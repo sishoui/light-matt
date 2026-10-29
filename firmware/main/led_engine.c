@@ -13,6 +13,7 @@
 #include "sdkconfig.h"
 
 #include "gamma.h"
+#include "selftest.h"
 #include "state_store.h"
 #include "stress_metrics.h"
 
@@ -44,6 +45,12 @@ static SemaphoreHandle_t s_render_signal;
 static lumen_state_t s_state;
 static lumen_state_t s_mailbox;
 static bool s_mailbox_dirty;
+
+/*
+ * 自检进度（协议 §11.2）。与 s_state 分开保存：自检是渲染层的临时覆盖，
+ * 绝不写共享状态、绝不触发 NVS。s_state_lock 同时保护这个结构。
+ */
+static lumen_selftest_t s_selftest;
 
 /* 灯带句柄的唯一所有者是渲染任务：init 创建后立刻交给渲染任务，之后只有
  * 渲染任务调用 set_pixel / refresh / del。 */
@@ -111,17 +118,26 @@ static esp_err_t push_frame(uint8_t r, uint8_t g, uint8_t b, uint16_t count)
  * 渲染一份快照。调用者是渲染任务，且持有灯带句柄的唯一所有权。
  * 同步 refresh() 而不是 refresh_async()：只有一个渲染任务、没有并发刷新，
  * 引入 async 就必须自建双缓冲，而本票没有任何收益。RMT × BLE 的调优在 #7。
+ *
+ * selftest 是渲染任务在锁内拷出的一份自检快照（不能直接读 s_selftest：
+ * BLE 回调可能并发取消/重启）。「自检覆盖 vs 存储状态」的规则集中在
+ * lumen_selftest_compose()，本函数只负责 gamma、去重与刷灯。
  */
-static void render_snapshot(const lumen_state_t *snapshot)
+static void render_snapshot(const lumen_state_t *snapshot, const lumen_selftest_t *selftest)
 {
-    /* 关灯把亮度乘 0，但保留状态里的亮度值；Color 仍参与 gamma 计算。 */
-    uint8_t brightness = snapshot->power ? lumen_state_clamp_brightness(
-                                               snapshot->brightness, max_brightness())
-                                         : 0;
+    uint8_t stored_rgb[3] = {snapshot->r, snapshot->g, snapshot->b};
+    uint8_t brightness;
+    uint8_t rgb[3];
 
-    uint8_t r = lumen_gamma_apply(snapshot->r, brightness);
-    uint8_t g = lumen_gamma_apply(snapshot->g, brightness);
-    uint8_t b = lumen_gamma_apply(snapshot->b, brightness);
+    /* 关灯把亮度乘 0，但保留状态里的亮度值；Color 仍参与 gamma 计算。 */
+    uint8_t clamped =
+        lumen_state_clamp_brightness(snapshot->brightness, max_brightness());
+    lumen_selftest_compose(selftest, snapshot->power, clamped, stored_rgb, max_brightness(),
+                           rgb, &brightness);
+
+    uint8_t r = lumen_gamma_apply(rgb[0], brightness);
+    uint8_t g = lumen_gamma_apply(rgb[1], brightness);
+    uint8_t b = lumen_gamma_apply(rgb[2], brightness);
     uint16_t count = snapshot->led_count;
 
     if (s_rendered_valid && r == s_rendered_r && g == s_rendered_g && b == s_rendered_b &&
@@ -406,14 +422,35 @@ static void render_task(void *arg)
     run_stress_phase();
 #endif
 
+    /*
+     * 自检开始后渲染任务必须按步醒来，因此等待超时取「距离下一次换色的
+     * tick 数」；没有自检时仍然 portMAX_DELAY 阻塞在信号量上，不轮询。
+     */
+    uint8_t logged_step = 0xFF;
+
     for (;;) {
-        /* 空闲时阻塞在二值信号量上，不空转、不轮询。 */
-        if (xSemaphoreTake(s_render_signal, portMAX_DELAY) != pdTRUE) {
-            continue;
+        TickType_t wait = portMAX_DELAY;
+        xSemaphoreTake(s_state_lock, portMAX_DELAY);
+        if (lumen_selftest_active(&s_selftest)) {
+            int64_t remaining_us =
+                lumen_selftest_next_step_in_us(&s_selftest, esp_timer_get_time());
+            /* FreeRTOS 里 0 表示「不等待」，至少等 1 tick 才不会死锁在自检中。 */
+            TickType_t ticks =
+                remaining_us > 0
+                    ? pdMS_TO_TICKS((uint32_t)((remaining_us + 999) / 1000))
+                    : 1;
+            wait = ticks > 0 ? ticks : 1;
         }
+        xSemaphoreGive(s_state_lock);
+
+        /* 超时（自检换色）与状态信号都会走到这里；不区分来源，统一重渲染。 */
+        (void)xSemaphoreTake(s_render_signal, wait);
 
         lumen_state_t snapshot;
+        lumen_selftest_t selftest;
         bool dirty;
+        bool selftest_active;
+        uint8_t selftest_rgb[3] = {0, 0, 0};
 
         xSemaphoreTake(s_state_lock, portMAX_DELAY);
         dirty = s_mailbox_dirty;
@@ -423,10 +460,36 @@ static void render_task(void *arg)
         } else {
             snapshot = s_state;
         }
+        /*
+         * 推进自检步骤（持锁：与取消/重启自检的命令互斥），并把整份自检状态
+         * 拷出来给渲染用——出锁后不能再用 s_selftest，BLE 回调随时可能改它。
+         * 序列走完后 active 自动变 false，渲染就会回到存储状态，这就是
+         * 「结束后恢复自检前的开关/亮度/颜色」（§11.2 第 3/4 条）。
+         */
+        lumen_selftest_advance(&s_selftest, esp_timer_get_time());
+        selftest = s_selftest;
+        selftest_active = lumen_selftest_color(&selftest, selftest_rgb);
+        uint8_t step = lumen_selftest_step(&selftest);
         xSemaphoreGive(s_state_lock);
 
+        if (!selftest_active) {
+            if (logged_step != 0xFF) {
+                /* 序列走完或被取消：串口上要能看到「已经回到存储状态」。 */
+                ESP_LOGI(TAG, "自检结束，恢复存储状态 power=%u brightness=%u rgb=%u,%u,%u",
+                         snapshot.power, snapshot.brightness, snapshot.r, snapshot.g,
+                         snapshot.b);
+            }
+            logged_step = 0xFF;
+        } else if (step != logged_step) {
+            /* 串口自检序列证据：与小程序日志无关，不依赖 BLE 也能看。 */
+            logged_step = step;
+            ESP_LOGI(TAG, "自检 %u/%d %s rgb=%u,%u,%u", (unsigned)step + 1,
+                     LUMEN_SELFTEST_STEPS, lumen_selftest_step_name(step), selftest_rgb[0],
+                     selftest_rgb[1], selftest_rgb[2]);
+        }
+
         /* 渲染耗时（set_pixel + 阻塞 refresh）不持锁，State read 不会被拖住。 */
-        render_snapshot(&snapshot);
+        render_snapshot(&snapshot, &selftest);
     }
 }
 
@@ -439,6 +502,7 @@ esp_err_t lumen_led_engine_init(void)
     }
 
     lumen_gamma_init();
+    lumen_selftest_reset(&s_selftest);
 
     lumen_state_defaults(&s_state, CONFIG_LUMEN_LED_COUNT);
     bool restored = lumen_state_store_load(&s_state);
@@ -531,4 +595,49 @@ void lumen_led_engine_set_store_event_cb(lumen_store_event_cb cb)
 uint8_t lumen_led_engine_max_brightness(void)
 {
     return max_brightness();
+}
+
+/*
+ * 协议 §11.2 自检控制。三个函数都不碰 s_state / s_mailbox / NVS：
+ * 自检只是渲染层的临时覆盖，结束后渲染任务直接回到存储状态。
+ */
+void lumen_led_engine_start_selftest(void)
+{
+    if (s_state_lock == NULL) {
+        return;
+    }
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    /* 重复收到 0x07 时从这里重新计时（§11.2 第 7 条）。 */
+    lumen_selftest_start(&s_selftest, esp_timer_get_time());
+    xSemaphoreGive(s_state_lock);
+    xSemaphoreGive(s_render_signal);
+}
+
+bool lumen_led_engine_cancel_selftest(void)
+{
+    if (s_state_lock == NULL) {
+        return false;
+    }
+    bool was_active;
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    was_active = lumen_selftest_active(&s_selftest);
+    lumen_selftest_stop(&s_selftest);
+    xSemaphoreGive(s_state_lock);
+
+    /* 只有真的在自检时才需要立刻重绘回存储状态。 */
+    if (was_active) {
+        xSemaphoreGive(s_render_signal);
+    }
+    return was_active;
+}
+
+bool lumen_led_engine_selftest_active(void)
+{
+    if (s_state_lock == NULL) {
+        return false;
+    }
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    bool active = lumen_selftest_active(&s_selftest);
+    xSemaphoreGive(s_state_lock);
+    return active;
 }

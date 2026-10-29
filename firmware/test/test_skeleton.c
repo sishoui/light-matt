@@ -23,6 +23,7 @@
 #include "command.h"
 #include "gamma.h"
 #include "protocol.h"
+#include "selftest.h"
 #include "state.h"
 
 static int g_checks;
@@ -364,8 +365,22 @@ static void run_app_case(const vector_case_t *c)
                                             before.r != frame.payload[2] ||
                                             before.g != frame.payload[3] ||
                                             before.b != frame.payload[4]));
+        } else if (frame.command == LUMEN_CMD_SELF_TEST) {
+            /* #13：SelfTest 立即回 0x00 并启动自检，但不改共享状态。 */
+            CHECK(c->result_code >= 0);
+            CHECK(outcome.result_code == (uint8_t)c->result_code);
+            CHECK(outcome.start_selftest);
+            CHECK(!outcome.cancels_selftest);
+            CHECK(!outcome.state_changed);
+            CHECK(outcome.next.power == before.power);
+            CHECK(outcome.next.brightness == before.brightness);
+            CHECK(outcome.next.r == before.r);
+            CHECK(outcome.next.g == before.g);
+            CHECK(outcome.next.b == before.b);
+            CHECK(outcome.next.led_count == before.led_count);
         } else {
-            /* 0x05-0x07 本票明确未实现，统一回 0x02；保留命令/未知命令同理。 */
+            /* 0x05 QueryState / 0x06 SetLedCount 语义属于 #11/#12，统一回
+             * 0x02；保留命令/未知命令同理。 */
             CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
             CHECK(!outcome.state_changed);
             CHECK(outcome.next.power == before.power);
@@ -498,16 +513,28 @@ static void test_set_power_reducer(void)
     CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
     CHECK(!outcome.state_changed);
 
-    /* 0x05-0x07 本票未实现：0x02（载荷长度正确时也不能改状态） */
-    for (uint8_t cmd = LUMEN_CMD_QUERY_STATE; cmd <= LUMEN_CMD_SELF_TEST; ++cmd) {
+    /* 0x05 QueryState / 0x06 SetLedCount 语义属于 #11/#12：0x02，不改状态 */
+    for (uint8_t cmd = LUMEN_CMD_QUERY_STATE; cmd <= LUMEN_CMD_SET_LED_COUNT; ++cmd) {
         lumen_frame_t known = {0};
         known.command = cmd;
         known.payload_len = lumen_command_payload_len(cmd);
         lumen_command_dispatch(&known, &state, 255, &outcome);
         CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
         CHECK(!outcome.state_changed);
+        CHECK(!outcome.start_selftest);
         CHECK(lumen_command_is_known(cmd));
     }
+
+    /* 0x07 SelfTest（#13）：立即回 0x00、不改状态、启动自检 */
+    lumen_frame_t selftest = {0};
+    selftest.command = LUMEN_CMD_SELF_TEST;
+    selftest.payload_len = 0;
+    lumen_command_dispatch(&selftest, &state, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(!outcome.state_changed);
+    CHECK(outcome.start_selftest);
+    CHECK(!outcome.cancels_selftest);
+    CHECK(memcmp(&outcome.next, &state, sizeof(state)) == 0);
 
     /* 保留 / 未知 / 设备→小程序命令字：0x02 */
     const uint8_t unknown[] = {0x00, 0x08, 0x7F, 0x80, 0x81, 0x82, 0xFF};
@@ -1051,6 +1078,324 @@ static void test_state_bytes_layout(void)
     CHECK(out[6] == 0x01);
 }
 
+/*
+ * 自检序列（协议 §11.2）：红 → 绿 → 蓝 → 白，每色 500ms，共 2s。
+ * 纯函数 + 注入时间，不依赖 FreeRTOS 与硬件。
+ */
+static void test_selftest_sequence(void)
+{
+    lumen_selftest_t st;
+    uint8_t rgb[3] = {0xEE, 0xEE, 0xEE};
+    const int64_t t0 = 1000000;
+
+    lumen_selftest_reset(&st);
+    CHECK(!lumen_selftest_active(&st));
+    CHECK(lumen_selftest_next_step_in_us(&st, t0) == -1);
+    CHECK(!lumen_selftest_color(&st, rgb)); /* 未激活时不写 out */
+    CHECK(rgb[0] == 0xEE);
+
+    lumen_selftest_start(&st, t0);
+    CHECK(lumen_selftest_active(&st));
+    CHECK(lumen_selftest_step(&st) == 0);
+    CHECK(lumen_selftest_next_step_in_us(&st, t0) == LUMEN_SELFTEST_STEP_US);
+
+    /* 第 1 色：红，0 ≤ t < 500ms */
+    CHECK(lumen_selftest_advance(&st, t0));
+    CHECK(lumen_selftest_color(&st, rgb));
+    CHECK(rgb[0] == 255 && rgb[1] == 0 && rgb[2] == 0);
+    CHECK(strcmp(lumen_selftest_step_name(lumen_selftest_step(&st)), "red") == 0);
+
+    CHECK(lumen_selftest_advance(&st, t0 + 499999));
+    CHECK(lumen_selftest_step(&st) == 0);
+    CHECK(lumen_selftest_next_step_in_us(&st, t0 + 499999) == 1);
+
+    /* 第 2 色：绿，500ms ≤ t < 1000ms */
+    CHECK(lumen_selftest_advance(&st, t0 + 500000));
+    CHECK(lumen_selftest_color(&st, rgb));
+    CHECK(rgb[0] == 0 && rgb[1] == 255 && rgb[2] == 0);
+    CHECK(lumen_selftest_next_step_in_us(&st, t0 + 500000) == LUMEN_SELFTEST_STEP_US);
+
+    /* 第 3 色：蓝 */
+    CHECK(lumen_selftest_advance(&st, t0 + 1000000));
+    CHECK(lumen_selftest_color(&st, rgb));
+    CHECK(rgb[0] == 0 && rgb[1] == 0 && rgb[2] == 255);
+
+    /* 第 4 色：白 */
+    CHECK(lumen_selftest_advance(&st, t0 + 1500000));
+    CHECK(lumen_selftest_color(&st, rgb));
+    CHECK(rgb[0] == 255 && rgb[1] == 255 && rgb[2] == 255);
+
+    /* 2s 之前仍停在白 */
+    CHECK(lumen_selftest_advance(&st, t0 + 1999999));
+    CHECK(lumen_selftest_step(&st) == 3);
+
+    /* 2s 整：序列自动结束，颜色不再覆盖 */
+    CHECK(!lumen_selftest_advance(&st, t0 + 2000000));
+    CHECK(!lumen_selftest_active(&st));
+    CHECK(!lumen_selftest_color(&st, rgb));
+    CHECK(lumen_selftest_next_step_in_us(&st, t0 + 2000000) == -1);
+}
+
+/* 渲染任务被延迟唤醒时按墙钟推进，不补播错过的颜色。 */
+static void test_selftest_late_wake(void)
+{
+    lumen_selftest_t st;
+    uint8_t rgb[3];
+    lumen_selftest_start(&st, 0);
+
+    /* 一次醒来已过 1.6s：直接是第 4 色（白），前面三色不补播。 */
+    CHECK(lumen_selftest_advance(&st, 1600000));
+    CHECK(lumen_selftest_color(&st, rgb));
+    CHECK(rgb[0] == 255 && rgb[1] == 255 && rgb[2] == 255);
+
+    /* 再晚 1s：超过 2s，直接结束。 */
+    CHECK(!lumen_selftest_advance(&st, 2600000));
+    CHECK(!lumen_selftest_active(&st));
+}
+
+/* 重复收到自检命令：重新从红色开始并重新计时（§11.2 第 7 条）。 */
+static void test_selftest_restart(void)
+{
+    lumen_selftest_t st;
+    uint8_t rgb[3];
+
+    lumen_selftest_start(&st, 1000);
+    CHECK(lumen_selftest_advance(&st, 1000 + 1200000));
+    CHECK(lumen_selftest_step(&st) == 2); /* 蓝 */
+
+    lumen_selftest_start(&st, 1000 + 1300000);
+    CHECK(lumen_selftest_step(&st) == 0);
+    CHECK(lumen_selftest_next_step_in_us(&st, 1000 + 1300000) == LUMEN_SELFTEST_STEP_US);
+
+    /* 旧起点已经远超 2s，但重启后按新起点计算，仍是红色。 */
+    CHECK(lumen_selftest_advance(&st, 1000 + 1300000 + 1000));
+    CHECK(lumen_selftest_color(&st, rgb));
+    CHECK(rgb[0] == 255 && rgb[1] == 0 && rgb[2] == 0);
+
+    CHECK(lumen_selftest_advance(&st, 1000 + 1300000 + 500000));
+    CHECK(lumen_selftest_color(&st, rgb));
+    CHECK(rgb[1] == 255);
+}
+
+/* 改状态命令立即取消自检；QueryState 不取消；非法命令不取消。 */
+static void test_selftest_cancel_rules(void)
+{
+    lumen_state_t state;
+    lumen_state_defaults(&state, 30);
+    state.power = 1;
+    state.brightness = 128;
+    state.r = 255;
+    state.g = 180;
+    state.b = 120;
+
+    lumen_command_outcome_t outcome;
+    lumen_frame_t frame = {0};
+
+    /* 五类改变状态的命令都属于「改变状态」类别（含 #12 的 SetLedCount）。 */
+    const uint8_t changing[] = {LUMEN_CMD_SET_POWER, LUMEN_CMD_SET_BRIGHTNESS,
+                                LUMEN_CMD_SET_COLOR, LUMEN_CMD_SET_ALL,
+                                LUMEN_CMD_SET_LED_COUNT};
+    for (size_t i = 0; i < sizeof(changing); ++i) {
+        CHECK(lumen_command_changes_state(changing[i]));
+    }
+    CHECK(!lumen_command_changes_state(LUMEN_CMD_QUERY_STATE));
+    CHECK(!lumen_command_changes_state(LUMEN_CMD_SELF_TEST));
+    CHECK(!lumen_command_changes_state(0x08));
+
+    /* 值没变化（state_changed=false）的 SetPower 仍要取消自检（第 5 条）。 */
+    frame.command = LUMEN_CMD_SET_POWER;
+    frame.payload_len = 1;
+    frame.payload[0] = 1;
+    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(!outcome.state_changed);
+    CHECK(outcome.cancels_selftest);
+    CHECK(!outcome.start_selftest);
+
+    /* SetBrightness / SetColor / SetAll 同样取消（这里都用当前值）。 */
+    frame.command = LUMEN_CMD_SET_BRIGHTNESS;
+    frame.payload_len = 1;
+    frame.payload[0] = state.brightness;
+    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(!outcome.state_changed);
+    CHECK(outcome.cancels_selftest);
+
+    frame.command = LUMEN_CMD_SET_COLOR;
+    frame.payload_len = 3;
+    frame.payload[0] = state.r;
+    frame.payload[1] = state.g;
+    frame.payload[2] = state.b;
+    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(!outcome.state_changed);
+    CHECK(outcome.cancels_selftest);
+
+    frame.command = LUMEN_CMD_SET_ALL;
+    frame.payload_len = 5;
+    frame.payload[0] = state.power;
+    frame.payload[1] = state.brightness;
+    frame.payload[2] = state.r;
+    frame.payload[3] = state.g;
+    frame.payload[4] = state.b;
+    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(!outcome.state_changed);
+    CHECK(outcome.cancels_selftest);
+
+    /* #12 接入点：SetLedCount 属改变状态类别；合入后回 0x00 即自动取消。 */
+    frame.command = LUMEN_CMD_SET_LED_COUNT;
+    frame.payload_len = 2;
+    frame.payload[0] = 30;
+    frame.payload[1] = 0;
+    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    CHECK(lumen_command_changes_state(frame.command));
+
+    /* QueryState：明确不取消自检（§11.2 第 6 条）。 */
+    frame.command = LUMEN_CMD_QUERY_STATE;
+    frame.payload_len = 0;
+    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    CHECK(!outcome.cancels_selftest);
+
+    /* 非法取值 / 长度错误 / 未知命令：命令未生效，不取消自检。 */
+    frame.command = LUMEN_CMD_SET_POWER;
+    frame.payload_len = 1;
+    frame.payload[0] = 2;
+    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(!outcome.cancels_selftest);
+
+    frame.command = LUMEN_CMD_SET_BRIGHTNESS;
+    frame.payload_len = 2;
+    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
+    CHECK(!outcome.cancels_selftest);
+
+    frame.command = 0x08;
+    frame.payload_len = 0;
+    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
+    CHECK(!outcome.cancels_selftest);
+
+    /* 自检命令本身不取消、只启动。 */
+    frame.command = LUMEN_CMD_SELF_TEST;
+    frame.payload_len = 0;
+    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    CHECK(outcome.start_selftest);
+    CHECK(!outcome.cancels_selftest);
+    CHECK(!outcome.state_changed);
+}
+
+/*
+ * 自检期间状态不变：State read 编码出的始终是存储状态，不是自检颜色。
+ * 自检开始时是关灯态，存储状态仍为关灯（结束回关灯由渲染层保证）。
+ */
+static void test_selftest_leaves_state_untouched(void)
+{
+    lumen_state_t state;
+    lumen_state_defaults(&state, 30);
+    state.power = 0;
+    state.brightness = 77;
+    state.r = 10;
+    state.g = 20;
+    state.b = 30;
+
+    uint8_t before[8];
+    lumen_state_to_bytes(&state, 255, before);
+
+    /* 自检启动是纯渲染层覆盖：命令结果 next 与 current 完全一致。 */
+    lumen_frame_t frame = {0};
+    frame.command = LUMEN_CMD_SELF_TEST;
+    frame.payload_len = 0;
+    lumen_command_outcome_t outcome;
+    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(!outcome.state_changed);
+    CHECK(memcmp(&outcome.next, &state, sizeof(state)) == 0);
+
+    lumen_selftest_t st;
+    lumen_selftest_start(&st, 0);
+    uint8_t rgb[3];
+    CHECK(lumen_selftest_color(&st, rgb));
+    CHECK(rgb[0] == 255 && rgb[1] == 0 && rgb[2] == 0); /* 自检点亮为红 */
+
+    /* 同时刻的 State 仍是关灯 + 原亮度/颜色（§11.2 第 6 条）。 */
+    uint8_t during[8];
+    lumen_state_to_bytes(&state, 255, during);
+    CHECK(memcmp(before, during, sizeof(before)) == 0);
+    CHECK(during[0] == 0);
+    CHECK(during[1] == 77);
+    CHECK(during[2] == 10 && during[3] == 20 && during[4] == 30);
+}
+
+/*
+ * 渲染合成规则（§11.2 第 2/3/4 条）：自检激活时用自检色 + max_brightness，
+ * 不看存储的 power/brightness；结束后回到存储状态（关灯回关灯）。
+ * lumen_selftest_compose() 是 led_engine 里唯一一处这类判断。
+ */
+static void test_selftest_compose(void)
+{
+    uint8_t rgb[3] = {0, 0, 0};
+    uint8_t brightness = 0;
+    const uint8_t stored_rgb[3] = {10, 20, 30};
+
+    /* 1) 未激活：关灯 -> 亮度 0，颜色保留存储值（与 #8 行为一致）。 */
+    lumen_selftest_t st;
+    lumen_selftest_reset(&st);
+    lumen_selftest_compose(&st, 0, 77, stored_rgb, 200, rgb, &brightness);
+    CHECK(brightness == 0);
+    CHECK(rgb[0] == 10 && rgb[1] == 20 && rgb[2] == 30);
+
+    /* 2) 未激活、开灯：亮度直接用存储值（钳位在调用方做）。 */
+    lumen_selftest_compose(&st, 1, 77, stored_rgb, 200, rgb, &brightness);
+    CHECK(brightness == 77);
+    CHECK(rgb[0] == 10 && rgb[1] == 20 && rgb[2] == 30);
+
+    /* 3) 关灯态启动自检：点亮为红，亮度取 max_brightness（§11.2 第 4 条）。 */
+    lumen_selftest_start(&st, 0);
+    lumen_selftest_advance(&st, 0);
+    lumen_selftest_compose(&st, 0, 77, stored_rgb, 200, rgb, &brightness);
+    CHECK(brightness == 200);
+    CHECK(rgb[0] == 255 && rgb[1] == 0 && rgb[2] == 0);
+
+    /* 4) 自检期间每一步都是满值颜色 + 同一个 max_brightness，与存储亮度无关。 */
+    const uint8_t expected[4][3] = {
+        {255, 0, 0}, {0, 255, 0}, {0, 0, 255}, {255, 255, 255}};
+    for (int i = 0; i < 4; ++i) {
+        lumen_selftest_advance(&st, (int64_t)i * LUMEN_SELFTEST_STEP_US);
+        lumen_selftest_compose(&st, 0, 1, stored_rgb, 128, rgb, &brightness);
+        CHECK(brightness == 128);
+        CHECK(rgb[0] == expected[i][0]);
+        CHECK(rgb[1] == expected[i][1]);
+        CHECK(rgb[2] == expected[i][2]);
+    }
+
+    /* 5) 序列走完：回到存储状态，关灯态回关灯（§11.2 第 3/4 条）。 */
+    lumen_selftest_advance(&st, 4 * LUMEN_SELFTEST_STEP_US);
+    CHECK(!lumen_selftest_active(&st));
+    lumen_selftest_compose(&st, 0, 77, stored_rgb, 200, rgb, &brightness);
+    CHECK(brightness == 0);
+    CHECK(rgb[0] == 10 && rgb[1] == 20 && rgb[2] == 30);
+
+    /* 6) 取消后同样立刻回存储状态。 */
+    lumen_selftest_start(&st, 0);
+    lumen_selftest_stop(&st);
+    lumen_selftest_compose(&st, 1, 77, stored_rgb, 200, rgb, &brightness);
+    CHECK(brightness == 77);
+    CHECK(rgb[0] == 10 && rgb[1] == 20 && rgb[2] == 30);
+
+    /* 7) max_brightness = 0 时自检也输出 0 亮度（钳位语义，不特判）。 */
+    lumen_selftest_start(&st, 0);
+    lumen_selftest_compose(&st, 0, 77, stored_rgb, 0, rgb, &brightness);
+    CHECK(brightness == 0);
+    CHECK(rgb[0] == 255); /* 颜色仍是自检色，亮度为 0 由 gamma 乘算归零 */
+
+    /* 8) NULL 自检指针按未激活处理，且不写非法指针。 */
+    lumen_selftest_compose(NULL, 1, 77, stored_rgb, 200, rgb, &brightness);
+    CHECK(brightness == 77);
+    CHECK(rgb[0] == 10 && rgb[1] == 20 && rgb[2] == 30);
+}
+
 static void test_gamma(void)
 {
     lumen_gamma_init();
@@ -1099,6 +1444,12 @@ int main(int argc, char **argv)
     test_decode_max_payload();
     test_state_defaults_and_clamp();
     test_state_bytes_layout();
+    test_selftest_sequence();
+    test_selftest_late_wake();
+    test_selftest_restart();
+    test_selftest_cancel_rules();
+    test_selftest_leaves_state_untouched();
+    test_selftest_compose();
     test_gamma();
 
     if (g_failures != 0) {

@@ -19,6 +19,7 @@ import {
 import { applyLocalColor, clampRgb, presetBrightness } from "./color";
 import {
   cmdQueryState,
+  cmdSelfTest,
   cmdSetAll,
   cmdSetBrightness,
   cmdSetColor,
@@ -231,6 +232,29 @@ export class ControlSession {
   /** 调试兜底：QueryState（次要路径，主路径是 State read）。 */
   async queryState(): Promise<AckResult> {
     return this.transport.sendAndWaitAck(cmdQueryState());
+  }
+
+  /**
+   * #13：自检。设备按 红→绿→蓝→白 各 500ms 临时覆盖灯带，2s 后自动恢复。
+   *
+   * 这里只发一帧并等 ACK：自检不改变设备状态，所以本地状态与 UI 都不动
+   * （避免「自检后 UI 显示自检颜色」）。允许 ACK 超时重发一次——重发会
+   * 让设备重启序列，结果仍是同一条 2s 自检，可接受；不重发则一次丢包就会
+   * 让用户觉得按钮没反应。
+   */
+  async selfTest(): Promise<CommandResult> {
+    try {
+      const ack = await this.transport.sendAndWaitAck(cmdSelfTest(), { retryOnTimeout: 1 });
+      if (!ack.ok) {
+        return { kind: "ack-error", ack };
+      }
+      return {
+        kind: "ok",
+        state: this.latestState ?? fallbackState({ r: 0, g: 0, b: 0 }, 0, 0),
+      };
+    } catch (err) {
+      return { kind: "error", message: errorText(err) };
+    }
   }
 
   /**

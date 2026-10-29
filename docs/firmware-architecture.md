@@ -15,7 +15,7 @@ app_main.c
    ▼
 ble_link  ──调用──▶  led_engine  ──调用──▶  state_store
    │                    │
-   │                    └──调用──▶  gamma / state / protocol（纯函数）
+   │                    └──调用──▶  gamma / state / selftest / protocol（纯函数）
    │
    └── GATT / 广播 / 帧收发
 ```
@@ -28,6 +28,7 @@ ble_link  ──调用──▶  led_engine  ──调用──▶  state_store
 | `protocol` | 帧信封解码、checksum、ACK/Event/StateReport 编码（纯函数） | 见 `protocol.h` |
 | `state` | 状态默认值、亮度钳位、8 字节 State 编码（纯函数） | 见 `state.h` |
 | `gamma` | gamma 表 + 亮度乘算（纯函数） | `lumen_gamma_init` / `lumen_gamma_apply` |
+| `selftest` | §11.2 自检序列状态机 + 自检/存储的颜色亮度合成（纯函数，#13） | 见 `selftest.h` |
 
 **依赖单向**：`ble_link → led_engine → state_store`。反向调用只有一种形式——`state_store` 通过编译期依赖拿到 `lumen_state_t`，但它从不调用 `led_engine` 或 `ble_link`。`led_engine` 不引用任何 NimBLE 头文件，因此渲染路径不依赖 BLE。
 
@@ -155,8 +156,9 @@ TX notify 的所有权：`lumen_ble_link_notify()` 创建 mbuf 后交给 `ble_ga
 - ✅ 命令分发、payload 校验、ACK 发送（#8；QueryState 的解码与 StateReport 留给 #13）。
 - ✅ SetPower 语义与 state 写入（#8）。
 - ✅ SetBrightness 语义与按 `max_brightness` 钳位（#9）。
+- ✅ SelfTest 语义：ACK `0x00` + 红→绿→蓝→白各 500ms 临时覆盖（#13）。
 - ⏳ `SetLedCount` 句柄重建与异步 ACK → #12。
-- ⏳ 自检 → #13。
+- ⏳ QueryState 的 StateReport 回应 → #11。
 - ⏳ RMT × BLE 共存调优 → #7。
 
 `protocol.c` 只保留信封与设备→小程序编码；命令表与载荷语义在 `command.c`（#8 起）。
@@ -234,11 +236,12 @@ rx_access → handle_frame
 | `0x02` SetBrightness | **#9 已实现**：0-255 全合法，按 `max_brightness` 钳位后提交，回 `0x00` |
 | `0x03` SetColor | **#10 已实现**：3 字节 RGB 全合法，只写颜色，回 `0x00` |
 | `0x04` SetAll | **#10 已实现**：5 字段原子生效；power 非 0/1 → `0x01` 且整帧不写；亮度按 §11.4 钳位 |
-| `0x05`-`0x07` | 载荷长度先按命令表校验（错 → `0x04`），合法长度统一回 `0x02`（明确未实现） |
+| `0x05`-`0x06` | 载荷长度先按命令表校验（错 → `0x04`），合法长度统一回 `0x02`（明确未实现，#11/#12 替换） |
+| `0x07` SelfTest | **#13 已实现**：立即回 `0x00` 并启动自检覆盖，不改共享状态（见 §12） |
 | `0x08`-`0xFF`（含小程序写 0x80） | `0x02` |
 
-**仍是暂时的协议偏差**：协议 §6 已定义 0x05-0x07 的语义，后续票（#12 灯珠数量、
-#13 自检/日志）会把它们替换成真实实现；替换前设备会对这些命令回 `0x02`，
+**仍是暂时的协议偏差**：协议 §6 已定义 0x05-0x06 的语义，后续票（#11 状态同步、
+#12 灯珠数量）会把它们替换成真实实现；替换前设备会对这些命令回 `0x02`，
 小程序据此显示「设备不支持该命令」。
 
 ### 9.4 Host 测试
@@ -366,3 +369,182 @@ SetAll 0x04 的语义（协议 §6 / §7 / §11.1 / §11.4）：
   全同不 commit、只有 power 变化也 commit、亮度钳位（200/255 → 180）、
   钳位后相同不 commit、`max_brightness = 0` 时亮度 0 且颜色照常生效。
 - 基线从 917 项增至 1024 项（只增不减）。
+
+---
+
+## 12. #13 落地后的增量（协议日志与自检）
+
+issue #13 的目标是「让真机上的问题可以被看见」：固件侧给出可自证的串口证据与
+不依赖小程序的灯带自检；小程序侧给出一个与 console 同源的隐藏帧日志面板。
+本票不新增任何协议字节——`SelfTest 0x07` 早就写在 `docs/protocol.md` §6/§11.2 里。
+
+### 12.1 自检状态机（`selftest.c` / `selftest.h`）
+
+自检被拆成一个**纯函数状态机**，时间由调用方注入，因此不依赖 FreeRTOS / ESP-IDF，
+可以在 host 上直接单测（`firmware/test/run-tests.cmd`）：
+
+```c
+typedef struct {
+    bool active;
+    uint8_t step;            /* 0..3：红/绿/蓝/白 */
+    int64_t step_started_us; /* 第一步的起点，单位由调用方决定 */
+} lumen_selftest_t;
+```
+
+- 顺序固定为 **红 → 绿 → 蓝 → 白**，每步 `LUMEN_SELFTEST_STEP_US = 500000`，共 2s。
+  顺序是 §11.2 的验收项，`k_selftest_rgb` 是唯一真相，不要在别处再写一份颜色表。
+- `advance(now_us)` 用 **`elapsed / 500ms` 算下标**，而不是「每次醒来 step+1」。
+  渲染任务被 BLE/日志拖晚时不会累积漂移，2s 总时长保持不变；代价是错过的颜色
+  不补播（墙钟优先）。走完 `index >= 4` 时自动 `stop()` 并返回 `false`。
+- `start()` 无条件把 `step` 归零并按新起点计时——这就是 §11.2 第 7 条「重复自检
+  重新开始」的实现，且**不产生任何完成事件**（协议没有这类 Event）。
+- `next_step_in_us()` 供渲染任务计算信号量超时，未激活返回 `-1`。
+
+关键边界：状态机**只回答「这一帧该渲染什么颜色」**，从不读 `lumen_state_t`、
+不写 NVS、不发 BLE。这样 §11.2 第 3/4 条（临时覆盖、结束后恢复）由数据结构本身
+保证，而不是靠调用方记得回滚。
+
+### 12.2 渲染层接入（`led_engine.c`）
+
+`s_selftest` 是独立于 `s_state` / `s_mailbox` 的静态变量，**由 `s_state_lock` 保护**，
+不进入邮箱、不触发 `commit`、不触发 `state_store`：自检从头到尾没有任何持久化路径。
+
+渲染循环的等待策略：
+
+| 情况 | 等待 | 理由 |
+|---|---|---|
+| 无自检 | `xSemaphoreTake(s_render_signal, portMAX_DELAY)` | 与 #8 相同，空闲不轮询 |
+| 自检中 | 超时 = 距下一色的 tick 数（至少 1 tick） | 只在自检期间按步醒来，普通路径零成本 |
+
+醒来后统一重渲染，不区分「信号」还是「超时」：自检期间状态信号本来也要重绘。
+
+`render_snapshot(snapshot, &selftest)` 把「这一帧输出什么」交给
+`lumen_selftest_compose()`（`selftest.c` 里的纯函数）：
+
+| 自检状态 | 颜色 | 亮度 |
+|---|---|---|
+| 激活 | 当前步骤的自检色（满值） | `max_brightness()`，**不看 power** |
+| 未激活 | 存储 RGB | `power ? clamp(brightness) : 0` |
+
+规则集中在这一个函数里，所以 §11.2 第 2/3/4 条可以在 host 上逐条断言
+（`test_selftest_compose()`），而不必烧板子看灯。gamma 与 `set_pixel` 仍留在
+`led_engine`；共享状态与 State read / StateReport 永远是存储值（§11.2 第 6 条）。
+
+渲染任务在锁内把 `s_selftest` **拷贝一份**再出锁使用：BLE 回调随时可能取消或
+重启自检，出锁后直接读静态变量会读到被并发改写的数据。
+
+`render_snapshot` 的「颜色/亮度/数量都没变就跳过」短路仍然有效：自检四步颜色
+互不相同，每步必然真正刷一次灯带；2s 结束后回到存储状态时也会因为颜色变化而重绘。
+
+串口每进入一个新步骤打一行（`自检 2/4 green rgb=0,255,0`），保证「不依赖小程序
+也能验证灯带与通道顺序」——只看串口与肉眼即可完成验收。
+
+### 12.3 取消规则（`command.c` + `ble_link.c`）
+
+`lumen_command_outcome_t` 新增两个布尔：
+
+| 字段 | 谁置位 | 语义 |
+|---|---|---|
+| `start_selftest` | `0x07` 分支 | 立即开始（或重启）自检 |
+| `cancels_selftest` | **统一收尾**，不在各分支里写 | 命令属于「改变状态」类别且已被接受 |
+
+统一收尾是这版最关键的决定：
+
+```c
+outcome->cancels_selftest =
+    outcome->result_code == LUMEN_RESULT_OK && lumen_command_changes_state(frame->command);
+```
+
+- `lumen_command_changes_state()` 把 **SetPower / SetBrightness / SetColor / SetAll /
+  SetLedCount** 五类都算进来，与 §11.2 第 5 条一一对应。
+- **即使 `state_changed == false` 也要取消**：把开关设成当前值仍然是「改变状态的
+  命令」，按协议它必须打断自检。只按 `state_changed` 判断会漏掉这一类。
+- **非法命令不取消**：`0x01 InvalidParam` / `0x04 BadLength` / `0x02 UnknownCommand`
+  都没有生效，自检继续跑（已在 `test_selftest_cancel_rules()` 里锁住）。
+- QueryState `0x05` 与 SelfTest `0x07` 不在类别里，所以查询不会打断自检。
+
+**SetLedCount（#12）的取消点已经预埋好**：`0x06` 现在回 `0x02`，等 #12 把它改成
+`0x00` 后，上面的统一收尾会自动置 `cancels_selftest`，自检代码一行都不用改。
+`test_selftest_cancel_rules()` 已经断言 `lumen_command_changes_state(0x06) == true`。
+
+`ble_link.c` 的执行顺序固定为 **取消/启动自检 → `commit` → 打日志 → 回 ACK**：
+
+1. 先取消自检再 commit，渲染任务下一次醒来看到的已经是新状态，不会闪回自检色；
+2. 日志里的 `power/brightness/rgb` 来自 `outcome.next`，即命令生效后的**存储状态**
+   （自检期间也一样），避免把自检色误读成设备状态；
+3. ACK 仍然是「写入 RAM 之后立刻回」，自检不改变这个时序（§10.1）。
+
+串口每帧一行的尾部标记：
+
+| 标记 | 含义 |
+|---|---|
+| `selftest=start` | 这条命令启动了自检 |
+| `selftest=cancel` | 这条命令**确实**打断了一个进行中的自检 |
+| `selftest=on` | 命令处理完后自检仍在跑（QueryState / State read 期间出现即证明没被取消） |
+| 无标记 | 命令与自检都无关 |
+
+`cancel` 只在真的停掉了自检时出现（`lumen_led_engine_cancel_selftest()` 返回
+是否曾经激活），否则每条 SetXxx 都会打 `cancel`，排查时会误以为自检被反复打断。
+
+### 12.4 小程序侧日志面板接口
+
+三块纯逻辑，全部不依赖 `wx.*`，可在 node 里单测：
+
+| 模块 | 职责 |
+|---|---|
+| `utils/ble/log.ts`（#8 已有） | 200 帧环形缓冲 `FrameLog`；`push` 是唯一入口，console 镜像也在这里 |
+| `utils/protocol/describe.ts`（新） | 帧 → 人可读文本：`describeCommand / describeAck / describeEvent / describeState / describeStateRead` |
+| `utils/ble/log-panel.ts`（新） | `TapSequence` 连点判定、`LogPanelModel` 可见性/暂停/清空/复制、行格式化 |
+
+**数据源唯一**：`FrameLogEntry` 只有一份。console 镜像、面板行、复制文本全部由
+`formatLogLine(entry)` 生成，因此「开发版 console 与面板看到的是同一份数据」
+是结构性保证，不是靠两边手写一致。
+
+`describe.ts` 的原则是「解析不了就退回 hex」，保证任何帧（包括坏帧、超长帧、
+未知命令）在日志里都有可对照的原始字节。`State read` 的 8 字节裸值不是协议帧，
+单独用 `describeStateRead()` 前缀区分，但字段顺序与 StateReport 完全一致。
+
+**暂停语义：冻结视图，继续记录。** 按下暂停时对当前缓冲做一次快照，视图停在
+那一刻；新帧继续进入 `FrameLog`（仍受 200 帧上限约束），恢复后立刻可见。
+
+选择理由：
+
+- 诊断的真实流程是「先复现，再回看」。若暂停等于停止记录，暂停期间发生的帧会
+  直接缺失，反而破坏「每一帧都能在面板看到」这条验收项。
+- 冻结视图同时满足「暂停阅读」这个使用需求：长日志滚动时不会被新帧顶走。
+- 代价是暂停久了旧帧会被环形缓冲挤掉——这正是「有上限」这个验收项要的行为，
+  面板上也用「视图已暂停」+ 帧数提示用户当前看的是哪个时刻。
+
+其它实现细节：
+
+- 面板刷新按 **200ms 合并**（`LOG_PANEL_REFRESH_MS`）。帧可能以 20Hz 到达，
+  每帧 `setData` 会让真机卡顿；暂停或面板隐藏时完全不 `setData`。
+- 复制走 `wx.setClipboardData`，复制的是**当前视图**（暂停时是冻结段，否则是
+  整个环形缓冲），一行一帧、末尾无空行，方便直接粘进 issue。
+- 隐藏入口是页脚版本号：`TapSequence` 在 2s 窗口内累计 5 次点击才切换可见性，
+  窗口外慢点会自然过期（不把一整天的点击攒成 5 次）。判定逻辑在纯函数里，
+  页面只负责应用结果。
+- 每行 seq 同时显示十进制与十六进制（`7 (0x07)`）。固件串口打的是 `seq=0x..`，
+  两边都是 hex 之后，「按 seq 对齐两端」退化成一次字符串搜索。
+
+### 12.5 Host / 小程序测试
+
+- `test_selftest_sequence()`：四步颜色与边界时刻（0 / 499999 / 500000 / ... / 2000000µs），
+  未激活时不写 `out_rgb`，走完自动 `stop()`。
+- `test_selftest_late_wake()`：一次醒来已过 1.6s 直接是白色，超过 2s 直接结束——
+  锁住「不补播、总时长不变」。
+- `test_selftest_restart()`：第 7 条重复自检从红色重新计时。
+- `test_selftest_cancel_rules()`：五类命令都算「改变状态」（含 `0x06`）、
+  值没变也取消、非法命令不取消、QueryState 与 SelfTest 不取消。
+- `test_selftest_leaves_state_untouched()`：自检期间 State 8 字节与自检前逐字节相同
+  （关灯 + 原亮度 + 原颜色）。
+- `test_selftest_compose()`：自检/存储两种情况的颜色与亮度合成——关灯也点亮、
+  亮度取 `max_brightness`、四步满值色、结束与取消都立刻回存储状态、
+  `max_brightness = 0` 时不特判。
+- 小程序 `tests/selftest.test.ts`：SelfTest 帧与共用向量逐字节一致、只发一帧、
+  不改本地状态、ACK 失败与异常都如实上报。
+- 小程序 `tests/log-panel.test.ts`：连点 5 次、200 帧上限、每行四要素、
+  暂停/清空/复制语义、console 与面板同源。
+- 小程序 `tests/describe.test.ts`：命令参数解析、坏载荷退回 hex、ACK / Event /
+  State / State read 的字段顺序。
+- 基线：host 1036 → 1160，vitest 81 → 107。

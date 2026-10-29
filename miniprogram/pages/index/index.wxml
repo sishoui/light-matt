@@ -99,9 +99,9 @@
     </view>
   </view>
 
-  <!-- 6. 页脚：版本 + 提示 -->
+  <!-- 6. 页脚：版本 + 提示；版本号连点 5 次开启隐藏日志面板 -->
   <view class="footer">
-    <text class="version">v{{version}}</text>
+    <text class="version" bindtap="onVersionTap">v{{version}}</text>
     <text class="footer-hint">开关与设备状态以设备为准</text>
   </view>
 
@@ -157,8 +157,59 @@
             <text class="info-value">v1</text>
           </view>
         </view>
+        <!-- 自检放在设备弹层里，不占主控制流（#13） -->
+        <button
+          class="sheet-btn ghost"
+          bindtap="onSelfTest"
+          disabled="{{!ready || selfTestBusy}}"
+        >
+          {{selfTestBusy ? '自检中…' : '自检（红→绿→蓝→白）'}}
+        </button>
         <button class="sheet-btn ghost danger" bindtap="onDisconnect">断开连接</button>
       </block>
+    </view>
+  </view>
+
+  <!-- 8. 隐藏协议日志面板（#13）：连点版本号 5 次开启；数据源是 FrameLog（200 帧） -->
+  <view wx:if="{{logVisible}}" class="log-mask" bindtap="onLogCloseTap">
+    <view class="log-panel" catchtap="noop">
+      <view class="log-head">
+        <text class="log-title">
+          协议日志 · {{logCount}} 帧{{logPaused ? ' · 视图已暂停' : ''}}
+        </text>
+        <text class="log-close" bindtap="onLogCloseTap">关闭</text>
+      </view>
+      <view class="log-toolbar">
+        <view class="log-btn" bindtap="onLogPauseTap">{{logPaused ? '继续' : '暂停'}}</view>
+        <view class="log-btn" bindtap="onLogClearTap">清空</view>
+        <view class="log-btn" bindtap="onLogCopyTap">复制</view>
+      </view>
+      <text wx:if="{{logHint}}" class="log-hint">{{logHint}}</text>
+      <scroll-view
+        scroll-y
+        class="log-list"
+        scroll-into-view="{{logScrollTarget}}"
+        scroll-with-animation="{{false}}"
+      >
+        <view
+          wx:for="{{logRows}}"
+          wx:key="id"
+          id="log-row-{{item.id}}"
+          class="log-row {{item.dir}} {{item.ok ? '' : 'bad'}}"
+        >
+          <text class="log-time">{{item.time}}</text>
+          <text class="log-arrow">{{item.arrow}}</text>
+          <text class="log-hex">{{item.hex}}</text>
+          <text class="log-name">{{item.name}}{{item.seq === '-' ? '' : ' seq=' + item.seq}}</text>
+          <text class="log-parsed">{{item.parsed}}</text>
+        </view>
+        <view wx:if="{{logRows.length === 0}}" class="log-empty">
+          还没有帧。连接设备并操作后，这里会显示收发记录。
+        </view>
+      </scroll-view>
+      <text class="log-foot">
+        与固件串口按 seq 对齐；开发版 console 打印的是同一份数据
+      </text>
     </view>
   </view>
 </view>
