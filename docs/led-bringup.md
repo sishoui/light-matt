@@ -6,8 +6,10 @@
 本文只回答一件事：**在真实硬件上，用 `espressif/led_strip` 的 RMT backend 能不能稳定点亮
 30 灯 WS2812B，颜色顺序是不是 GRB，电气边界在哪。** 灯效、BLE、协议、持久化都不在这里。
 
-> 当前的 `firmware/main/main.c` 是**临时 bring-up main**，没有 BLE、没有协议、没有 NVS。
-> #6 会把它整体替换成正式骨架。本票的交付物是「接线基线 + 实测结论」，不是产品代码。
+> **代码位置**：本票的 bring-up 固件保留在独立工程 `firmware/bringup/`（无 BLE、无协议、无 NVS），
+> 用 `scripts\build-led-bringup.cmd` 构建、`scripts\flash-led-bringup.cmd COM6` 烧录。
+> 正式产品固件在 `firmware/`，两者的 Kconfig 符号名共用。本票的交付物是「接线基线 + 实测结论」，
+> 不是产品代码。
 
 ## 1. 结论摘要
 
@@ -162,11 +164,11 @@ C3FH4 是 QFN32 封装 + **封装内 4MB flash**，22 个 GPIO 里有相当一�
 仓库路径含中文，ESP-IDF 在中文路径下会卡住，**必须用包装脚本**：
 
 ```bat
-REM 构建（源码同步到 %TEMP%\lumen-firmware）
-scripts\build-firmware.cmd
+REM 构建 bring-up 工程（源码同步到 %TEMP%\lumen-bringup）
+scripts\build-led-bringup.cmd
 
 REM 烧录（默认 COM6）
-scripts\flash-firmware.cmd COM6
+scripts\flash-led-bringup.cmd COM6
 ```
 
 只烧不监视时，串口日志用任意工具抓 115200 8N1；或者：
@@ -175,9 +177,10 @@ scripts\flash-firmware.cmd COM6
 idf.py -p COM6 monitor
 ```
 
-> **注意**：两个脚本都用固定目录 `%TEMP%\lumen-firmware` 作为构建目录。
-> 如果同时在多个 worktree 里构建（例如 #4 与 #6 并行），后跑的那个会把前一个的源码镜像覆盖，
-> 可能编出别人的 `main.c`。串行构建，或者临时给 `TEMP` 指到不同目录。
+> **注意**：每个构建脚本都用固定的 `%TEMP%` 目录（产品固件 `lumen-firmware`、
+> bring-up 工程 `lumen-bringup`）。产品与 bring-up 互不覆盖，但**同一个工程**在多个
+> worktree 里并行构建时，后跑的那个会覆盖前一个的源码镜像。并行工作时串行构建，
+> 或临时把 `TEMP` 指到不同目录。
 
 ## 7. 用户验收步骤
 
@@ -194,14 +197,14 @@ idf.py -p COM6 monitor
 ### 步骤 1：烧录并确认固件在跑
 
 ```bat
-scripts\build-firmware.cmd
-scripts\flash-firmware.cmd COM6
+scripts\build-led-bringup.cmd
+scripts\flash-led-bringup.cmd COM6
 ```
 
 串口应出现：
 
 ```
-lumen #4 LED bring-up（临时 main，#6 会替换）
+lumen #4 LED bring-up（独立 bring-up 工程）
 reset_reason=2 (POWERON) uptime=0.052s   ← 或 11 (USB)，烧录后首次启动常见
 strip: gpio=3 leds=30 color_order=GRB mem_block_symbols=48 ...
 ```
@@ -256,7 +259,7 @@ idf.py menuconfig   → Lumen 灯带 → 颜色通道顺序 → RGB
 - 灯带应保持**恒定暗红**，不闪、不灭、不偏色
 - 串口心跳应连续编号 1/10 → 10/10，**中间不能断**
 - 若日志从 `lumen #4 LED bring-up` 重新开始，就是重启了，看 `reset_reason`
-- 若出现心跳但灯带在闪 → 这是 RMT/中断层面的问题，记下来交给 #10
+- 若出现心跳但灯带在闪 → 这是 RMT/中断层面的问题，记下来交给 #7
 
 `refresh_errors` 在 soak 结束时会打印累计值，应为 0。
 
@@ -282,7 +285,7 @@ idf.py menuconfig   → Lumen 灯带 → 颜色通道顺序 → RGB
 | `warm_low` 完全不亮 | 亮度 1 的量化边界（`(1,1,0)`），WS2812B 低位非线性 | 可接受；正式固件加 gamma 或提高最低亮度 |
 | `warm_low` 偏黄绿而非暖白 | 亮度 1 时整数取整把 B 通道归零 | 正常，不是通道顺序问题 |
 | `off` 后有单灯微亮 | 共地不良 / 数据线残留 / 串阻缺失 | 查共地与串阻 |
-| 心跳连续但灯带在闪 | 不是供电问题，是 RMT × 中断/射频 | 记录并交给 #10 |
+| 心跳连续但灯带在闪 | 不是供电问题，是 RMT × 中断/射频 | 记录并交给 #7 |
 | `led_strip_new_rmt_device` 失败 | GPIO 被占用或 RMT 通道不足 | 换 GPIO，确认没有别的驱动占 RMT |
 
 ## 9. 实测记录
@@ -319,8 +322,8 @@ idf.py menuconfig   → Lumen 灯带 → 颜色通道顺序 → RGB
 
 ## 10. 对后续票的影响
 
-- **#6（固件骨架）**：沿用本票的 Kconfig 符号名；`strip_gpio_num`/`max_leds`/`mem_block_symbols`
-  取值不变。是否引入编译期 `max_brightness` 取决于 §9.2 的全白结论。
-- **#10（RMT × BLE 共存）**：本票不做 BLE，soak 期间的闪烁是纯 RMT 基线。
+- **#6（固件骨架，已合入）**：沿用本票的 Kconfig 符号名；`strip_gpio_num`/`max_leds`/`mem_block_symbols`
+  取值不变，并接上了 `LUMEN_LED_COLOR_ORDER` 选择。是否引入编译期 `max_brightness` 取决于 §9.2 的全白结论。
+- **#7（RMT × BLE 共存）**：本票不做 BLE，soak 期间的闪烁是纯 RMT 基线。
   加 BLE 后若出现新的闪烁，就能归因到共存而不是灯带本身。
 - **画板**：`74AHCT125`、首灯电容、串阻三件套必须进 BOM；数据脚继续用 GPIO3。
