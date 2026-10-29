@@ -22,8 +22,11 @@
 
 #include "command.h"
 #include "gamma.h"
+#include "led_count_job.h"
 #include "protocol.h"
+#include "save_scheduler.h"
 #include "state.h"
+#include "state_blob.h"
 
 static int g_checks;
 static int g_failures;
@@ -364,10 +367,35 @@ static void run_app_case(const vector_case_t *c)
                                             before.r != frame.payload[2] ||
                                             before.g != frame.payload[3] ||
                                             before.b != frame.payload[4]));
+        } else if (frame.command == LUMEN_CMD_SET_LED_COUNT) {
+            /*
+             * SetLedCount（#12）：合法取值只标记「需要重建」，不改 next、
+             * state_changed 保持 false——数量要等渲染任务重建句柄成功后才写入
+             * 共享状态（§11.3）。越界 → 0x01 且不请求重建。
+             */
+            CHECK(c->result_code >= 0);
+            CHECK(outcome.result_code == (uint8_t)c->result_code);
+            uint16_t expected =
+                (uint16_t)(frame.payload[0] | ((uint16_t)frame.payload[1] << 8));
+            CHECK(!outcome.state_changed);
+            CHECK(outcome.next.power == before.power);
+            CHECK(outcome.next.brightness == before.brightness);
+            CHECK(outcome.next.r == before.r);
+            CHECK(outcome.next.g == before.g);
+            CHECK(outcome.next.b == before.b);
+            if (outcome.result_code == LUMEN_RESULT_OK) {
+                CHECK(outcome.led_count_rebuild);
+                CHECK(outcome.led_count == expected);
+                CHECK(outcome.next.led_count == before.led_count);
+            } else {
+                CHECK(!outcome.led_count_rebuild);
+                CHECK(outcome.led_count == before.led_count);
+            }
         } else {
-            /* 0x05-0x07 本票明确未实现，统一回 0x02；保留命令/未知命令同理。 */
+            /* 0x05 / 0x07 本票明确未实现，统一回 0x02；保留命令/未知命令同理。 */
             CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
             CHECK(!outcome.state_changed);
+            CHECK(!outcome.led_count_rebuild);
             CHECK(outcome.next.power == before.power);
             CHECK(outcome.next.brightness == before.brightness);
             CHECK(outcome.next.r == before.r);
@@ -498,15 +526,18 @@ static void test_set_power_reducer(void)
     CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
     CHECK(!outcome.state_changed);
 
-    /* 0x05-0x07 本票未实现：0x02（载荷长度正确时也不能改状态） */
-    for (uint8_t cmd = LUMEN_CMD_QUERY_STATE; cmd <= LUMEN_CMD_SELF_TEST; ++cmd) {
+    /* 0x05 与 0x07 本票未实现：0x02（载荷长度正确时也不能改状态）。
+     * 0x06 自 #12 起已实现，单独覆盖在 test_set_led_count_reducer()。 */
+    const uint8_t unimplemented[] = {LUMEN_CMD_QUERY_STATE, LUMEN_CMD_SELF_TEST};
+    for (size_t i = 0; i < sizeof(unimplemented); ++i) {
         lumen_frame_t known = {0};
-        known.command = cmd;
-        known.payload_len = lumen_command_payload_len(cmd);
+        known.command = unimplemented[i];
+        known.payload_len = lumen_command_payload_len(unimplemented[i]);
         lumen_command_dispatch(&known, &state, 255, &outcome);
         CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
         CHECK(!outcome.state_changed);
-        CHECK(lumen_command_is_known(cmd));
+        CHECK(!outcome.led_count_rebuild);
+        CHECK(lumen_command_is_known(unimplemented[i]));
     }
 
     /* 保留 / 未知 / 设备→小程序命令字：0x02 */
@@ -938,6 +969,7 @@ static void test_encode_event_storage_failed(void)
     size_t len =
         lumen_protocol_encode_event(LUMEN_EVENT_STORAGE_FAILED, 0x04, out, sizeof(out));
     CHECK(len == 8);
+    CHECK(len == 2 + LUMEN_FRAME_OVERHEAD);
     CHECK(out[0] == 0xA5);
     CHECK(out[1] == 0x01);
     CHECK(out[2] == 0x81);
@@ -946,12 +978,44 @@ static void test_encode_event_storage_failed(void)
     CHECK(out[5] == LUMEN_EVENT_STORAGE_FAILED);
     CHECK(out[6] == 0x04);
     CHECK(out[7] == 0xD1);
+    CHECK_BYTES(out, "A5018100020104D1", len);
 
     /* seq 不随连接序号变化：换 detail 也应始终是 0x00。 */
     len = lumen_protocol_encode_event(LUMEN_EVENT_STORAGE_FAILED, 0x01, out, sizeof(out));
     CHECK(len == 8);
     CHECK(out[3] == 0x00);
     CHECK(out[6] == 0x01);
+
+    /*
+     * #12 补充：每个可能触发持久化的命令字都能编出来，detail 原样透传，
+     * 且编出来的帧能用同一信封解回（两端共用一份契约）。
+     */
+    const uint8_t commands[] = {LUMEN_CMD_SET_POWER, LUMEN_CMD_SET_BRIGHTNESS,
+                                LUMEN_CMD_SET_COLOR, LUMEN_CMD_SET_ALL,
+                                LUMEN_CMD_SET_LED_COUNT};
+    for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); ++i) {
+        uint8_t frame[LUMEN_MAX_FRAME];
+        size_t n = lumen_protocol_encode_event(LUMEN_EVENT_STORAGE_FAILED, commands[i], frame,
+                                               sizeof(frame));
+        CHECK(n == 8);
+        CHECK(frame[3] == 0x00); /* seq 固定 0 */
+        CHECK(frame[5] == LUMEN_EVENT_STORAGE_FAILED);
+        CHECK(frame[6] == commands[i]);
+        CHECK(frame[7] == lumen_protocol_checksum(frame, 7));
+
+        lumen_frame_t decoded;
+        uint8_t rc = 0xFF;
+        CHECK(lumen_protocol_decode(frame, n, &decoded, &rc) == LUMEN_DECODE_OK);
+        CHECK(decoded.command == LUMEN_CMD_EVENT);
+        CHECK(decoded.seq == 0x00);
+        CHECK(decoded.payload_len == 2);
+        CHECK(decoded.payload[0] == LUMEN_EVENT_STORAGE_FAILED);
+        CHECK(decoded.payload[1] == commands[i]);
+    }
+
+    /* 缓冲不足必须失败，不能截断。 */
+    CHECK(lumen_protocol_encode_event(LUMEN_EVENT_STORAGE_FAILED, LUMEN_CMD_SET_ALL, out, 7) ==
+          0);
 }
 
 static void test_encode_limits(void)
@@ -1075,6 +1139,392 @@ static void test_gamma(void)
     }
 }
 
+/* ---------------- #12：SetLedCount reducer ---------------- */
+
+/*
+ * command 层（0x06）：只做取值校验 + 「需要重建」标记。
+ *
+ * 关键语义（§11.3）：数量不能在这里写进 next，因为共享状态要等渲染任务重建
+ * 句柄成功后才更新；ACK 也必须等重建结果。所以合法取值一律 state_changed=false。
+ */
+static void test_set_led_count_reducer(void)
+{
+    lumen_state_t state;
+    lumen_state_defaults(&state, 30);
+    state.power = 1;
+    state.brightness = 77;
+    state.r = 10;
+    state.g = 20;
+    state.b = 30;
+
+    lumen_command_outcome_t outcome;
+    lumen_frame_t frame = {0};
+    frame.command = LUMEN_CMD_SET_LED_COUNT;
+    frame.seq = 10;
+    frame.payload_len = 2;
+
+    /* 合法：1、30（与当前相同）、64 —— 都标记重建，都不动状态。 */
+    const uint16_t accepted[] = {1, 30, 64};
+    for (size_t i = 0; i < sizeof(accepted) / sizeof(accepted[0]); ++i) {
+        frame.payload[0] = (uint8_t)(accepted[i] & 0xFF);
+        frame.payload[1] = (uint8_t)(accepted[i] >> 8);
+        lumen_command_dispatch(&frame, &state, 255, &outcome);
+        CHECK(outcome.result_code == LUMEN_RESULT_OK);
+        CHECK(outcome.led_count_rebuild);
+        CHECK(outcome.led_count == accepted[i]);
+        CHECK(!outcome.state_changed);
+        /* 开关 / 亮度 / RGB / 数量全部原样（数量由引擎在重建成功后提交）。 */
+        CHECK(outcome.next.power == state.power);
+        CHECK(outcome.next.brightness == state.brightness);
+        CHECK(outcome.next.r == state.r);
+        CHECK(outcome.next.g == state.g);
+        CHECK(outcome.next.b == state.b);
+        CHECK(outcome.next.led_count == state.led_count);
+    }
+
+    /* 越界：0 与 65 → 0x01，不请求重建、不改状态（协议 §6）。 */
+    const uint16_t rejected[] = {0, 65, 0xFFFF};
+    for (size_t i = 0; i < sizeof(rejected) / sizeof(rejected[0]); ++i) {
+        frame.payload[0] = (uint8_t)(rejected[i] & 0xFF);
+        frame.payload[1] = (uint8_t)(rejected[i] >> 8);
+        lumen_command_dispatch(&frame, &state, 255, &outcome);
+        CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+        CHECK(!outcome.led_count_rebuild);
+        CHECK(outcome.led_count == state.led_count);
+        CHECK(!outcome.state_changed);
+    }
+
+    /* 小端读法：0x0100 = 256 越界；0x4000 = 64 合法（已在上面的 accepted 里）。 */
+    frame.payload[0] = 0x00;
+    frame.payload[1] = 0x01;
+    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(!outcome.led_count_rebuild);
+
+    /* 载荷长度 1 / 3 → 0x04，不请求重建。 */
+    frame.payload_len = 1;
+    frame.payload[0] = 0x1E;
+    frame.payload[1] = 0x00;
+    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
+    CHECK(!outcome.led_count_rebuild);
+
+    frame.payload_len = 3;
+    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
+    CHECK(!outcome.led_count_rebuild);
+
+    /* payload_len 正确的 0 长度帧同样 0x04。 */
+    frame.payload_len = 0;
+    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
+    CHECK(!outcome.led_count_rebuild);
+
+    /* 命令表：0x06 已知且载荷 2 字节。 */
+    CHECK(lumen_command_is_known(LUMEN_CMD_SET_LED_COUNT));
+    CHECK(lumen_command_payload_len(LUMEN_CMD_SET_LED_COUNT) == 2);
+}
+
+/* ---------------- #12：led_count_job 重建状态机 ---------------- */
+
+static void test_led_count_job(void)
+{
+    lumen_led_count_job_t job;
+    lumen_led_count_job_init(&job);
+
+    CHECK(!lumen_led_count_job_busy(&job));
+    CHECK(lumen_led_count_job_target(&job) == 0);
+
+    lumen_state_t state;
+    lumen_state_defaults(&state, 30);
+    state.power = 1;
+    state.brightness = 99;
+    state.r = 1;
+    state.g = 2;
+    state.b = 3;
+
+    /* 1. 请求 → 排队 → Busy（未 begin 时第二个请求也要被判忙，§11.3「不排队」）。 */
+    CHECK(lumen_led_count_job_request(&job, 60, 30, 0x21) == LUMEN_LED_COUNT_ACCEPTED);
+    CHECK(lumen_led_count_job_busy(&job));
+    CHECK(lumen_led_count_job_target(&job) == 60);
+    CHECK(lumen_led_count_job_request(&job, 45, 30, 0x22) == LUMEN_LED_COUNT_BUSY);
+    /* 被拒的请求不能污染目标值 / seq。 */
+    CHECK(lumen_led_count_job_target(&job) == 60);
+
+    /* 2. begin：pending → running，取出 target 与 seq。 */
+    uint16_t target = 0;
+    uint8_t seq = 0;
+    CHECK(lumen_led_count_job_begin(&job, &target, &seq));
+    CHECK(target == 60);
+    CHECK(seq == 0x21);
+    CHECK(lumen_led_count_job_busy(&job));
+    /* 没有 pending 时不能再次 begin。 */
+    CHECK(!lumen_led_count_job_begin(&job, NULL, NULL));
+    /* 重建进行中（running）同样判忙。 */
+    CHECK(lumen_led_count_job_request(&job, 60, 30, 0x23) == LUMEN_LED_COUNT_BUSY);
+
+    /* 3. complete(true)：只改 led_count，其它字段原样。 */
+    CHECK(lumen_led_count_job_complete(&job, true, &state));
+    CHECK(state.led_count == 60);
+    CHECK(state.power == 1);
+    CHECK(state.brightness == 99);
+    CHECK(state.r == 1 && state.g == 2 && state.b == 3);
+    CHECK(!lumen_led_count_job_busy(&job));
+    /* 完成后 target 保留（供日志），但状态机已空闲。 */
+
+    /* 4. 完成后能再次请求。 */
+    CHECK(lumen_led_count_job_request(&job, 12, 60, 0x24) == LUMEN_LED_COUNT_ACCEPTED);
+    CHECK(lumen_led_count_job_begin(&job, &target, &seq));
+    CHECK(target == 12);
+    CHECK(seq == 0x24);
+
+    /* 5. complete(false)：状态回滚（旧值 60 不变），状态机释放。 */
+    lumen_state_t before = state;
+    CHECK(!lumen_led_count_job_complete(&job, false, &state));
+    CHECK(!lumen_led_count_job_busy(&job));
+    CHECK(state.led_count == before.led_count);
+    CHECK(state.power == before.power);
+    CHECK(state.brightness == before.brightness);
+
+    /* 失败后仍可再次请求（不卡死）。 */
+    CHECK(lumen_led_count_job_request(&job, 12, 60, 0x25) == LUMEN_LED_COUNT_ACCEPTED);
+    CHECK(lumen_led_count_job_begin(&job, &target, &seq));
+    CHECK(lumen_led_count_job_complete(&job, true, &state));
+    CHECK(state.led_count == 12);
+
+    /* 6. 与当前数量相同 → UNCHANGED（不排队、不重建，调用方直接回 0x00）。 */
+    CHECK(lumen_led_count_job_request(&job, 12, 12, 0x26) == LUMEN_LED_COUNT_UNCHANGED);
+    CHECK(!lumen_led_count_job_busy(&job));
+
+    /* 7. 判忙优先于判相同：重建中即使请求当前数量也回 Busy。 */
+    CHECK(lumen_led_count_job_request(&job, 20, 12, 0x27) == LUMEN_LED_COUNT_ACCEPTED);
+    CHECK(lumen_led_count_job_request(&job, 12, 12, 0x28) == LUMEN_LED_COUNT_BUSY);
+
+    /* 8. 越界防御：直接调 request 也不破坏状态机（仍处于 pending）。 */
+    CHECK(lumen_led_count_job_request(&job, 0, 12, 0x29) == LUMEN_LED_COUNT_BUSY);
+    CHECK(lumen_led_count_job_request(&job, 65, 12, 0x2A) == LUMEN_LED_COUNT_BUSY);
+    CHECK(lumen_led_count_job_target(&job) == 20);
+
+    /* 9. complete 需要 running：pending 状态直接 complete 无效。 */
+    CHECK(!lumen_led_count_job_complete(&job, true, &state));
+    CHECK(state.led_count == 12);
+
+    /* 10. NULL job 防御。 */
+    CHECK(!lumen_led_count_job_busy(NULL));
+    CHECK(lumen_led_count_job_target(NULL) == 0);
+    CHECK(lumen_led_count_job_request(NULL, 5, 30, 1) == LUMEN_LED_COUNT_BUSY);
+    CHECK(!lumen_led_count_job_begin(NULL, NULL, NULL));
+    CHECK(!lumen_led_count_job_complete(NULL, true, &state));
+    lumen_led_count_job_init(NULL); /* 不崩即通过 */
+}
+
+/* ---------------- #12：save_scheduler 500ms debounce ---------------- */
+
+static lumen_state_t state_with(uint16_t leds, uint8_t brightness)
+{
+    lumen_state_t s;
+    lumen_state_defaults(&s, leds);
+    s.brightness = brightness;
+    return s;
+}
+
+static void test_save_scheduler(void)
+{
+    lumen_save_scheduler_t sched;
+    lumen_save_scheduler_init(&sched);
+
+    lumen_state_t out;
+    uint8_t command = 0;
+
+    /* 1. 初始：没有待写，next_delay 为 UINT32_MAX，take_due 失败。 */
+    CHECK(!lumen_save_scheduler_pending(&sched));
+    CHECK(lumen_save_scheduler_next_delay_ms(&sched, 0) == UINT32_MAX);
+    CHECK(!lumen_save_scheduler_take_due(&sched, 0, &out, &command));
+
+    /* 2. 一次请求 → 500ms 后到期；499ms 时还差 1ms。 */
+    lumen_state_t a = state_with(30, 10);
+    CHECK(lumen_save_scheduler_request(&sched, &a, LUMEN_CMD_SET_BRIGHTNESS, 1000));
+    CHECK(lumen_save_scheduler_pending(&sched));
+    CHECK(lumen_save_scheduler_next_delay_ms(&sched, 1000) == LUMEN_SAVE_DEBOUNCE_MS);
+    CHECK(lumen_save_scheduler_next_delay_ms(&sched, 1499) == 1);
+    CHECK(lumen_save_scheduler_next_delay_ms(&sched, 1500) == 0);
+    CHECK(!lumen_save_scheduler_take_due(&sched, 1499, &out, &command));
+    CHECK(lumen_save_scheduler_take_due(&sched, 1500, &out, &command));
+    CHECK(out.brightness == 10);
+    CHECK(out.led_count == 30);
+    CHECK(command == LUMEN_CMD_SET_BRIGHTNESS);
+    /* 取走之后 pending 清空，再来一次 take 失败。 */
+    CHECK(!lumen_save_scheduler_pending(&sched));
+    CHECK(!lumen_save_scheduler_take_due(&sched, 2000, &out, &command));
+
+    /* 3. 连续请求不断推迟，只写最后一次快照。 */
+    CHECK(lumen_save_scheduler_request(&sched, &a, LUMEN_CMD_SET_BRIGHTNESS, 0));
+    lumen_state_t b = state_with(30, 20);
+    CHECK(lumen_save_scheduler_request(&sched, &b, LUMEN_CMD_SET_COLOR, 100));
+    lumen_state_t c = state_with(30, 30);
+    CHECK(lumen_save_scheduler_request(&sched, &c, LUMEN_CMD_SET_ALL, 200));
+    /* 600ms 时：第一次的 deadline(500) 已过，但最后请求的 deadline 是 700。 */
+    CHECK(lumen_save_scheduler_next_delay_ms(&sched, 600) == 100);
+    CHECK(!lumen_save_scheduler_take_due(&sched, 699, &out, &command));
+    CHECK(lumen_save_scheduler_take_due(&sched, 700, &out, &command));
+    CHECK(out.brightness == 30); /* 只有最后一份 */
+    CHECK(command == LUMEN_CMD_SET_ALL);
+
+    /* 4. 时钟回绕：deadline 越过 0xFFFFFFFF，仍按差值判定，不卡死。 */
+    uint32_t near_wrap = 0xFFFFFF00u; /* deadline = 0x000000F4（回绕后） */
+    lumen_state_t d = state_with(64, 40);
+    CHECK(lumen_save_scheduler_request(&sched, &d, LUMEN_CMD_SET_LED_COUNT, near_wrap));
+    CHECK(lumen_save_scheduler_next_delay_ms(&sched, near_wrap) == LUMEN_SAVE_DEBOUNCE_MS);
+    /* 回绕之后：now = 0x0000000A，差值 = 0xF4 - 0x0A = 234。 */
+    CHECK(lumen_save_scheduler_next_delay_ms(&sched, 0x0000000Au) == 234);
+    CHECK(!lumen_save_scheduler_take_due(&sched, 0x0000000Au, &out, &command));
+    CHECK(lumen_save_scheduler_take_due(&sched, 0x000000F4u, &out, &command));
+    CHECK(out.led_count == 64);
+    CHECK(command == LUMEN_CMD_SET_LED_COUNT);
+
+    /* 5. 回绕后立刻请求也正常（deadline 未越过零点的情况）。 */
+    CHECK(lumen_save_scheduler_request(&sched, &d, LUMEN_CMD_SET_POWER, 0xFFFFFFFEu));
+    CHECK(lumen_save_scheduler_next_delay_ms(&sched, 0xFFFFFFFEu) == LUMEN_SAVE_DEBOUNCE_MS);
+    CHECK(lumen_save_scheduler_next_delay_ms(&sched, 0x00000002u) ==
+          LUMEN_SAVE_DEBOUNCE_MS - 4);
+
+    /* 6. 非法指针：request 失败且不改状态。 */
+    lumen_save_scheduler_init(&sched);
+    CHECK(!lumen_save_scheduler_request(&sched, NULL, 0x01, 0));
+    CHECK(!lumen_save_scheduler_pending(&sched));
+    CHECK(!lumen_save_scheduler_request(NULL, &a, 0x01, 0));
+    CHECK(lumen_save_scheduler_next_delay_ms(NULL, 0) == UINT32_MAX);
+    CHECK(!lumen_save_scheduler_pending(NULL));
+
+    /* 7. out / command 允许为 NULL（只用来清 pending）。 */
+    CHECK(lumen_save_scheduler_request(&sched, &a, 0x02, 0));
+    CHECK(lumen_save_scheduler_take_due(&sched, 1000, NULL, NULL));
+    CHECK(!lumen_save_scheduler_pending(&sched));
+}
+
+/* ---------------- #12：state_blob 编解码 ---------------- */
+
+static void test_state_blob(void)
+{
+    /* 1. 往返一致：所有字段原样回来。 */
+    lumen_state_t in;
+    in.power = 1;
+    in.brightness = 200;
+    in.r = 1;
+    in.g = 2;
+    in.b = 3;
+    in.led_count = 64;
+
+    uint8_t blob[LUMEN_STATE_BLOB_SIZE];
+    CHECK(lumen_state_blob_encode(&in, blob) == LUMEN_STATE_BLOB_SIZE);
+    /* 显式布局：magic 0..3、version 4..5、power 6、brightness 7、rgb 8..10、
+     * led_count 11..12（小端）。 */
+    CHECK(blob[0] == 'L' && blob[1] == 'M' && blob[2] == 'E' && blob[3] == 'N');
+    CHECK(blob[4] == (LUMEN_STATE_BLOB_VERSION & 0xFF));
+    CHECK(blob[5] == (LUMEN_STATE_BLOB_VERSION >> 8));
+    CHECK(blob[6] == 1);
+    CHECK(blob[7] == 200);
+    CHECK(blob[8] == 1 && blob[9] == 2 && blob[10] == 3);
+    CHECK(blob[11] == 64 && blob[12] == 0);
+
+    lumen_state_t out;
+    memset(&out, 0xAA, sizeof(out));
+    CHECK(lumen_state_blob_decode(blob, sizeof(blob), &out));
+    CHECK(out.power == 1);
+    CHECK(out.brightness == 200);
+    CHECK(out.r == 1 && out.g == 2 && out.b == 3);
+    CHECK(out.led_count == 64);
+
+    /* 小端数量：300 → 2C 01（虽然 300 超出协议上限，编码器不在业务层校验；
+     * 解码器会拒绝，见下）。 */
+    lumen_state_t wide;
+    lumen_state_defaults(&wide, 30);
+    wide.led_count = 0x0123;
+    CHECK(lumen_state_blob_encode(&wide, blob) == LUMEN_STATE_BLOB_SIZE);
+    CHECK(blob[11] == 0x23 && blob[12] == 0x01);
+
+    /* 2. 长度错误：12 / 14 字节都拒绝（版本演进必须提升 version，不猜）。 */
+    lumen_state_defaults(&in, 30);
+    CHECK(lumen_state_blob_encode(&in, blob) == LUMEN_STATE_BLOB_SIZE);
+    CHECK(!lumen_state_blob_decode(blob, LUMEN_STATE_BLOB_SIZE - 1, &out));
+    CHECK(!lumen_state_blob_decode(blob, LUMEN_STATE_BLOB_SIZE + 1, &out));
+    CHECK(!lumen_state_blob_decode(blob, 0, &out));
+
+    /* 3. 坏 magic。 */
+    uint8_t bad[LUMEN_STATE_BLOB_SIZE];
+    memcpy(bad, blob, sizeof(bad));
+    bad[0] = 'X';
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+    memcpy(bad, blob, sizeof(bad));
+    bad[3] = 0x00;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+
+    /* 4. 坏 version（0 与 2）。 */
+    memcpy(bad, blob, sizeof(bad));
+    bad[4] = 0x00;
+    bad[5] = 0x00;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+    memcpy(bad, blob, sizeof(bad));
+    bad[4] = 0x02;
+    bad[5] = 0x00;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+    /* 只有高字节错位的伪版本也拒绝。 */
+    memcpy(bad, blob, sizeof(bad));
+    bad[5] = 0x01;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+
+    /* 5. power > 1。 */
+    memcpy(bad, blob, sizeof(bad));
+    bad[6] = 2;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+    memcpy(bad, blob, sizeof(bad));
+    bad[6] = 0xFF;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+
+    /* 6. led_count 越界：0 与 65。 */
+    memcpy(bad, blob, sizeof(bad));
+    bad[11] = 0x00;
+    bad[12] = 0x00;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+    memcpy(bad, blob, sizeof(bad));
+    bad[11] = 0x41;
+    bad[12] = 0x00;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+    /* 0xFFFF（小端 FF FF）同样越界。 */
+    memcpy(bad, blob, sizeof(bad));
+    bad[11] = 0xFF;
+    bad[12] = 0xFF;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+
+    /* 7. 失败时不写 out（调用方保留默认值）。 */
+    memcpy(bad, blob, sizeof(bad));
+    bad[6] = 9;
+    lumen_state_t untouched;
+    lumen_state_defaults(&untouched, 30);
+    lumen_state_t copy = untouched;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &untouched));
+    CHECK(untouched.power == copy.power);
+    CHECK(untouched.brightness == copy.brightness);
+    CHECK(untouched.led_count == copy.led_count);
+
+    /* 8. 边界合法值：power = 0、led_count = 1 都能解出来。 */
+    lumen_state_t edge;
+    lumen_state_defaults(&edge, 1);
+    edge.power = 0;
+    edge.brightness = 0;
+    CHECK(lumen_state_blob_encode(&edge, blob) == LUMEN_STATE_BLOB_SIZE);
+    CHECK(lumen_state_blob_decode(blob, sizeof(blob), &out));
+    CHECK(out.power == 0);
+    CHECK(out.brightness == 0);
+    CHECK(out.led_count == 1);
+
+    /* 9. NULL 防御。 */
+    CHECK(lumen_state_blob_encode(NULL, blob) == 0);
+    CHECK(lumen_state_blob_encode(&in, NULL) == 0);
+    CHECK(!lumen_state_blob_decode(NULL, LUMEN_STATE_BLOB_SIZE, &out));
+    CHECK(!lumen_state_blob_decode(blob, LUMEN_STATE_BLOB_SIZE, NULL));
+}
+
 int main(int argc, char **argv)
 {
     const char *vectors = argc > 1 ? argv[1] : "docs/protocol-testvectors.json";
@@ -1100,6 +1550,10 @@ int main(int argc, char **argv)
     test_state_defaults_and_clamp();
     test_state_bytes_layout();
     test_gamma();
+    test_set_led_count_reducer();
+    test_led_count_job();
+    test_save_scheduler();
+    test_state_blob();
 
     if (g_failures != 0) {
         fprintf(stderr, "\n%d/%d checks failed\n", g_failures, g_checks);

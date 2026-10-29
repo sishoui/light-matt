@@ -27,6 +27,10 @@ import {
 } from "../../utils/control/session";
 import { statusView } from "../../utils/control/status-view";
 import {
+  ledCountResultHint,
+  parseLedCountInput,
+} from "../../utils/control/ledCount";
+import {
   hsvForWheel,
   hsvToRgb,
   normalizeHue,
@@ -96,6 +100,12 @@ Page({
     scanHint: "" as string,
     deviceName: "",
     deviceId: "",
+
+    // 灯珠数量（#12）：只在设备弹层里出现，是设备级低频设置
+    ledCount: 0, // 设备当前生效的数量；未连接时为 0
+    ledCountInput: "", // 输入框内容（字符串，避免数字输入框的中间态被 setData 抹掉）
+    ledCountHintText: "",
+    ledCountBusy: false,
 
     version: "0.1.0",
   },
@@ -189,11 +199,16 @@ Page({
     }
     const state = session.linkState;
     if (state === "ready") {
+      const ledCount = session.deviceState?.ledCount ?? this.data.ledCount;
       this.setData({
         sheetVisible: true,
         sheetMode: "device",
         deviceId: session.transport.currentDeviceId ?? "",
         deviceName: this.data.deviceName || session.cachedDevice?.name || "",
+        ledCount,
+        // 打开弹层时输入框对齐设备当前值；用户改动后由 onLedCountInput 接管。
+        ledCountInput: ledCount > 0 ? String(ledCount) : "",
+        ledCountHintText: "",
       });
       return;
     }
@@ -255,6 +270,87 @@ Page({
     /* 空实现 */
   },
 
+  // ---------------- 灯珠数量（#12，只在设备弹层里） ----------------
+
+  /**
+   * 输入变化：只记原始文本，不在输入过程中改值或报错。
+   * 校验与拒绝放在「应用」时做，避免用户删到一半就被红字打断。
+   */
+  onLedCountInput(e: WechatMiniprogram.Input) {
+    this.setData({
+      ledCountInput: String(e.detail.value ?? ""),
+      ledCountHintText: "",
+    });
+  },
+
+  /**
+   * 应用新数量：
+   *   1. 前端先校验（1-64、纯整数），非法直接拒绝且不改输入框里的旧值；
+   *   2. 合法则发 SetLedCount，ACK 超时 3000ms（重建句柄慢）；
+   *   3. 成功刷新 ledCount；失败保留旧值并提示具体原因（Busy / InternalError）。
+   */
+  async onApplyLedCount() {
+    if (session === null || this.data.ledCountBusy || !this.data.ready) {
+      return;
+    }
+    const parsed = parseLedCountInput(this.data.ledCountInput);
+    if (!parsed.ok) {
+      // 非法输入：明确拒绝，输入框恢复成设备当前生效值（旧值不被写坏）。
+      this.setData({
+        ledCountHintText: parsed.message,
+        ledCountInput: this.data.ledCount > 0 ? String(this.data.ledCount) : "",
+      });
+      wx.showToast({ title: parsed.message, icon: "none" });
+      return;
+    }
+
+    // 与当前数量相同：不发帧，也不打扰设备。
+    if (parsed.value === this.data.ledCount) {
+      this.setData({
+        ledCountHintText: `当前已是 ${parsed.value} 颗`,
+        ledCountInput: String(parsed.value),
+      });
+      return;
+    }
+
+    this.setData({ ledCountBusy: true, ledCountHintText: "正在应用…" });
+    try {
+      const result = await session.setLedCount(parsed.value);
+      if (result.kind === "ok") {
+        this.setData({
+          ledCount: result.state.ledCount,
+          ledCountInput: String(result.state.ledCount),
+          ledCountHintText: `已设为 ${result.state.ledCount} 颗（已保存到设备）`,
+        });
+        return;
+      }
+      if (result.kind === "ack-error") {
+        // Busy(0x05) 可稍后重试；InternalError(0x09) 表示重建失败、数量未变。
+        const hint = ledCountResultHint(result.ack.resultCode) || "设置失败";
+        this.setData({
+          ledCountHintText: hint,
+          ledCountInput: this.data.ledCount > 0 ? String(this.data.ledCount) : "",
+        });
+        wx.showToast({ title: hint, icon: "none" });
+        return;
+      }
+      if (result.kind === "stale") {
+        // #11：旧连接上飞行的 SetLedCount 晚到，回连后的 State 才是权威。
+        // 不提示、不改本地值；下一次 State 同步会带回真实数量。
+        this.setData({ ledCountHintText: "" });
+        return;
+      }
+      // 传输层异常（超时 / 断线）：旧值保留，提示原因。
+      this.setData({
+        ledCountHintText: result.message,
+        ledCountInput: this.data.ledCount > 0 ? String(this.data.ledCount) : "",
+      });
+      wx.showToast({ title: result.message, icon: "none" });
+    } finally {
+      this.setData({ ledCountBusy: false });
+    }
+  },
+
   async startScan() {
     if (session === null) {
       return;
@@ -307,6 +403,9 @@ Page({
       brightnessHintText: "连接后可调节",
       colorHintText: "连接后可选色",
       selectedPreset: "",
+      ledCount: 0,
+      ledCountInput: "",
+      ledCountHintText: "",
     });
   },
 
@@ -630,6 +729,9 @@ Page({
           brightnessHintText: "连接后可调节",
           colorHintText: "连接后可选色",
           selectedPreset: "",
+          ledCount: 0,
+          ledCountInput: "",
+          ledCountHintText: "",
         });
       }
     }
@@ -655,6 +757,8 @@ Page({
       colorSaturation: Math.round(hsv.s * 100),
       selectedPreset: this.matchingPreset(rgb),
       colorHintText: this.colorHintText(this.data.ready),
+      // 设备权威：State read / StateReport 里的数量总是覆盖本地值。
+      ledCount: state.ledCount,
     });
     this.redrawWheel();
   },

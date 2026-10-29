@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -11,10 +12,27 @@
  * led_engine：共享状态的唯一所有者 + latest-wins 邮箱 + 渲染任务。
  *
  * 依赖方向：ble_link → led_engine → state_store。led_engine 不调用任何 BLE API。
- * 灯带句柄只在渲染任务里使用（句柄在 init 中创建，任务启动后不再由其它任务触碰）。
+ * 灯带句柄只在渲染任务里使用：`led_strip_del` 旧句柄与 `led_strip_new_rmt_device`
+ * 新句柄都只在渲染任务里执行（协议 §11.3 的异步重建）。
  */
 
+/*
+ * SetLedCount 的「延迟回执」哨兵：不是协议结果码，绝不能出现在帧里。
+ * 收到它表示 ACK 由引擎在渲染任务重建完成 / 失败后通过 response 回调发出。
+ */
+#define LUMEN_LED_ENGINE_DEFERRED 0xFF
+
+/*
+ * 异步回执通道：引擎在渲染任务里（重建完成后）调用它发 ACK。
+ * 回调实现由 ble_link 注册；必须是非阻塞的（只做协议编码 + notify 入队），
+ * 且不得反向调用会等待渲染任务完成的接口。
+ */
+typedef void (*lumen_led_engine_response_cb)(uint8_t seq, uint8_t command, uint8_t result);
+
 esp_err_t lumen_led_engine_init(void);
+
+/* BLE 层注册：引擎用它在渲染任务里回 SetLedCount 的异步 ACK。 */
+void lumen_led_engine_set_response_cb(lumen_led_engine_response_cb cb);
 
 /* 把共享状态编码成 8 字节 State（docs/protocol.md §7），供 State read 使用。 */
 void lumen_led_engine_state_bytes(uint8_t out[8]);
@@ -33,6 +51,18 @@ void lumen_led_engine_commit(const lumen_state_t *next, uint8_t command);
 
 /* 注册 NVS 写失败回调（参数是触发写入的命令字）。BLE 层用它发 Event 0x81。 */
 void lumen_led_engine_set_store_event_cb(lumen_store_event_cb cb);
+
+/*
+ * 请求把灯珠数量改为 count（调用方保证 1-64 已由命令层校验）。
+ *
+ * 返回：
+ *   LUMEN_RESULT_OK            与当前数量相同，无需重建；调用方立即回 ACK 0x00；
+ *   LUMEN_RESULT_BUSY          已有重建在排队/进行中（§11.3：不排队）；回 0x05；
+ *   LUMEN_LED_ENGINE_DEFERRED  已排队；渲染任务重建完成后经 response 回执。
+ *
+ * 数量要等句柄重建成功后才写入共享状态；失败时旧句柄与旧数量原样保留。
+ */
+uint8_t lumen_led_engine_set_led_count(uint16_t count, uint8_t seq);
 
 /* 当前生效的亮度上限（构建期常量）。 */
 uint8_t lumen_led_engine_max_brightness(void);

@@ -29,11 +29,14 @@ import {
   effectiveMaxBrightness,
 } from "./brightness";
 import { applyLocalColor, clampRgb, presetBrightness } from "./color";
+import { LED_COUNT_ACK_TIMEOUT_MS } from "./ledCount";
+import { MAX_LEDS, MIN_LEDS } from "../protocol/constants";
 import {
   cmdQueryState,
   cmdSetAll,
   cmdSetBrightness,
   cmdSetColor,
+  cmdSetLedCount,
   cmdSetPower,
 } from "../protocol/commands";
 import type {
@@ -429,6 +432,54 @@ export class ControlSession {
       }
       this.handleCommandFailure(err);
       throw err;
+    }
+  }
+
+  /**
+   * #12：改灯珠数量。
+   *
+   * 为什么单独一条路径而不是走连续量/普通离散路径：
+   *  - 设备要重建 led_strip 句柄，ACK 可能晚很多，超时放宽到 3000ms；
+   *  - 不重传：重建是重操作，超时重发只会撞上 0x05 Busy；超时按断线处理；
+   *  - 成功才更新本地 ledCount（设备权威），失败保留旧值并给出具体提示。
+   *
+   * 输入校验（1-64、纯整数）在页面层用 parseLedCountInput 先做，这里再兜一次：
+   * 非法值不发帧，直接返回错误，绝不「尽量发送」。
+   */
+  async setLedCount(count: number): Promise<CommandResult> {
+    if (!Number.isInteger(count) || count < MIN_LEDS || count > MAX_LEDS) {
+      return { kind: "error", message: `灯珠数量必须是 ${MIN_LEDS}-${MAX_LEDS} 的整数` };
+    }
+    if (this.transport.linkState !== "ready") {
+      return { kind: "error", message: "设备未连接" };
+    }
+    const epoch = this.linkEpoch;
+    try {
+      // 走 #11 的统一命令通道（10008 加间隔重试 / 断线触发重连），
+      // 但 ACK 超时仍是 3000ms，且不设 retryOnTimeout：重建是重操作，
+      // 超时重发只会撞上 0x05 Busy。
+      const ack = await this.sendCommand(cmdSetLedCount(count), {
+        timeoutMs: LED_COUNT_ACK_TIMEOUT_MS,
+      });
+      // #11：旧连接上飞行的 ACK 晚到，不得覆盖回连后读到的新 State。
+      if (this.isStaleEpoch(epoch)) {
+        return { kind: "stale" };
+      }
+      if (!ack.ok) {
+        // Busy(0x05) / InternalError(0x09) / InvalidParam(0x01) 都表示数量没变：
+        // 不更新本地值，页面按 ledCountResultHint 提示。
+        return { kind: "ack-error", ack };
+      }
+      // 成功：设备已按新数量重建并持久化，本地只改 ledCount。
+      if (this.latestState !== null) {
+        this.latestState = { ...this.latestState, ledCount: count };
+      }
+      return {
+        kind: "ok",
+        state: this.latestState ?? fallbackState({ r: 0, g: 0, b: 0 }),
+      };
+    } catch (err) {
+      return { kind: "error", message: errorText(err) };
     }
   }
 
