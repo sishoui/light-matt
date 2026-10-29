@@ -138,7 +138,7 @@ static void handle_frame(const uint8_t *data, size_t len)
     lumen_led_engine_snapshot(&current);
 
     lumen_command_outcome_t outcome;
-    /* max_brightness 取构建期常量：SetBrightness 在这里被钳位，而不是拒绝。 */
+    /* max_brightness 取构建期常量：SetBrightness / SetAll 在这里被钳位，而不是拒绝。 */
     lumen_command_dispatch(&frame, &current, lumen_led_engine_max_brightness(), &outcome);
 
     if (outcome.state_changed) {
@@ -146,11 +146,13 @@ static void handle_frame(const uint8_t *data, size_t len)
         lumen_led_engine_commit(&outcome.next);
     }
 
+    /* 颜色也打进日志：真机排查错色时，App 日志与固件串口能按 seq 对齐 RGB。 */
     ESP_LOGI(TAG,
-             "RX cmd=0x%02X seq=0x%02X len=%u result=0x%02X power=%u brightness=%u%s",
+             "RX cmd=0x%02X seq=0x%02X len=%u result=0x%02X power=%u brightness=%u "
+             "rgb=%u,%u,%u%s",
              frame.command, frame.seq, frame.payload_len, outcome.result_code,
-             outcome.next.power, outcome.next.brightness,
-             outcome.state_changed ? " changed" : "");
+             outcome.next.power, outcome.next.brightness, outcome.next.r, outcome.next.g,
+             outcome.next.b, outcome.state_changed ? " changed" : "");
 
     /* ACK 在写入 RAM 之后立刻发；不等待渲染完成。 */
     send_ack(frame.seq, frame.command, outcome.result_code);

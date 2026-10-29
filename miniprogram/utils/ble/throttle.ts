@@ -65,6 +65,27 @@ export class LatestWinsThrottle<T> {
     }
   }
 
+  /**
+   * 丢弃满足条件的 pending 值（不取消正在飞的那一帧）。
+   *
+   * #10 用：用户拖色环留下一个未发出的颜色，紧接着点了预设（SetAll 离散帧）。
+   * 若不丢弃，这个旧颜色会在 SetAll 之后落地，造成「旧色回跳」。
+   */
+  dropIf(predicate: (value: T) => boolean): void {
+    if (!this.hasPending || this.pending === undefined) {
+      return;
+    }
+    if (!predicate(this.pending)) {
+      return;
+    }
+    this.hasPending = false;
+    this.pending = undefined;
+    if (this.timerHandle !== null) {
+      this.timer.clearTimeout(this.timerHandle);
+      this.timerHandle = null;
+    }
+  }
+
   get pendingValue(): T | undefined {
     return this.hasPending ? this.pending : undefined;
   }

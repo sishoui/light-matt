@@ -25,7 +25,8 @@ lumen/
 固件骨架已落地：`ble_link → led_engine → state_store` 三层，NimBLE GATT 服务与单连接、
 latest-wins 渲染任务、NVS debounce 都已就位（[firmware-architecture.md](docs/firmware-architecture.md)）。
 灯带 bring-up 已烧录并通过 5 分钟 soak（[led-bringup.md](docs/led-bringup.md)），颜色顺序与
-全白供电结论待肉眼确认。「设开关」（#8）与「设亮度」（#9）两条命令已端到端打通：固件命令层 + ACK、
-小程序传输层/codec/单页开关与亮度滑块（20Hz latest-wins、连续量不重传、亮度按
-设备 `max_brightness` 钳位）。颜色与预设控件仍留位待后续票。协议与测试向量见
+全白供电结论待肉眼确认。「设开关」（#8）、「设亮度」（#9）、「颜色与预设」（#10）三条
+路径已端到端打通：固件命令层 + ACK、小程序传输层/codec/单页开关、亮度滑块与色环
+（20Hz latest-wins 单通道、连续量不重传、亮度按设备 `max_brightness` 钳位、预设用
+一条 SetAll 原子下发）。色相准确性、色环触控精度与低亮度色相待真机确认。协议与测试向量见
 [docs/protocol.md](docs/protocol.md)，执行票在 GitHub Issues。

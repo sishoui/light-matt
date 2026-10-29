@@ -42,22 +42,61 @@
     <text class="section-hint">{{brightnessHintText}}</text>
   </view>
 
-  <!-- 4. 颜色：为 #10 预留，本票禁用 -->
-  <view class="section disabled">
+  <!-- 4. 颜色：色相环（单块 canvas）+ 饱和度。V 恒为 1，亮度由上面的滑块负责 -->
+  <view class="section {{ready ? '' : 'disabled'}}">
     <view class="section-head">
       <text class="section-title">颜色</text>
-      <view class="swatch" style="background: {{colorHex}}"></view>
+      <view class="color-readout">
+        <view class="swatch" style="background: {{colorHex}}"></view>
+        <text class="section-value mono">{{colorHex}}</text>
+      </view>
     </view>
-    <view class="color-wheel-placeholder">
-      <view class="color-wheel-ring"></view>
-      <view class="color-wheel-center"></view>
+
+    <view class="wheel-wrap">
+      <canvas
+        type="2d"
+        id="color-wheel"
+        class="wheel-canvas"
+        bindtouchstart="onWheelTouchStart"
+        bindtouchmove="onWheelTouchMove"
+        bindtouchend="onWheelTouchEnd"
+        bindtouchcancel="onWheelTouchEnd"
+      ></canvas>
     </view>
-    <text class="section-hint">色环将在后续版本开放</text>
+
+    <view class="sat-row">
+      <text class="sat-label">饱和度</text>
+      <slider
+        class="sat-slider"
+        min="0"
+        max="100"
+        step="1"
+        value="{{colorSaturation}}"
+        disabled="{{!ready}}"
+        activeColor="{{colorHex}}"
+        backgroundColor="#2a2a32"
+        block-size="20"
+        bindchanging="onSaturationChanging"
+        bindchange="onSaturationChange"
+      />
+      <text class="sat-value">{{colorSaturation}}%</text>
+    </view>
+
+    <text class="section-hint">{{colorHintText}}</text>
   </view>
 
-  <!-- 5. 预设：为 #10 预留，本票禁用 -->
-  <view class="presets disabled">
-    <view wx:for="{{presets}}" wx:key="name" class="preset" style="background: {{item.hex}}"></view>
+  <!-- 5. 预设：一次 SetAll（开关 + 亮度 + RGB）原子下发 -->
+  <view class="presets {{ready ? '' : 'disabled'}}">
+    <view
+      wx:for="{{presetList}}"
+      wx:key="name"
+      class="preset {{selectedPreset === item.name ? 'selected' : ''}}"
+      data-index="{{index}}"
+      bindtap="onPresetTap"
+    >
+      <view class="preset-dot" style="background: {{item.hex}}"></view>
+      <text class="preset-name">{{item.name}}</text>
+    </view>
   </view>
 
   <!-- 6. 页脚：版本 + 提示 -->

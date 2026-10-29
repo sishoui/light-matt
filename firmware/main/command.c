@@ -84,6 +84,70 @@ static void dispatch_set_brightness(const lumen_frame_t *frame,
     }
 }
 
+/*
+ * SetColor 0x03：载荷 3 字节 R, G, B，各 0-255，没有非法取值。
+ *
+ * 关键语义：
+ *  - 颜色是用户空间 RGB，命令层不做 gamma；gamma 只发生在渲染路径
+ *    （led_engine → lumen_gamma_apply），见 protocol §7 与 spec §6。
+ *  - 只写 r/g/b，绝不动 power 与 brightness：关灯时选颜色也会保存下来，
+ *    开灯即生效；调色不会顺带开灯或改亮度。
+ *  - 三个字节都与当前值相同时不 commit（ACK 仍为 0x00）。
+ */
+static void dispatch_set_color(const lumen_frame_t *frame, const lumen_state_t *current,
+                               lumen_command_outcome_t *outcome)
+{
+    uint8_t r = frame->payload[0];
+    uint8_t g = frame->payload[1];
+    uint8_t b = frame->payload[2];
+
+    outcome->result_code = LUMEN_RESULT_OK;
+    if (current->r != r || current->g != g || current->b != b) {
+        outcome->next.r = r;
+        outcome->next.g = g;
+        outcome->next.b = b;
+        outcome->state_changed = true;
+    }
+}
+
+/*
+ * SetAll 0x04：载荷 5 字节 power, brightness, R, G, B，按 §11.1 原子生效。
+ *
+ * 关键语义：
+ *  - 原子性：power 不是 0/1 时回 0x01，brightness / RGB 一个都不写。
+ *    实现方式就是「先校验，后赋值」——任何字段校验失败都在第一次赋值之前返回。
+ *  - brightness 与 SetBrightness 同一条钳位规则（§11.4）：越界不拒绝，钳位后回 0x00。
+ *  - 即使 power = 0，载荷里的 brightness / RGB 也会被保存（§7）：关灯保留颜色与亮度。
+ *  - RGB 是用户空间颜色，命令层不做 gamma。
+ *  - 五个字段（钳位后的 brightness）与当前值全部相同则不 commit。
+ */
+static void dispatch_set_all(const lumen_frame_t *frame, const lumen_state_t *current,
+                             uint8_t max_brightness, lumen_command_outcome_t *outcome)
+{
+    uint8_t power = frame->payload[0];
+    if (power > 1) {
+        /* §11.1：power 非法 → 0x01，整帧不生效。 */
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+
+    uint8_t brightness = lumen_state_clamp_brightness(frame->payload[1], max_brightness);
+    uint8_t r = frame->payload[2];
+    uint8_t g = frame->payload[3];
+    uint8_t b = frame->payload[4];
+
+    outcome->result_code = LUMEN_RESULT_OK;
+    if (current->power != power || current->brightness != brightness || current->r != r ||
+        current->g != g || current->b != b) {
+        outcome->next.power = power;
+        outcome->next.brightness = brightness;
+        outcome->next.r = r;
+        outcome->next.g = g;
+        outcome->next.b = b;
+        outcome->state_changed = true;
+    }
+}
+
 void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *current,
                             uint8_t max_brightness, lumen_command_outcome_t *outcome)
 {
@@ -119,12 +183,18 @@ void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *cur
         return;
 
     case LUMEN_CMD_SET_COLOR:
+        dispatch_set_color(frame, current, outcome);
+        return;
+
     case LUMEN_CMD_SET_ALL:
+        dispatch_set_all(frame, current, max_brightness, outcome);
+        return;
+
     case LUMEN_CMD_QUERY_STATE:
     case LUMEN_CMD_SET_LED_COUNT:
     case LUMEN_CMD_SELF_TEST:
-        /* #8/#9 只打通开关与亮度；其余命令的语义留给 #10/#12/#13。
-         * 明确回「未实现」而不是假装成功，状态保持不变。 */
+        /* #10 只打通颜色与一次设全部；查询状态/灯珠数量/自检的语义留给
+         * #12/#13。明确回「未实现」而不是假装成功，状态保持不变。 */
         outcome->result_code = LUMEN_RESULT_UNKNOWN_COMMAND;
         return;
 
