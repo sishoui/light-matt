@@ -3,19 +3,21 @@ setlocal
 REM Build the issue #7 RMT x BLE coexistence stress firmware.
 REM
 REM Usage:
-REM   scripts\build-rmt-stress.cmd [mem_block] [cycle|steady] [sync|async] [minutes]
+REM   scripts\build-rmt-stress.cmd [mem_block] [cycle|steady] [sync|async] [minutes] [brightness]
 REM
-REM   mem_block  48 / 96 / 192 / 384   (default 48)
-REM   pattern    cycle = change color every frame (max stress)
-REM              steady = fixed color, refresh every frame (to count wrong-color frames)
-REM   refresh    sync = blocking led_strip_refresh (default)
-REM              async = refresh_async + deferred refresh_async_done (group 5)
-REM   minutes    stress duration in minutes, 0 = forever (default 30)
+REM   mem_block   48 / 96 / 192 / 384   (default 48; >192 cannot work on C3)
+REM   pattern     cycle = change color every frame (max stress)
+REM               steady = fixed color, refresh every frame (to count wrong-color frames)
+REM   refresh     sync = blocking led_strip_refresh (default)
+REM               async = refresh_async + deferred refresh_async_done (group 5)
+REM   minutes     stress duration in minutes, 0 = forever (default 30)
+REM   brightness  1..255, multiplied into the stress color (default 64)
 REM
 REM Examples:
 REM   scripts\build-rmt-stress.cmd 48 steady sync 30
-REM   scripts\build-rmt-stress.cmd 384 cycle sync 30
+REM   scripts\build-rmt-stress.cmd 384 cycle sync 10
 REM   scripts\build-rmt-stress.cmd 48 steady async 30
+REM   scripts\build-rmt-stress.cmd 48 steady sync 30 96
 REM
 REM The repo path contains non-ASCII characters, so sources are synced to an
 REM ASCII temp dir. Keep this file ASCII-only: cmd.exe reads .cmd in the OEM
@@ -28,6 +30,8 @@ set "REFRESH=%~3"
 if "%REFRESH%"=="" set "REFRESH=sync"
 set "MINUTES=%~4"
 if "%MINUTES%"=="" set "MINUTES=30"
+set "BRIGHTNESS=%~5"
+if "%BRIGHTNESS%"=="" set "BRIGHTNESS=64"
 
 if /i not "%PATTERN%"=="cycle" if /i not "%PATTERN%"=="steady" (
   echo [build-rmt-stress] invalid pattern: %PATTERN% ^(use cycle or steady^)
@@ -65,7 +69,7 @@ del /q "%DST%\sdkconfig.old" 2>nul
 >>"%DST%\sdkconfig.defaults" echo CONFIG_LUMEN_STRESS_DURATION_MIN=%MINUTES%
 >>"%DST%\sdkconfig.defaults" echo CONFIG_LUMEN_STRESS_START_DELAY_S=20
 >>"%DST%\sdkconfig.defaults" echo CONFIG_LUMEN_STRESS_HEARTBEAT_S=30
->>"%DST%\sdkconfig.defaults" echo CONFIG_LUMEN_STRESS_BRIGHTNESS=64
+>>"%DST%\sdkconfig.defaults" echo CONFIG_LUMEN_STRESS_BRIGHTNESS=%BRIGHTNESS%
 >>"%DST%\sdkconfig.defaults" echo CONFIG_LUMEN_RMT_MEM_BLOCK_SYMBOLS=%MEM_BLOCK%
 if /i "%PATTERN%"=="steady" (
   >>"%DST%\sdkconfig.defaults" echo CONFIG_LUMEN_STRESS_PATTERN_STEADY=y
@@ -76,7 +80,7 @@ if /i "%REFRESH%"=="async" (
   >>"%DST%\sdkconfig.defaults" echo CONFIG_LUMEN_STRESS_REFRESH_ASYNC=y
 )
 
-echo [build-rmt-stress] mem_block=%MEM_BLOCK% pattern=%PATTERN% refresh=%REFRESH% minutes=%MINUTES%
+echo [build-rmt-stress] mem_block=%MEM_BLOCK% pattern=%PATTERN% refresh=%REFRESH% minutes=%MINUTES% brightness=%BRIGHTNESS%
 echo [build-rmt-stress] build dir: %DST%
 
 if not exist "%DST%\build\CMakeCache.txt" (

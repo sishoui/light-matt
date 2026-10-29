@@ -322,9 +322,17 @@ static void dump_write_ring(void)
         int64_t raw = s_write_ring[tail % STRESS_WRITE_RING];
         int64_t t = raw >> 8;
         unsigned len = (unsigned)(raw & 0xFF);
-        /* 单条最长约 25 字符；每行超过 180 字符就换行，256 字节缓冲不会溢出。 */
+        /* 单条最长约 16 字符；每行超过 180 字符就换行，256 字节缓冲留足余量。 */
         int wrote = snprintf(line + pos, sizeof(line) - (size_t)pos, " %" PRId64 ":%u", t, len);
         if (wrote <= 0) {
+            continue;
+        }
+        if (pos + wrote >= (int)sizeof(line)) {
+            /* 只可能发生在极端截断时；丢掉这一条，避免指针越界。 */
+            line[pos] = '\0';
+            ESP_LOGI(TAG, "   %s", line);
+            pos = 0;
+            line[0] = '\0';
             continue;
         }
         pos += wrote;
@@ -441,7 +449,8 @@ void lumen_stress_final_report(void)
     ESP_LOGI(TAG, "===== 压力阶段结束 t=%" PRId64 "s =====", now_us() / 1000000);
     ESP_LOGI(TAG, "提醒：以上仍然只能证明「固件没崩、刷新没报错」；"
                   "错色帧数必须由人眼填入 docs/rmt-ble-stability.md 的表格。");
-    ESP_LOGI(TAG, "压力阶段结束后已回到普通 latest-wins 渲染路径（灯带停在最后一帧）。");
+    ESP_LOGI(TAG, "压力阶段结束后回到普通 latest-wins 渲染路径："
+                  "若压力期间有 BLE 写入，灯带会按最新共享状态重绘一次。");
 }
 
 #endif /* CONFIG_LUMEN_RMT_STRESS_MODE */

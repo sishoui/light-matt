@@ -148,14 +148,15 @@ menu "Lumen"
             prompt "压力循环的像素模式"
             default LUMEN_STRESS_PATTERN_CYCLE
             help
-                CYCLE：每周期切换颜色/亮度，制造最大的状态变化压力
-                       （票里字面要求的 20Hz 循环换色）。
+                CYCLE：每周期发真实 SetBrightness（#9 已实现）+ SetColor
+                       （#10 之后实现）帧走 reducer，制造最大的状态变化
+                       压力，对应票里的「20Hz 循环切换颜色/亮度」。
                 STEADY：每周期强制刷新同一帧。RMT 负载与 CYCLE 完全相同
                         （每周期都完整发送 30x24 bit），但灯带颜色恒定，
                         是肉眼数「错色帧」时必须用的模式。
 
             config LUMEN_STRESS_PATTERN_CYCLE
-                bool "CYCLE：每周期换色（最大压力）"
+                bool "CYCLE：每周期换色/亮度（最大压力）"
 
             config LUMEN_STRESS_PATTERN_STEADY
                 bool "STEADY：固定颜色但持续刷新（肉眼判错色）"
@@ -183,9 +184,10 @@ menu "Lumen"
             default 64
             range 1 255
             help
-                压力循环里乘到颜色上的亮度。默认 64：饱和色单通道约 150mA，
-                避免开发板 USB 5V 限流/掉压混进「错色」统计。跑全白高亮前
-                先确认供电能力。此值不影响判定方法，但同一组实验内不要改。
+                STEADY 模式的固定亮度，也是 CYCLE 模式亮度档位的上限参考。
+                默认 64：饱和色单通道约 150mA，避免开发板 USB 5V 限流/掉压
+                混进「错色」统计。跑全白高亮前先确认供电能力。
+                此值不影响判定方法，但同一组实验内不要改。
 
     endif
 
