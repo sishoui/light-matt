@@ -1,7 +1,9 @@
 @echo off
 setlocal
-REM Host 单元测试：不需要 ESP-IDF 工具链，也不连硬件。
-REM 产物写到 %TEMP%，避免污染仓库（仓库路径含中文，也避免 gcc 输出文件落在中文路径下）。
+REM Host unit tests: no ESP-IDF toolchain, no hardware.
+REM Build output goes to %TEMP% so the repo stays clean (and gcc avoids the
+REM non-ASCII repo path). Keep this file ASCII-only: cmd.exe reads .cmd in the
+REM OEM code page, so UTF-8 comments get mangled into bogus commands.
 
 set "MAIN=%~dp0..\main"
 set "OUT=%TEMP%\lumen-host-tests"

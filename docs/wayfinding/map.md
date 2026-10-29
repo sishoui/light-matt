@@ -32,16 +32,16 @@
 |---|---|---|---|---|
 | 01 | [开发环境就绪](./tickets/01-dev-environment.md) | task | — | done |
 | 02 | [协议规格定稿](./tickets/02-protocol-spec.md) | grilling | — | done |
-| 03 | [led_strip 点灯验证](./tickets/03-led-strip-smoke-test.md) | prototype | 01 | blocked |
+| 03 | [led_strip 点灯验证](./tickets/03-led-strip-smoke-test.md) | prototype | 01 | 代码完成，待肉眼确认 |
 | 04 | [小程序 BLE 探测](./tickets/04-miniprogram-ble-probe.md) | prototype | 01 | done |
-| 05 | [固件 BLE 服务与分层骨架](./tickets/05-firmware-ble-skeleton.md) | task | 02, 03 | blocked |
-| 06 | [固件协议实现与状态机](./tickets/06-firmware-protocol-impl.md) | task | 02, 05 | blocked |
+| 05 | [固件 BLE 服务与分层骨架](./tickets/05-firmware-ble-skeleton.md) | task | 02, 03 | done |
+| 06 | [固件协议实现与状态机](./tickets/06-firmware-protocol-impl.md) | task | 02, 05 | ready |
 | 07 | [小程序 BLE 传输层与协议 codec](./tickets/07-miniprogram-transport-codec.md) | task | 02, 04 | ready |
 | 08 | [小程序控制界面](./tickets/08-miniprogram-ui.md) | prototype | 07 | blocked |
 | 09 | [端到端真机联调与验收](./tickets/09-end-to-end-acceptance.md) | task | 06, 08, 10 | blocked |
-| 10 | [RMT × BLE 共存稳定性验证](./tickets/10-rmt-ble-coexistence.md) | prototype | 03, 05 | blocked |
+| 10 | [RMT × BLE 共存稳定性验证](./tickets/10-rmt-ble-coexistence.md) | prototype | 03, 05 | ready |
 
-**现在的 frontier 是 03（灯带点亮）与 07（小程序传输层与协议 codec）。** 03 等灯带硬件；07 已解除 02/04 的阻塞。
+**现在的 frontier 是 03 的肉眼确认、06、07 与 10。** 03 的固件已烧录并跑满 5 分钟 soak（10/10 心跳、`refresh_errors=0`、无重启），但颜色/闪烁/掉压必须由人眼判定；05 已合入 `integration/lumen-mvp`。06/07 是小程序与固件协议实现的两条并行线；10 需要 06 的命令路径来产生高频写入。
 
 依赖形状说明：01（环境）与 02（协议）是两条独立的地基——一条通固件，一条通两端。它们在 05/07 处汇合。03 与 04 是两条平行的风险探针，一个摸硬件、一个摸平台，都只依赖 01。
 
@@ -55,6 +55,8 @@
 - **开发环境就绪**（[GitHub #3](https://github.com/sishoui/light-matt/issues/3)，[环境文档](../dev-environment.md)）：ESP-IDF v5.4 工具链装好；hello_world 烧录 COM6 并输出；led_strip 依赖编译通过；微信开发者工具真机预览通过。芯片实际 4MB flash，正式固件按 4MB 配置。
 - **小程序 BLE 探测**（[GitHub #5](https://github.com/sishoui/light-matt/issues/5)，[实测笔记](../ble-notes.md)）：Android 16 真机验证扫描/连接/MTU/notify/写/回显；deviceId 是 MAC，`setBLEMTU(185)` 实际回包 256；连接间隔 30ms；20/50/100ms 各 20 帧全部回显；重连成功。iOS 未测（无设备），按官方文档记录，留到端到端验收。
 - **协议规格定稿**（[GitHub #2](https://github.com/sishoui/light-matt/issues/2)，规格见 [protocol.md](../protocol.md)）：帧 ≤20 字节、小端、校验和覆盖 magic..payload 后取反；7 条命令 + ACK/Event/StateReport；State 固定 8 字节；结果码 0x00-0x09；ACK 在写入 RAM 后回，NVS 失败用 Event 0x81；自检与灯珠数量重建语义已定。测试向量在 `docs/protocol-testvectors.json`。
+- **led_strip 点灯验证**（[GitHub #4](https://github.com/sishoui/light-matt/issues/4)，接线与验收步骤见 [led-bringup.md](../led-bringup.md)）：GPIO3 + RMT 10MHz + `mem_block_symbols=48` + 无 DMA，30 灯序列跑通；连续 5 分钟 soak 中 10/10 心跳准点、`refresh_errors=0`、heap 稳定、无重启。颜色顺序、闪烁与全白掉压仍需人眼确认；亮度 1/255 时 `(255,180,120)` 量化成 `(1,1,0)` 属整数取整。
+- **固件 BLE 服务与分层骨架**（[GitHub #6](https://github.com/sishoui/light-matt/issues/6)，见 [firmware-architecture.md](../firmware-architecture.md)）：`ble_link → led_engine → state_store` 单向依赖；RX 回调只解信封打日志，不刷灯/不写 NVS；latest-wins 邮箱（互斥锁 + dirty + 二值信号量）；单连接、断开重新广播；渲染任务 4096B/优先级 4，存储任务 3072B/优先级 2；host 单测 341 项通过。
 
 ## Not yet specified
 

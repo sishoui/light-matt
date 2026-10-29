@@ -22,6 +22,8 @@ lumen/
 
 ## 现状
 
-设计阶段。协议已定稿（[docs/protocol.md](docs/protocol.md)），开发环境已就绪（工具链、烧录、
-真机预览均通过），实现规格与执行票在 GitHub Issues。地图的前沿是「led_strip 点灯验证」与
-「小程序传输层与协议 codec」。尚无产品代码（BLE 回显 fixture 与探针除外）。
+固件骨架已落地：`ble_link → led_engine → state_store` 三层，NimBLE GATT 服务与单连接、
+latest-wins 渲染任务、NVS debounce 都已就位（[firmware-architecture.md](docs/firmware-architecture.md)）。
+灯带 bring-up 已烧录并通过 5 分钟 soak（[led-bringup.md](docs/led-bringup.md)），颜色顺序与
+全白供电结论待肉眼确认。小程序仍是 BLE 探针，尚未接协议。协议与测试向量见
+[docs/protocol.md](docs/protocol.md)，执行票在 GitHub Issues。
