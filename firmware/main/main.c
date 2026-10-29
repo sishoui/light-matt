@@ -1,254 +1,339 @@
-#include <string.h>
-
-#include "esp_log.h"
-#include "nvs_flash.h"
-
-#include "nimble/nimble_port.h"
-#include "nimble/nimble_port_freertos.h"
-#include "host/ble_hs.h"
-#include "host/ble_att.h"
-#include "host/ble_uuid.h"
-#include "host/util/util.h"
-#include "services/gap/ble_svc_gap.h"
-#include "services/gatt/ble_svc_gatt.h"
-
-static const char *TAG = "lumen_echo";
-
-static uint8_t own_addr_type;
-static uint16_t conn_handle = BLE_HS_CONN_HANDLE_NONE;
-static uint16_t tx_val_handle;
-
-static int gap_event(struct ble_gap_event *event, void *arg);
-
-/* 128-bit UUID 在 NimBLE 里按小端存放。
- * Service 6c756d65-6e00-4b1e-9a3c-000000000001
- * RX      ...-000000000002
- * TX      ...-000000000003
- * State   ...-000000000004
+/*
+ * #4「灯带点亮与电气基线」的临时 bring-up 固件。
+ *
+ * 这不是产品固件：
+ *   - 这里只有一个 main，没有 BLE、没有协议、没有状态持久化、没有灯效；
+ *   - #6 会把整个 main 重写成正式的固件骨架（渲染任务 / 状态机 / BLE 服务）。
+ *
+ * 它存在的唯一目的：在真实硬件上确认
+ *   - espressif/led_strip 的 RMT backend 能在 ESP32-C3FH4 上点亮 30 灯 WS2812B；
+ *   - 颜色通道顺序到底是不是 GRB；
+ *   - 亮度 1 / 128 / 255 的实际观感；
+ *   - 全白高亮时开发板 USB 5V 供不上电会怎样（掉压 / 重启 / 闪烁）；
+ *   - 连续 5 分钟常亮是否稳定。
+ *
+ * 所有结论必须由人眼在灯带前确认，串口日志只能证明固件在跑、没重启。
  */
-static const ble_uuid128_t svc_uuid = BLE_UUID128_INIT(
-    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3c, 0x9a,
-    0x1e, 0x4b, 0x00, 0x6e, 0x65, 0x6d, 0x75, 0x6c);
-static const ble_uuid128_t rx_uuid = BLE_UUID128_INIT(
-    0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3c, 0x9a,
-    0x1e, 0x4b, 0x00, 0x6e, 0x65, 0x6d, 0x75, 0x6c);
-static const ble_uuid128_t tx_uuid = BLE_UUID128_INIT(
-    0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3c, 0x9a,
-    0x1e, 0x4b, 0x00, 0x6e, 0x65, 0x6d, 0x75, 0x6c);
-static const ble_uuid128_t state_uuid = BLE_UUID128_INIT(
-    0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3c, 0x9a,
-    0x1e, 0x4b, 0x00, 0x6e, 0x65, 0x6d, 0x75, 0x6c);
 
-/* 探针用的假状态：开关、亮度、RGB、灯珠数、亮度上限 */
-static uint8_t state_buf[8] = {0x01, 0x80, 0xFF, 0xB4, 0x78, 0x1E, 0x00, 0xFF};
+#include <inttypes.h>
+#include <stdbool.h>
+#include <stdint.h>
 
-static int rx_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *ctxt, void *arg)
-{
-    if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) {
-        return BLE_ATT_ERR_UNLIKELY;
-    }
+#include "esp_chip_info.h"
+#include "esp_err.h"
+#include "esp_log.h"
+#include "esp_system.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "led_strip.h"
+#include "sdkconfig.h"
 
-    uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
-    uint8_t buf[256];
-    if (len > sizeof(buf)) {
-        return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
-    }
+static const char *TAG = "lumen_led";
 
-    uint16_t out_len = 0;
-    if (ble_hs_mbuf_to_flat(ctxt->om, buf, sizeof(buf), &out_len) != 0) {
-        return BLE_ATT_ERR_UNLIKELY;
-    }
+/* RMT 时钟：WS2812B 的 1.25us 位宽在 10MHz 下是 12.5 tick，led_strip 内部按此量化。 */
+#define LUMEN_RMT_RESOLUTION_HZ (10 * 1000 * 1000)
 
-    ESP_LOGI(TAG, "RX len=%u", out_len);
+/* soak：5 分钟常亮，电流可控的红色 + 中亮。 */
+#define SOAK_DURATION_MS (5 * 60 * 1000)
+#define SOAK_HEARTBEAT_MS 30000
+#define SOAK_R 255
+#define SOAK_G 0
+#define SOAK_B 0
+#define SOAK_BRIGHTNESS 128
 
-    if (conn == BLE_HS_CONN_HANDLE_NONE || out_len == 0) {
-        return 0;
-    }
+#if CONFIG_LUMEN_LED_COLOR_ORDER_RGB
+#define LUMEN_COLOR_FORMAT LED_STRIP_COLOR_COMPONENT_FMT_RGB
+#define LUMEN_COLOR_FORMAT_NAME "RGB"
+#else
+#define LUMEN_COLOR_FORMAT LED_STRIP_COLOR_COMPONENT_FMT_GRB
+#define LUMEN_COLOR_FORMAT_NAME "GRB"
+#endif
 
-    struct os_mbuf *om = ble_hs_mbuf_from_flat(buf, out_len);
-    if (om == NULL) {
-        return BLE_ATT_ERR_INSUFFICIENT_RES;
-    }
+typedef struct {
+    const char *name;      /* 日志里的阶段名，ASCII，方便回传日志后 grep */
+    const char *expect;    /* 人眼应该看到什么 */
+    uint8_t r;             /* 命令颜色（未经亮度缩放） */
+    uint8_t g;
+    uint8_t b;
+    uint8_t brightness;    /* 0-255，线性乘到 RGB 上 */
+    uint32_t duration_ms;
+} led_stage_t;
 
-    int rc = ble_gatts_notify_custom(conn, tx_val_handle, om);
-    if (rc != 0) {
-        os_mbuf_free_chain(om);
-        ESP_LOGW(TAG, "notify failed rc=%d", rc);
-    }
-    return 0;
-}
-
-static int tx_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *ctxt, void *arg)
-{
-    return BLE_ATT_ERR_UNLIKELY;
-}
-
-static int state_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *ctxt, void *arg)
-{
-    if (ctxt->op != BLE_GATT_ACCESS_OP_READ_CHR) {
-        return BLE_ATT_ERR_UNLIKELY;
-    }
-    int rc = os_mbuf_append(ctxt->om, state_buf, sizeof(state_buf));
-    return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
-}
-
-static const struct ble_gatt_svc_def gatt_svcs[] = {
+/* 序列末尾的“灭”是 5 秒，然后立刻进 soak。 */
+static const led_stage_t k_stages[] = {
     {
-        .type = BLE_GATT_SVC_TYPE_PRIMARY,
-        .uuid = &svc_uuid.u,
-        .characteristics = (struct ble_gatt_chr_def[]){
-            {
-                .uuid = &rx_uuid.u,
-                .access_cb = rx_access,
-                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
-            },
-            {
-                .uuid = &tx_uuid.u,
-                .access_cb = tx_access,
-                .flags = BLE_GATT_CHR_F_NOTIFY,
-                .val_handle = &tx_val_handle,
-            },
-            {
-                .uuid = &state_uuid.u,
-                .access_cb = state_access,
-                .flags = BLE_GATT_CHR_F_READ,
-            },
-            {0},
-        },
+        .name = "red",
+        .expect = "整条 30 灯纯红，颜色均匀、尾部不衰减",
+        .r = 255, .g = 0, .b = 0,
+        .brightness = 255,
+        .duration_ms = 2000,
     },
-    {0},
+    {
+        .name = "green",
+        .expect = "整条纯绿；若这里是红色，说明 R/G 通道要互换（改为 RGB）",
+        .r = 0, .g = 255, .b = 0,
+        .brightness = 255,
+        .duration_ms = 2000,
+    },
+    {
+        .name = "blue",
+        .expect = "整条纯蓝",
+        .r = 0, .g = 0, .b = 255,
+        .brightness = 255,
+        .duration_ms = 2000,
+    },
+    {
+        .name = "warm_low",
+        .expect = "暖白、明显很暗（亮度 1/255），不应刺眼；若这一段不亮或闪烁，属低亮度边界问题",
+        .r = 255, .g = 180, .b = 120,
+        .brightness = 1,
+        .duration_ms = 2000,
+    },
+    {
+        .name = "warm_mid",
+        .expect = "同色暖白，中等亮度（128/255），约为上一段的可感知放大量",
+        .r = 255, .g = 180, .b = 120,
+        .brightness = 128,
+        .duration_ms = 2000,
+    },
+    {
+        .name = "white_high",
+        .expect = "全白最亮（255/255），约 1.8A；重点观察是否掉压、整条闪烁、开发板重启",
+        .r = 255, .g = 255, .b = 255,
+        .brightness = 255,
+        .duration_ms = 3000,
+    },
+    {
+        .name = "off",
+        .expect = "全部熄灭，不应有单灯微亮（若有，属首灯/末灯供电或数据问题）",
+        .r = 0, .g = 0, .b = 0,
+        .brightness = 0,
+        .duration_ms = 5000,
+    },
 };
 
-static void advertise(void)
+#define STAGE_COUNT (sizeof(k_stages) / sizeof(k_stages[0]))
+
+static led_strip_handle_t s_strip;
+static uint32_t s_refresh_errors;
+
+static double now_s(void)
 {
-    struct ble_hs_adv_fields fields = {0};
-    fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-    fields.uuids128 = &svc_uuid;
-    fields.num_uuids128 = 1;
-    fields.uuids128_is_complete = 1;
+    return (double)esp_timer_get_time() / 1000000.0;
+}
 
-    int rc = ble_gap_adv_set_fields(&fields);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "adv fields rc=%d", rc);
-        return;
-    }
+/* WS2812B 没有全局亮度寄存器，亮度只能在写入前线性乘到 RGB 上。
+ * 这里刻意不做 gamma：本票要观察的是电气与通道顺序，
+ * 线性缩放至少保证 1/255 就是真的 1/255（gamma 会让它更暗）。 */
+static uint8_t scale_brightness(uint8_t value, uint8_t brightness)
+{
+    return (uint8_t)(((uint16_t)value * brightness + 127u) / 255u);
+}
 
-    struct ble_hs_adv_fields rsp = {0};
-    const char *name = ble_svc_gap_device_name();
-    rsp.name = (const uint8_t *)name;
-    rsp.name_len = strlen(name);
-    rsp.name_is_complete = 1;
-
-    rc = ble_gap_adv_rsp_set_fields(&rsp);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "scan rsp rc=%d", rc);
-        return;
-    }
-
-    struct ble_gap_adv_params params = {0};
-    params.conn_mode = BLE_GAP_CONN_MODE_UND;
-    params.disc_mode = BLE_GAP_DISC_MODE_GEN;
-
-    rc = ble_gap_adv_start(own_addr_type, NULL, BLE_HS_FOREVER, &params, gap_event, NULL);
-    if (rc != 0 && rc != BLE_HS_EALREADY) {
-        ESP_LOGE(TAG, "adv start rc=%d", rc);
+static const char *reset_reason_name(esp_reset_reason_t reason)
+{
+    switch (reason) {
+    case ESP_RST_UNKNOWN:   return "UNKNOWN";
+    case ESP_RST_POWERON:   return "POWERON";
+    case ESP_RST_EXT:       return "EXT";
+    case ESP_RST_SW:        return "SW";
+    case ESP_RST_PANIC:     return "PANIC";
+    case ESP_RST_INT_WDT:   return "INT_WDT";
+    case ESP_RST_TASK_WDT:  return "TASK_WDT";
+    case ESP_RST_WDT:       return "WDT";
+    case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT:  return "BROWNOUT";
+    case ESP_RST_SDIO:      return "SDIO";
+    case ESP_RST_USB:       return "USB";       /* 原生 USB-JTAG 复位，烧录后会看到 */
+    case ESP_RST_JTAG:      return "JTAG";
+    case ESP_RST_EFUSE:     return "EFUSE";
+    case ESP_RST_PWR_GLITCH: return "PWR_GLITCH";
+    case ESP_RST_CPU_LOCKUP: return "CPU_LOCKUP";
+    default:                return "?";
     }
 }
 
-static int gap_event(struct ble_gap_event *event, void *arg)
+static void log_boot_banner(void)
 {
-    struct ble_gap_conn_desc desc;
+    esp_chip_info_t chip = {0};
+    esp_chip_info(&chip);
 
-    switch (event->type) {
-    case BLE_GAP_EVENT_CONNECT:
-        if (event->connect.status == 0) {
-            conn_handle = event->connect.conn_handle;
-            if (ble_gap_conn_find(conn_handle, &desc) == 0) {
-                ESP_LOGI(TAG, "connected itvl=%d latency=%d timeout=%d",
-                         desc.conn_itvl, desc.conn_latency, desc.supervision_timeout);
-            }
-            ESP_LOGI(TAG, "mtu=%d", ble_att_mtu(conn_handle));
-        } else {
-            conn_handle = BLE_HS_CONN_HANDLE_NONE;
-            advertise();
+    esp_reset_reason_t reason = esp_reset_reason();
+
+    ESP_LOGI(TAG, "======================================================");
+    ESP_LOGI(TAG, "lumen #4 LED bring-up（临时 main，#6 会替换）");
+    ESP_LOGI(TAG, "chip=%s cores=%d rev=%d.%d", CONFIG_IDF_TARGET, chip.cores,
+             chip.revision / 100, chip.revision % 100);
+    ESP_LOGI(TAG, "reset_reason=%d (%s) uptime=%.3fs", (int)reason,
+             reset_reason_name(reason), now_s());
+
+    if (reason == ESP_RST_BROWNOUT || reason == ESP_RST_PWR_GLITCH) {
+        ESP_LOGE(TAG, "*** 上次复位是 %s：供电不足（USB 5V 限流 / 线损 / 未共地）***",
+                 reset_reason_name(reason));
+    } else if (reason == ESP_RST_TASK_WDT || reason == ESP_RST_INT_WDT ||
+               reason == ESP_RST_WDT || reason == ESP_RST_PANIC ||
+               reason == ESP_RST_CPU_LOCKUP) {
+        ESP_LOGE(TAG, "*** 上次复位不是正常上电（%s）：先查接线与供电，再怀疑固件 ***",
+                 reset_reason_name(reason));
+    }
+
+    ESP_LOGI(TAG, "strip: gpio=%d leds=%d color_order=%s mem_block_symbols=%d resolution=%d Hz dma=off",
+             CONFIG_LUMEN_LED_GPIO, CONFIG_LUMEN_LED_COUNT, LUMEN_COLOR_FORMAT_NAME,
+             CONFIG_LUMEN_RMT_MEM_BLOCK_SYMBOLS, LUMEN_RMT_RESOLUTION_HZ);
+    ESP_LOGI(TAG, "接线：GPIO%d -> DIN；灯带用独立 5V 供电；开发板 GND 必须与灯带 GND 相连", CONFIG_LUMEN_LED_GPIO);
+    ESP_LOGI(TAG, "接线：首灯并 500-1000uF/>=6.3V 电容；数据线串 300-500ohm（靠灯珠一端）");
+    ESP_LOGI(TAG, "接线：灯带方向 DIN 在首灯，箭头指向尾部；接反不会亮");
+    ESP_LOGI(TAG, "电气：3.3V 直驱 5V 灯带不满足 VIH=3.5V 规格，画板必须加 74AHCT125（不能用 74HC125）");
+    ESP_LOGI(TAG, "======================================================");
+}
+
+static esp_err_t strip_init(void)
+{
+    led_strip_config_t strip_config = {
+        .strip_gpio_num = CONFIG_LUMEN_LED_GPIO,
+        .max_leds = CONFIG_LUMEN_LED_COUNT,
+        .led_model = LED_MODEL_WS2812,
+        .color_component_format = LUMEN_COLOR_FORMAT,
+        .flags.invert_out = false,
+    };
+    led_strip_rmt_config_t rmt_config = {
+        .clk_src = RMT_CLK_SRC_DEFAULT,
+        .resolution_hz = LUMEN_RMT_RESOLUTION_HZ,
+        .mem_block_symbols = CONFIG_LUMEN_RMT_MEM_BLOCK_SYMBOLS,
+        .flags.with_dma = false,
+    };
+
+    esp_err_t err = led_strip_new_rmt_device(&strip_config, &rmt_config, &s_strip);
+    if (err != ESP_OK) {
+        s_strip = NULL;
+        ESP_LOGE(TAG, "led_strip_new_rmt_device 失败: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "常见原因：GPIO 被占用/RMT 通道不足；先确认 GPIO%d 没接别的东西",
+                 CONFIG_LUMEN_LED_GPIO);
+    }
+    return err;
+}
+
+/* 把一帧真正写进灯带并阻塞等待发完。 */
+static esp_err_t show_rgb(uint8_t r, uint8_t g, uint8_t b, uint8_t brightness)
+{
+    if (s_strip == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    uint8_t sr = scale_brightness(r, brightness);
+    uint8_t sg = scale_brightness(g, brightness);
+    uint8_t sb = scale_brightness(b, brightness);
+
+    for (int i = 0; i < CONFIG_LUMEN_LED_COUNT; ++i) {
+        esp_err_t err = led_strip_set_pixel(s_strip, i, sr, sg, sb);
+        if (err != ESP_OK) {
+            s_refresh_errors++;
+            ESP_LOGE(TAG, "set_pixel(%d) 失败: %s", i, esp_err_to_name(err));
+            return err;
         }
-        return 0;
+    }
 
-    case BLE_GAP_EVENT_DISCONNECT:
-        ESP_LOGI(TAG, "disconnected reason=%d", event->disconnect.reason);
-        conn_handle = BLE_HS_CONN_HANDLE_NONE;
-        advertise();
-        return 0;
+    esp_err_t err = led_strip_refresh(s_strip);
+    if (err != ESP_OK) {
+        s_refresh_errors++;
+        ESP_LOGE(TAG, "refresh 失败: %s", esp_err_to_name(err));
+    }
+    return err;
+}
 
-    case BLE_GAP_EVENT_ADV_COMPLETE:
-        advertise();
-        return 0;
+static void log_stage(int index, const led_stage_t *stage)
+{
+    uint8_t sr = scale_brightness(stage->r, stage->brightness);
+    uint8_t sg = scale_brightness(stage->g, stage->brightness);
+    uint8_t sb = scale_brightness(stage->b, stage->brightness);
 
-    case BLE_GAP_EVENT_MTU:
-        ESP_LOGI(TAG, "mtu updated=%d", event->mtu.value);
-        return 0;
+    ESP_LOGI(TAG, "[t=%8.3fs] [stage %d/%d] %-10s 期望：%s", now_s(),
+             index + 1, (int)STAGE_COUNT, stage->name, stage->expect);
+    ESP_LOGI(TAG, "[t=%8.3fs] [stage %d/%d] %-10s 命令 RGB=(%3u,%3u,%3u) brightness=%3u -> 实际下发 (%3u,%3u,%3u) x %d 灯 %" PRIu32 "ms",
+             now_s(), index + 1, (int)STAGE_COUNT, stage->name,
+             stage->r, stage->g, stage->b, stage->brightness,
+             sr, sg, sb, CONFIG_LUMEN_LED_COUNT, stage->duration_ms);
+}
 
-    case BLE_GAP_EVENT_CONN_UPDATE:
-        if (ble_gap_conn_find(event->conn_update.conn_handle, &desc) == 0) {
-            ESP_LOGI(TAG, "conn updated itvl=%d latency=%d timeout=%d",
-                     desc.conn_itvl, desc.conn_latency, desc.supervision_timeout);
+static void run_sequence(uint32_t pass)
+{
+    ESP_LOGI(TAG, "[t=%8.3fs] ===== 序列第 %" PRIu32 " 轮开始：红 -> 绿 -> 蓝 -> 暖白低 -> 暖白中 -> 全白高 -> 灭 =====",
+             now_s(), pass);
+
+    for (int i = 0; i < (int)STAGE_COUNT; ++i) {
+        const led_stage_t *stage = &k_stages[i];
+        log_stage(i, stage);
+        show_rgb(stage->r, stage->g, stage->b, stage->brightness);
+        vTaskDelay(pdMS_TO_TICKS(stage->duration_ms));
+    }
+
+    ESP_LOGI(TAG, "[t=%8.3fs] ===== 序列第 %" PRIu32 " 轮结束 =====", now_s(), pass);
+}
+
+/* 5 分钟常亮。红色 + 亮度 128 的电流远低于全白，适合长时间观察闪烁/重启。 */
+static void run_soak(uint32_t pass)
+{
+    ESP_LOGI(TAG, "[t=%8.3fs] [soak] 开始：全红 RGB=(255,0,0) brightness=%d，持续 %d 分钟，每 %d 秒心跳",
+             now_s(), SOAK_BRIGHTNESS, SOAK_DURATION_MS / 60000, SOAK_HEARTBEAT_MS / 1000);
+    ESP_LOGI(TAG, "[t=%8.3fs] [soak] 期望：整条保持均匀红色，5 分钟内不闪烁、不重启；"
+                  "若中途日志从头开始且 reset_reason=BROWNOUT，就是掉压", now_s());
+
+    show_rgb(SOAK_R, SOAK_G, SOAK_B, SOAK_BRIGHTNESS);
+
+    int64_t start_us = esp_timer_get_time();
+    int64_t next_heartbeat_us = start_us + (int64_t)SOAK_HEARTBEAT_MS * 1000;
+    int beat = 0;
+    const int total_beats = SOAK_DURATION_MS / SOAK_HEARTBEAT_MS;
+
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+
+        int64_t now_us = esp_timer_get_time();
+        int64_t elapsed_ms = (now_us - start_us) / 1000;
+        bool finished = elapsed_ms >= SOAK_DURATION_MS;
+
+        if (now_us >= next_heartbeat_us) {
+            beat++;
+            next_heartbeat_us += (int64_t)SOAK_HEARTBEAT_MS * 1000;
+            ESP_LOGI(TAG, "[t=%8.3fs] [soak] 心跳 %d/%d：已常亮 %" PRId64 "s，剩余 %" PRId64
+                          "s，heap=%" PRIu32 " min_heap=%" PRIu32 " refresh_errors=%" PRIu32,
+                     now_s(), beat, total_beats, elapsed_ms / 1000,
+                     (SOAK_DURATION_MS - elapsed_ms) / 1000 > 0
+                         ? (SOAK_DURATION_MS - elapsed_ms) / 1000
+                         : 0,
+                     esp_get_free_heap_size(), esp_get_minimum_free_heap_size(),
+                     s_refresh_errors);
         }
-        return 0;
 
-    default:
-        return 0;
-    }
-}
-
-static void on_sync(void)
-{
-    int rc = ble_hs_util_ensure_addr(0);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "ensure_addr rc=%d", rc);
-        return;
+        if (finished) {
+            break;
+        }
     }
 
-    rc = ble_hs_id_infer_auto(0, &own_addr_type);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "infer addr rc=%d", rc);
-        return;
-    }
-
-    advertise();
-}
-
-static void on_reset(int reason)
-{
-    ESP_LOGW(TAG, "host reset reason=%d", reason);
-}
-
-static void host_task(void *param)
-{
-    ESP_LOGI(TAG, "BLE host task started");
-    nimble_port_run();
-    nimble_port_freertos_deinit();
+    ESP_LOGI(TAG, "[t=%8.3fs] [soak] 第 %" PRIu32 " 轮结束：累计 refresh_errors=%" PRIu32
+                  "，heap=%" PRIu32 "，min_heap=%" PRIu32,
+             now_s(), pass, s_refresh_errors, esp_get_free_heap_size(),
+             esp_get_minimum_free_heap_size());
 }
 
 void app_main(void)
 {
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
+    log_boot_banner();
+
+    if (strip_init() != ESP_OK) {
+        ESP_LOGE(TAG, "无法创建灯带，序列不会开始。检查接线后按 RST 重启。");
+        for (;;) {
+            vTaskDelay(pdMS_TO_TICKS(10000));
+            ESP_LOGE(TAG, "[t=%8.3fs] 仍在等待：led_strip 初始化失败，未点灯", now_s());
+        }
     }
-    ESP_ERROR_CHECK(ret);
 
-    ESP_ERROR_CHECK(nimble_port_init());
+    /* 先灭一次，避免复位后残留上一轮的像素。 */
+    show_rgb(0, 0, 0, 0);
 
-    ble_hs_cfg.reset_cb = on_reset;
-    ble_hs_cfg.sync_cb = on_sync;
-
-    ble_svc_gap_init();
-    ble_svc_gatt_init();
-
-    ble_gatts_count_cfg(gatt_svcs);
-    ble_gatts_add_svcs(gatt_svcs);
-    ble_svc_gap_device_name_set("Lumen-ECHO");
-
-    nimble_port_freertos_init(host_task);
+    for (uint32_t pass = 1;; ++pass) {
+        run_sequence(pass);
+        run_soak(pass);
+    }
 }
