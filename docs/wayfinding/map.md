@@ -35,13 +35,18 @@
 | 03 | [led_strip 点灯验证](./tickets/03-led-strip-smoke-test.md) | prototype | 01 | 代码完成，待肉眼确认 |
 | 04 | [小程序 BLE 探测](./tickets/04-miniprogram-ble-probe.md) | prototype | 01 | done |
 | 05 | [固件 BLE 服务与分层骨架](./tickets/05-firmware-ble-skeleton.md) | task | 02, 03 | done |
-| 06 | [固件协议实现与状态机](./tickets/06-firmware-protocol-impl.md) | task | 02, 05 | ready |
-| 07 | [小程序 BLE 传输层与协议 codec](./tickets/07-miniprogram-transport-codec.md) | task | 02, 04 | ready |
-| 08 | [小程序控制界面](./tickets/08-miniprogram-ui.md) | prototype | 07 | blocked |
-| 09 | [端到端真机联调与验收](./tickets/09-end-to-end-acceptance.md) | task | 06, 08, 10 | blocked |
-| 10 | [RMT × BLE 共存稳定性验证](./tickets/10-rmt-ble-coexistence.md) | prototype | 03, 05 | ready |
+| 06 | [固件协议实现与状态机](./tickets/06-firmware-protocol-impl.md) | task | 02, 05 | done（合并进 #8/#9/#10） |
+| 07 | [小程序 BLE 传输层与协议 codec](./tickets/07-miniprogram-transport-codec.md) | task | 02, 04 | done（合并进 #8） |
+| 08 | [小程序控制界面](./tickets/08-miniprogram-ui.md) | prototype | 07 | done（合并进 #8/#9/#10） |
+| 09 | [端到端真机联调与验收](./tickets/09-end-to-end-acceptance.md) | task | 06, 08, 10 | 待真机 |
+| 10 | [RMT × BLE 共存稳定性验证](./tickets/10-rmt-ble-coexistence.md) | prototype | 03, 05 | 方案与固件完成，待用户实测 |
 
-**现在的 frontier 是 03 的肉眼确认、06、07 与 10。** 03 的固件已烧录并跑满 5 分钟 soak（10/10 心跳、`refresh_errors=0`、无重启），但颜色/闪烁/掉压必须由人眼判定；05 已合入 `integration/lumen-mvp`。06/07 是小程序与固件协议实现的两条并行线；10 需要 06 的命令路径来产生高频写入。
+**frontier：03 的肉眼确认、10 的五组长跑实测、09 的端到端验收。** 三者的共同点是都需要真机与人眼；
+代码侧的实现票（05–08 与 GitHub #11–#13）已全部落到 `integration/lumen-mvp`。
+
+GitHub 实现票（13 张）与本地 wayfinder 票的对应关系：本地 06/07/08 被拆成了更细的 GitHub 票
+（#8 开关、#9 亮度、#10 颜色、#11 状态同步、#12 灯珠数与持久化、#13 日志与自检），按纵向切片
+逐条打通，而不是按层实现。
 
 依赖形状说明：01（环境）与 02（协议）是两条独立的地基——一条通固件，一条通两端。它们在 05/07 处汇合。03 与 04 是两条平行的风险探针，一个摸硬件、一个摸平台，都只依赖 01。
 
@@ -57,6 +62,12 @@
 - **协议规格定稿**（[GitHub #2](https://github.com/sishoui/light-matt/issues/2)，规格见 [protocol.md](../protocol.md)）：帧 ≤20 字节、小端、校验和覆盖 magic..payload 后取反；7 条命令 + ACK/Event/StateReport；State 固定 8 字节；结果码 0x00-0x09；ACK 在写入 RAM 后回，NVS 失败用 Event 0x81；自检与灯珠数量重建语义已定。测试向量在 `docs/protocol-testvectors.json`。
 - **led_strip 点灯验证**（[GitHub #4](https://github.com/sishoui/light-matt/issues/4)，接线与验收步骤见 [led-bringup.md](../led-bringup.md)）：GPIO3 + RMT 10MHz + `mem_block_symbols=48` + 无 DMA，30 灯序列跑通；连续 5 分钟 soak 中 10/10 心跳准点、`refresh_errors=0`、heap 稳定、无重启。颜色顺序、闪烁与全白掉压仍需人眼确认；亮度 1/255 时 `(255,180,120)` 量化成 `(1,1,0)` 属整数取整。
 - **固件 BLE 服务与分层骨架**（[GitHub #6](https://github.com/sishoui/light-matt/issues/6)，见 [firmware-architecture.md](../firmware-architecture.md)）：`ble_link → led_engine → state_store` 单向依赖；RX 回调只解信封打日志，不刷灯/不写 NVS；latest-wins 邮箱（互斥锁 + dirty + 二值信号量）；单连接、断开重新广播；渲染任务 4096B/优先级 4，存储任务 3072B/优先级 2；host 单测 341 项通过。
+- **开关端到端**（[GitHub #8](https://github.com/sishoui/light-matt/issues/8)）：命令层抽成纯 reducer（`command.c`），RX 回调只做「解码 → 分发 → 写 RAM → 回 ACK」；小程序建 transport / codec / throttle / log / session 分层；20Hz latest-wins 与写入串行化就位；两端共用 37 条测试向量。
+- **亮度端到端**（[GitHub #9](https://github.com/sishoui/light-matt/issues/9)）：20Hz 节流接真，`bindchanging` 拖动实时跟随；亮度按 State 的 `max_brightness` 钳位；亮度 0 保留 power 位，开灯时用最近非 0 亮度恢复。
+- **颜色与预设**（[GitHub #10](https://github.com/sishoui/light-matt/issues/10)）：色相环 + 饱和度滑块（V 恒为 1，亮度只走滑块，绝不折进 RGB）；8 个预设走 SetAll 单帧下发；颜色与亮度共用同一个节流通道，不会叠成 40Hz。
+- **状态同步与回连**（[GitHub #11](https://github.com/sishoui/light-matt/issues/11)）：State 是唯一权威；断线立即清空设备状态；1s/2s/4s 退避回连（修掉了「只走第一次」的排程 bug 与「主动断开被误标可回连」的 bug）；退避耗尽停住并给手动入口。
+- **灯珠数量与断电记忆**（[GitHub #12](https://github.com/sishoui/light-matt/issues/12)）：重建状态机保证 ACK 等句柄重建结果才发，重建中再请求回 Busy；`new`/`del` 句柄只在渲染任务里；500ms debounce 用有符号差值比较时间，32 位回绕不卡死；NVS blob 13 字节显式布局。
+- **Event 0x81 跨票缺口**（[GitHub #1](https://github.com/sishoui/light-matt/issues/1) 范围内的补丁）：协议 §10.3 要求的 NVS 写失败上报，从 #6 到 #10 都没有调用点（每张票都假设别人接）。补通 `state_store → led_engine → ble_link` 整条链，并加逐字节断言。
 
 ## Not yet specified
 
