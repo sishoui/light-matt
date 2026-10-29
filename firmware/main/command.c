@@ -163,6 +163,29 @@ bool lumen_command_changes_state(uint8_t command)
     }
 }
 
+/*
+ * SetLedCount 0x06：载荷 2 字节小端，合法 1-64（§6）。
+ *
+ * 关键语义（§11.3）：
+ *  - 这里只校验并标记「需要重建」。数量必须在渲染任务重建 led_strip 成功后
+ *    才写入共享状态，ACK 也要等重建结果——所以本 reducer 不改 next、
+ *    state_changed 保持 false，由 led_engine 在重建完成时提交 / 回滚。
+ *  - 越界（0、>64、小端读出的 65535 等）→ 0x01，不请求重建、不改状态。
+ *  - 与当前数量相同时由 led_engine 判为「无需重建」，直接回 0x00。
+ */
+static void dispatch_set_led_count(const lumen_frame_t *frame,
+                                   lumen_command_outcome_t *outcome)
+{
+    uint16_t count = (uint16_t)(frame->payload[0] | ((uint16_t)frame->payload[1] << 8));
+    if (count < 1 || count > LUMEN_MAX_LEDS) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    outcome->result_code = LUMEN_RESULT_OK;
+    outcome->led_count_rebuild = true;
+    outcome->led_count = count;
+}
+
 void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *current,
                             uint8_t max_brightness, lumen_command_outcome_t *outcome)
 {
@@ -175,6 +198,8 @@ void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *cur
     outcome->state_changed = false;
     outcome->start_selftest = false;
     outcome->cancels_selftest = false;
+    outcome->led_count_rebuild = false;
+    outcome->led_count = current->led_count;
     outcome->next = *current;
 
     /*
@@ -207,11 +232,18 @@ void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *cur
         dispatch_set_all(frame, current, max_brightness, outcome);
         break;
 
-    case LUMEN_CMD_QUERY_STATE:
     case LUMEN_CMD_SET_LED_COUNT:
-        /* 语义属于 #11/#12，当前明确回「未实现」而不是假装成功。
-         * 注意：#12 在 SetLedCount 分支回 0x00 后，下面的统一收尾会自动
-         * 把 cancels_selftest 置 true，自检代码无需再改。 */
+        /*
+         * #12 实现重建语义；这里**不能 return**——必须走到下面的统一收尾，
+         * 否则 SetLedCount 不会置 cancels_selftest（§11.2 第 5 条要求灯珠
+         * 数量变更同样立即取消自检）。
+         */
+        dispatch_set_led_count(frame, outcome);
+        break;
+
+    case LUMEN_CMD_QUERY_STATE:
+        /* 语义属于 #11，当前明确回「未实现」而不是假装成功。
+         * QueryState 不取消自检（§11.2 第 6 条）。 */
         outcome->result_code = LUMEN_RESULT_UNKNOWN_COMMAND;
         break;
 

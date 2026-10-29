@@ -41,23 +41,33 @@ function vector(name: string): VectorCase {
   return found as VectorCase;
 }
 
-/** 只实现 session 用到的三种成员：sendAndWaitAck / onState / linkState。 */
+/** 只实现 session 用到的成员：sendAndWaitAck / onLink / onState / linkState。 */
 class FakeTransport {
   linkState: "ready" | "idle" = "ready";
   attempts: Array<{ req: CommandRequest; opts: unknown }> = [];
   nextResult: "ok" | "ack-error" | "throw" = "ok";
-  private readonly listeners: Array<(state: DeviceState) => void> = [];
+  private readonly stateListeners: Array<(state: DeviceState) => void> = [];
+  private readonly linkListeners: Array<(state: string, detail?: unknown) => void> = [];
+
+  /** #11 起 session 内部订阅链路状态；这里只记录，不主动触发。 */
+  onLink(fn: (state: string, detail?: unknown) => void): () => void {
+    this.linkListeners.push(fn);
+    return () => {
+      const i = this.linkListeners.indexOf(fn);
+      if (i >= 0) this.linkListeners.splice(i, 1);
+    };
+  }
 
   onState(fn: (state: DeviceState) => void): () => void {
-    this.listeners.push(fn);
+    this.stateListeners.push(fn);
     return () => {
-      const i = this.listeners.indexOf(fn);
-      if (i >= 0) this.listeners.splice(i, 1);
+      const i = this.stateListeners.indexOf(fn);
+      if (i >= 0) this.stateListeners.splice(i, 1);
     };
   }
 
   emitState(state: DeviceState): void {
-    for (const fn of this.listeners.slice()) {
+    for (const fn of this.stateListeners.slice()) {
       fn(state);
     }
   }

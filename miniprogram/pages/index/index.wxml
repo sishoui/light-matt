@@ -165,6 +165,36 @@
         >
           {{selfTestBusy ? '自检中…' : '自检（红→绿→蓝→白）'}}
         </button>
+
+        <!-- 灯珠数量（#12）：设备级低频设置，只在设备弹层里改 -->
+        <view class="led-count-block">
+          <view class="led-count-head">
+            <text class="info-label">灯珠数量</text>
+            <text class="led-count-current">当前 {{ledCount > 0 ? ledCount : '—'}} 颗</text>
+          </view>
+          <view class="led-count-row">
+            <input
+              class="led-count-input"
+              type="number"
+              value="{{ledCountInput}}"
+              maxlength="2"
+              placeholder="1-64"
+              disabled="{{!ready || ledCountBusy}}"
+              bindinput="onLedCountInput"
+            />
+            <button
+              class="led-count-apply {{ledCountBusy ? 'busy' : ''}}"
+              disabled="{{!ready || ledCountBusy}}"
+              bindtap="onApplyLedCount"
+            >
+              {{ledCountBusy ? '应用中…' : '应用'}}
+            </button>
+          </view>
+          <text class="led-count-hint {{ledCountHintText ? 'visible' : ''}}">
+            {{ledCountHintText || '改完立即生效并写入设备，重启后保持；非法值会被拒绝'}}
+          </text>
+        </view>
+
         <button class="sheet-btn ghost danger" bindtap="onDisconnect">断开连接</button>
       </block>
     </view>

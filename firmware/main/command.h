@@ -15,9 +15,10 @@
  * command → payload 长度 → payload 取值。
  *
  * #8 实现 SetPower 0x01；#9 实现 SetBrightness 0x02；#10 实现 SetColor 0x03
- * 与 SetAll 0x04；#13 实现 SelfTest 0x07 的命令语义（ACK 0x00 + 启动自检）。
- * 0x05 QueryState 与 0x06 SetLedCount 的语义属于 #11/#12，当前仍回 0x02
- * （UnknownCommand）——这是「明确未实现」路径，不是协议最终行为。
+ * 与 SetAll 0x04；#12 实现 SetLedCount 0x06 的取值校验与「需要重建句柄」
+ * 标记（真正的重建在 led_engine 的渲染任务里）；#13 实现 SelfTest 0x07 的
+ * 命令语义（ACK 0x00 + 启动自检）。0x05 QueryState 的语义属于 #11，仍回
+ * 0x02（UnknownCommand）——这是「明确未实现」路径，不是协议最终行为。
  */
 
 typedef struct {
@@ -34,6 +35,10 @@ typedef struct {
      */
     bool start_selftest;
     bool cancels_selftest;
+    /* SetLedCount 专用（§11.3）：合法取值时置 true。数量要等渲染任务重建
+     * led_strip 句柄成功后才写入共享状态，ACK 也必须等重建结果。 */
+    bool led_count_rebuild;
+    uint16_t led_count;    /* 目标灯珠数量；仅在 led_count_rebuild 为 true 时有效 */
     lumen_state_t next;    /* 命令生效后的完整状态（未生效时等于 current） */
 } lumen_command_outcome_t;
 
@@ -41,8 +46,11 @@ typedef struct {
  * 分发一条已通过信封校验的帧。
  *
  * current / outcome 不能为 NULL；调用方保证 frame 非 NULL。
- * 返回前总是填充 outcome->next（未生效时复制 current），因此调用方可以
- * 无条件读取，但只有 state_changed 为 true 时才应写入共享状态。
+ * 返回前总是填充 outcome->next（未生效时复制 current）、led_count_rebuild /
+ * led_count，以及 start_selftest / cancels_selftest，因此调用方可以无条件读取。
+ * 只有 state_changed 为 true 时才应写入共享状态，只有 led_count_rebuild 为
+ * true 时才应请求重建句柄，而 cancels_selftest 为 true 时必须在写入共享状态
+ * **之前**结束自检（SetLedCount 的 state_changed 恒为 false，但仍要取消自检）。
  *
  * max_brightness 是构建期亮度上限（协议 §11.4）：SetBrightness 与 SetAll
  * 载荷里的 brightness 会被钳位到这个值而不是拒绝。调用方传
@@ -61,8 +69,8 @@ bool lumen_command_is_known(uint8_t command);
  * （SetPower / SetBrightness / SetColor / SetAll / SetLedCount）。
  * QueryState 与 SelfTest 不算。
  *
- * SetLedCount 的语义由 #12 实现；本函数在 #13 就已把它列进来，因此 #12
- * 只要在 switch 里回 0x00，cancels_selftest 就会自动生效，无需再改自检代码。
+ * 取消规则在 dispatch 的统一收尾里执行，因此任何新增的「改变状态」命令只要
+ * 加进本函数就会自动取消自检——不需要再去改 ble_link 或 led_engine。
  */
 bool lumen_command_changes_state(uint8_t command);
 

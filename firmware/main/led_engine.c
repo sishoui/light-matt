@@ -13,6 +13,8 @@
 #include "sdkconfig.h"
 
 #include "gamma.h"
+#include "led_count_job.h"
+#include "protocol.h"
 #include "selftest.h"
 #include "state_store.h"
 #include "stress_metrics.h"
@@ -21,7 +23,6 @@
 /* 压力模式复用 command.c 的唯一命令语义入口（纯 reducer）与协议编解码。
  * 只在实验编译单元里引入，产品路径的依赖方向不变。 */
 #include "command.h"
-#include "protocol.h"
 #endif
 
 static const char *TAG = "lumen_engine";
@@ -53,8 +54,16 @@ static bool s_mailbox_dirty;
 static lumen_selftest_t s_selftest;
 
 /* 灯带句柄的唯一所有者是渲染任务：init 创建后立刻交给渲染任务，之后只有
- * 渲染任务调用 set_pixel / refresh / del。 */
+ * 渲染任务调用 set_pixel / refresh / del / new_rmt_device（重建）。 */
 static led_strip_handle_t s_strip;
+
+/*
+ * SetLedCount 异步重建状态机（§11.3）。请求在 BLE 回调里只登记，
+ * 真正的 create_strip / del 与 ACK 都在渲染任务里。
+ * s_response_cb 由 ble_link 注册，用来在渲染任务里发延迟 ACK。
+ */
+static lumen_led_count_job_t s_led_count_job;
+static lumen_led_engine_response_cb s_response_cb;
 
 /* 上一次真正写进灯带的像素。状态未变时跳过 set_pixel + refresh。 */
 static bool s_rendered_valid;
@@ -155,6 +164,105 @@ static void render_snapshot(const lumen_state_t *snapshot, const lumen_selftest_
     s_rendered_brightness = brightness;
     s_rendered_count = count;
     s_rendered_valid = true;
+}
+
+/*
+ * SetLedCount 的句柄重建（协议 §11.3）。只在渲染任务里执行。
+ *
+ * 并发模型：
+ *  - BLE 回调里的 lumen_led_engine_set_led_count() 只做三件事：判忙、登记
+ *    pending、给渲染信号量。它绝不调 led_strip_*（句柄唯一所有者是渲染任务）。
+ *  - 渲染任务在每次醒来时调用本函数：取走 pending → create_strip 新句柄 →
+ *    成功才在锁内替换 s_strip 并写 s_state.led_count（保留其它字段），
+ *    然后 del 旧句柄、强制重绘、debounce 持久化、回 ACK 0x00；
+ *    失败则什么都替换（旧句柄、旧数量原样保留），回 ACK 0x09。
+ *  - 重建期间到达的其它命令照常 commit 到 s_mailbox；本函数成功后按最新
+ *    s_state 重绘（render_snapshot 用强制标志），因此画面不会丢最新状态。
+ *
+ * 为什么在渲染任务里：led_strip_new_rmt_device 会申请 RMT 通道与内存，
+ * led_strip_del 会释放；与 set_pixel / refresh 并发会直接损坏在途事务。
+ * 把「重建 + 旧句柄释放 + 立即重绘」放在同一个任务里，句柄生命周期天然串行。
+ */
+static void rebuild_led_count_if_pending(void)
+{
+    uint16_t target = 0;
+    uint8_t seq = 0;
+
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    bool have_job = lumen_led_count_job_begin(&s_led_count_job, &target, &seq);
+    xSemaphoreGive(s_state_lock);
+    if (!have_job) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "led count rebuild begin: %u leds (seq=0x%02X)", target, seq);
+
+    led_strip_handle_t fresh = NULL;
+    esp_err_t err = create_strip(target, &fresh);
+    if (err != ESP_OK || fresh == NULL) {
+        ESP_LOGE(TAG, "led count rebuild failed: %u leds err=%s（保留旧句柄与旧数量）", target,
+                 esp_err_to_name(err));
+        xSemaphoreTake(s_state_lock, portMAX_DELAY);
+        lumen_led_count_job_complete(&s_led_count_job, false, NULL);
+        xSemaphoreGive(s_state_lock);
+        if (s_response_cb != NULL) {
+            s_response_cb(seq, LUMEN_CMD_SET_LED_COUNT, LUMEN_RESULT_INTERNAL_ERROR);
+        }
+        return;
+    }
+
+    led_strip_handle_t old;
+    lumen_state_t snapshot;
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    old = s_strip;
+    s_strip = fresh;
+    /* 只改数量：重建期间其它命令可能已改过开关/亮度/颜色，那些值原样保留。 */
+    bool committed = lumen_led_count_job_complete(&s_led_count_job, true, &s_state);
+    snapshot = s_state;
+    xSemaphoreGive(s_state_lock);
+
+    if (old != NULL) {
+        /* 旧句柄只有渲染任务碰，del 不会与任何刷新并发。 */
+        led_strip_del(old);
+    }
+
+    /* 新句柄的像素缓冲是空的：清掉「已渲染」标记，强制按最新状态重绘。
+     * 放在 committed 判定之前，任何返回路径都不会留下「以为已渲染」的状态。 */
+    s_rendered_valid = false;
+
+    if (!committed) {
+        /* 状态机异常（不该发生）：新句柄已经接管，但状态没更新，按失败回。 */
+        ESP_LOGE(TAG, "led count job complete rejected after swap");
+        if (s_response_cb != NULL) {
+            s_response_cb(seq, LUMEN_CMD_SET_LED_COUNT, LUMEN_RESULT_INTERNAL_ERROR);
+        }
+        return;
+    }
+
+    {
+        lumen_state_t latest;
+        lumen_selftest_t selftest;
+        xSemaphoreTake(s_state_lock, portMAX_DELAY);
+        latest = s_state;
+        /* 重建期间 commit 过的快照已经被这一帧覆盖，邮箱不再需要。 */
+        s_mailbox_dirty = false;
+        /*
+         * SetLedCount 已在命令层取消自检（§11.2 第 5 条），这里读到的一般是
+         * 未激活状态；仍然传一份快照而不是 NULL，保持 render_snapshot 的入参
+         * 语义统一（自检激活时新句柄也该显示自检色）。
+         */
+        selftest = s_selftest;
+        xSemaphoreGive(s_state_lock);
+        render_snapshot(&latest, &selftest);
+    }
+
+    /* 成功后才持久化（§11.3 第 2 条）；触发命令是 SetLedCount。 */
+    lumen_state_store_request_save(&snapshot, LUMEN_CMD_SET_LED_COUNT);
+
+    ESP_LOGI(TAG, "led count -> %u (seq=0x%02X)", snapshot.led_count, seq);
+    if (s_response_cb != NULL) {
+        s_response_cb(seq, LUMEN_CMD_SET_LED_COUNT, LUMEN_RESULT_OK);
+    }
 }
 
 #if CONFIG_LUMEN_RMT_STRESS_MODE
@@ -446,6 +554,10 @@ static void render_task(void *arg)
         /* 超时（自检换色）与状态信号都会走到这里；不区分来源，统一重渲染。 */
         (void)xSemaphoreTake(s_render_signal, wait);
 
+        /* 先处理 SetLedCount 的重建：它会重建句柄、强制重绘并回延迟 ACK。
+         * 重建期间的其它命令已进邮箱，下面的 latest-wins 取最新快照兜底。 */
+        rebuild_led_count_if_pending();
+
         lumen_state_t snapshot;
         lumen_selftest_t selftest;
         bool dirty;
@@ -503,6 +615,8 @@ esp_err_t lumen_led_engine_init(void)
 
     lumen_gamma_init();
     lumen_selftest_reset(&s_selftest);
+    lumen_led_count_job_init(&s_led_count_job);
+    s_response_cb = NULL;
 
     lumen_state_defaults(&s_state, CONFIG_LUMEN_LED_COUNT);
     bool restored = lumen_state_store_load(&s_state);
@@ -583,13 +697,51 @@ void lumen_led_engine_commit(const lumen_state_t *next, uint8_t command)
     /* 二值信号量天然只保留一个 pending 唤醒，旧快照会被 s_mailbox 覆盖。 */
     xSemaphoreGive(s_render_signal);
 
-    /* 写失败在 ACK 之后由 Event 0x81 异步上报（§10.3）。 */
+    /* 写失败在 ACK 之后由 Event 0x81 异步上报（§10.3）；command 是 detail。 */
     lumen_state_store_request_save(&accepted, command);
 }
 
 void lumen_led_engine_set_store_event_cb(lumen_store_event_cb cb)
 {
     lumen_state_store_set_event_cb(cb);
+}
+
+void lumen_led_engine_set_response_cb(lumen_led_engine_response_cb cb)
+{
+    /* 只在初始化阶段由 ble_link 调用一次；不做运行期切换。 */
+    s_response_cb = cb;
+}
+
+uint8_t lumen_led_engine_set_led_count(uint16_t count, uint8_t seq)
+{
+    if (count < 1 || count > LUMEN_MAX_LEDS) {
+        /* 命令层已拦下越界值；这里防御性拒绝，不改状态机。 */
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+
+    lumen_led_count_request_t status;
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    status = lumen_led_count_job_request(&s_led_count_job, count, s_state.led_count, seq);
+    xSemaphoreGive(s_state_lock);
+
+    switch (status) {
+    case LUMEN_LED_COUNT_ACCEPTED:
+        /* 叫醒渲染任务去重建句柄；ACK 由它完成后经 response 回调发出。 */
+        xSemaphoreGive(s_render_signal);
+        ESP_LOGI(TAG, "SetLedCount %u 已排队（seq=0x%02X），等渲染任务重建", count, seq);
+        return LUMEN_LED_ENGINE_DEFERRED;
+
+    case LUMEN_LED_COUNT_UNCHANGED:
+        /* 数量没变：不需要重建，调用方直接回 0x00（不写 NVS，也不刷灯）。 */
+        ESP_LOGI(TAG, "SetLedCount %u 与当前一致（seq=0x%02X），无需重建", count, seq);
+        return LUMEN_RESULT_OK;
+
+    case LUMEN_LED_COUNT_BUSY:
+    default:
+        /* §11.3：重建进行中收到第二个请求 → 0x05，不排队。 */
+        ESP_LOGW(TAG, "SetLedCount %u 被拒：已有重建在排队/进行中（seq=0x%02X）", count, seq);
+        return LUMEN_RESULT_BUSY;
+    }
 }
 
 uint8_t lumen_led_engine_max_brightness(void)

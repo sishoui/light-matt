@@ -37,7 +37,7 @@ import type {
   DiscoveredDevice,
   LinkState,
 } from "../protocol/types";
-import { errorText, iosStateText, resultText } from "./errors";
+import { errorText, iosStateText, resultText, triage } from "./errors";
 import { FrameLog } from "./log";
 import { WxCallError, WxCallTimeoutError, wxCall } from "./wx-promise";
 import { SerialWriter } from "./writer";
@@ -58,6 +58,11 @@ export interface BleTransportOptions {
 export interface LinkDetail {
   message?: string;
   deviceName?: string;
+  /**
+   * true = 非用户主动的断线（设备断电 / 超出范围 / 10006）。
+   * 会话层据此启动 1s/2s/4s 自动回连；主动 disconnect 不带这个标记。
+   */
+  reconnectable?: boolean;
 }
 
 export interface SendOptions {
@@ -384,12 +389,7 @@ export class BleTransport {
         { deviceId: targetDeviceId },
         2000,
       ).catch(() => undefined);
-      this.deviceId = null;
-      this.filterDeviceId = null;
-      this.serviceId = null;
-      this.rxId = null;
-      this.txId = null;
-      this.stateId = null;
+      this.clearConnectionHandles();
       this.setLink("failed", {
         message: errorText(err),
         deviceName: name,
@@ -486,6 +486,10 @@ export class BleTransport {
 
   async disconnect(): Promise<void> {
     const deviceId = this.deviceId;
+    // 主动断开：先摘掉「已确认连接」标记，这样 close 触发的
+    // onBLEConnectionStateChange(false) 会被当成「旧连接残留」直接返回，
+    // 不会误发 reconnectable —— 主动断开绝不能触发自动回连（spec §3 / 笔记 #42）。
+    this.connectionConfirmed = false;
     this.resetLinkWaiters(new Error("已断开连接"));
     if (deviceId !== null) {
       try {
@@ -494,14 +498,7 @@ export class BleTransport {
         /* 已断开时 close 会失败，忽略 */
       }
     }
-    this.connectionConfirmed = false;
-    this.deviceId = null;
-    this.filterDeviceId = null;
-    this.serviceId = null;
-    this.rxId = null;
-    this.txId = null;
-    this.stateId = null;
-    this.nextSeq = 1;
+    this.clearConnectionHandles();
     this.setLink("idle");
   }
 
@@ -519,6 +516,9 @@ export class BleTransport {
       await this.writer.enqueue(frame);
     } catch (err) {
       this.logFailure(frame, req.command, seq, errorText(err));
+      // 10006 / 写回调超时：链路已经不可用，切到「非主动断线」交给会话层退避回连；
+      // 10001：适配器被关掉，显示「请打开蓝牙」，等适配器事件（非致命）。
+      this.noteWriteFailure(err);
       throw err;
     }
     return { seq };
@@ -582,6 +582,7 @@ export class BleTransport {
         this.ackWaiters.delete(seq);
         waiter.reject(err);
       }
+      this.noteWriteFailure(err);
       throw err;
     }
 
@@ -730,8 +731,10 @@ export class BleTransport {
       return;
     }
     const deviceId = res?.deviceId ?? "";
-    if (this.filterDeviceId !== null && upper(deviceId) !== upper(this.filterDeviceId)) {
-      return; // 旧连接的回调不能串入
+    // 断开后 filterDeviceId 会被清空：此时任何 value 回调都属于旧连接，
+    // 必须丢弃，否则旧 State / 旧 ACK 会串进新连接（设备是状态权威）。
+    if (this.filterDeviceId === null || upper(deviceId) !== upper(this.filterDeviceId)) {
+      return;
     }
     const characteristicId = upper(res?.characteristicId);
     const raw = res?.value;
@@ -765,7 +768,7 @@ export class BleTransport {
       return;
     }
     const deviceId = res?.deviceId ?? "";
-    if (this.filterDeviceId !== null && upper(deviceId) !== upper(this.filterDeviceId)) {
+    if (this.filterDeviceId === null || upper(deviceId) !== upper(this.filterDeviceId)) {
       return;
     }
     if (res?.connected === true) {
@@ -777,16 +780,8 @@ export class BleTransport {
     }
 
     // 断线：清空写队列、reject 所有等待者；UI 立即显示未连接。
-    this.resetLinkWaiters(new Error("连接已断开"));
-    this.nextSeq = 1;
-    this.connectionConfirmed = false;
-    this.deviceId = null;
-    this.filterDeviceId = null;
-    this.serviceId = null;
-    this.rxId = null;
-    this.txId = null;
-    this.stateId = null;
-    this.setLink("idle", { message: "连接已断开" });
+    // reconnectable 让会话层启动 1s/2s/4s 退避回连（这是唯一自动回连触发源）。
+    this.markLinkLost("连接已断开");
   };
 
   private readonly handleAdapterStateChange = (res: any): void => {
@@ -796,14 +791,7 @@ export class BleTransport {
     if (res?.available === false) {
       // 适配器关闭：连接必然失效。清掉设备句柄与等待者，避免残留状态。
       this.resetLinkWaiters(new Error("蓝牙已关闭"));
-      this.connectionConfirmed = false;
-      this.deviceId = null;
-      this.filterDeviceId = null;
-      this.serviceId = null;
-      this.rxId = null;
-      this.txId = null;
-      this.stateId = null;
-      this.nextSeq = 1;
+      this.clearConnectionHandles();
       this.setLink("adapter-off", { message: "请打开蓝牙" });
       return;
     }
@@ -886,6 +874,53 @@ export class BleTransport {
     }
 
     this.logFrame("rx", bytes, command, seq, "未知的设备→小程序命令", false);
+  }
+
+  /**
+   * 清掉一条连接的全部句柄与 seq。
+   *
+   * 每次连接（含回连）的 GATT 句柄与订阅都是 per-connection 的，必须重新发现；
+   * filterDeviceId 也一起清空，后续任何迟到 value 回调都会被丢弃。
+   */
+  private clearConnectionHandles(): void {
+    this.connectionConfirmed = false;
+    this.deviceId = null;
+    this.filterDeviceId = null;
+    this.serviceId = null;
+    this.rxId = null;
+    this.txId = null;
+    this.stateId = null;
+    this.nextSeq = 1;
+  }
+
+  /**
+   * 非主动断线的统一收尾：清等待者与句柄 → `idle` + reconnectable。
+   * 触发源只有一个（这里），会话层据此启动退避回连；不做重试写。
+   */
+  private markLinkLost(message: string): void {
+    if (this.link !== "ready" && this.link !== "initializing") {
+      return;
+    }
+    this.resetLinkWaiters(new Error(message));
+    this.clearConnectionHandles();
+    this.setLink("idle", { message, deviceName: this.deviceName ?? undefined, reconnectable: true });
+  }
+
+  /**
+   * 写失败的错误分诊（spec §9）：
+   *  - 10006 / 写回调超时 → 链路已断：切 reconnectable，**不在这里重试写**；
+   *  - 10001 → 适配器被关闭：非致命，切 adapter-off 等 onBluetoothAdapterStateChange；
+   *  - 10008 → 留给会话层「加间隔重试一次」，这里不动链路状态。
+   */
+  private noteWriteFailure(err: unknown): void {
+    const action = triage(err);
+    if (action === "reconnect") {
+      this.markLinkLost("连接已断开");
+    } else if (action === "wait-adapter" && this.link === "ready") {
+      this.resetLinkWaiters(new Error("请打开蓝牙"));
+      this.clearConnectionHandles();
+      this.setLink("adapter-off", { message: "请打开蓝牙" });
+    }
   }
 
   private sendOne(bytes: Uint8Array): Promise<void> {

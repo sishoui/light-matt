@@ -237,7 +237,7 @@ rx_access → handle_frame
 | `0x03` SetColor | **#10 已实现**：3 字节 RGB 全合法，只写颜色，回 `0x00` |
 | `0x04` SetAll | **#10 已实现**：5 字段原子生效；power 非 0/1 → `0x01` 且整帧不写；亮度按 §11.4 钳位 |
 | `0x05`-`0x06` | 载荷长度先按命令表校验（错 → `0x04`），合法长度统一回 `0x02`（明确未实现，#11/#12 替换） |
-| `0x07` SelfTest | **#13 已实现**：立即回 `0x00` 并启动自检覆盖，不改共享状态（见 §12） |
+| `0x07` SelfTest | **#13 已实现**：立即回 `0x00` 并启动自检覆盖，不改共享状态（见 §13） |
 | `0x08`-`0xFF`（含小程序写 0x80） | `0x02` |
 
 **仍是暂时的协议偏差**：协议 §6 已定义 0x05-0x06 的语义，后续票（#11 状态同步、
@@ -372,13 +372,156 @@ SetAll 0x04 的语义（协议 §6 / §7 / §11.1 / §11.4）：
 
 ---
 
-## 12. #13 落地后的增量（协议日志与自检）
+## 12. #12 落地后的增量（灯珠数量与断电记忆）
+
+issue #12 让灯珠数量可在运行时修改并掉电保持。两条链路最容易出错的地方是
+**谁拥有 `led_strip` 句柄** 和 **何时才允许把新数量写进共享状态**，所以核心逻辑
+被拆成三个可在 host 上单测的纯模块，`led_engine` / `state_store` 只保留平台相关
+的外壳。
+
+| 新模块 | 职责 | 为什么独立 |
+|---|---|---|
+| `led_count_job` | 重建状态机（pending / running / target / seq） | 「第二个请求回 Busy、成功后只改数量」是纯状态转移，不需要 led_strip |
+| `save_scheduler` | 500ms debounce（可回绕的 32 位时钟） | 用假时钟能精确测到期 / 推迟 / 回绕，不必真的 sleep 500ms |
+| `state_blob` | NVS blob 的 13 字节显式编解码 | 布局与越界校验需要在没有 NVS 的 host 上验证 |
+
+### 12.1 SetLedCount 的完整路径（协议 §11.3）
+
+```
+NimBLE RX 回调（主机任务）
+  lumen_protocol_decode
+  → lumen_command_dispatch            # command.c：校验 1-64，置 led_count_rebuild
+  → lumen_led_engine_set_led_count    # 只判忙 / 判相同 + 登记 pending，绝不碰 led_strip
+       ├─ UNCHANGED → 立即回 ACK 0x00
+       ├─ BUSY      → 立即回 ACK 0x05
+       └─ ACCEPTED  → give(render_signal)，本回调不发明 ACK
+                    │
+                    ▼
+渲染任务（lumen_render，句柄唯一所有者）
+  rebuild_led_count_if_pending
+    job_begin（pending → running）
+    → create_strip(target)              # led_strip_new_rmt_device
+       ├─ 失败：job_complete(false)，旧句柄 / 旧数量原样，回 ACK 0x09
+       └─ 成功：锁内 s_strip = fresh + job_complete(true, &s_state)
+                → led_strip_del(old)    # 只有渲染任务碰句柄，del 不与刷新并发
+                → 强制重绘（s_rendered_valid = false）
+                → lumen_state_store_request_save(..., LUMEN_CMD_SET_LED_COUNT)
+                → 回 ACK 0x00
+```
+
+关键约束与实现位置：
+
+- **`create_strip` 与 `led_strip_del` 都只在渲染任务里**（`led_engine.c` 的
+  `rebuild_led_count_if_pending`）。BLE 回调只做状态机登记，违反这条会发生在途
+  RMT 事务被释放的崩溃。
+- **新数量只在重建成功后写入共享状态**：命令层不写 `next.led_count`
+  （`state_changed` 恒为 false），由 `lumen_led_count_job_complete(true, &s_state)`
+  在锁内只覆盖 `led_count`，开关 / 亮度 / RGB 保持重建完成时的最新值。
+- **ACK 由渲染任务发**：`lumen_led_engine_response_cb` 由 `ble_link` 注册为
+  `engine_response` → `send_ack`。命令层返回哨兵 `LUMEN_LED_ENGINE_DEFERRED`
+  （0xFF，绝不进帧），`handle_frame` 见到它就 return，不发普通 ACK。
+- **不在 BLE 回调里等重建**：ACK 可能晚几百毫秒，绝不能在主机任务里阻塞。
+
+### 12.2 重建并发（§11.3 第 4 条）
+
+`lumen_led_count_job_request()` 的判定顺序是 **先判忙、后判相同**：
+
+| 当前状态 | 新请求 | 结果 |
+|---|---|---|
+| pending 或 running | 任意（含与旧数量相同） | `BUSY` → ACK 0x05，不排队 |
+| 空闲 | 与当前数量相同 | `UNCHANGED` → ACK 0x00，不重建、不写 NVS |
+| 空闲 | 1-64 且不同 | `ACCEPTED` → 排队，ACK 延迟 |
+| 空闲 | 越界 | 命令层已拦成 0x01；这里防御性回 `BUSY` |
+
+先判忙的原因：重建期间共享状态里仍是旧数量，用旧值判「相同」没有意义。
+重建期间到达的其它命令（开关 / 亮度 / 颜色）照常 commit 到邮箱，重建成功后
+按最新 `s_state` 重绘，所以画面不会丢最新状态。
+
+### 12.3 500ms debounce（§12）
+
+`save_scheduler` 每次请求覆盖快照并重置 `deadline = now + 500`，用
+`(int32_t)(deadline - now)` 的有符号差值判定剩余时间，因此 32 位毫秒时钟
+从 `0xFFFFFFFF` 回绕到 0 时不会卡死（回绕后仍在窗口内就继续等，越过窗口就立即到期）。
+
+存储任务不能用「信号量超时就写」——超时落在 tick 边界，可能比真正到期早不到
+1ms 而漏写。实现改为先问 `lumen_save_scheduler_next_delay_ms()`，按精确剩余
+时间等待，被新请求唤醒就重算并继续推迟。最终只写最后一次快照。
+
+### 12.4 NVS blob 布局
+
+`state_blob` 用显式字节布局，避开结构体 padding 随编译器变化：
+
+| 偏移 | 宽度 | 字段 |
+|---|---|---|
+| 0..3 | 4 | magic `'L' 'M' 'E' 'N'` |
+| 4..5 | 2 | version（小端，当前 1） |
+| 6 | 1 | power（0/1） |
+| 7 | 1 | brightness |
+| 8..10 | 3 | r, g, b |
+| 11..12 | 2 | led_count（小端） |
+
+解码拒绝：长度 ≠ 13、magic 不符、version ≠ 1、`power > 1`、`led_count` 不在
+1-64。任一失败都不写 `out`，调用方保留协议默认值（`state_store_load` 返回 false，
+`led_engine_init` 继续用 Kconfig 默认的灯珠数）。旧固件留下的 8 字节或别的布局
+一律视为损坏并按默认值启动，不做「尽量解析」。
+
+### 12.5 Event 0x81 通道接线
+
+NVS 写失败发生在 ACK 之后，只能异步上报（§10.3）：载荷 `[0x01, 原命令字]`，
+seq 固定 `0x00`。整条链的接线位置：
+
+```
+命令字来源：ble_link.handle_frame → lumen_led_engine_commit(&next, frame.command)
+                                    → lumen_state_store_request_save(state, command)
+                                    → save_scheduler 记住 command
+存储任务：write_blob 失败 → s_event_cb(command)
+回调注册：lumen_ble_link_init → lumen_state_store_set_event_cb(on_store_failed)
+发送：    send_event(LUMEN_EVENT_STORAGE_FAILED, command) → TX notify
+```
+
+`command` 跟着快照一起被 debounce 覆盖，所以合并多帧后上报的是「最后一份快照
+对应的命令」，与真正写进去的内容一致。自检不写 NVS，因此不会产生这条 Event。
+
+### 12.6 小程序侧
+
+- 灯珠数量放在**设备 / 连接弹层**内（设备级低频设置，不占主控制流）。
+- 输入框只接受十进制整数：`parseLedCountInput()` 拒绝空值、非数字、小数、
+  `0`、`65`、`0x10`、`1e2` 等；非法时明确提示且**输入框恢复设备当前值**，
+  绝不发帧。
+- SetLedCount 的 ACK 超时是 **3000ms**（`LED_COUNT_ACK_TIMEOUT_MS`），不走普通
+  命令的 600ms；**不重传**（重建是重操作，超时重发只会撞 0x05）。
+- 成功才更新本地 `ledCount`；`0x05`（Busy）与 `0x09`（InternalError）保留旧值
+  并给具体提示（`ledCountResultHint`）。
+
+### 12.7 Host 测试（`test_skeleton.c`）
+
+- 向量 `set_led_count_30` / `set_led_count_64` 走新增的 SetLedCount 分支：
+  断言结果码、`led_count_rebuild == true`、`state_changed == false`、
+  `next.led_count` 保持旧值。
+- 向量 `invalid_led_count_0` / `invalid_led_count_65`：`0x01`、不请求重建。
+- `test_set_led_count_reducer()`：1/30/64 合法标记、0/65/65535/256 越界、
+  长度 0/1/3 → `0x04`、命令表项。
+- `test_led_count_job()`：请求→Busy（排队中与运行中都判忙）、相同数量 →
+  UNCHANGED、begin/complete 成功只改 `led_count`、失败回滚、完成后可再请求、
+  越界防御、NULL 防御。
+- `test_save_scheduler()`：500ms 到期、499ms 差 1ms、连续请求只写最后一份、
+  时钟回绕（`0xFFFFFF00` → 越过零点）、`next_delay_ms` 语义、
+  `out`/`command` 允许为 NULL。
+- `test_state_blob()`：往返一致、显式布局逐字节、长度 12/14/0、坏 magic、
+  版本 0/2/高位错位、`power` 2/0xFF、`led_count` 0/65/0xFFFF、失败不写 out、
+  边界值 1。
+- Event 0x81：与向量 `event_storage_failed` 逐字节一致，并枚举每个可能的
+  触发命令字（含 `LUMEN_CMD_SET_LED_COUNT`）都能编码 + 解码回原字段。
+- 计数基线：integration 的 1036 项 → **1289 项**（只增不减）。
+---
+
+## 13. #13 落地后的增量（协议日志与自检）
 
 issue #13 的目标是「让真机上的问题可以被看见」：固件侧给出可自证的串口证据与
 不依赖小程序的灯带自检；小程序侧给出一个与 console 同源的隐藏帧日志面板。
 本票不新增任何协议字节——`SelfTest 0x07` 早就写在 `docs/protocol.md` §6/§11.2 里。
 
-### 12.1 自检状态机（`selftest.c` / `selftest.h`）
+### 13.1 自检状态机（`selftest.c` / `selftest.h`）
 
 自检被拆成一个**纯函数状态机**，时间由调用方注入，因此不依赖 FreeRTOS / ESP-IDF，
 可以在 host 上直接单测（`firmware/test/run-tests.cmd`）：
@@ -404,7 +547,7 @@ typedef struct {
 不写 NVS、不发 BLE。这样 §11.2 第 3/4 条（临时覆盖、结束后恢复）由数据结构本身
 保证，而不是靠调用方记得回滚。
 
-### 12.2 渲染层接入（`led_engine.c`）
+### 13.2 渲染层接入（`led_engine.c`）
 
 `s_selftest` 是独立于 `s_state` / `s_mailbox` 的静态变量，**由 `s_state_lock` 保护**，
 不进入邮箱、不触发 `commit`、不触发 `state_store`：自检从头到尾没有任何持久化路径。
@@ -439,7 +582,7 @@ typedef struct {
 串口每进入一个新步骤打一行（`自检 2/4 green rgb=0,255,0`），保证「不依赖小程序
 也能验证灯带与通道顺序」——只看串口与肉眼即可完成验收。
 
-### 12.3 取消规则（`command.c` + `ble_link.c`）
+### 13.3 取消规则（`command.c` + `ble_link.c`）
 
 `lumen_command_outcome_t` 新增两个布尔：
 
@@ -463,11 +606,13 @@ outcome->cancels_selftest =
   都没有生效，自检继续跑（已在 `test_selftest_cancel_rules()` 里锁住）。
 - QueryState `0x05` 与 SelfTest `0x07` 不在类别里，所以查询不会打断自检。
 
-**SetLedCount（#12）的取消点已经预埋好**：`0x06` 现在回 `0x02`，等 #12 把它改成
-`0x00` 后，上面的统一收尾会自动置 `cancels_selftest`，自检代码一行都不用改。
-`test_selftest_cancel_rules()` 已经断言 `lumen_command_changes_state(0x06) == true`。
+**SetLedCount（#12）的取消点**：`dispatch_set_led_count()` 只标记 `led_count_rebuild`
+（`state_changed == false`），因此**必须**让控制流走到统一收尾，否则灯珠数量变更
+不会取消自检。`command.c` 的 `0x06` 分支所以是 `break` 而不是 `return`；
+`run_app_case()` 里也断言了「合法 SetLedCount → `cancels_selftest == true`、
+越界 → `false`」这条两票之间的接缝。
 
-`ble_link.c` 的执行顺序固定为 **取消/启动自检 → `commit` → 打日志 → 回 ACK**：
+`ble_link.c` 的执行顺序固定为 **取消/启动自检 → `commit` → 打日志 → ACK / 重建登记**：
 
 1. 先取消自检再 commit，渲染任务下一次醒来看到的已经是新状态，不会闪回自检色；
 2. 日志里的 `power/brightness/rgb` 来自 `outcome.next`，即命令生效后的**存储状态**
@@ -480,13 +625,13 @@ outcome->cancels_selftest =
 |---|---|
 | `selftest=start` | 这条命令启动了自检 |
 | `selftest=cancel` | 这条命令**确实**打断了一个进行中的自检 |
-| `selftest=on` | 命令处理完后自检仍在跑（QueryState / State read 期间出现即证明没被取消） |
+| `selftest=on` | 命令处理完后自检仍在跑，即这条命令没取消自检（QueryState 期间出现即证明查询不打断自检） |
 | 无标记 | 命令与自检都无关 |
 
 `cancel` 只在真的停掉了自检时出现（`lumen_led_engine_cancel_selftest()` 返回
 是否曾经激活），否则每条 SetXxx 都会打 `cancel`，排查时会误以为自检被反复打断。
 
-### 12.4 小程序侧日志面板接口
+### 13.4 小程序侧日志面板接口
 
 三块纯逻辑，全部不依赖 `wx.*`，可在 node 里单测：
 
@@ -527,7 +672,7 @@ outcome->cancels_selftest =
 - 每行 seq 同时显示十进制与十六进制（`7 (0x07)`）。固件串口打的是 `seq=0x..`，
   两边都是 hex 之后，「按 seq 对齐两端」退化成一次字符串搜索。
 
-### 12.5 Host / 小程序测试
+### 13.5 Host / 小程序测试
 
 - `test_selftest_sequence()`：四步颜色与边界时刻（0 / 499999 / 500000 / ... / 2000000µs），
   未激活时不写 `out_rgb`，走完自动 `stop()`。
@@ -547,4 +692,4 @@ outcome->cancels_selftest =
   暂停/清空/复制语义、console 与面板同源。
 - 小程序 `tests/describe.test.ts`：命令参数解析、坏载荷退回 hex、ACK / Event /
   State / State read 的字段顺序。
-- 基线：host 1036 → 1160，vitest 81 → 107。
+- 基线（合并 #11/#12 后）：host 1289 → **1415**，vitest 133 → **159**（只增不减）。
