@@ -67,6 +67,7 @@ GitHub 实现票（13 张）与本地 wayfinder 票的对应关系：本地 06/0
 - **颜色与预设**（[GitHub #10](https://github.com/sishoui/light-matt/issues/10)）：色相环 + 饱和度滑块（V 恒为 1，亮度只走滑块，绝不折进 RGB）；8 个预设走 SetAll 单帧下发；颜色与亮度共用同一个节流通道，不会叠成 40Hz。
 - **状态同步与回连**（[GitHub #11](https://github.com/sishoui/light-matt/issues/11)）：State 是唯一权威；断线立即清空设备状态；1s/2s/4s 退避回连（修掉了「只走第一次」的排程 bug 与「主动断开被误标可回连」的 bug）；退避耗尽停住并给手动入口。
 - **灯珠数量与断电记忆**（[GitHub #12](https://github.com/sishoui/light-matt/issues/12)）：重建状态机保证 ACK 等句柄重建结果才发，重建中再请求回 Busy；`new`/`del` 句柄只在渲染任务里；500ms debounce 用有符号差值比较时间，32 位回绕不卡死；NVS blob 13 字节显式布局。
+- **协议日志与自检**（[GitHub #13](https://github.com/sishoui/light-matt/issues/13)）：自检是渲染层的临时覆盖（`selftest.c` 纯状态机 + `lumen_selftest_compose()`），不写共享状态也不写 NVS，红→绿→蓝→白各 500ms 后自动回到存储状态；取消规则放在命令层的统一收尾，五类改状态命令（含 SetLedCount）都取消、非法命令与 QueryState 不取消。小程序 200 帧环形缓冲 + 隐藏面板（连点版本号 5 次），暂停=冻结视图但继续记录，面板、console、复制共用同一个 formatter，每行 seq 同时给十进制与 hex 便于与串口对齐。
 - **Event 0x81 跨票缺口**（[GitHub #1](https://github.com/sishoui/light-matt/issues/1) 范围内的补丁）：协议 §10.3 要求的 NVS 写失败上报，从 #6 到 #10 都没有调用点（每张票都假设别人接）。补通 `state_store → led_engine → ble_link` 整条链，并加逐字节断言。
 
 ## Not yet specified
