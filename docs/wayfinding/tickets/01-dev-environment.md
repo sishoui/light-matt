@@ -38,7 +38,11 @@
 
 ## 状态
 
-`ready-for-agent` — 本票我能驱动大部分（安装命令、环境脚本、验证清单），但**第 3、4 步需要你在本机操作**并把结果回传。
+`in-progress`（2026-10-29）— 工具链与构建验证已完成；剩第 3、4 步需要真机操作。
+
+已完成：riscv32-esp-elf / cmake / ninja / idf-exe 安装，`idf.py --version` = v5.4，hello_world 编译通过，`espressif/led_strip` 依赖拉取并编译通过，`docs/dev-environment.md` 已提交。
+
+待完成：接板子烧录 hello_world 看串口输出；微信开发者工具导入 `miniprogram/` 并真机预览。
 
 ## 交付
 

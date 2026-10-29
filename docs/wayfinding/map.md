@@ -30,7 +30,7 @@
 
 | # | 票 | 类型 | 阻塞于 | 状态 |
 |---|---|---|---|---|
-| 01 | [开发环境就绪](./tickets/01-dev-environment.md) | task | — | ready |
+| 01 | [开发环境就绪](./tickets/01-dev-environment.md) | task | — | in-progress |
 | 02 | [协议规格定稿](./tickets/02-protocol-spec.md) | grilling | — | done |
 | 03 | [led_strip 点灯验证](./tickets/03-led-strip-smoke-test.md) | prototype | 01 | blocked |
 | 04 | [小程序 BLE 探测](./tickets/04-miniprogram-ble-probe.md) | prototype | 01 | blocked |
@@ -41,7 +41,7 @@
 | 09 | [端到端真机联调与验收](./tickets/09-end-to-end-acceptance.md) | task | 06, 08, 10 | blocked |
 | 10 | [RMT × BLE 共存稳定性验证](./tickets/10-rmt-ble-coexistence.md) | prototype | 03, 05 | blocked |
 
-**现在的 frontier 只有 01（环境）。** 02（协议）已关闭；03/04 仍被 01 阻塞。
+**现在的 frontier 只有 01（环境），已推进到需要真机确认。** 02（协议）已关闭；03/04 仍被 01 阻塞。
 
 依赖形状说明：01（环境）与 02（协议）是两条独立的地基——一条通固件，一条通两端。它们在 05/07 处汇合。03 与 04 是两条平行的风险探针，一个摸硬件、一个摸平台，都只依赖 01。
 

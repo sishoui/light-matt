@@ -23,5 +23,6 @@ lumen/
 ## 现状
 
 设计阶段。协议已定稿（[docs/protocol.md](docs/protocol.md)），实现规格在
-[docs/spec.md](docs/spec.md)，执行票在 GitHub Issues。地图的前沿只剩「开发环境就绪」。
-尚无可用代码。
+[docs/spec.md](docs/spec.md)，执行票在 GitHub Issues。地图的前沿只剩「开发环境就绪」：
+工具链已装好、hello_world 与 led_strip 编译通过，待接板子烧录与真机预览确认。
+尚无产品代码。
