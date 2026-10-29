@@ -1,13 +1,16 @@
 /**
- * 单页控制界面（#8 walking skeleton）。
+ * 单页控制界面（#8 开关 + #9 亮度）。
  *
  * 页面只做 view model 与事件转发，所有 BLE 细节经 ControlSession。
- * 本票只打通「设开关」；亮度 / 色环 / 预设区域渲染为禁用占位，
- * 后续 #9 / #10 直接把控件接到 session.queueBrightness / queueColor，
- * 不需要重排页面。
+ * 亮度滑块：bindchanging 连续量进 20Hz latest-wins 节流，bindchange 松手
+ * 用同一个节流实例 flush 一次最终值。色环 / 预设仍是 #10 的禁用占位。
  */
 
 import { errorText, resultText } from "../../utils/ble/errors";
+import {
+  brightnessPercent as percentOf,
+  clampBrightness,
+} from "../../utils/control/brightness";
 import {
   ControlSession,
   detectDevMode,
@@ -78,10 +81,13 @@ Page({
     powerBusy: false,
     powerLabel: "已关",
 
-    // 为 #9 / #10 预留的状态（本票只显示，不控制）
-    brightness: 0,
+    // 亮度：滑块上限取设备 State.maxBrightness（不硬编码 255）
+    brightness: 0, // 绑定到 slider value，只在松手 / 设备状态更新时改
+    brightnessDisplay: 0, // 拖动过程中的实时读数（不写回 slider.value）
     brightnessPercent: 0,
     maxBrightness: 255,
+    brightnessHintText: "连接后可调节",
+    // 为 #10 预留
     colorHex: "#FFB478",
     presets: PRESETS,
 
@@ -220,7 +226,17 @@ Page({
       return;
     }
     await session.disconnect();
-    this.setData({ sheetVisible: false, deviceName: "", deviceId: "", power: 0, powerLabel: "已关" });
+    this.setData({
+      sheetVisible: false,
+      deviceName: "",
+      deviceId: "",
+      power: 0,
+      powerLabel: "已关",
+      brightness: 0,
+      brightnessDisplay: 0,
+      brightnessPercent: 0,
+      brightnessHintText: "连接后可调节",
+    });
   },
 
   // ---------------- 开关 ----------------
@@ -239,35 +255,116 @@ Page({
     }
   },
 
+  // ---------------- 亮度（#9） ----------------
+
+  /**
+   * 拖动中（连续量）：只更新本地显示，交给 session 的 20Hz latest-wins。
+   * 这是「跟手」的关键——不在这里等任何回包。
+   */
+  onBrightnessChanging(e: WechatMiniprogram.SliderChanging) {
+    const value = Number(e.detail.value);
+    if (!Number.isFinite(value)) {
+      return;
+    }
+    // 拖动中只刷新读数，不回写 slider.value：原生滑块自己的拇指已经跟手，
+    // 这时改 value 反而可能造成回跳。控制值走 session 的 20Hz 节流。
+    this.setBrightnessView(value, false);
+    session?.queueBrightness(value);
+  },
+
+  /**
+   * 松手（一次最终确认）：同一值再推一次并 flush。
+   * 不重传旧值——节流层只保留最新值，flush 只是把最小间隔提前。
+   */
+  onBrightnessChange(e: WechatMiniprogram.SliderChange) {
+    const value = Number(e.detail.value);
+    if (!Number.isFinite(value)) {
+      return;
+    }
+    this.setBrightnessView(value, true);
+    session?.commitBrightness(value);
+  },
+
+  /**
+   * 亮度只影响 brightness：power 位不动（亮度 0 视觉等于关灯，但设备仍是「开」）。
+   * bindValue 为 false 时不回写 slider.value（拖动中由原生控件跟手）。
+   */
+  setBrightnessView(rawValue: number, bindValue: boolean) {
+    const max = this.data.maxBrightness;
+    const value = clampBrightness(rawValue, max);
+    const patch: Record<string, unknown> = {
+      brightnessDisplay: value,
+      brightnessPercent: percentOf(value, max),
+      brightnessHintText: this.brightnessHintText(value, this.data.ready),
+    };
+    if (bindValue) {
+      patch.brightness = value;
+    }
+    this.setData(patch);
+  },
+
+  brightnessHintText(value: number, ready: boolean): string {
+    if (!ready) {
+      return "连接后可调节";
+    }
+    if (value === 0) {
+      return "亮度 0 视觉上等于关灯；开关状态保持为开";
+    }
+    return "拖动实时跟随，松手确认";
+  },
+
   // ---------------- 内部 ----------------
 
   applyLink(state: LinkState, message?: string) {
     const view = statusView(state, this.data.deviceName, message);
+    const ready = state === "ready";
     this.setData({
       ...view,
-      ready: state === "ready",
+      ready,
+      // ready 时提示文案要反映当前亮度（连接流水线先写 state 再置 ready）。
+      brightnessHintText: ready
+        ? this.brightnessHintText(this.data.brightness, true)
+        : this.data.brightnessHintText,
     });
     if (state !== "ready" && state !== "initializing") {
       // 断线后不显示过期设备状态（设备是权威）。
       if (state === "idle" || state === "failed" || state === "adapter-off") {
-        this.setData({ power: 0, powerLabel: "已关", brightnessPercent: 0 });
+        this.setData({
+          power: 0,
+          powerLabel: "已关",
+          brightness: 0,
+          brightnessDisplay: 0,
+          brightnessPercent: 0,
+          brightnessHintText: "连接后可调节",
+        });
       }
     }
   },
 
   applyDeviceState(state: DeviceState) {
     const max = state.maxBrightness > 0 ? state.maxBrightness : 255;
+    const brightness = clampBrightness(state.brightness, max);
     this.setData({
       power: state.power,
-      powerLabel: state.power === 1 ? "已开" : "已关",
-      brightness: state.brightness,
-      brightnessPercent: Math.round((Math.min(state.brightness, max) / max) * 100),
-      maxBrightness: state.maxBrightness,
+      powerLabel: this.powerLabelText(state.power, brightness),
+      brightness,
+      brightnessDisplay: brightness,
+      brightnessPercent: percentOf(brightness, max),
+      maxBrightness: max,
+      brightnessHintText: this.brightnessHintText(brightness, this.data.ready),
       colorHex: `#${[state.r, state.g, state.b]
         .map((v) => v.toString(16).padStart(2, "0"))
         .join("")
         .toUpperCase()}`,
     });
+  },
+
+  /** 亮度 0 且 power=1：灯是灭的但开关位仍为开，文案要如实说明（§7）。 */
+  powerLabelText(power: 0 | 1, brightness: number): string {
+    if (power === 0) {
+      return "已关";
+    }
+    return brightness === 0 ? "已开 · 亮度 0" : "已开";
   },
 
   applyPowerResult(result: PowerResult) {

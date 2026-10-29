@@ -20,17 +20,26 @@
     <text class="power-label">{{powerLabel}}</text>
   </view>
 
-  <!-- 3. 亮度：为 #9 预留，本票禁用 -->
-  <view class="section disabled">
+  <!-- 3. 亮度：真实滑块（#9）。min/max 来自设备 State，不硬编码 255 -->
+  <view class="section {{ready ? '' : 'disabled'}}">
     <view class="section-head">
       <text class="section-title">亮度</text>
-      <text class="section-value">{{brightness}}</text>
+      <text class="section-value">{{brightnessDisplay}} / {{maxBrightness}} · {{brightnessPercent}}%</text>
     </view>
-    <view class="slider-track">
-      <view class="slider-fill" style="width: {{brightnessPercent}}%"></view>
-      <view class="slider-knob" style="left: {{brightnessPercent}}%"></view>
-    </view>
-    <text class="section-hint">亮度控制将在后续版本开放</text>
+    <slider
+      class="brightness-slider"
+      min="0"
+      max="{{maxBrightness}}"
+      step="1"
+      value="{{brightness}}"
+      disabled="{{!ready}}"
+      activeColor="#ffb478"
+      backgroundColor="#2a2a32"
+      block-size="24"
+      bindchanging="onBrightnessChanging"
+      bindchange="onBrightnessChange"
+    />
+    <text class="section-hint">{{brightnessHintText}}</text>
   </view>
 
   <!-- 4. 颜色：为 #10 预留，本票禁用 -->

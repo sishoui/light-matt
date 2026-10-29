@@ -198,32 +198,9 @@
   border: 1rpx solid #3a3a44;
 }
 
-/* 亮度占位滑块 */
-.slider-track {
-  position: relative;
-  height: 8rpx;
-  border-radius: 4rpx;
-  background: #2a2a32;
-}
-
-.slider-fill {
-  position: absolute;
-  left: 0;
-  top: 0;
-  height: 8rpx;
-  border-radius: 4rpx;
-  background: #ffb478;
-}
-
-.slider-knob {
-  position: absolute;
-  top: 50%;
-  width: 32rpx;
-  height: 32rpx;
-  margin-left: -16rpx;
-  margin-top: -16rpx;
-  border-radius: 50%;
-  background: #f5f5f5;
+/* 亮度滑块（原生 slider，样式只覆盖高度与间距） */
+.brightness-slider {
+  margin: 8rpx 0;
 }
 
 /* 色环占位 */
