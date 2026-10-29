@@ -22,7 +22,6 @@ lumen/
 
 ## 现状
 
-设计阶段。协议已定稿（[docs/protocol.md](docs/protocol.md)），实现规格在
-[docs/spec.md](docs/spec.md)，执行票在 GitHub Issues。地图的前沿只剩「开发环境就绪」：
-工具链已装好、hello_world 与 led_strip 编译通过，待接板子烧录与真机预览确认。
-尚无产品代码。
+设计阶段。协议已定稿（[docs/protocol.md](docs/protocol.md)），开发环境已就绪（工具链、烧录、
+真机预览均通过），实现规格与执行票在 GitHub Issues。地图的前沿是「led_strip 点灯验证」与
+「小程序 BLE 探测」。尚无产品代码。

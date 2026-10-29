@@ -38,13 +38,19 @@
 
 ## 状态
 
-`in-progress`（2026-10-29）— 工具链与构建验证已完成；剩第 3、4 步需要真机操作。
+`resolved`（2026-10-30）
 
-已完成：riscv32-esp-elf / cmake / ninja / idf-exe 安装，`idf.py --version` = v5.4，hello_world 编译通过，`espressif/led_strip` 依赖拉取并编译通过，`docs/dev-environment.md` 已提交。
+## Answer
 
-已补充：hello_world 已烧录到 COM6，串口确认 `Hello world!`、ESP-IDF v5.4、chip rev v0.4、4MB flash。
+环境已全部跑通：
 
-待完成：微信开发者工具导入 `miniprogram/` 并真机预览。
+- ESP-IDF v5.4 + riscv32-esp-elf 14.2.0 / cmake / ninja / idf-exe 安装完成，`idf.py --version` 可用。
+- hello_world 编译并烧录到 COM6（原生 USB，VID 303A），串口输出 `Hello world!`、chip rev v0.4。
+- `espressif/led_strip` 依赖拉取并编译通过。
+- 微信开发者工具真机预览成功。
+- 细节与已知问题见 [dev-environment.md](../../dev-environment.md)。
+
+GitHub 决议：[#3](https://github.com/sishoui/light-matt/issues/3)。
 
 ## 交付
 
