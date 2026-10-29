@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "app_main.c"
         "ble_link.c"
+        "command.c"
         "led_engine.c"
         "state_store.c"
         "state.c"

@@ -117,7 +117,8 @@ BLE 回调 / 命令层                     渲染任务
 - **相同快照跳过**：渲染任务记住上次写进灯带的 `(r, g, b, brightness, count)`；状态没造成像素变化时不调用 `set_pixel` / `refresh`。
 - **空闲不空转**：渲染任务唯一阻塞点是 `xSemaphoreTake(s_render_signal, portMAX_DELAY)`，没有固定帧率、没有轮询、没有 `vTaskDelay` 循环。
 
-本票没有任何命令路径会调用 `commit`；初始化时直接给一次信号量，按默认（或 NVS 恢复的）状态渲染一次，用于验证灯带句柄可用。
+初始化时直接给一次信号量，按默认（或 NVS 恢复的）状态渲染一次，用于验证灯带句柄可用。
+#8 之后，`SetPower` 命令路径会调用 `commit`（见 §9）。
 
 ---
 
@@ -148,15 +149,16 @@ TX notify 的所有权：`lumen_ble_link_notify()` 创建 mbuf 后交给 `ble_ga
 本票只钉骨架：
 
 - ✅ GATT Service / RX / TX / State，广播名 `Lumen-XXXX`，广播包含 128-bit Service UUID，单连接，断开重广播，15-30ms 连接参数。
-- ✅ RX 只解信封并打印「收到 N 字节」，不执行命令、不改变灯带、不回 ACK。
+- ✅ RX 解信封并打印帧日志（#6 只解信封；#8 起执行命令并回 ACK）。
 - ✅ 共享状态 + latest-wins + 渲染任务 + gamma + 亮度乘算。
 - ✅ NVS 加载与 500ms debounce 保存骨架。
-- ⏳ 命令分发、payload 校验、ACK / Event / StateReport 发送、QueryState 解码 → #8。
-- ⏳ `SetLedCount` 句柄重建与异步 ACK → #8。
-- ⏳ 自检 → #8。
+- ✅ 命令分发、payload 校验、ACK 发送（#8；QueryState 的解码与 StateReport 留给 #13）。
+- ✅ SetPower 语义与 state 写入（#8）。
+- ⏳ `SetLedCount` 句柄重建与异步 ACK → #12。
+- ⏳ 自检 → #13。
 - ⏳ RMT × BLE 共存调优 → #7。
 
-`protocol.c` 只保留信封与设备→小程序编码；命令表、已知命令判断、载荷语义全部没有实现，留给 #8。
+`protocol.c` 只保留信封与设备→小程序编码；命令表与载荷语义在 `command.c`（#8 起）。
 
 ---
 
@@ -173,10 +175,12 @@ firmware\test\run-tests.cmd
 ```cmd
 gcc -std=c11 -Wall -Wextra -Werror -Ifirmware\main ^
     firmware\test\test_skeleton.c firmware\main\protocol.c ^
-    firmware\main\state.c firmware\main\gamma.c -lm -o lumen_host_tests.exe
+    firmware\main\command.c firmware\main\state.c firmware\main\gamma.c ^
+    -lm -o lumen_host_tests.exe
+lumen_host_tests.exe docs\protocol-testvectors.json
 ```
 
-覆盖：合法帧、坏 magic、坏 version、坏 length（超上限 / 与声明不符 / 拖尾）、坏 checksum、短帧静默丢弃、14 字节最大载荷、未知命令回显 seq、ACK / Event / StateReport 编码与缓冲不足、State 默认值与 8 字节布局、gamma + 亮度乘算单调性。
+覆盖：`docs/protocol-testvectors.json` 全部 37 条用例（app 方向编码/解码与错误码、device 方向解码与 ACK / Event / StateReport 逐字节复现）、SetPower reducer 边界、未实现命令的 `0x02`、全部结果码的 ACK 编码与缓冲不足、State 默认值与 8 字节布局、gamma + 亮度乘算单调性。
 
 ### 固件构建
 
@@ -185,3 +189,62 @@ scripts\build-firmware.cmd
 ```
 
 只构建，不烧录。真机验收项（nRF Connect 看服务、写 RX 日志、单连接释放）见 issue #6。
+
+---
+
+## 9. #8 落地后的增量（walking skeleton）
+
+issue #8 把「设开关」一条命令纵向打通，同时钉下后续票复用的命令层形状。
+
+### 9.1 新增 `command` 模块（纯 reducer）
+
+| 接口 | 说明 |
+|---|---|
+| `lumen_command_dispatch(frame, current, outcome)` | 旧状态 + 命令 → 新状态 + 结果码；不依赖 NimBLE / FreeRTOS / NVS，可在 host 上单测 |
+| `lumen_command_is_known(command)` | 协议 §6 的 0x01-0x07 |
+| `lumen_command_payload_len(command)` | 命令表里的载荷长度 |
+
+`lumen_command_outcome_t` 带 `result_code` / `state_changed` / `next`。调用方只在
+`state_changed` 为真时调用 `lumen_led_engine_commit()`；错误路径一律不改状态。
+
+### 9.2 RX 路径（`ble_link.c`）
+
+```
+rx_access → handle_frame
+  解码（magic → version → length → checksum）
+  → lumen_led_engine_snapshot（短锁拷贝）
+  → lumen_command_dispatch（command → payload 长度 → payload 取值）
+  → state_changed ? lumen_led_engine_commit（写 RAM + 邮箱 + 渲染信号 + debounce 持久化）
+  → send_ack（协议 §10.1：写入 RAM 后立刻回）
+```
+
+- 命令语义与 ACK 都在 NimBLE 主机任务的回调里完成；渲染仍由 `lumen_render` 异步执行，
+  回调里不碰 `led_strip_*`、不写 NVS。
+- 整帧 > 20 字节：先按 header 判 magic / version，再回 `0x04`；超过 64 字节本地缓冲的帧
+  同样走 `reject_oversized`，不会截断执行。
+- 不足 6 字节：静默丢弃（读不到可靠 seq）。
+- ACK 载荷 `[原命令字, 结果码]`，seq 回显；串口日志打印 `cmd / seq / result`，与小程序日志按 seq 对齐。
+
+### 9.3 本票的命令覆盖
+
+| 命令 | 本票行为 |
+|---|---|
+| `0x01` SetPower | 完整实现：0/1 合法并提交；其他值 → `0x01`；载荷非 1 字节 → `0x04` |
+| `0x02`-`0x07` | 载荷长度先按命令表校验（错 → `0x04`），合法长度统一回 `0x02`（明确未实现） |
+| `0x08`-`0xFF`（含小程序写 0x80） | `0x02` |
+
+**这是暂时的协议偏差**：协议 §6 已定义 0x02-0x07 的语义，后续票（#9 亮度、#10 颜色、
+#12 灯珠数量、#13 自检/日志）会把它们替换成真实实现；替换前设备会对这些命令回
+`0x02`，小程序据此显示「设备不支持该命令」。
+
+### 9.4 Host 测试
+
+`firmware/test/test_skeleton.c` 直接读取 `docs/protocol-testvectors.json`（两端共用），
+对全部 37 条用例断言：
+
+- `app_to_device` 有效帧：解码字段 + payload 与向量一致，并对 SetPower 断言 reducer 结果码；
+- `app_to_device` 无效帧：失败原因 / 结果码与向量一致（短帧静默丢弃）；
+- `device_to_app` 帧：解码后能用 ACK / Event / StateReport 编码器逐字节复现 `frame_hex`。
+
+另加 reducer 边界（重复设置同一 power 不重复 commit、非法取值、长度不符、0x08/0x7F/0x80/0xFF）
+与全部结果码的 ACK 编码断言。
