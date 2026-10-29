@@ -138,15 +138,18 @@ static void handle_frame(const uint8_t *data, size_t len)
     lumen_led_engine_snapshot(&current);
 
     lumen_command_outcome_t outcome;
-    lumen_command_dispatch(&frame, &current, &outcome);
+    /* max_brightness 取构建期常量：SetBrightness 在这里被钳位，而不是拒绝。 */
+    lumen_command_dispatch(&frame, &current, lumen_led_engine_max_brightness(), &outcome);
 
     if (outcome.state_changed) {
         /* 写入 RAM + 发渲染信号 + 请求 debounce 持久化；本回调不刷灯、不写 NVS。 */
         lumen_led_engine_commit(&outcome.next);
     }
 
-    ESP_LOGI(TAG, "RX cmd=0x%02X seq=0x%02X len=%u result=0x%02X power=%u%s", frame.command,
-             frame.seq, frame.payload_len, outcome.result_code, outcome.next.power,
+    ESP_LOGI(TAG,
+             "RX cmd=0x%02X seq=0x%02X len=%u result=0x%02X power=%u brightness=%u%s",
+             frame.command, frame.seq, frame.payload_len, outcome.result_code,
+             outcome.next.power, outcome.next.brightness,
              outcome.state_changed ? " changed" : "");
 
     /* ACK 在写入 RAM 之后立刻发；不等待渲染完成。 */

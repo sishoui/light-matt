@@ -6,7 +6,8 @@
  *      - app_to_device 合法帧：解码字段与编码结果逐字节一致；
  *      - app_to_device 非法帧：解码失败原因 / 结果码与向量一致；
  *      - device_to_app 帧：解码，并用 ACK / Event / StateReport 编码器逐字节复现；
- *   2. SetPower reducer 的取值与状态语义，未实现命令的明确回退；
+ *   2. SetPower / SetBrightness reducer 的取值与状态语义（含钳位与开关解耦），
+ *      未实现命令的明确回退；
  *   3. state 默认值/钳位/8 字节布局与 gamma + 亮度乘算。
  *
  * 运行：firmware/test/run-tests.cmd（会把工作目录切到仓库根，再传向量路径）。
@@ -314,10 +315,11 @@ static void run_app_case(const vector_case_t *c)
         lumen_state_t before;
         lumen_state_defaults(&before, 30);
         lumen_command_outcome_t outcome;
-        lumen_command_dispatch(&frame, &before, &outcome);
+        /* 向量不涉及构建期上限，按 255 跑 reducer。 */
+        lumen_command_dispatch(&frame, &before, 255, &outcome);
 
         if (frame.command == LUMEN_CMD_SET_POWER) {
-            /* SetPower 是本票唯一实现语义的命令：结果码必须与向量一致。 */
+            /* SetPower 结果码必须与向量一致。 */
             CHECK(c->result_code >= 0);
             CHECK(outcome.result_code == (uint8_t)c->result_code);
             if (outcome.result_code == LUMEN_RESULT_OK) {
@@ -327,8 +329,15 @@ static void run_app_case(const vector_case_t *c)
                 CHECK(!outcome.state_changed);
                 CHECK(outcome.next.power == before.power);
             }
+        } else if (frame.command == LUMEN_CMD_SET_BRIGHTNESS) {
+            /* SetBrightness 同样实现语义：载荷在 0-255 内，不需要钳位。 */
+            CHECK(c->result_code >= 0);
+            CHECK(outcome.result_code == (uint8_t)c->result_code);
+            CHECK(outcome.next.power == before.power);
+            CHECK(outcome.next.brightness == frame.payload[0]);
+            CHECK(outcome.state_changed == (before.brightness != frame.payload[0]));
         } else {
-            /* 0x02-0x07 本票明确未实现，统一回 0x02；保留命令/未知命令同理。 */
+            /* 0x03-0x07 本票明确未实现，统一回 0x02；保留命令/未知命令同理。 */
             CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
             CHECK(!outcome.state_changed);
             CHECK(outcome.next.power == before.power);
@@ -432,13 +441,13 @@ static void test_set_power_reducer(void)
     frame.seq = 1;
     frame.payload_len = 1;
     frame.payload[0] = 1;
-    lumen_command_dispatch(&frame, &state, &outcome);
+    lumen_command_dispatch(&frame, &state, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.state_changed);
     CHECK(outcome.next.power == 1);
 
     /* 已是开灯：ACK 0x00 但不重复 commit */
-    lumen_command_dispatch(&frame, &outcome.next, &outcome);
+    lumen_command_dispatch(&frame, &outcome.next, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(!outcome.state_changed);
     CHECK(outcome.next.power == 1);
@@ -448,7 +457,7 @@ static void test_set_power_reducer(void)
     bad.command = LUMEN_CMD_SET_POWER;
     bad.payload_len = 1;
     bad.payload[0] = 2;
-    lumen_command_dispatch(&bad, &state, &outcome);
+    lumen_command_dispatch(&bad, &state, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
     CHECK(!outcome.state_changed);
     CHECK(outcome.next.power == state.power);
@@ -457,16 +466,16 @@ static void test_set_power_reducer(void)
     bad.payload_len = 2;
     bad.payload[0] = 1;
     bad.payload[1] = 0;
-    lumen_command_dispatch(&bad, &state, &outcome);
+    lumen_command_dispatch(&bad, &state, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
     CHECK(!outcome.state_changed);
 
-    /* 0x02-0x07 本票未实现：0x02（载荷长度正确时也不能改状态） */
-    for (uint8_t cmd = LUMEN_CMD_SET_BRIGHTNESS; cmd <= LUMEN_CMD_SELF_TEST; ++cmd) {
+    /* 0x03-0x07 本票未实现：0x02（载荷长度正确时也不能改状态） */
+    for (uint8_t cmd = LUMEN_CMD_SET_COLOR; cmd <= LUMEN_CMD_SELF_TEST; ++cmd) {
         lumen_frame_t known = {0};
         known.command = cmd;
         known.payload_len = lumen_command_payload_len(cmd);
-        lumen_command_dispatch(&known, &state, &outcome);
+        lumen_command_dispatch(&known, &state, 255, &outcome);
         CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
         CHECK(!outcome.state_changed);
         CHECK(lumen_command_is_known(cmd));
@@ -477,10 +486,126 @@ static void test_set_power_reducer(void)
     for (size_t i = 0; i < sizeof(unknown); ++i) {
         lumen_frame_t f = {0};
         f.command = unknown[i];
-        lumen_command_dispatch(&f, &state, &outcome);
+        lumen_command_dispatch(&f, &state, 255, &outcome);
         CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
         CHECK(!outcome.state_changed);
     }
+}
+
+/*
+ * SetBrightness：0-255 全部合法（协议 §6），但按 §11.4 钳位到构建期上限。
+ * 亮度与开关解耦：亮度 0 不清 power，关灯不改 brightness。
+ */
+static void test_set_brightness_reducer(void)
+{
+    lumen_state_t state;
+    lumen_state_defaults(&state, 30);
+    state.power = 1;
+    lumen_frame_t frame = {0};
+    frame.command = LUMEN_CMD_SET_BRIGHTNESS;
+    frame.seq = 2;
+    frame.payload_len = 1;
+    lumen_command_outcome_t outcome;
+
+    /* 边界值逐个下发：0 / 1 / 128 / 254 / 255，全部 0x00。 */
+    const uint8_t boundaries[] = {0, 1, 128, 254, 255};
+    lumen_state_t before = state;
+    for (size_t i = 0; i < sizeof(boundaries); ++i) {
+        frame.payload[0] = boundaries[i];
+        lumen_command_dispatch(&frame, &before, 255, &outcome);
+        CHECK(outcome.result_code == LUMEN_RESULT_OK);
+        CHECK(outcome.state_changed == (before.brightness != boundaries[i]));
+        CHECK(outcome.next.brightness == boundaries[i]);
+        /* 其它字段一律不动，特别是 power。 */
+        CHECK(outcome.next.power == before.power);
+        CHECK(outcome.next.r == before.r);
+        CHECK(outcome.next.g == before.g);
+        CHECK(outcome.next.b == before.b);
+        CHECK(outcome.next.led_count == before.led_count);
+        before = outcome.next;
+    }
+
+    /* 亮度 0 是合法状态：power 位保持 1（协议 §7）。 */
+    lumen_state_t zero = state;
+    zero.brightness = 0;
+    frame.payload[0] = 0;
+    lumen_command_dispatch(&frame, &zero, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(!outcome.state_changed);
+    CHECK(outcome.next.power == 1);
+    CHECK(outcome.next.brightness == 0);
+
+    /* 相同值不 commit（避免无意义刷新 / NVS 写入），ACK 仍为 0x00。 */
+    lumen_state_t same = state;
+    same.brightness = 128;
+    frame.payload[0] = 128;
+    lumen_command_dispatch(&frame, &same, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(!outcome.state_changed);
+    CHECK(outcome.next.brightness == 128);
+
+    /* 钳位而不是拒绝：max_brightness=180 时，200 / 255 都落到 180。 */
+    frame.payload[0] = 200;
+    lumen_command_dispatch(&frame, &state, 180, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(outcome.state_changed);
+    CHECK(outcome.next.brightness == 180);
+    CHECK(outcome.next.power == 1);
+
+    frame.payload[0] = 255;
+    lumen_command_dispatch(&frame, &state, 180, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(outcome.next.brightness == 180);
+
+    /* 钳位后的值与当前值相同：不 commit。 */
+    lumen_state_t at_cap = state;
+    at_cap.brightness = 180;
+    frame.payload[0] = 255;
+    lumen_command_dispatch(&frame, &at_cap, 180, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(!outcome.state_changed);
+
+    /* 上限之内的值不受影响。 */
+    frame.payload[0] = 100;
+    lumen_command_dispatch(&frame, &state, 180, &outcome);
+    CHECK(outcome.next.brightness == 100);
+
+    /* max_brightness = 0：任何值都被钳到 0，仍然回 0x00。 */
+    frame.payload[0] = 255;
+    lumen_command_dispatch(&frame, &state, 0, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(outcome.next.brightness == 0);
+    CHECK(outcome.next.power == 1);
+
+    /* 载荷长度不符：0x04，状态不变。 */
+    frame.payload_len = 2;
+    frame.payload[0] = 100;
+    frame.payload[1] = 0;
+    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
+    CHECK(!outcome.state_changed);
+    CHECK(outcome.next.brightness == state.brightness);
+
+    /* 关灯再开：SetPower 不改变 brightness（关灯保留亮度）。 */
+    lumen_state_t lit = state;
+    lit.power = 1;
+    lit.brightness = 77;
+    lumen_frame_t power = {0};
+    power.command = LUMEN_CMD_SET_POWER;
+    power.payload_len = 1;
+    power.payload[0] = 0;
+    lumen_command_dispatch(&power, &lit, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(outcome.state_changed);
+    CHECK(outcome.next.power == 0);
+    CHECK(outcome.next.brightness == 77);
+
+    power.payload[0] = 1;
+    lumen_command_dispatch(&power, &outcome.next, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(outcome.state_changed);
+    CHECK(outcome.next.power == 1);
+    CHECK(outcome.next.brightness == 77);
 }
 
 static void test_encode_ack_all_results(void)
@@ -639,6 +764,7 @@ int main(int argc, char **argv)
 
     test_checksum();
     test_set_power_reducer();
+    test_set_brightness_reducer();
     test_encode_ack_all_results();
     test_encode_limits();
     test_decode_short();

@@ -154,6 +154,7 @@ TX notify 的所有权：`lumen_ble_link_notify()` 创建 mbuf 后交给 `ble_ga
 - ✅ NVS 加载与 500ms debounce 保存骨架。
 - ✅ 命令分发、payload 校验、ACK 发送（#8；QueryState 的解码与 StateReport 留给 #13）。
 - ✅ SetPower 语义与 state 写入（#8）。
+- ✅ SetBrightness 语义与按 `max_brightness` 钳位（#9）。
 - ⏳ `SetLedCount` 句柄重建与异步 ACK → #12。
 - ⏳ 自检 → #13。
 - ⏳ RMT × BLE 共存调优 → #7。
@@ -230,10 +231,11 @@ rx_access → handle_frame
 | 命令 | 本票行为 |
 |---|---|
 | `0x01` SetPower | 完整实现：0/1 合法并提交；其他值 → `0x01`；载荷非 1 字节 → `0x04` |
-| `0x02`-`0x07` | 载荷长度先按命令表校验（错 → `0x04`），合法长度统一回 `0x02`（明确未实现） |
+| `0x02` SetBrightness | **#9 已实现**：0-255 全合法，按 `max_brightness` 钳位后提交，回 `0x00` |
+| `0x03`-`0x07` | 载荷长度先按命令表校验（错 → `0x04`），合法长度统一回 `0x02`（明确未实现） |
 | `0x08`-`0xFF`（含小程序写 0x80） | `0x02` |
 
-**这是暂时的协议偏差**：协议 §6 已定义 0x02-0x07 的语义，后续票（#9 亮度、#10 颜色、
+**仍是暂时的协议偏差**：协议 §6 已定义 0x03-0x07 的语义，后续票（#10 颜色、
 #12 灯珠数量、#13 自检/日志）会把它们替换成真实实现；替换前设备会对这些命令回
 `0x02`，小程序据此显示「设备不支持该命令」。
 
@@ -248,3 +250,54 @@ rx_access → handle_frame
 
 另加 reducer 边界（重复设置同一 power 不重复 commit、非法取值、长度不符、0x08/0x7F/0x80/0xFF）
 与全部结果码的 ACK 编码断言。
+
+---
+
+## 10. #9 落地后的增量（亮度端到端）
+
+issue #9 把「设亮度」纵向打通：滑块 → 20Hz 节流 → BLE 写入 → 固件解码 →
+状态更新 → gamma + 亮度乘算 → 灯带跟随。
+
+### 10.1 命令层（`command.c` / `command.h`）
+
+`lumen_command_dispatch()` 增加一个参数 `max_brightness`，调用方传
+`lumen_led_engine_max_brightness()`（构造期常量；host 测试直接传测试值）：
+
+```c
+void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *current,
+                            uint8_t max_brightness, lumen_command_outcome_t *outcome);
+```
+
+SetBrightness 0x02 的语义（协议 §6 / §7 / §11.4）：
+
+| 输入 | 行为 |
+|---|---|
+| 载荷 1 字节 0-255 | `lumen_state_clamp_brightness()` 钳位后写入 `next.brightness`，回 `0x00` |
+| 钳位后与当前值相同 | 回 `0x00`，`state_changed = false`（不 commit、不刷新、不写 NVS） |
+| 载荷长度 ≠ 1 | `0x04`，状态不变 |
+| 任何取值 | **钳位而不是拒绝**——协议 §6 的 SetBrightness 没有 InvalidParam |
+
+- **只写 brightness，绝不动 power**：亮度 0 是合法状态，视觉等于关灯，但 power 位保持 1。
+- 关灯保留亮度：SetPower 0/1 的 reducer 只改 `power`（#8 语义，单测覆盖）。
+- 钳位发生在 reducer 内（不是渲染时才钳），保证 `state_changed` 的判定也按生效值。
+
+### 10.2 渲染路径
+
+`led_engine.c` 的 `render_snapshot()` 保持不变（#6 已建）：
+
+```
+brightness = power ? clamp(state.brightness, max_brightness) : 0
+pixel = lumen_gamma_apply(state.r/g/b, brightness)
+```
+
+gamma 与亮度乘算只用 `lumen_gamma_apply()` 一处实现；亮度 0 时它自然输出 0，
+不需要清 power 位。相同像素快照会跳过 `set_pixel + refresh`（拖回同一值不重复刷灯）。
+
+### 10.3 Host 测试（`test_skeleton.c`）
+
+- 向量 `set_brightness_128` / `set_brightness_0` 走 `run_app_case` 的亮度分支，
+  断言结果码、`next.brightness`、`state_changed`、power 不变。
+- `test_set_brightness_reducer()`：边界 0/1/128/254/255、钳位到 180、
+  `max_brightness = 0`、相同值不 commit、钳位后相同不 commit、长度不符 `0x04`、
+  关灯再开保留亮度。
+- 基线从 856 项增至 917 项（只增不减）。
