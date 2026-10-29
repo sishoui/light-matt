@@ -420,14 +420,15 @@ describe("色环几何（触控精度只到这里，其余待真机）", () => {
     expect(calls.filter((c) => c === "arc")).toHaveLength(362);
     expect(calls.filter((c) => c === "fill")).toHaveLength(1);
 
-    /* 拖动：擦两块（旧位置 + 新位置）并补回对应环弧，再画新标记。 */
+    /* 拖动：只擦旧位置并补回该角区间的环弧，再画新标记。 */
     calls.length = 0;
     moveWheelMarker(ctx, geometry, 2, 60, "#FFB478", 30);
     expect(calls[0]).toBe("setTransform");
-    expect(calls.filter((c) => c === "clearRect")).toHaveLength(2);
+    expect(calls.filter((c) => c === "clearRect")).toHaveLength(1);
     expect(calls.filter((c) => c === "fill")).toHaveLength(1);
-    /* 擦除次数恒定，与拖动历史无关。 */
+    /* 擦除工作量恒定，与拖动历史无关。 */
     const arcsForMove = calls.filter((c) => c === "arc").length;
+    expect(arcsForMove).toBeLessThan(80);
     calls.length = 0;
     moveWheelMarker(ctx, geometry, 2, 300, "#FFB478", 60);
     expect(calls.filter((c) => c === "arc").length).toBe(arcsForMove);

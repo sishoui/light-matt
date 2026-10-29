@@ -218,8 +218,10 @@ export function drawWheel(
 /**
  * 只重画选中点（拖动中每次 touchmove 用）。
  *
- * previousHue 是上一次标记的位置：先擦掉旧位置和新位置的标记矩形、重画这两段
- * 环弧，再画新标记。做的工作量与角度无关，不会随拖动次数增长。
+ * previousHue 是上一次标记的位置：先擦掉旧标记矩形并重画该角区间的环弧，
+ * 再画新标记。新位置的环弧无需重画——新标记本来就盖在完整的环上，只有旧
+ * 标记擦掉的区域需要补。工作量恒定为「一段角区间 + 一个圆点」，与拖动历史
+ * 和距离无关（也比重画整环便宜一个数量级）。
  */
 export function moveWheelMarker(
   ctx: WheelContext2D,
@@ -231,6 +233,5 @@ export function moveWheelMarker(
 ): void {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   eraseMarker(ctx, geometry, previousHue);
-  eraseMarker(ctx, geometry, hue);
   strokeMarker(ctx, geometry, hue, fillColor);
 }

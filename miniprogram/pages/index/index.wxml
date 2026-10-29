@@ -9,7 +9,7 @@
     <text class="status-action">{{statusAction}}</text>
   </view>
 
-  <!-- 2. 大开关：本票唯一可操作控制 -->
+  <!-- 2. 大开关 -->
   <view class="power-card">
     <view
       class="power-btn {{power ? 'on' : ''}} {{!ready ? 'disabled' : ''}} {{powerBusy ? 'busy' : ''}}"
