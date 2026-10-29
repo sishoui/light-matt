@@ -1,16 +1,20 @@
 /**
- * 单页控制界面（#8 开关 + #9 亮度 + #10 颜色与预设）。
+ * 单页控制界面（#8 开关 + #9 亮度 + #10 颜色与预设 + #11 状态同步与回连）。
  *
  * 页面只做 view model 与事件转发，所有 BLE 细节经 ControlSession。
  * 亮度滑块与色环都进 session 里**同一个** 20Hz latest-wins 节流实例；
  * 预设用一条 SetAll（开关 + 亮度 + RGB）原子下发。
+ *
+ * #11：连接状态以设备为准。断线立即清空控件（不显示过期状态）；自动回连由
+ * session 的 1s/2s/4s 退避负责；onShow 时静默回连（不打断扫描/手动连接）；
+ * 回连成功后 transport 重新订阅 notify 并读 State，页面用新 State 全量刷新。
  *
  * 色环用单块 2D canvas：色相环画一次，拖动时只擦/画选中点所在的小块并补回
  * 该角区间的环弧（见 utils/color/wheel.ts）。setData 的取色读数按 20Hz 更新，
  * 与 BLE 节流同一个节奏。
  */
 
-import { errorText, resultText } from "../../utils/ble/errors";
+import { errorText, eventText, resultText } from "../../utils/ble/errors";
 import {
   brightnessPercent as percentOf,
   clampBrightness,
@@ -21,6 +25,7 @@ import {
   detectPlatform,
   type CommandResult,
 } from "../../utils/control/session";
+import { statusView } from "../../utils/control/status-view";
 import {
   ledCountResultHint,
   parseLedCountInput,
@@ -57,39 +62,6 @@ interface WheelCtx {
   ctx: WheelContext2D;
   geometry: WheelGeometry;
   dpr: number;
-}
-
-interface StatusView {
-  statusText: string;
-  statusSub: string;
-  statusAction: string;
-  linkClass: string;
-}
-
-function statusView(state: LinkState, deviceName: string, message?: string): StatusView {
-  switch (state) {
-    case "ready":
-      return {
-        statusText: `已连接 · ${deviceName || "设备"}`,
-        statusSub: "点击查看设备",
-        statusAction: "设备",
-        linkClass: "link-ready",
-      };
-    case "scanning":
-      return { statusText: "扫描中…", statusSub: message ?? "正在查找 Lumen 设备", statusAction: "停止", linkClass: "link-busy" };
-    case "connecting":
-      return { statusText: "连接中…", statusSub: deviceName, statusAction: "取消", linkClass: "link-busy" };
-    case "initializing":
-      return { statusText: "同步状态…", statusSub: deviceName, statusAction: "取消", linkClass: "link-busy" };
-    case "adapter-off":
-      return { statusText: "请打开蓝牙", statusSub: message ?? "打开系统蓝牙后会自动继续", statusAction: "重试", linkClass: "link-warn" };
-    case "failed":
-      return { statusText: "未连接", statusSub: message ?? "连接失败", statusAction: "重试", linkClass: "link-error" };
-    case "idle":
-      return { statusText: "未连接", statusSub: message ?? "点击选择设备", statusAction: "扫描", linkClass: "link-idle" };
-    default:
-      return { statusText: "未连接", statusSub: "点击选择设备", statusAction: "扫描", linkClass: "link-idle" };
-  }
 }
 
 Page({
@@ -157,7 +129,14 @@ Page({
     console.log(`[lumen] 平台 ${platform}，开发版日志 ${devMode ? "开启" : "关闭"}`);
 
     unsubscribers = [
-      session.onLink((state, detail) => this.applyLink(state, detail?.message)),
+      session.onLink((state, detail) => {
+        // 自动回连 / 首次连接都可能由 session 发起：页面没有主动 setData 设备名，
+        // 这里从链路事件补上（ready 时 detail 带 deviceName）。
+        if (state === "ready" && detail?.deviceName !== undefined) {
+          this.setData({ deviceName: detail.deviceName });
+        }
+        this.applyLink(state, detail?.message);
+      }),
       session.onDevices((devices) => {
         this.setData({ devices });
       }),
@@ -166,8 +145,11 @@ Page({
         this.setData({ scanHint: hint ?? "" });
       }),
       session.onDeviceEvent((code, detail) => {
-        if (code === 0x01) {
-          wx.showToast({ title: `保存失败（命令 0x${detail.toString(16)}）`, icon: "none" });
+        // Event 0x81（NVS 存储失败）发生在 ACK 之后：状态已生效，只是掉电可能丢。
+        // 非阻塞轻提示，不回 ACK、不改控件（设备仍是权威）。
+        const text = eventText(code, detail);
+        if (text !== null) {
+          wx.showToast({ title: text, icon: "none" });
         }
       }),
     ];
@@ -192,9 +174,10 @@ Page({
   },
 
   onShow() {
-    // 本票不做静默回连（#11）；回到前台只复核一次链路状态文案。
+    // #11：进前台静默回连。session 自己在内部判断是否该回连，
+    // 并保证不打断正在进行的扫描 / 手动连接（扫描中、连接中直接返回）。
     if (session !== null) {
-      this.applyLink(session.linkState);
+      void session.onShow();
     }
     // 首次 onShow 早于 onReady（canvas 还没布局），交给 onReady 初始化；
     // 之后回到前台时 canvas 可能被回收，补一次绘制。
@@ -210,7 +193,7 @@ Page({
 
   // ---------------- 状态条与弹层 ----------------
 
-  onStatusTap() {
+  async onStatusTap() {
     if (session === null) {
       return;
     }
@@ -221,6 +204,7 @@ Page({
         sheetVisible: true,
         sheetMode: "device",
         deviceId: session.transport.currentDeviceId ?? "",
+        deviceName: this.data.deviceName || session.cachedDevice?.name || "",
         ledCount,
         // 打开弹层时输入框对齐设备当前值；用户改动后由 onLedCountInput 接管。
         ledCountInput: ledCount > 0 ? String(ledCount) : "",
@@ -231,7 +215,38 @@ Page({
     if (state === "connecting" || state === "initializing") {
       return; // 连接中不重复触发扫描
     }
+    if (state === "scanning") {
+      // 扫描中点状态条 = 停止扫描并关弹层。
+      this.closeSheet();
+      return;
+    }
+    // 退避耗尽 / 主动断开后的手动入口：
+    // 有 deviceId 缓存时直接重连（最快路径），否则回扫描。
+    const cached = session.cachedDevice;
+    if (cached !== null && (state === "failed" || state === "idle")) {
+      await this.manualReconnect();
+      return;
+    }
     this.openScanSheet();
+  },
+
+  /** 手动重连：复用缓存的 deviceId；成功后刷新全部控件（设备权威）。 */
+  async manualReconnect() {
+    if (session === null) {
+      return;
+    }
+    const cached = session.cachedDevice;
+    if (cached === null) {
+      this.openScanSheet();
+      return;
+    }
+    try {
+      const state = await session.connect(cached.deviceId, cached.name);
+      this.applyDeviceState(state);
+      this.setData({ deviceName: cached.name ?? "", deviceId: cached.deviceId });
+    } catch (err) {
+      wx.showToast({ title: errorText(err), icon: "none" });
+    }
   },
 
   openScanSheet() {
@@ -317,6 +332,12 @@ Page({
           ledCountInput: this.data.ledCount > 0 ? String(this.data.ledCount) : "",
         });
         wx.showToast({ title: hint, icon: "none" });
+        return;
+      }
+      if (result.kind === "stale") {
+        // #11：旧连接上飞行的 SetLedCount 晚到，回连后的 State 才是权威。
+        // 不提示、不改本地值；下一次 State 同步会带回真实数量。
+        this.setData({ ledCountHintText: "" });
         return;
       }
       // 传输层异常（超时 / 断线）：旧值保留，提示原因。
@@ -682,7 +703,10 @@ Page({
   },
 
   applyLink(state: LinkState, message?: string) {
-    const view = statusView(state, this.data.deviceName, message);
+    // #11：回连进行中 / 有 deviceId 缓存，决定副标题与动作（重连 vs 扫描）。
+    const reconnectPending = session?.reconnectPending ?? false;
+    const hasCachedDevice = (session?.cachedDevice ?? null) !== null;
+    const view = statusView(state, this.data.deviceName, message, reconnectPending, hasCachedDevice);
     const ready = state === "ready";
     this.setData({
       ...view,
@@ -761,6 +785,10 @@ Page({
   applyCommandResult(result: CommandResult) {
     if (result.kind === "ok") {
       this.applyDeviceState(result.state);
+      return;
+    }
+    if (result.kind === "stale") {
+      // 旧连接上飞行的命令晚到：回连后的新 State 才是权威，什么都不改。
       return;
     }
     if (result.kind === "ack-error") {

@@ -132,7 +132,17 @@ class FakeTransport {
   pendingAcks: Array<{ req: CommandRequest; resolve: (resultCode: number) => void }> = [];
 
   private readonly stateListeners: Array<(state: DeviceState) => void> = [];
+  private readonly linkListeners: Array<(state: string, detail?: unknown) => void> = [];
   private seq = 1;
+
+  /** #11 起 session 内部订阅链路状态；这里只记录，不主动触发。 */
+  onLink(fn: (state: string, detail?: unknown) => void): () => void {
+    this.linkListeners.push(fn);
+    return () => {
+      const i = this.linkListeners.indexOf(fn);
+      if (i >= 0) this.linkListeners.splice(i, 1);
+    };
+  }
 
   onState(fn: (state: DeviceState) => void): () => void {
     this.stateListeners.push(fn);

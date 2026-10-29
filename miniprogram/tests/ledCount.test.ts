@@ -23,10 +23,19 @@ class FakeTransport {
   readonly sendOptions: Array<SendOptions | undefined> = [];
   readonly ackQueue: Array<AckResult | Error> = [];
   private stateListener: ((state: DeviceState) => void) | null = null;
+  private linkListener: ((state: LinkState) => void) | null = null;
+  /** deferAck = true 时 ACK 挂起，等测试用 releaseAck 放行（模拟晚到的 ACK）。 */
+  deferAck = false;
+  private readonly ackResolvers: Array<(value: AckResult) => void> = [];
 
   async sendAndWaitAck(req: CommandRequest, opts?: SendOptions): Promise<AckResult> {
     this.writes.push(req);
     this.sendOptions.push(opts);
+    if (this.deferAck) {
+      return new Promise<AckResult>((resolve) => {
+        this.ackResolvers.push(resolve);
+      });
+    }
     const next = this.ackQueue.shift();
     if (next === undefined) {
       throw new Error("测试未排 ACK");
@@ -35,6 +44,15 @@ class FakeTransport {
       throw next;
     }
     return next;
+  }
+
+  /** 放行挂起的 ACK（配合 deferAck）。 */
+  releaseAck(result: AckResult): void {
+    const resolve = this.ackResolvers.shift();
+    if (resolve === undefined) {
+      throw new Error("没有挂起的 ACK");
+    }
+    resolve(result);
   }
 
   // ControlSession 构造时注册的订阅；返回空的取消函数。
@@ -50,8 +68,16 @@ class FakeTransport {
     this.stateListener?.(state);
   }
 
-  onLink(): () => void {
-    return () => undefined;
+  onLink(fn: (state: LinkState) => void): () => void {
+    this.linkListener = fn;
+    return () => {
+      this.linkListener = null;
+    };
+  }
+
+  /** 模拟链路状态变化（#11 用它推进 linkEpoch）。 */
+  emitLink(state: LinkState): void {
+    this.linkListener?.(state);
   }
 
   onDevices(): () => void {
@@ -265,5 +291,25 @@ describe("ControlSession.setLedCount", () => {
 
     expect(result.kind).toBe("error");
     expect(transport.writes).toHaveLength(0);
+  });
+
+  it("旧连接上晚到的成功 ACK 折成 stale，不覆盖回连后的新值（#11）", async () => {
+    const transport = new FakeTransport();
+    const session = sessionWith(transport);
+    transport.emitState(stateWith(30));
+
+    // ACK 在等待期间才落地；此时链路已经重建（linkEpoch 前进），
+    // 设备上报的真实数量 12 才是权威。
+    transport.deferAck = true;
+    const pending = session.setLedCount(60);
+    // 让 sendAndWaitAck 真正开始等待（写入已入队）。
+    await Promise.resolve();
+    transport.emitLink("ready");
+    transport.emitState(stateWith(12));
+    transport.releaseAck(ack(0x06, 0x00));
+
+    const result = await pending;
+    expect(result.kind).toBe("stale");
+    expect(session.deviceState?.ledCount).toBe(12);
   });
 });
