@@ -1,4 +1,46 @@
 <view class="page">
-  <text class="title">{{title}}</text>
-  <text class="hint">{{hint}}</text>
+  <view class="header">
+    <text class="title">BLE 探针</text>
+    <text class="status">{{status}}</text>
+    <text class="meta">{{platform}} · {{connected ? "已连接" : "未连接"}}</text>
+  </view>
+
+  <view class="row">
+    <button size="mini" bindtap="openAdapter">打开适配器</button>
+    <button size="mini" bindtap="startScan">扫描</button>
+    <button size="mini" bindtap="stopScan">停止扫描</button>
+    <button size="mini" bindtap="disconnect" disabled="{{!connected}}">断开</button>
+    <button size="mini" bindtap="reconnect" disabled="{{!cached}}">重连</button>
+  </view>
+
+  <view class="row">
+    <button size="mini" bindtap="send" disabled="{{!connected}}">发 20 字节</button>
+    <button size="mini" bindtap="burst20" disabled="{{!connected}}">连发 @20ms</button>
+    <button size="mini" bindtap="burst50" disabled="{{!connected}}">@50ms</button>
+    <button size="mini" bindtap="burst100" disabled="{{!connected}}">@100ms</button>
+    <button size="mini" bindtap="readState" disabled="{{!connected}}">读 State</button>
+  </view>
+
+  <view class="row">
+    <button size="mini" bindtap="clearLogs">清空日志</button>
+    <button size="mini" bindtap="copyLogs">复制日志</button>
+  </view>
+
+  <scroll-view scroll-y class="devices">
+    <view
+      wx:for="{{devices}}"
+      wx:key="deviceId"
+      class="device"
+      data-device-id="{{item.deviceId}}"
+      bindtap="connect"
+    >
+      <text class="device-name">{{item.name}}</text>
+      <text class="device-meta">{{item.deviceId}} · RSSI {{item.RSSI}}</text>
+    </view>
+    <view wx:if="{{devices.length === 0}}" class="empty">点击「扫描」查找 Lumen-ECHO</view>
+  </scroll-view>
+
+  <scroll-view scroll-y class="logs">
+    <text wx:for="{{logs}}" wx:key="index" class="log">{{item}}</text>
+  </scroll-view>
 </view>

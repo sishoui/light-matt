@@ -1,5 +1,4 @@
-declare function App<T>(options: T): void;
-declare function Page<T>(options: T): void;
+/// <reference types="miniprogram-api-typings" />
 
 interface IAppOption {
   globalData: Record<string, never>;

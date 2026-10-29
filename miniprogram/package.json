@@ -1,0 +1,10 @@
+{
+  "name": "lumen-miniprogram",
+  "version": "0.0.0",
+  "private": true,
+  "description": "lumen 微信小程序",
+  "devDependencies": {
+    "miniprogram-api-typings": "^5.2.3",
+    "typescript": "^5.6.0"
+  }
+}

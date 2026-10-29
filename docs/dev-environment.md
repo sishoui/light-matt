@@ -105,6 +105,8 @@ idf.py build
 | 查看 IDF 版本 | `idf.py --version` |
 | 配置目标 | `idf.py set-target esp32c3` |
 | 编译 | `idf.py build` |
+| 构建固件（中文路径安全） | `scripts\build-firmware.cmd` |
+| 烧录固件 | `scripts\flash-firmware.cmd COM6` |
 | 烧录 + 监视 | `idf.py -p COMx flash monitor` |
 | 只监视 | `idf.py -p COMx monitor` |
 | 清理 | `idf.py fullclean` |
@@ -123,6 +125,7 @@ idf.py build
 
 - `idf.py add-dependency` 之后如果 `build` 报 `led_strip.h: No such file or directory`，跑一次 `idf.py reconfigure` 再 build，让组件管理器拉取依赖。
 - **flash size 警告**：开发板实际是 4MB flash，但 hello_world 默认按 2MB 配置，启动会打印 `Detected size(4096k) larger than the size in the binary image header(2048k)`。实际固件工程按 C3FH4 配置 4MB：`CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y`。
+- **中文路径**：仓库在 `...\Desktop\项目\...`，ESP-IDF 的 ccache/CMake 在中文路径下会报 `filesystem error: Cannot convert character sequence`，构建会卡住或失败（`--no-ccache` 也不够）。已落地的办法：用 `scripts\build-firmware.cmd`，它把 `firmware/` 同步到 `%TEMP%\lumen-firmware`（纯 ASCII）再构建；烧录用 `scripts\flash-firmware.cmd COM6`。或者把整个仓库移到纯 ASCII 路径。
 - **devtools AppID**：`touristappid` 在当前版本会被 CLI 拒绝（`code 10：不存在此 AppID`）。真机预览前，在 IDE 里导入 `miniprogram/` 并使用「测试号」，或把测试号 AppID 填进 `project.config.json`。
 - 当前没有检测到已连接的串口时，先接板子；本次识别到的是原生 USB 的 `USB 串行设备 (COM6)`（VID `303A`）。系统里还记录过 CH340 的 COM3/COM4、CH343 的 COM5，注意别烧错口。
 - 系统 Python 是 3.12.10，但 IDF 工具链用自带的 3.11.2。`scripts/idf.cmd` 已把 IDF Python 放到 PATH 最前面；不要用系统 Python 直接跑 `idf_tools.py`。
