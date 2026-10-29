@@ -6,49 +6,354 @@
   color: #f5f5f5;
   display: flex;
   flex-direction: column;
+  gap: 24rpx;
+}
+
+/* ---------------- 连接状态条 ---------------- */
+
+.statusbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
   gap: 16rpx;
-}
-
-.header {
-  display: flex;
-  flex-direction: column;
-  gap: 6rpx;
-}
-
-.title {
-  font-size: 40rpx;
-  font-weight: 600;
-}
-
-.status {
-  font-size: 28rpx;
-  color: #8fd18f;
-}
-
-.meta {
-  font-size: 24rpx;
-  color: #9a9aa5;
-}
-
-.row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8rpx;
-}
-
-.devices {
-  height: 260rpx;
+  min-height: 96rpx;
+  padding: 16rpx 20rpx;
+  box-sizing: border-box;
+  border-radius: 16rpx;
+  background: #18181e;
   border: 1rpx solid #2a2a32;
-  border-radius: 12rpx;
-  padding: 8rpx;
 }
 
-.device {
-  padding: 10rpx 8rpx;
-  border-bottom: 1rpx solid #22222a;
+.status-dot {
+  width: 16rpx;
+  height: 16rpx;
+  border-radius: 50%;
+  background: #6f6f7a;
+  flex-shrink: 0;
+}
+
+.link-ready .status-dot {
+  background: #4dd17a;
+}
+
+.link-busy .status-dot {
+  background: #ffb478;
+}
+
+.link-warn .status-dot {
+  background: #ffb478;
+}
+
+.link-error .status-dot {
+  background: #ff6b6b;
+}
+
+.status-main {
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 4rpx;
+  min-width: 0;
+}
+
+.status-text {
+  font-size: 30rpx;
+  font-weight: 600;
+}
+
+.status-sub {
+  font-size: 22rpx;
+  color: #9a9aa5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-action {
+  font-size: 24rpx;
+  color: #ffb478;
+  flex-shrink: 0;
+}
+
+/* ---------------- 大开关 ---------------- */
+
+.power-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16rpx;
+  padding: 32rpx 0 16rpx;
+}
+
+.power-btn {
+  width: 240rpx;
+  height: 240rpx;
+  border-radius: 50%;
+  background: #1c1c23;
+  border: 2rpx solid #2f2f38;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 120ms ease;
+}
+
+.power-btn.on {
+  background: #2a2118;
+  border-color: #ffb478;
+  box-shadow: 0 0 48rpx rgba(255, 180, 120, 0.35);
+}
+
+.power-btn.disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.power-btn.busy {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+/* 电源图标：圆环 + 竖线，纯 CSS，不引入图标资源 */
+.power-glyph {
+  position: relative;
+  width: 96rpx;
+  height: 96rpx;
+  border: 8rpx solid #c9c9d1;
+  border-radius: 50%;
+  border-top-color: transparent;
+}
+
+.power-btn.on .power-glyph {
+  border-color: #ffb478;
+  border-top-color: transparent;
+}
+
+.power-glyph::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -12rpx;
+  width: 8rpx;
+  height: 48rpx;
+  margin-left: -4rpx;
+  background: #c9c9d1;
+  border-radius: 4rpx;
+}
+
+.power-btn.on .power-glyph::after {
+  background: #ffb478;
+}
+
+.power-label {
+  font-size: 26rpx;
+  color: #9a9aa5;
+}
+
+/* ---------------- 预留区块（亮度 / 颜色 / 预设） ---------------- */
+
+.section {
+  background: #18181e;
+  border: 1rpx solid #2a2a32;
+  border-radius: 20rpx;
+  padding: 24rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+}
+
+.section.disabled,
+.presets.disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.section-title {
+  font-size: 28rpx;
+  font-weight: 600;
+}
+
+.section-value {
+  font-size: 26rpx;
+  color: #9a9aa5;
+  font-family: Menlo, Consolas, monospace;
+}
+
+.section-hint {
+  font-size: 22rpx;
+  color: #6f6f7a;
+}
+
+.swatch {
+  width: 48rpx;
+  height: 48rpx;
+  border-radius: 12rpx;
+  border: 1rpx solid #3a3a44;
+}
+
+/* 亮度占位滑块 */
+.slider-track {
+  position: relative;
+  height: 8rpx;
+  border-radius: 4rpx;
+  background: #2a2a32;
+}
+
+.slider-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 8rpx;
+  border-radius: 4rpx;
+  background: #ffb478;
+}
+
+.slider-knob {
+  position: absolute;
+  top: 50%;
+  width: 32rpx;
+  height: 32rpx;
+  margin-left: -16rpx;
+  margin-top: -16rpx;
+  border-radius: 50%;
+  background: #f5f5f5;
+}
+
+/* 色环占位 */
+.color-wheel-placeholder {
+  position: relative;
+  align-self: center;
+  width: 360rpx;
+  height: 360rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.color-wheel-ring {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: 50%;
+  background: conic-gradient(
+    #ff0000,
+    #ffff00,
+    #00ff00,
+    #00ffff,
+    #0000ff,
+    #ff00ff,
+    #ff0000
+  );
+  opacity: 0.5;
+  -webkit-mask: radial-gradient(circle, transparent 58%, #000 59%);
+  mask: radial-gradient(circle, transparent 58%, #000 59%);
+}
+
+.color-wheel-center {
+  width: 220rpx;
+  height: 220rpx;
+  border-radius: 50%;
+  background: #101014;
+}
+
+/* 预设占位 */
+.presets {
+  display: flex;
+  justify-content: space-between;
+}
+
+.preset {
+  width: 72rpx;
+  height: 72rpx;
+  border-radius: 50%;
+  border: 1rpx solid #3a3a44;
+}
+
+/* ---------------- 页脚 ---------------- */
+
+.footer {
+  margin-top: auto;
+  padding: 16rpx 0 calc(16rpx + env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+}
+
+.version {
+  font-size: 22rpx;
+  color: #6f6f7a;
+  font-family: Menlo, Consolas, monospace;
+}
+
+.footer-hint {
+  font-size: 22rpx;
+  color: #6f6f7a;
+}
+
+/* ---------------- 扫描 / 设备弹层 ---------------- */
+
+.sheet-mask {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: flex-end;
+}
+
+.sheet {
+  width: 100%;
+  max-height: 70vh;
+  box-sizing: border-box;
+  padding: 24rpx 24rpx calc(24rpx + env(safe-area-inset-bottom));
+  background: #18181e;
+  border-radius: 32rpx 32rpx 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sheet-title {
+  font-size: 32rpx;
+  font-weight: 600;
+}
+
+.sheet-close {
+  font-size: 26rpx;
+  color: #9a9aa5;
+}
+
+.device-list {
+  height: 420rpx;
+  border: 1rpx solid #2a2a32;
+  border-radius: 16rpx;
+}
+
+.device-row {
+  padding: 20rpx 16rpx;
+  border-bottom: 1rpx solid #22222a;
+  display: flex;
+  flex-direction: column;
+  gap: 6rpx;
 }
 
 .device-name {
@@ -58,27 +363,66 @@
 .device-meta {
   font-size: 22rpx;
   color: #9a9aa5;
+  font-family: Menlo, Consolas, monospace;
 }
 
-.empty {
-  padding: 24rpx 8rpx;
+.device-empty {
+  padding: 32rpx 16rpx;
   font-size: 24rpx;
   color: #6f6f7a;
+  line-height: 1.6;
 }
 
-.logs {
-  flex: 1;
-  min-height: 360rpx;
-  border: 1rpx solid #2a2a32;
-  border-radius: 12rpx;
-  padding: 8rpx;
+.scan-hint {
+  font-size: 22rpx;
+  color: #ffb478;
 }
 
-.log {
-  display: block;
-  font-size: 20rpx;
-  line-height: 1.5;
-  color: #c9c9d1;
-  font-family: monospace;
+.sheet-btn {
+  height: 88rpx;
+  line-height: 88rpx;
+  border-radius: 16rpx;
+  background: #ffb478;
+  color: #1a1208;
+  font-size: 28rpx;
+  font-weight: 600;
+  text-align: center;
+}
+
+.sheet-btn.ghost {
+  background: #23232b;
+  color: #f5f5f5;
+}
+
+.sheet-btn.danger {
+  color: #ff8a8a;
+}
+
+.device-info {
+  display: flex;
+  flex-direction: column;
+  gap: 14rpx;
+  padding: 8rpx 0;
+}
+
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 24rpx;
+  font-size: 24rpx;
+}
+
+.info-label {
+  color: #9a9aa5;
+  flex-shrink: 0;
+}
+
+.info-value {
+  color: #f5f5f5;
   word-break: break-all;
+  text-align: right;
+}
+
+.mono {
+  font-family: Menlo, Consolas, monospace;
 }
