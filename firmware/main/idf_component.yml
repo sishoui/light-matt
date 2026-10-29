@@ -5,3 +5,4 @@
 ## 这里只钉主版本，避免不同机器的次版本漂移过大。
 dependencies:
   espressif/led_strip: "^3.1.1"
+  idf: ">=5.4"

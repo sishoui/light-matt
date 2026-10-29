@@ -1,33 +1,31 @@
-menu "Lumen 灯带（#4 bring-up 临时配置）"
+menu "Lumen"
 
-    # 这些名字是 #4/#6 共用的约定，后续 #6 加同名配置时不要改名。
     config LUMEN_LED_GPIO
-        int "灯带数据脚 GPIO"
-        range 0 21
+        int "LED 数据脚 GPIO"
         default 3
+        range 0 21
         help
-            驱动 WS2812B DIN 的 GPIO。默认 GPIO3。
-
-            C3FH4 上不可用/不建议用的引脚见 docs/led-bringup.md：
-            GPIO12-17（封装内 flash）、GPIO18/19（USB Serial/JTAG）、
-            GPIO20/21（UART0）、GPIO4-7（JTAG）、GPIO2/8/9（strapping）。
-            GPIO3 不在禁用名单内。
+            WS2812B 数据脚。默认 GPIO3，不在 C3FH4 的禁用引脚名单内。
+            禁用/慎用：GPIO12-17（封装内 flash）、GPIO11（VDD_SPI）、
+            GPIO18/19（USB Serial/JTAG）、GPIO20/21（UART0）、
+            GPIO4-7（JTAG）、GPIO2/8/9（strapping）。
 
     config LUMEN_LED_COUNT
         int "灯珠数量"
-        range 1 1000
         default 30
+        range 1 64
         help
-            灯带上的 WS2812B 灯珠数。协议文档默认值也是 30。
+            上电默认灯珠数量，同时也是首次上电（无 NVS 历史）的默认值。
+            协议常量 max_leds = 64 是硬上限。
 
     config LUMEN_RMT_MEM_BLOCK_SYMBOLS
         int "RMT mem_block_symbols"
-        range 48 1024
         default 48
+        range 48 512
         help
-            每个 RMT 内存块能容纳的 symbol 数。C3 每通道只有 48 个 word，
-            默认 48。C3 没有 RMT DMA，编码在 ISR 里逐块执行；中断被 BLE/Wi-Fi
-            拖慢时波形会坏。调大这个值相当于加缓冲，但必须是 48 的整数倍。
+            RMT 通道一次能容纳的 symbol 数量。C3 无 RMT DMA，编码在 ISR 里
+            逐块执行；官方建议取 48 的整数倍以降低 BLE/Wi-Fi 中断导致的波形
+            损坏风险。最终值由 RMT × BLE 共存验证票（#7）决定。
 
     choice LUMEN_LED_COLOR_ORDER
         prompt "颜色通道顺序"
@@ -42,5 +40,47 @@ menu "Lumen 灯带（#4 bring-up 临时配置）"
         config LUMEN_LED_COLOR_ORDER_RGB
             bool "RGB（红绿互换的批次）"
     endchoice
+
+    config LUMEN_MAX_BRIGHTNESS
+        int "亮度上限（0-255，0 表示不限制）"
+        default 255
+        range 0 255
+        help
+            构建期亮度上限。State 的 max_brightness 字段暴露这个值，
+            小程序滑块最大值与之对齐。初值 255（暂不限制）；#4 点灯验证
+            未观察到吊压，因此暂不引入限制。
+
+    config LUMEN_RENDER_TASK_STACK_SIZE
+        int "渲染任务栈大小（字节）"
+        default 4096
+        range 2048 16384
+        help
+            渲染任务只做 gamma 查表、set_pixel 循环和阻塞 refresh，
+            4 KB 足以覆盖 led_strip 与 RMT 驱动的调用深度。
+
+    config LUMEN_RENDER_TASK_PRIORITY
+        int "渲染任务优先级"
+        default 4
+        range 1 10
+        help
+            C3 单核。NimBLE 主机任务优先级是 configMAX_PRIORITIES - 4
+            （IDF 默认 configMAX_PRIORITIES=25，即 21）。渲染任务必须低于
+            主机任务，否则刷新期间会阻塞协议栈；高于 IDLE(0) 与 app_main(1)
+            即可，取 4 留出协议栈抢占余量。
+
+    config LUMEN_STORE_TASK_STACK_SIZE
+        int "存储任务栈大小（字节）"
+        default 3072
+        range 2048 8192
+        help
+            存储任务只做 NVS blob 写入与 commit，3 KB 足够。
+
+    config LUMEN_STORE_TASK_PRIORITY
+        int "存储任务优先级"
+        default 2
+        range 1 10
+        help
+            存储任务优先级低于渲染任务：NVS 写不是实时路径，且 flash 操作
+            会短暂关 cache，不应抢占渲染与协议栈。
 
 endmenu
