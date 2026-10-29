@@ -1,400 +1,289 @@
-const SERVICE_UUID = "6C756D65-6E00-4B1E-9A3C-000000000001";
-const RX_UUID = "6C756D65-6E00-4B1E-9A3C-000000000002";
-const TX_UUID = "6C756D65-6E00-4B1E-9A3C-000000000003";
-const STATE_UUID = "6C756D65-6E00-4B1E-9A3C-000000000004";
+/**
+ * 单页控制界面（#8 walking skeleton）。
+ *
+ * 页面只做 view model 与事件转发，所有 BLE 细节经 ControlSession。
+ * 本票只打通「设开关」；亮度 / 色环 / 预设区域渲染为禁用占位，
+ * 后续 #9 / #10 直接把控件接到 session.queueBrightness / queueColor，
+ * 不需要重排页面。
+ */
 
-interface DeviceItem {
-  deviceId: string;
-  name: string;
-  RSSI: number;
+import { errorText, resultText } from "../../utils/ble/errors";
+import {
+  ControlSession,
+  detectDevMode,
+  detectPlatform,
+  type PowerResult,
+} from "../../utils/control/session";
+import type { DeviceState, DiscoveredDevice, LinkState } from "../../utils/protocol/types";
+
+/** 模块级单例：页面重入时复用同一条 BLE 会话。 */
+let session: ControlSession | null = null;
+let unsubscribers: Array<() => void> = [];
+
+const PRESETS = [
+  { name: "暖白", hex: "#FFB478" },
+  { name: "冷白", hex: "#E8F0FF" },
+  { name: "红", hex: "#FF4D4D" },
+  { name: "橙", hex: "#FF9A3D" },
+  { name: "绿", hex: "#4DD17A" },
+  { name: "青", hex: "#3DD1D1" },
+  { name: "蓝", hex: "#4D7DFF" },
+  { name: "紫", hex: "#A06DFF" },
+];
+
+interface StatusView {
+  statusText: string;
+  statusSub: string;
+  statusAction: string;
+  linkClass: string;
 }
 
-function wxCall<T>(api: (options: any) => void, options: any = {}): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    api({
-      ...options,
-      success: (res: T) => resolve(res),
-      fail: (err: any) => reject(err),
-    });
-  });
-}
-
-function errText(err: any): string {
-  if (err == null) return "unknown";
-  const code = err.errCode ?? err.errno;
-  const msg = err.errMsg ?? err.message ?? String(err);
-  return code === undefined ? msg : `errCode=${code} ${msg}`;
-}
-
-function toHex(value: ArrayBuffer): string {
-  return Array.from(new Uint8Array(value))
-    .map((b) => b.toString(16).padStart(2, "0").toUpperCase())
-    .join(" ");
-}
-
-function makeTestFrame(seq: number): ArrayBuffer {
-  const buf = new Uint8Array(20);
-  buf[0] = 0xa5;
-  buf[1] = 0x01;
-  buf[2] = 0x01;
-  buf[3] = seq & 0xff;
-  buf[4] = 0x00;
-  for (let i = 5; i < buf.length; i += 1) {
-    buf[i] = (seq + i) & 0xff;
+function statusView(state: LinkState, deviceName: string, message?: string): StatusView {
+  switch (state) {
+    case "ready":
+      return {
+        statusText: `已连接 · ${deviceName || "设备"}`,
+        statusSub: "点击查看设备",
+        statusAction: "设备",
+        linkClass: "link-ready",
+      };
+    case "scanning":
+      return { statusText: "扫描中…", statusSub: message ?? "正在查找 Lumen 设备", statusAction: "停止", linkClass: "link-busy" };
+    case "connecting":
+      return { statusText: "连接中…", statusSub: deviceName, statusAction: "取消", linkClass: "link-busy" };
+    case "initializing":
+      return { statusText: "同步状态…", statusSub: deviceName, statusAction: "取消", linkClass: "link-busy" };
+    case "adapter-off":
+      return { statusText: "请打开蓝牙", statusSub: message ?? "打开系统蓝牙后会自动继续", statusAction: "重试", linkClass: "link-warn" };
+    case "failed":
+      return { statusText: "未连接", statusSub: message ?? "连接失败", statusAction: "重试", linkClass: "link-error" };
+    case "idle":
+      return { statusText: "未连接", statusSub: message ?? "点击选择设备", statusAction: "扫描", linkClass: "link-idle" };
+    default:
+      return { statusText: "未连接", statusSub: "点击选择设备", statusAction: "扫描", linkClass: "link-idle" };
   }
-  return buf.buffer;
 }
 
 Page({
   data: {
-    status: "未初始化",
-    platform: "",
-    devices: [] as DeviceItem[],
-    logs: [] as string[],
-    connected: false,
-    cached: false,
+    // 连接状态条
+    statusText: "未连接",
+    statusSub: "点击选择设备",
+    statusAction: "扫描",
+    linkClass: "link-idle",
+    ready: false,
+
+    // 开关
+    power: 0 as 0 | 1,
+    powerBusy: false,
+    powerLabel: "已关",
+
+    // 为 #9 / #10 预留的状态（本票只显示，不控制）
+    brightness: 0,
+    brightnessPercent: 0,
+    maxBrightness: 255,
+    colorHex: "#FFB478",
+    presets: PRESETS,
+
+    // 扫描 / 设备弹层
+    sheetVisible: false,
+    sheetMode: "scan" as "scan" | "device",
+    devices: [] as DiscoveredDevice[],
+    scanHint: "" as string,
+    deviceName: "",
+    deviceId: "",
+
+    version: "0.1.0",
   },
 
-  deviceId: "",
-  serviceId: SERVICE_UUID,
-  rxId: RX_UUID,
-  txId: TX_UUID,
-  stateId: STATE_UUID,
-  scanning: false,
-  writing: false,
-  nextSeq: 0,
-
   onLoad() {
-    const info = wx.getSystemInfoSync();
-    this.setData({ platform: info.platform });
-    this.log(`平台 ${info.platform} / ${info.system} / 基础库 ${info.SDKVersion}`);
+    const platform = detectPlatform();
+    const devMode = detectDevMode();
+    session = new ControlSession({ platform, devMode });
+    console.log(`[lumen] 平台 ${platform}，开发版日志 ${devMode ? "开启" : "关闭"}`);
 
-    wx.onBluetoothDeviceFound((res) => {
-      const found = res.devices ?? [];
-      if (!found.length) return;
-      const map = new Map(this.data.devices.map((d) => [d.deviceId, d]));
-      for (const dev of found) {
-        if (!dev.deviceId) continue;
-        map.set(dev.deviceId, {
-          deviceId: dev.deviceId,
-          name: dev.name || dev.localName || "(无名)",
-          RSSI: dev.RSSI ?? 0,
-        });
-      }
-      const devices = Array.from(map.values())
-        .sort((a, b) => b.RSSI - a.RSSI)
-        .slice(0, 20);
-      this.setData({ devices });
-    });
+    unsubscribers = [
+      session.onLink((state, detail) => this.applyLink(state, detail?.message)),
+      session.onDevices((devices) => {
+        this.setData({ devices });
+      }),
+      session.onState((state) => this.applyDeviceState(state)),
+      session.onScanHint((hint) => {
+        this.setData({ scanHint: hint ?? "" });
+      }),
+      session.onDeviceEvent((code, detail) => {
+        if (code === 0x01) {
+          wx.showToast({ title: `保存失败（命令 0x${detail.toString(16)}）`, icon: "none" });
+        }
+      }),
+    ];
 
-    wx.onBLECharacteristicValueChange((res) => {
-      const id = res.characteristicId.toUpperCase();
-      const hex = toHex(res.value);
-      if (id === this.txId.toUpperCase()) {
-        this.log(`TX <- ${hex}`);
-      } else if (id === this.stateId.toUpperCase()) {
-        this.log(`State <- ${hex}`);
-      } else {
-        this.log(`${id} <- ${hex}`);
-      }
-    });
-
-    wx.onBLEConnectionStateChange((res) => {
-      if (res.deviceId !== this.deviceId) return;
-      this.setData({ connected: res.connected });
-      this.log(res.connected ? "连接建立" : "连接断开");
-      if (!res.connected) this.setStatus("未连接");
-    });
-
-    wx.onBluetoothAdapterStateChange((res) => {
-      this.log(`适配器 available=${res.available} discovering=${res.discovering}`);
-      if (!res.available) {
-        this.setData({ connected: false });
-        this.setStatus("蓝牙已关闭");
-      } else if (!this.scanning && !this.data.connected) {
-        this.setStatus("适配器就绪");
-      }
-    });
+    void session.boot();
   },
 
   onUnload() {
-    if (this.scanning) {
-      wx.stopBluetoothDevicesDiscovery();
+    for (const off of unsubscribers) {
+      off();
     }
-    if (this.deviceId) {
-      wx.closeBLEConnection({ deviceId: this.deviceId });
+    unsubscribers = [];
+    // 页面生命周期结束，彻底断开并反注册 wx.on*（避免回调串入）。
+    session?.destroy();
+    session = null;
+  },
+
+  onShow() {
+    // 本票不做静默回连（#11）；回到前台只复核一次链路状态文案。
+    if (session !== null) {
+      this.applyLink(session.linkState);
     }
   },
 
-  log(line: string) {
-    const now = new Date();
-    const stamp = `${now.getHours().toString().padStart(2, "0")}:${now
-      .getMinutes()
-      .toString()
-      .padStart(2, "0")}:${now.getSeconds().toString().padStart(2, "0")}.${now
-      .getMilliseconds()
-      .toString()
-      .padStart(3, "0")}`;
-    const logs = [`${stamp} ${line}`, ...this.data.logs].slice(0, 200);
-    this.setData({ logs });
-    console.log(`[probe] ${line}`);
-  },
+  // ---------------- 状态条与弹层 ----------------
 
-  setStatus(status: string) {
-    this.setData({ status });
-  },
-
-  async openAdapter() {
-    try {
-      await wxCall(wx.openBluetoothAdapter);
-      this.log("适配器已打开");
-      this.setStatus("适配器就绪");
-    } catch (err) {
-      const code = (err as any).errCode;
-      if (code === 10001) {
-        this.log("蓝牙未开（10001）；打开系统蓝牙后会自动继续");
-        this.setStatus("请打开蓝牙");
-      } else {
-        this.log(`打开适配器失败：${errText(err)}`);
-        this.setStatus("适配器失败");
-      }
+  onStatusTap() {
+    if (session === null) {
+      return;
     }
+    const state = session.linkState;
+    if (state === "ready") {
+      this.setData({
+        sheetVisible: true,
+        sheetMode: "device",
+        deviceId: session.transport.currentDeviceId ?? "",
+      });
+      return;
+    }
+    if (state === "connecting" || state === "initializing") {
+      return; // 连接中不重复触发扫描
+    }
+    this.openScanSheet();
+  },
+
+  openScanSheet() {
+    this.setData({ sheetVisible: true, sheetMode: "scan", scanHint: "" });
+    void this.startScan();
+  },
+
+  closeSheet() {
+    this.setData({ sheetVisible: false, devices: [] });
+    if (session !== null && session.linkState === "scanning") {
+      void session.stopScan();
+    }
+  },
+
+  onSheetMaskTap() {
+    this.closeSheet();
+  },
+
+  /** catchtap 占位，阻止弹层内部点击穿透到遮罩。 */
+  noop() {
+    /* 空实现 */
   },
 
   async startScan() {
-    if (this.scanning) {
-      this.log("已在扫描");
+    if (session === null) {
       return;
     }
     try {
-      await this.openAdapter();
-      this.setData({ devices: [] });
-      this.scanning = true;
-      await wxCall(wx.startBluetoothDevicesDiscovery, {
-        services: [SERVICE_UUID],
-        allowDuplicatesKey: true,
-        interval: 0,
-      });
-      this.log(`开始扫描 service=${SERVICE_UUID}`);
-      this.setStatus("扫描中…");
-      setTimeout(() => {
-        if (this.scanning && this.data.devices.length === 0) {
-          this.log("10 秒无结果：Android 6.0+ 检查定位权限与定位开关；iOS 检查蓝牙授权");
-        }
-      }, 10000);
+      await session.scan();
     } catch (err) {
-      this.scanning = false;
-      this.log(`扫描失败：${errText(err)}`);
-      this.setStatus("扫描失败");
+      this.setData({ scanHint: errorText(err) });
     }
   },
 
-  async stopScan() {
-    this.scanning = false;
-    try {
-      await wxCall(wx.stopBluetoothDevicesDiscovery);
-    } catch (err) {
-      this.log(`停止扫描：${errText(err)}`);
-    }
-    this.setStatus(this.data.connected ? "已连接" : "已停止扫描");
+  onRescan() {
+    void this.startScan();
   },
 
-  async connect(e: WechatMiniprogram.TouchEvent) {
+  async onDeviceTap(e: WechatMiniprogram.TouchEvent) {
+    if (session === null) {
+      return;
+    }
     const deviceId = String(e.currentTarget.dataset.deviceId ?? "");
-    if (!deviceId) return;
-    await this.stopScan();
-    this.deviceId = deviceId;
-    this.setData({ cached: true });
-    this.setStatus("连接中…");
-    this.log(`连接 ${deviceId}`);
-    try {
-      await wxCall(wx.createBLEConnection, { deviceId, timeout: 10000 });
-      this.setData({ connected: true });
-      await this.initLink();
-    } catch (err) {
-      this.log(`连接失败：${errText(err)}`);
-      this.setStatus("连接失败");
-    }
-  },
-
-  async initLink() {
-    const deviceId = this.deviceId;
-    const platform = this.data.platform;
-
-    try {
-      if (platform === "android") {
-        try {
-          const res: any = await wxCall(wx.setBLEMTU, { deviceId, mtu: 185 });
-          this.log(`MTU 协商结果 ${res.mtu}`);
-        } catch (err) {
-          this.log(`setBLEMTU 失败：${errText(err)}`);
-        }
-      } else {
-        this.log("iOS/其他平台：跳过 setBLEMTU");
-      }
-
-      const services: any = await wxCall(wx.getBLEDeviceServices, { deviceId });
-      this.log(`services: ${services.services.map((s: any) => s.uuid).join(", ")}`);
-      const service = services.services.find(
-        (s: any) => s.uuid.toUpperCase() === SERVICE_UUID,
-      );
-      if (!service) throw new Error(`找不到 service ${SERVICE_UUID}`);
-      const serviceId = service.uuid;
-      this.serviceId = serviceId;
-
-      const chars: any = await wxCall(wx.getBLEDeviceCharacteristics, {
-        deviceId,
-        serviceId,
-      });
-      for (const c of chars.characteristics) {
-        this.log(
-          `char ${c.uuid} write=${c.properties.write} writeNoResponse=${c.properties.writeNoResponse} notify=${c.properties.notify} read=${c.properties.read}`,
-        );
-      }
-      const rx = chars.characteristics.find(
-        (c: any) => c.uuid.toUpperCase() === RX_UUID,
-      );
-      const tx = chars.characteristics.find(
-        (c: any) => c.uuid.toUpperCase() === TX_UUID,
-      );
-      const state = chars.characteristics.find(
-        (c: any) => c.uuid.toUpperCase() === STATE_UUID,
-      );
-      if (!rx) throw new Error("找不到 RX");
-      if (!tx) throw new Error("找不到 TX");
-      if (!state) throw new Error("找不到 State");
-      this.rxId = rx.uuid;
-      this.txId = tx.uuid;
-      this.stateId = state.uuid;
-      if (!rx.properties.writeNoResponse) {
-        this.log("警告：RX 不支持 writeNoResponse");
-      }
-
-      await wxCall(wx.notifyBLECharacteristicValueChange, {
-        state: true,
-        deviceId,
-        serviceId,
-        characteristicId: tx.uuid,
-        type: "notification",
-      });
-      this.log("notify 已订阅");
-
-      await new Promise<void>((resolve) => {
-        setTimeout(() => resolve(), 500);
-      });
-      await wxCall(wx.readBLECharacteristicValue, {
-        deviceId,
-        serviceId,
-        characteristicId: state.uuid,
-      });
-      this.log("已读 State");
-      this.setStatus("已连接 / 就绪");
-    } catch (err) {
-      this.log(`初始化失败：${errText(err)}`);
-      this.setStatus("初始化失败");
-    }
-  },
-
-  async send() {
-    if (!this.data.connected) return;
-    if (this.writing) {
-      this.log("上一次写入未完成，跳过");
+    const name = String(e.currentTarget.dataset.name ?? "");
+    if (!deviceId) {
       return;
     }
-    this.writing = true;
-    this.nextSeq = (this.nextSeq + 1) & 0xff;
     try {
-      const frame = makeTestFrame(this.nextSeq);
-      await wxCall(wx.writeBLECharacteristicValue, {
-        deviceId: this.deviceId,
-        serviceId: this.serviceId,
-        characteristicId: this.rxId,
-        value: frame,
-        writeType: "writeNoResponse",
-      });
-      this.log(`RX -> ${toHex(frame)}`);
+      const state = await session.connect(deviceId, name);
+      this.applyDeviceState(state);
+      this.setData({ sheetVisible: false, deviceName: name, deviceId });
+      // connect() 内发出 ready 时页面还没拿到设备名，这里补一次状态条。
+      this.applyLink("ready");
     } catch (err) {
-      this.log(`写入失败：${errText(err)}`);
-    } finally {
-      this.writing = false;
+      this.setData({ scanHint: errorText(err) });
     }
   },
 
-  async burst(interval: number) {
-    if (!this.data.connected) return;
-    const count = 20;
-    this.log(`连发 ${count} 帧 @ ${interval}ms`);
-    for (let i = 0; i < count; i += 1) {
-      await this.send();
-      if (i < count - 1) {
-        await new Promise<void>((resolve) => {
-          setTimeout(() => resolve(), interval);
-        });
+  async onDisconnect() {
+    if (session === null) {
+      return;
+    }
+    await session.disconnect();
+    this.setData({ sheetVisible: false, deviceName: "", deviceId: "", power: 0, powerLabel: "已关" });
+  },
+
+  // ---------------- 开关 ----------------
+
+  async onTogglePower() {
+    if (session === null || !this.data.ready || this.data.powerBusy) {
+      return;
+    }
+    const next = this.data.power === 1 ? 0 : 1;
+    this.setData({ powerBusy: true });
+    try {
+      const result: PowerResult = await session.setPower(next === 1);
+      this.applyPowerResult(result);
+    } finally {
+      this.setData({ powerBusy: false });
+    }
+  },
+
+  // ---------------- 内部 ----------------
+
+  applyLink(state: LinkState, message?: string) {
+    const view = statusView(state, this.data.deviceName, message);
+    this.setData({
+      ...view,
+      ready: state === "ready",
+    });
+    if (state !== "ready" && state !== "initializing") {
+      // 断线后不显示过期设备状态（设备是权威）。
+      if (state === "idle" || state === "failed" || state === "adapter-off") {
+        this.setData({ power: 0, powerLabel: "已关", brightnessPercent: 0 });
       }
     }
-    this.log("连发结束");
   },
 
-  burst20() {
-    return this.burst(20);
-  },
-
-  burst50() {
-    return this.burst(50);
-  },
-
-  burst100() {
-    return this.burst(100);
-  },
-
-  async disconnect() {
-    if (!this.deviceId) return;
-    try {
-      await wxCall(wx.closeBLEConnection, { deviceId: this.deviceId });
-    } catch (err) {
-      this.log(`断开失败：${errText(err)}`);
-    }
-    this.setData({ connected: false });
-    this.setStatus("已断开");
-  },
-
-  async reconnect() {
-    if (!this.deviceId) return;
-    this.setStatus("重连中…");
-    try {
-      await wxCall(wx.createBLEConnection, {
-        deviceId: this.deviceId,
-        timeout: 10000,
-      });
-      this.setData({ connected: true });
-      await this.initLink();
-    } catch (err) {
-      this.log(`重连失败：${errText(err)}`);
-      this.setStatus("重连失败");
-    }
-  },
-
-  async readState() {
-    if (!this.data.connected) return;
-    try {
-      await wxCall(wx.readBLECharacteristicValue, {
-        deviceId: this.deviceId,
-        serviceId: this.serviceId,
-        characteristicId: this.stateId,
-      });
-    } catch (err) {
-      this.log(`读 State 失败：${errText(err)}`);
-    }
-  },
-
-  clearLogs() {
-    this.setData({ logs: [] });
-  },
-
-  copyLogs() {
-    wx.setClipboardData({
-      data: this.data.logs.join("\n"),
-      success: () => this.log("日志已复制"),
+  applyDeviceState(state: DeviceState) {
+    const max = state.maxBrightness > 0 ? state.maxBrightness : 255;
+    this.setData({
+      power: state.power,
+      powerLabel: state.power === 1 ? "已开" : "已关",
+      brightness: state.brightness,
+      brightnessPercent: Math.round((Math.min(state.brightness, max) / max) * 100),
+      maxBrightness: state.maxBrightness,
+      colorHex: `#${[state.r, state.g, state.b]
+        .map((v) => v.toString(16).padStart(2, "0"))
+        .join("")
+        .toUpperCase()}`,
     });
+  },
+
+  applyPowerResult(result: PowerResult) {
+    if (result.kind === "ok") {
+      this.applyDeviceState(result.state);
+      return;
+    }
+    if (result.kind === "ack-error") {
+      wx.showToast({ title: resultText(result.ack.resultCode), icon: "none" });
+      // 非零 ACK：设备权威，重新读一次 State（失败就等用户手动重连）。
+      void session?.refreshState().then(
+        (state) => this.applyDeviceState(state),
+        () => undefined,
+      );
+      return;
+    }
+    wx.showToast({ title: result.message, icon: "none" });
   },
 });

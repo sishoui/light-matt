@@ -1,46 +1,116 @@
 <view class="page">
-  <view class="header">
-    <text class="title">BLE 探针</text>
-    <text class="status">{{status}}</text>
-    <text class="meta">{{platform}} · {{connected ? "已连接" : "未连接"}}</text>
-  </view>
-
-  <view class="row">
-    <button size="mini" bindtap="openAdapter">打开适配器</button>
-    <button size="mini" bindtap="startScan">扫描</button>
-    <button size="mini" bindtap="stopScan">停止扫描</button>
-    <button size="mini" bindtap="disconnect" disabled="{{!connected}}">断开</button>
-    <button size="mini" bindtap="reconnect" disabled="{{!cached}}">重连</button>
-  </view>
-
-  <view class="row">
-    <button size="mini" bindtap="send" disabled="{{!connected}}">发 20 字节</button>
-    <button size="mini" bindtap="burst20" disabled="{{!connected}}">连发 @20ms</button>
-    <button size="mini" bindtap="burst50" disabled="{{!connected}}">@50ms</button>
-    <button size="mini" bindtap="burst100" disabled="{{!connected}}">@100ms</button>
-    <button size="mini" bindtap="readState" disabled="{{!connected}}">读 State</button>
-  </view>
-
-  <view class="row">
-    <button size="mini" bindtap="clearLogs">清空日志</button>
-    <button size="mini" bindtap="copyLogs">复制日志</button>
-  </view>
-
-  <scroll-view scroll-y class="devices">
-    <view
-      wx:for="{{devices}}"
-      wx:key="deviceId"
-      class="device"
-      data-device-id="{{item.deviceId}}"
-      bindtap="connect"
-    >
-      <text class="device-name">{{item.name}}</text>
-      <text class="device-meta">{{item.deviceId}} · RSSI {{item.RSSI}}</text>
+  <!-- 1. 顶部连接状态条：始终可见，整条可点 -->
+  <view class="statusbar {{linkClass}}" bindtap="onStatusTap">
+    <view class="status-dot"></view>
+    <view class="status-main">
+      <text class="status-text">{{statusText}}</text>
+      <text class="status-sub" wx:if="{{statusSub}}">{{statusSub}}</text>
     </view>
-    <view wx:if="{{devices.length === 0}}" class="empty">点击「扫描」查找 Lumen-ECHO</view>
-  </scroll-view>
+    <text class="status-action">{{statusAction}}</text>
+  </view>
 
-  <scroll-view scroll-y class="logs">
-    <text wx:for="{{logs}}" wx:key="index" class="log">{{item}}</text>
-  </scroll-view>
+  <!-- 2. 大开关：本票唯一可操作控制 -->
+  <view class="power-card">
+    <view
+      class="power-btn {{power ? 'on' : ''}} {{!ready ? 'disabled' : ''}} {{powerBusy ? 'busy' : ''}}"
+      bindtap="onTogglePower"
+    >
+      <view class="power-glyph"></view>
+    </view>
+    <text class="power-label">{{powerLabel}}</text>
+  </view>
+
+  <!-- 3. 亮度：为 #9 预留，本票禁用 -->
+  <view class="section disabled">
+    <view class="section-head">
+      <text class="section-title">亮度</text>
+      <text class="section-value">{{brightness}}</text>
+    </view>
+    <view class="slider-track">
+      <view class="slider-fill" style="width: {{brightnessPercent}}%"></view>
+      <view class="slider-knob" style="left: {{brightnessPercent}}%"></view>
+    </view>
+    <text class="section-hint">亮度控制将在后续版本开放</text>
+  </view>
+
+  <!-- 4. 颜色：为 #10 预留，本票禁用 -->
+  <view class="section disabled">
+    <view class="section-head">
+      <text class="section-title">颜色</text>
+      <view class="swatch" style="background: {{colorHex}}"></view>
+    </view>
+    <view class="color-wheel-placeholder">
+      <view class="color-wheel-ring"></view>
+      <view class="color-wheel-center"></view>
+    </view>
+    <text class="section-hint">色环将在后续版本开放</text>
+  </view>
+
+  <!-- 5. 预设：为 #10 预留，本票禁用 -->
+  <view class="presets disabled">
+    <view wx:for="{{presets}}" wx:key="name" class="preset" style="background: {{item.hex}}"></view>
+  </view>
+
+  <!-- 6. 页脚：版本 + 提示 -->
+  <view class="footer">
+    <text class="version">v{{version}}</text>
+    <text class="footer-hint">开关与设备状态以设备为准</text>
+  </view>
+
+  <!-- 7. 扫描 / 设备弹层 -->
+  <view wx:if="{{sheetVisible}}" class="sheet-mask" bindtap="onSheetMaskTap">
+    <view class="sheet" catchtap="noop">
+      <view class="sheet-head">
+        <text class="sheet-title">{{sheetMode === 'scan' ? '选择设备' : '设备'}}</text>
+        <text class="sheet-close" bindtap="closeSheet">关闭</text>
+      </view>
+
+      <block wx:if="{{sheetMode === 'scan'}}">
+        <scroll-view scroll-y class="device-list">
+          <view
+            wx:for="{{devices}}"
+            wx:key="deviceId"
+            class="device-row"
+            data-device-id="{{item.deviceId}}"
+            data-name="{{item.name}}"
+            bindtap="onDeviceTap"
+          >
+            <text class="device-name">{{item.name}}</text>
+            <text class="device-meta">{{item.deviceId}} · {{item.rssi}} dBm</text>
+          </view>
+          <view wx:if="{{devices.length === 0}}" class="device-empty">
+            {{scanHint || '扫描中…'}}
+          </view>
+        </scroll-view>
+        <view wx:if="{{scanHint && devices.length > 0}}" class="scan-hint">{{scanHint}}</view>
+        <button class="sheet-btn" bindtap="onRescan">重新扫描</button>
+      </block>
+
+      <block wx:else>
+        <view class="device-info">
+          <view class="info-row">
+            <text class="info-label">设备</text>
+            <text class="info-value">{{deviceName || '未知'}}</text>
+          </view>
+          <view class="info-row">
+            <text class="info-label">deviceId</text>
+            <text class="info-value mono">{{deviceId}}</text>
+          </view>
+          <view class="info-row">
+            <text class="info-label">开关</text>
+            <text class="info-value">{{power ? '开' : '关'}}</text>
+          </view>
+          <view class="info-row">
+            <text class="info-label">亮度</text>
+            <text class="info-value">{{brightness}}</text>
+          </view>
+          <view class="info-row">
+            <text class="info-label">协议版本</text>
+            <text class="info-value">v1</text>
+          </view>
+        </view>
+        <button class="sheet-btn ghost danger" bindtap="onDisconnect">断开连接</button>
+      </block>
+    </view>
+  </view>
 </view>

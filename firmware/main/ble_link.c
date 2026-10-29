@@ -17,6 +17,7 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
+#include "command.h"
 #include "led_engine.h"
 #include "protocol.h"
 
@@ -53,14 +54,111 @@ static int gap_event(struct ble_gap_event *event, void *arg);
 static void advertise(void);
 
 /*
- * RX 回调：本票只做信封解码与日志，不执行命令、不改变灯带、不回 ACK。
- * 命令分发、payload 校验与 ACK 都在 #8。
+ * 回一条 ACK：载荷 [原命令字, 结果码]，seq 回显请求。
+ * 在 NimBLE 主机任务的 RX 回调里调用；notify 内部只做 mbuf 拷贝与入队，
+ * 不等待射频发送完成，也不刷灯 / 写 NVS。
  */
+static void send_ack(uint8_t seq, uint8_t command, uint8_t result)
+{
+    uint8_t frame[LUMEN_MAX_FRAME];
+    size_t len = lumen_protocol_encode_ack(seq, command, result, frame, sizeof(frame));
+    if (len == 0) {
+        ESP_LOGE(TAG, "ACK 编码失败 cmd=0x%02X seq=0x%02X result=0x%02X", command, seq,
+                 result);
+        return;
+    }
+    esp_err_t err = lumen_ble_link_notify(frame, len);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "ACK notify 失败 cmd=0x%02X seq=0x%02X result=0x%02X err=%s", command,
+                 seq, result, esp_err_to_name(err));
+        return;
+    }
+    ESP_LOGI(TAG, "ACK cmd=0x%02X seq=0x%02X result=0x%02X", command, seq, result);
+}
+
+/*
+ * 超过本地缓冲的帧：协议规定整帧 > 20 字节必须拒绝（0x04），绝不截断执行。
+ * 仍然可以从前 4 字节读出 header 并回显 seq / 命令字，所以先按 §10.2 的
+ * 顺序检查 magic / version，再回长度错误。
+ */
+static void reject_oversized(const struct os_mbuf *om, uint16_t mbuf_len)
+{
+    uint8_t header[4] = {0};
+    uint16_t copied = 0;
+    int rc = ble_hs_mbuf_to_flat(om, header, sizeof(header), &copied);
+    if (rc != 0 || copied < sizeof(header)) {
+        ESP_LOGW(TAG, "超长帧 %u 字节且读不到 header，静默丢弃", mbuf_len);
+        return;
+    }
+
+    uint8_t result = LUMEN_RESULT_BAD_LENGTH;
+    if (header[0] != LUMEN_MAGIC) {
+        result = LUMEN_RESULT_BAD_MAGIC;
+    } else if (header[1] != LUMEN_VERSION) {
+        result = LUMEN_RESULT_UNSUPPORTED_VERSION;
+    }
+    ESP_LOGW(TAG, "RX 收到 %u 字节，超过整帧上限 %d，拒绝 cmd=0x%02X seq=0x%02X result=0x%02X",
+             mbuf_len, LUMEN_MAX_FRAME, header[2], header[3], result);
+    send_ack(header[3], header[2], result);
+}
+
+/*
+ * 处理一条完整写到 RX 的帧：
+ *   解码（§10.2 magic→version→length→checksum）
+ *   → 命令分发（§10.2 command→payload 长度→payload 取值）
+ *   → 写入共享状态（RAM）
+ *   → 发渲染信号（lumen_led_engine_commit 内部完成，渲染异步）
+ *   → 回 ACK（协议 §10.1：写入 RAM 后立刻回）
+ *
+ * 渲染任务与 NVS 写入都不在本回调里发生。命令层是纯函数，状态写入是 O(1)
+ * 邮箱操作，不阻塞 NimBLE 主机任务。
+ */
+static void handle_frame(const uint8_t *data, size_t len)
+{
+    lumen_frame_t frame;
+    uint8_t result_code = 0xFF;
+    lumen_decode_status_t status = lumen_protocol_decode(data, len, &frame, &result_code);
+
+    switch (status) {
+    case LUMEN_DECODE_OK:
+        break;
+    case LUMEN_DECODE_SILENT:
+        /* 不足 6 字节：读不出可靠的 seq，按协议静默丢弃。 */
+        ESP_LOGW(TAG, "帧不足 %d 字节，静默丢弃", LUMEN_FRAME_OVERHEAD);
+        return;
+    default:
+        /* 坏 magic / version / length / checksum：尽力回显 header，不执行命令。 */
+        ESP_LOGW(TAG, "帧校验失败 cmd=0x%02X seq=0x%02X result=0x%02X", frame.command,
+                 frame.seq, result_code);
+        send_ack(frame.seq, frame.command, result_code);
+        return;
+    }
+
+    lumen_state_t current;
+    lumen_led_engine_snapshot(&current);
+
+    lumen_command_outcome_t outcome;
+    lumen_command_dispatch(&frame, &current, &outcome);
+
+    if (outcome.state_changed) {
+        /* 写入 RAM + 发渲染信号 + 请求 debounce 持久化；本回调不刷灯、不写 NVS。 */
+        lumen_led_engine_commit(&outcome.next);
+    }
+
+    ESP_LOGI(TAG, "RX cmd=0x%02X seq=0x%02X len=%u result=0x%02X power=%u%s", frame.command,
+             frame.seq, frame.payload_len, outcome.result_code, outcome.next.power,
+             outcome.state_changed ? " changed" : "");
+
+    /* ACK 在写入 RAM 之后立刻发；不等待渲染完成。 */
+    send_ack(frame.seq, frame.command, outcome.result_code);
+}
+
 static int rx_access(uint16_t conn_handle, uint16_t attr_handle,
                      struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
     (void)attr_handle;
     (void)arg;
+    (void)conn_handle;
 
     if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) {
         return BLE_ATT_ERR_UNLIKELY;
@@ -68,7 +166,7 @@ static int rx_access(uint16_t conn_handle, uint16_t attr_handle,
 
     uint16_t mbuf_len = OS_MBUF_PKTLEN(ctxt->om);
     if (mbuf_len > LUMEN_RX_BUF_SIZE) {
-        ESP_LOGW(TAG, "RX 收到 %u 字节，超过本地缓冲 %d，丢弃", mbuf_len, LUMEN_RX_BUF_SIZE);
+        reject_oversized(ctxt->om, mbuf_len);
         return 0;
     }
 
@@ -86,25 +184,7 @@ static int rx_access(uint16_t conn_handle, uint16_t attr_handle,
         ESP_LOG_BUFFER_HEX_LEVEL(TAG, buf, len, ESP_LOG_INFO);
     }
 
-    lumen_frame_t frame;
-    uint8_t result_code = 0xFF;
-    lumen_decode_status_t status = lumen_protocol_decode(buf, len, &frame, &result_code);
-    switch (status) {
-    case LUMEN_DECODE_OK:
-        ESP_LOGI(TAG, "信封 OK cmd=0x%02X seq=0x%02X payload_len=%u（本票不执行命令）",
-                 frame.command, frame.seq, frame.payload_len);
-        break;
-    case LUMEN_DECODE_SILENT:
-        ESP_LOGW(TAG, "帧不足 %d 字节，静默丢弃", LUMEN_FRAME_OVERHEAD);
-        break;
-    default:
-        ESP_LOGW(TAG, "信封错误 result=0x%02X cmd=0x%02X seq=0x%02X（ACK 留给 #8）",
-                 result_code, frame.command, frame.seq);
-        break;
-    }
-
-    /* 骨架阶段：绝不在这里刷灯 / 写 NVS / 改共享状态。 */
-    (void)conn_handle;
+    handle_frame(buf, len);
     return 0;
 }
 
