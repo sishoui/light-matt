@@ -8,12 +8,16 @@ idf_component_register(
         "state.c"
         "gamma.c"
         "protocol.c"
+        "stress_metrics.c"
     INCLUDE_DIRS "."
     REQUIRES
         bt
         nvs_flash
         esp_driver_rmt
         esp_hw_support
+        esp_system
+        esp_timer
+        heap
         freertos
         log
 )
