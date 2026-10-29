@@ -1,0 +1,4 @@
+<view class="page">
+  <text class="title">{{title}}</text>
+  <text class="hint">{{hint}}</text>
+</view>

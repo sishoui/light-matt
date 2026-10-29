@@ -1,0 +1,20 @@
+.page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: #101014;
+  color: #f5f5f5;
+}
+
+.title {
+  font-size: 48rpx;
+  font-weight: 600;
+}
+
+.hint {
+  margin-top: 16rpx;
+  font-size: 26rpx;
+  color: #9a9aa5;
+}

@@ -1,0 +1,9 @@
+{
+  "desc": "lumen",
+  "rules": [
+    {
+      "action": "allow",
+      "page": "*"
+    }
+  ]
+}
