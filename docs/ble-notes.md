@@ -46,28 +46,23 @@
 
 - **断开/重连**：串口观察到 3 次连接；断开 `reason=531`，重连后 MTU 再次 23 → 256。
 - **待补**：手机平台/型号、deviceId 形态、`setBLEMTU(185)` 的实际回包、services/characteristics properties、State 读回值、权限行为（日志最底部的早期行）。
+- **平台信息（已补）**：Android 16 / 基础库 3.17.6；deviceId = MAC `CC:8D:A2:C2:56:62`（与固件 MAC 一致）；`setBLEMTU(185)` 回包 **256**；services/characteristics/State 见下。
 
 ### Android
 
-- 型号 / 系统 / 微信版本：
-- deviceId 形态（MAC / UUID）：
-- `setBLEMTU(185)` 结果：
-- 20 字节 echo：
-- 连发回显数：@20ms / @50ms / @100ms =
-- 断线 → 重连：
-- 定位权限/蓝牙开关异常：
-- 其它：
+- **型号 / 系统 / 微信版本**：Android 16 / 基础库 3.17.6（机型待补）。
+- **deviceId 形态**：MAC，`CC:8D:A2:C2:56:62`，与固件蓝牙 MAC 一致。
+- **`setBLEMTU(185)` 结果**：**256**。请求值不是最终值，必须用 `res.mtu`。
+- **20 字节 echo**：`TX <-` 与 `RX ->` 逐字节一致。
+- **连发回显数**：@20ms / @50ms / @100ms = **20 / 20 / 20**（每轮 20 帧，0 丢包，`notify failed` 0）。
+- **实际平均间隔**：27ms / 55ms / 111ms。
+- **断线 → 重连**：3 次连接循环；断开 `reason=531`；重连后 MTU 再次 23 → 256。
+- **定位权限/蓝牙开关异常**：本轮未触发（正常授权与蓝牙开启状态下测试）。
+- **其它**：services 列表含自定义 Service + 标准 GAP `1800` / GATT `1801`；RX `write=true writeNoResponse=true`，TX `notify=true`，State `read=true`；State 读回 `01 80 FF B4 78 1E 00 FF`，与协议示例一致。
 
 ### iOS
 
-- 型号 / 系统 / 微信版本：
-- deviceId 形态（UUID）：
-- 是否跳过 `setBLEMTU`：
-- 20 字节 echo：
-- 连发回显数：@20ms / @50ms / @100ms =
-- 断线 → 重连：
-- 蓝牙授权异常：
-- 其它：
+**未测（当前无 iOS 设备）**。按官方文档预期：deviceId 为 UUID；无 `setBLEMTU`，必须跳过；`openBluetoothAdapter` 需要 `scope.bluetooth` 授权；超长写入可能静默失败。iOS 分支按这些预期实现，留到 #14 端到端验收时用真机确认。
 
 ### 固件串口（连接时复制）
 
@@ -78,6 +73,7 @@
 ## 结论
 
 - **writeNoResponse 推荐间隔**：**20Hz（50ms）**。实测 20ms 请求也不丢包，但实收间隔被拉到 27ms；50ms 请求实收 55ms，稳定。传输层按「20Hz 上限 + latest-wins」即可，不需要更激进。
-- **需要写进传输层的平台分支**：iOS 跳过 `setBLEMTU`；Android 调 `setBLEMTU`（最终值待回包确认）；notify 后先等 500ms 或先读 State 再写。
-- **未解释的现象**：断开 `reason=531` 的精确含义待查；MTU 最终 256 与 `setBLEMTU(185)` 的关系待回包确认。
-- **是否阻塞 #7**：不阻塞。20Hz 节流 + 串行写已在真机验证。
+- **MTU**：Android 上 `setBLEMTU(185)` 回包 256，固件侧也看到 23 → 256。传输层必须用回包 `res.mtu`，不能假设请求值生效；帧长仍按 20 字节设计，MTU 变大只当优化。
+- **需要写进传输层的平台分支**：iOS 跳过 `setBLEMTU`；Android 调 `setBLEMTU`（不要依赖请求值，读回包）；notify 后先等 500ms 或先读 State 再写。
+- **未解释的现象**：断开 `reason=531` 的精确含义待查；不影响重连。
+- **是否阻塞 #7**：不阻塞。20Hz 节流 + 串行写已在 Android 真机验证；iOS 按官方文档分支实现，留到 #14 验收。

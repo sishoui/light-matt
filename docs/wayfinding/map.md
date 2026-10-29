@@ -33,7 +33,7 @@
 | 01 | [开发环境就绪](./tickets/01-dev-environment.md) | task | — | done |
 | 02 | [协议规格定稿](./tickets/02-protocol-spec.md) | grilling | — | done |
 | 03 | [led_strip 点灯验证](./tickets/03-led-strip-smoke-test.md) | prototype | 01 | blocked |
-| 04 | [小程序 BLE 探测](./tickets/04-miniprogram-ble-probe.md) | prototype | 01 | blocked |
+| 04 | [小程序 BLE 探测](./tickets/04-miniprogram-ble-probe.md) | prototype | 01 | done |
 | 05 | [固件 BLE 服务与分层骨架](./tickets/05-firmware-ble-skeleton.md) | task | 02, 03 | blocked |
 | 06 | [固件协议实现与状态机](./tickets/06-firmware-protocol-impl.md) | task | 02, 05 | blocked |
 | 07 | [小程序 BLE 传输层与协议 codec](./tickets/07-miniprogram-transport-codec.md) | task | 02, 04 | blocked |
@@ -41,7 +41,7 @@
 | 09 | [端到端真机联调与验收](./tickets/09-end-to-end-acceptance.md) | task | 06, 08, 10 | blocked |
 | 10 | [RMT × BLE 共存稳定性验证](./tickets/10-rmt-ble-coexistence.md) | prototype | 03, 05 | blocked |
 
-**现在的 frontier 是 03（灯带点亮）与 04（小程序 BLE 探测）。** 两者都只依赖 01，可以并行；02 已关闭。
+**现在的 frontier 是 03（灯带点亮）与 07（小程序传输层与协议 codec）。** 03 等灯带硬件；07 已解除 02/04 的阻塞。
 
 依赖形状说明：01（环境）与 02（协议）是两条独立的地基——一条通固件，一条通两端。它们在 05/07 处汇合。03 与 04 是两条平行的风险探针，一个摸硬件、一个摸平台，都只依赖 01。
 
@@ -53,6 +53,7 @@
 
 - **BLE × 固件 × WS2812 事实核查**（调研，[研究笔记](./research/ble-and-firmware-facts.md)）：确认 20 字节是硬约束且 iOS 超长写会静默失败；C3 的 RMT 无 DMA 且单核，与 BLE 共存存在波形损坏风险；3.3V 驱动 5V WS2812B 在规格上不达标（VIH=3.5V）。详见研究笔记，已并入架构基线。
 - **开发环境就绪**（[GitHub #3](https://github.com/sishoui/light-matt/issues/3)，[环境文档](../dev-environment.md)）：ESP-IDF v5.4 工具链装好；hello_world 烧录 COM6 并输出；led_strip 依赖编译通过；微信开发者工具真机预览通过。芯片实际 4MB flash，正式固件按 4MB 配置。
+- **小程序 BLE 探测**（[GitHub #5](https://github.com/sishoui/light-matt/issues/5)，[实测笔记](../ble-notes.md)）：Android 16 真机验证扫描/连接/MTU/notify/写/回显；deviceId 是 MAC，`setBLEMTU(185)` 实际回包 256；连接间隔 30ms；20/50/100ms 各 20 帧全部回显；重连成功。iOS 未测（无设备），按官方文档记录，留到端到端验收。
 - **协议规格定稿**（[GitHub #2](https://github.com/sishoui/light-matt/issues/2)，规格见 [protocol.md](../protocol.md)）：帧 ≤20 字节、小端、校验和覆盖 magic..payload 后取反；7 条命令 + ACK/Event/StateReport；State 固定 8 字节；结果码 0x00-0x09；ACK 在写入 RAM 后回，NVS 失败用 Event 0x81；自检与灯珠数量重建语义已定。测试向量在 `docs/protocol-testvectors.json`。
 
 ## Not yet specified

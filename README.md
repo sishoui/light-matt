@@ -24,4 +24,4 @@ lumen/
 
 设计阶段。协议已定稿（[docs/protocol.md](docs/protocol.md)），开发环境已就绪（工具链、烧录、
 真机预览均通过），实现规格与执行票在 GitHub Issues。地图的前沿是「led_strip 点灯验证」与
-「小程序 BLE 探测」。尚无产品代码。
+「小程序传输层与协议 codec」。尚无产品代码（BLE 回显 fixture 与探针除外）。

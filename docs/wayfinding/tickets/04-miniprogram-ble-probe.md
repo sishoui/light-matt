@@ -53,10 +53,28 @@
 
 ## 验收
 
-- [ ] Android 真机能扫到并连上，MTU 协商结果记录在案
-- [ ] iOS 真机能扫到并连上，deviceId 形态记录在案
-- [ ] 发出一帧，设备回显被 notify 收到
-- [ ] 断线 → 重连流程走通一次
-- [ ] `docs/ble-notes.md` 里写清两端差异与踩到的坑
-- [ ] 摸清 `writeNoResponse` 连续发送的安全间隔（给出推荐值）
-- [ ] 记录国产 Android 机型的权限/开关异常行为（若有）
+- [x] Android 真机能扫到并连上，MTU 协商结果记录在案
+- [ ] iOS 真机能扫到并连上，deviceId 形态记录在案（当前无 iOS 设备，留到端到端验收）
+- [x] 发出一帧，设备回显被 notify 收到
+- [x] 断线 → 重连流程走通一次
+- [x] `docs/ble-notes.md` 里写清两端差异与踩到的坑
+- [x] 摸清 `writeNoResponse` 连续发送的安全间隔（给出推荐值）
+- [x] 记录国产 Android 机型的权限/开关异常行为（若有；本轮未触发异常）
+
+## 状态
+
+`resolved`（2026-10-30）
+
+## Answer
+
+Android 真机全部验证；iOS 未测（无设备），按官方文档记录，留到端到端验收。
+
+- 平台：Android 16 / 基础库 3.17.6。
+- deviceId：MAC `CC:8D:A2:C2:56:62`。
+- MTU：`setBLEMTU(185)` 回包 256；固件侧 23 → 256。
+- 连接：30ms 间隔、latency 0、超时 5s；断开 reason=531；重连 3 次成功。
+- 回显：20 字节逐字节一致；20/50/100ms 各 20 帧全部回显，0 notify 失败。
+- 结论：传输层按 20Hz（50ms）+ latest-wins + 串行写；MTU 只当优化。
+- 详情：[ble-notes.md](../../ble-notes.md)。
+
+GitHub 决议：[#5](https://github.com/sishoui/light-matt/issues/5)。
