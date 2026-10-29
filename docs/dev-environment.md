@@ -90,6 +90,7 @@ idf.py build
 
 1. 打开微信开发者工具，导入 `miniprogram/` 目录。
 2. `project.config.json` 里 `appid` 目前是 `touristappid`。**真机预览需要换成你的测试号 AppID**（测试号在公众平台申请，BLE 不依赖服务器域名）。
+   > 注：当前开发者工具版本用 CLI `open --project` 打开 `touristappid` 会报 `code 10：不存在此 AppID`。真机预览必须先在 IDE 里导入项目并使用「测试号」，或填入测试号 AppID。
 3. 模拟器只能模拟部分蓝牙接口；**完整 BLE 功能必须真机调试**。
 4. 真机预览步骤：工具栏「预览」→ 手机微信扫码 → 打开小程序。
 5. 平台差异：
@@ -122,5 +123,6 @@ idf.py build
 
 - `idf.py add-dependency` 之后如果 `build` 报 `led_strip.h: No such file or directory`，跑一次 `idf.py reconfigure` 再 build，让组件管理器拉取依赖。
 - **flash size 警告**：开发板实际是 4MB flash，但 hello_world 默认按 2MB 配置，启动会打印 `Detected size(4096k) larger than the size in the binary image header(2048k)`。实际固件工程按 C3FH4 配置 4MB：`CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y`。
+- **devtools AppID**：`touristappid` 在当前版本会被 CLI 拒绝（`code 10：不存在此 AppID`）。真机预览前，在 IDE 里导入 `miniprogram/` 并使用「测试号」，或把测试号 AppID 填进 `project.config.json`。
 - 当前没有检测到已连接的串口时，先接板子；本次识别到的是原生 USB 的 `USB 串行设备 (COM6)`（VID `303A`）。系统里还记录过 CH340 的 COM3/COM4、CH343 的 COM5，注意别烧错口。
 - 系统 Python 是 3.12.10，但 IDF 工具链用自带的 3.11.2。`scripts/idf.cmd` 已把 IDF Python 放到 PATH 最前面；不要用系统 Python 直接跑 `idf_tools.py`。
