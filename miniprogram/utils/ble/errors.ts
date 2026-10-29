@@ -115,3 +115,39 @@ export function resultText(resultCode: number): string {
       return `设备返回错误码 0x${resultCode.toString(16).padStart(2, "0")}`;
   }
 }
+
+/**
+ * 设备 → 小程序 Event 的提示文案（protocol §8 / §10.3）。
+ *
+ * `0x01` = NVS 存储失败（detail 是触发写入的原命令字），发生在 ACK 之后，
+ * 属于**非阻塞**警告：状态已写入 RAM 并生效，只是掉电后可能丢失。
+ * 保留码（`0x02-0xFF`）返回 null，调用方只记日志、不打扰用户。
+ */
+export function eventText(code: number, detail: number): string | null {
+  if (code === 0x01) {
+    return `设备保存失败（${commandText(detail)}），本次改动掉电后可能丢失`;
+  }
+  return null;
+}
+
+/** Event detail 里的原命令字 → 可读名；未知命令按十六进制显示。 */
+function commandText(command: number): string {
+  switch (command) {
+    case 0x01:
+      return "SetPower";
+    case 0x02:
+      return "SetBrightness";
+    case 0x03:
+      return "SetColor";
+    case 0x04:
+      return "SetAll";
+    case 0x05:
+      return "QueryState";
+    case 0x06:
+      return "SetLedCount";
+    case 0x07:
+      return "SelfTest";
+    default:
+      return `0x${command.toString(16).padStart(2, "0").toUpperCase()}`;
+  }
+}
