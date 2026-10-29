@@ -148,6 +148,29 @@ static void dispatch_set_all(const lumen_frame_t *frame, const lumen_state_t *cu
     }
 }
 
+/*
+ * SetLedCount 0x06：载荷 2 字节小端，合法 1-64（§6）。
+ *
+ * 关键语义（§11.3）：
+ *  - 这里只校验并标记「需要重建」。数量必须在渲染任务重建 led_strip 成功后
+ *    才写入共享状态，ACK 也要等重建结果——所以本 reducer 不改 next、
+ *    state_changed 保持 false，由 led_engine 在重建完成时提交 / 回滚。
+ *  - 越界（0、>64、小端读出的 65535 等）→ 0x01，不请求重建、不改状态。
+ *  - 与当前数量相同时由 led_engine 判为「无需重建」，直接回 0x00。
+ */
+static void dispatch_set_led_count(const lumen_frame_t *frame,
+                                   lumen_command_outcome_t *outcome)
+{
+    uint16_t count = (uint16_t)(frame->payload[0] | ((uint16_t)frame->payload[1] << 8));
+    if (count < 1 || count > LUMEN_MAX_LEDS) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    outcome->result_code = LUMEN_RESULT_OK;
+    outcome->led_count_rebuild = true;
+    outcome->led_count = count;
+}
+
 void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *current,
                             uint8_t max_brightness, lumen_command_outcome_t *outcome)
 {
@@ -158,6 +181,8 @@ void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *cur
     /* 默认：状态不变、结果码未知，等具体分支覆盖。 */
     outcome->result_code = LUMEN_RESULT_UNKNOWN_COMMAND;
     outcome->state_changed = false;
+    outcome->led_count_rebuild = false;
+    outcome->led_count = current->led_count;
     outcome->next = *current;
 
     /*
@@ -190,11 +215,14 @@ void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *cur
         dispatch_set_all(frame, current, max_brightness, outcome);
         return;
 
-    case LUMEN_CMD_QUERY_STATE:
     case LUMEN_CMD_SET_LED_COUNT:
+        dispatch_set_led_count(frame, outcome);
+        return;
+
+    case LUMEN_CMD_QUERY_STATE:
     case LUMEN_CMD_SELF_TEST:
-        /* #10 只打通颜色与一次设全部；查询状态/灯珠数量/自检的语义留给
-         * #12/#13。明确回「未实现」而不是假装成功，状态保持不变。 */
+        /* 查询状态与自检的语义属于 #13。明确回「未实现」而不是假装成功，
+         * 状态保持不变。 */
         outcome->result_code = LUMEN_RESULT_UNKNOWN_COMMAND;
         return;
 

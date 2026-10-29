@@ -20,6 +20,7 @@
 #include "command.h"
 #include "led_engine.h"
 #include "protocol.h"
+#include "state_store.h"
 #include "stress_metrics.h"
 
 static const char *TAG = "lumen_ble";
@@ -102,6 +103,15 @@ static void send_ack(uint8_t seq, uint8_t command, uint8_t result)
 }
 
 /*
+ * 引擎在渲染任务里发出的异步 ACK（SetLedCount 重建完成后）。
+ * 同样只做编码 + notify 入队，不阻塞渲染任务。
+ */
+static void engine_response(uint8_t seq, uint8_t command, uint8_t result)
+{
+    send_ack(seq, command, result);
+}
+
+/*
  * 超过本地缓冲的帧：协议规定整帧 > 20 字节必须拒绝（0x04），绝不截断执行。
  * 仍然可以从前 4 字节读出 header 并回显 seq / 命令字，所以先按 §10.2 的
  * 顺序检查 magic / version，再回长度错误。
@@ -178,6 +188,21 @@ static void handle_frame(const uint8_t *data, size_t len)
              frame.command, frame.seq, frame.payload_len, outcome.result_code,
              outcome.next.power, outcome.next.brightness, outcome.next.r, outcome.next.g,
              outcome.next.b, outcome.state_changed ? " changed" : "");
+
+    if (outcome.led_count_rebuild) {
+        /*
+         * SetLedCount（协议 §10.1 例外 / §11.3）：ACK 必须等句柄重建结果。
+         * 这里只登记请求 —— 引擎判忙 / 判相同值，真正的 create/del 在渲染任务，
+         * 结果由引擎经 response 回调发 ACK。
+         */
+        uint8_t status = lumen_led_engine_set_led_count(outcome.led_count, frame.seq);
+        if (status == LUMEN_LED_ENGINE_DEFERRED) {
+            return; /* ACK 由渲染任务在重建完成后发 */
+        }
+        /* OK（数量未变）或 Busy：可以立即回。 */
+        send_ack(frame.seq, frame.command, status);
+        return;
+    }
 
     /* ACK 在写入 RAM 之后立刻发；不等待渲染完成。 */
     send_ack(frame.seq, frame.command, outcome.result_code);
@@ -448,6 +473,14 @@ static void host_task(void *param)
 
 esp_err_t lumen_ble_link_init(void)
 {
+    /*
+     * 两条异步回执通道先接上（都在 notify 可用之前注册，避免丢第一帧）：
+     *   1. 引擎在渲染任务里回 SetLedCount 的延迟 ACK；
+     *   2. 存储任务在 NVS 写失败时发 Event 0x81。
+     */
+    lumen_led_engine_set_response_cb(engine_response);
+    lumen_state_store_set_event_cb(on_store_failed);
+
     esp_err_t err = nimble_port_init();
     if (err != ESP_OK) {
         return err;
@@ -477,10 +510,6 @@ esp_err_t lumen_ble_link_init(void)
         return ESP_FAIL;
     }
     ESP_LOGI(TAG, "GATT 服务已注册（Service 6c756d65-...-0001，RX/TX/State）");
-
-    /* NVS 写失败的异步上报通道（§10.3）。注册在启动主机任务之前，
-     * 避免开启广播后出现「失败已发生但回调还没接上」的窗口。 */
-    lumen_led_engine_set_store_event_cb(on_store_failed);
 
     nimble_port_freertos_init(host_task);
     return ESP_OK;

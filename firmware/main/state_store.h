@@ -11,10 +11,18 @@
  * state_store：NVS 持久化。
  * 上电加载一次；状态变更后 500ms debounce 写一次。
  *
+ * debounce 与 blob 编解码分别由 save_scheduler / state_blob 两个纯模块实现，
+ * 本文件只负责任务、NVS 与失败上报，因此 host 单测不需要 NVS。
+ *
  * 写失败发生在 ACK 之后，按 docs/protocol.md §10.3 用 Event 0x81 上报：
  * 注册的 event_cb 会被调用，参数是触发这次写入的命令字（detail 字段）。
  */
 
+/*
+ * NVS 写失败的异步通知（协议 §10.3 Event 0x81）。
+ * 参数是触发这次写入的命令字，即 Event 载荷的第二字节。
+ * 回调在存储任务上下文里执行，实现必须非阻塞（只做协议编码 + notify 入队）。
+ */
 typedef void (*lumen_store_event_cb)(uint8_t command);
 
 esp_err_t lumen_state_store_init(void);
