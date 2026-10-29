@@ -19,6 +19,7 @@
 
 #include "led_engine.h"
 #include "protocol.h"
+#include "stress_metrics.h"
 
 static const char *TAG = "lumen_ble";
 
@@ -79,6 +80,9 @@ static int rx_access(uint16_t conn_handle, uint16_t attr_handle,
         ESP_LOGW(TAG, "mbuf flatten failed rc=%d", rc);
         return BLE_ATT_ERR_UNLIKELY;
     }
+
+    /* 压力模式：#7 要求每次写入都带时间戳，用于和高频刷新做时间对齐。 */
+    lumen_stress_note_ble_write(len);
 
     /* 验收要求的一行：收到 N 字节。20 字节以内的帧顺带打 hex，日志仍是一行。 */
     ESP_LOGI(TAG, "RX 收到 %u 字节", len);
@@ -255,6 +259,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         }
 
         s_conn_handle = event->connect.conn_handle;
+        lumen_stress_note_ble_connect(s_conn_handle);
         if (ble_gap_conn_find(s_conn_handle, &desc) == 0) {
             ESP_LOGI(TAG, "connected handle=0x%04X itvl=%d latency=%d timeout=%d",
                      s_conn_handle, desc.conn_itvl, desc.conn_latency,
@@ -267,6 +272,8 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "disconnected handle=0x%04X reason=%d",
                  event->disconnect.conn.conn_handle, event->disconnect.reason);
+        lumen_stress_note_ble_disconnect(event->disconnect.conn.conn_handle,
+                                         event->disconnect.reason);
         /* 只清理当前连接句柄；旧连接的延迟 DISCONNECT 不能误伤新连接。 */
         if (s_conn_handle == event->disconnect.conn.conn_handle) {
             s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
@@ -281,6 +288,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
 
     case BLE_GAP_EVENT_MTU:
         ESP_LOGI(TAG, "mtu updated=%d", event->mtu.value);
+        lumen_stress_note_ble_mtu(event->mtu.value);
         return 0;
 
     case BLE_GAP_EVENT_CONN_UPDATE:

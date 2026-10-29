@@ -27,6 +27,11 @@ menu "Lumen"
             逐块执行；官方建议取 48 的整数倍以降低 BLE/Wi-Fi 中断导致的波形
             损坏风险。最终值由 RMT × BLE 共存验证票（#7）决定。
 
+            硬件上限：C3 每个 RMT group 只有 4 个通道 × 48 word = 192 word。
+            驱动按 mem_block_symbols/48 向上取整申请连续内存块，因此
+            96（2 块）和 192（4 块）可行，384（8 块）会在
+            led_strip_new_rmt_device 处失败。组 4 的 384 只会记录「初始化失败」。
+
     choice LUMEN_LED_COLOR_ORDER
         prompt "颜色通道顺序"
         default LUMEN_LED_COLOR_ORDER_GRB
@@ -82,5 +87,106 @@ menu "Lumen"
         help
             存储任务优先级低于渲染任务：NVS 写不是实时路径，且 flash 操作
             会短暂关 cache，不应抢占渲染与协议栈。
+
+    config LUMEN_RMT_STRESS_MODE
+        bool "RMT × BLE 共存压力测试模式（#7，仅实验固件）"
+        default n
+        help
+            仅用于 issue #7「RMT × BLE 共存验证」的硬件实测，不是产品功能。
+
+            开启后：
+              - 渲染任务不再阻塞在 latest-wins 信号量上，而是按固定周期强制
+                刷新灯带，制造持续的 RMT 编码压力；
+              - 串口按周期打印可判定指标（refresh 返回码/耗时、循环间隔抖动、
+                heap/min_heap、BLE 连接/MTU/写入计数）；
+              - 启动时打印复位原因并醒目区分 BROWNOUT / WDT / PANIC。
+
+            关闭时：渲染任务与串口输出与 #6 骨架完全一致，产品路径不受影响。
+            量产固件绝对不要打开这个开关。
+
+    if LUMEN_RMT_STRESS_MODE
+
+        config LUMEN_STRESS_PERIOD_MS
+            int "压力循环周期（毫秒，50 = 20Hz）"
+            default 50
+            range 10 1000
+            help
+                渲染任务每周期强制刷新一次灯带。30 灯一帧约 1.2ms 数据 +
+                280us reset，50ms 周期远高于 WS2812B 的可见刷新需求，
+                对应票里的「20Hz 高频写入」，同时留出 BLE 连接事件的间隙。
+
+        config LUMEN_STRESS_DURATION_MIN
+            int "压力模式运行时长（分钟，0 = 无限）"
+            default 30
+            range 0 240
+            help
+                到期后停止压力循环、打印最终汇总，然后回到普通 latest-wins
+                渲染路径（灯带停留在最后一帧）。判定线要求 30 分钟，默认 30。
+
+        config LUMEN_STRESS_START_DELAY_S
+            int "压力循环开始前的等待（秒）"
+            default 20
+            range 0 300
+            help
+                给手机留出连接并开始写入的时间。组 2/组 3 必须在压力循环
+                已经开始时才有 BLE 活动；默认 20 秒足够 nRF Connect 连上并
+                连续发送。组 1（BLE 不连接）保持默认即可，不影响判定。
+
+        config LUMEN_STRESS_LOG_WRITES
+            bool "每次 BLE 写入立即打一行（会阻塞 NimBLE 主机任务）"
+            default n
+            help
+                默认关闭。写入时间戳始终记录在固件的 1024 条环形缓冲里，
+                每个心跳批量打印，不在 NimBLE 主机任务里碰 UART。
+
+                打开后每次 RX 写入额外打一行 t=<us> len=<n>。代价：115200
+                下每行约 5ms 串口时间，20Hz 写入时约 10% 占空，且这段时间
+                主机任务无法处理 BLE 事件——本身就可能造成断连或写入延迟，
+                从而污染被测对象。只在需要逐帧对齐时临时打开。
+
+        choice LUMEN_STRESS_PATTERN
+            prompt "压力循环的像素模式"
+            default LUMEN_STRESS_PATTERN_CYCLE
+            help
+                CYCLE：每周期切换颜色/亮度，制造最大的状态变化压力
+                       （票里字面要求的 20Hz 循环换色）。
+                STEADY：每周期强制刷新同一帧。RMT 负载与 CYCLE 完全相同
+                        （每周期都完整发送 30x24 bit），但灯带颜色恒定，
+                        是肉眼数「错色帧」时必须用的模式。
+
+            config LUMEN_STRESS_PATTERN_CYCLE
+                bool "CYCLE：每周期换色（最大压力）"
+
+            config LUMEN_STRESS_PATTERN_STEADY
+                bool "STEADY：固定颜色但持续刷新（肉眼判错色）"
+        endchoice
+
+        config LUMEN_STRESS_REFRESH_ASYNC
+            bool "组 5：使用 refresh_async 延迟等待（非双缓冲）"
+            default n
+            help
+                led_strip 3.1.1 的 refresh_async 没有双缓冲：发送期间不能改
+                像素。开启后渲染任务把 refresh_async_done 的等待推迟到下一次
+                刷新之前，用来对比「渲染任务每帧阻塞时间」。它不会减少 RMT
+                编码与 BLE 的 ISR 竞争，组 5 的结论见 docs/rmt-ble-stability.md。
+
+        config LUMEN_STRESS_HEARTBEAT_S
+            int "心跳间隔（秒）"
+            default 30
+            range 5 300
+            help
+                串口心跳间隔。心跳行包含累计刷新数、错误数、间隔 min/avg/max、
+                refresh 耗时、async 等待、heap、min_heap、BLE 计数。
+
+        config LUMEN_STRESS_BRIGHTNESS
+            int "压力循环亮度（0-255）"
+            default 64
+            range 1 255
+            help
+                压力循环里乘到颜色上的亮度。默认 64：饱和色单通道约 150mA，
+                避免开发板 USB 5V 限流/掉压混进「错色」统计。跑全白高亮前
+                先确认供电能力。此值不影响判定方法，但同一组实验内不要改。
+
+    endif
 
 endmenu

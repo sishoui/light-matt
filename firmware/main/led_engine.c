@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -12,6 +13,7 @@
 
 #include "gamma.h"
 #include "state_store.h"
+#include "stress_metrics.h"
 
 static const char *TAG = "lumen_engine";
 
@@ -73,6 +75,31 @@ static esp_err_t create_strip(uint16_t count, led_strip_handle_t *out)
 }
 
 /*
+ * 把一帧像素写进驱动并阻塞等待 RMT 发完。
+ * 只有渲染任务调用（灯带句柄唯一所有者）。
+ * 压力模式开启时顺带记录返回码与阻塞耗时；关闭时两次 esp_timer 调用
+ * 都被编译掉，产品路径与 #6 骨架一致。
+ */
+static esp_err_t push_frame(uint8_t r, uint8_t g, uint8_t b, uint16_t count)
+{
+    for (uint16_t i = 0; i < count; ++i) {
+        led_strip_set_pixel(s_strip, i, r, g, b);
+    }
+
+#if CONFIG_LUMEN_RMT_STRESS_MODE
+    int64_t t0 = esp_timer_get_time();
+#endif
+    esp_err_t err = led_strip_refresh(s_strip);
+#if CONFIG_LUMEN_RMT_STRESS_MODE
+    lumen_stress_note_refresh(err, esp_timer_get_time() - t0);
+#endif
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "refresh failed: %s", esp_err_to_name(err));
+    }
+    return err;
+}
+
+/*
  * 渲染一份快照。调用者是渲染任务，且持有灯带句柄的唯一所有权。
  * 同步 refresh() 而不是 refresh_async()：只有一个渲染任务、没有并发刷新，
  * 引入 async 就必须自建双缓冲，而本票没有任何收益。RMT × BLE 的调优在 #7。
@@ -94,12 +121,7 @@ static void render_snapshot(const lumen_state_t *snapshot)
         return; /* 状态没变，不碰灯带 */
     }
 
-    for (uint16_t i = 0; i < count; ++i) {
-        led_strip_set_pixel(s_strip, i, r, g, b);
-    }
-    esp_err_t err = led_strip_refresh(s_strip);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "refresh failed: %s", esp_err_to_name(err));
+    if (push_frame(r, g, b, count) != ESP_OK) {
         return;
     }
 
@@ -111,9 +133,158 @@ static void render_snapshot(const lumen_state_t *snapshot)
     s_rendered_valid = true;
 }
 
+#if CONFIG_LUMEN_RMT_STRESS_MODE
+/*
+ * ===== issue #7 专用：RMT × BLE 共存压力阶段 =====
+ *
+ * 与产品路径的区别只有两点：
+ *   1. 不等 latest-wins 信号量，而是按固定周期强制刷新（制造持续 RMT 负载）；
+ *   2. 每帧的返回码/耗时、循环间隔抖动、heap、BLE 计数打到串口。
+ *
+ * 压力模式不读共享状态的颜色：它用固定序列/固定色，确保每组的刺激可复现。
+ * BLE 服务本身照常工作（连接、读 State、写 RX 日志），因此五组实验可以在
+ * 同一份固件上只改 Kconfig 跑完。
+ */
+
+typedef struct {
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+} stress_color_t;
+
+/*
+ * CYCLE 模式每周期换一帧。颜色亮度统一由 CONFIG_LUMEN_STRESS_BRIGHTNESS
+ * 缩放（默认 64），避免全白高亮把开发板 USB 5V 拉垮、把「错色」和「掉压」
+ * 混在一起。STEADY 模式固定用第 0 帧（暗红），便于肉眼数错色帧。
+ */
+static const stress_color_t k_stress_colors[] = {
+    {255, 0, 0},  {0, 255, 0},   {0, 0, 255}, {255, 180, 120},
+    {255, 255, 0}, {0, 255, 255}, {255, 0, 255}, {0, 0, 0},
+};
+#define STRESS_COLOR_COUNT (sizeof(k_stress_colors) / sizeof(k_stress_colors[0]))
+
+/* 运行压力阶段；到时（CONFIG_LUMEN_STRESS_DURATION_MIN）返回后走普通渲染循环。 */
+static void run_stress_phase(void)
+{
+    const int64_t duration_us = (int64_t)CONFIG_LUMEN_STRESS_DURATION_MIN * 60 * 1000000;
+
+    /* 灯珠数量当前不会在压力阶段变化（SetLedCount 在 #8），启动时读一次。 */
+    uint16_t count;
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    count = s_state.led_count;
+    xSemaphoreGive(s_state_lock);
+
+    ESP_LOGI(TAG, "压力循环开始：%dms/帧（约 %dHz），亮度=%d，灯数=%u，"
+                  "时长=%d 分钟（0=无限），async=%s",
+             CONFIG_LUMEN_STRESS_PERIOD_MS, 1000 / CONFIG_LUMEN_STRESS_PERIOD_MS,
+             CONFIG_LUMEN_STRESS_BRIGHTNESS, count, CONFIG_LUMEN_STRESS_DURATION_MIN,
+#if CONFIG_LUMEN_STRESS_REFRESH_ASYNC
+             "on"
+#else
+             "off"
+#endif
+    );
+
+#if CONFIG_LUMEN_STRESS_START_DELAY_S > 0
+    /* 给手机留出连接并开始写入的时间：组 2/3 的 BLE 活动必须与刷新重叠。 */
+    ESP_LOGI(TAG, "等待 %d 秒后开始压力循环（这段时间灯带静止，便于手机连接）",
+             CONFIG_LUMEN_STRESS_START_DELAY_S);
+    vTaskDelay(pdMS_TO_TICKS(CONFIG_LUMEN_STRESS_START_DELAY_S * 1000));
+#endif
+
+    TickType_t last_wake = xTaskGetTickCount();
+    const int64_t started = esp_timer_get_time();
+    int64_t last_loop_us = 0;
+    uint32_t frame = 0;
+#if CONFIG_LUMEN_STRESS_REFRESH_ASYNC
+    bool async_inflight = false;
+#endif
+
+    for (;;) {
+        /* 固定节拍唤醒；间隔测量放在唤醒后，量到的是真实周期。 */
+        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(CONFIG_LUMEN_STRESS_PERIOD_MS));
+
+        int64_t now = esp_timer_get_time();
+        if (duration_us > 0 && now - started >= duration_us) {
+            break;
+        }
+        if (last_loop_us != 0) {
+            lumen_stress_note_loop_interval(now - last_loop_us);
+        }
+        last_loop_us = now;
+
+#if CONFIG_LUMEN_STRESS_REFRESH_ASYNC
+        /*
+         * 组 5：把上一帧的完成等待推迟到下一次改像素之前。
+         * led_strip 3.1.1 无双缓冲，发送期间像素缓冲属于在途事务，
+         * 所以必须先 wait 再 set_pixel——这是 async 的唯一合法用法。
+         */
+        if (async_inflight) {
+            int64_t wait_t0 = esp_timer_get_time();
+            esp_err_t werr = led_strip_refresh_async_done(s_strip);
+            lumen_stress_note_async_wait(werr, esp_timer_get_time() - wait_t0);
+            async_inflight = false;
+            if (werr != ESP_OK) {
+                ESP_LOGW(TAG, "refresh_async_done failed: %s", esp_err_to_name(werr));
+            }
+        }
+#endif
+
+#if CONFIG_LUMEN_STRESS_PATTERN_STEADY
+        const stress_color_t *color = &k_stress_colors[0];
+#else
+        const stress_color_t *color = &k_stress_colors[frame % STRESS_COLOR_COUNT];
+#endif
+        uint8_t r = lumen_gamma_apply(color->r, CONFIG_LUMEN_STRESS_BRIGHTNESS);
+        uint8_t g = lumen_gamma_apply(color->g, CONFIG_LUMEN_STRESS_BRIGHTNESS);
+        uint8_t b = lumen_gamma_apply(color->b, CONFIG_LUMEN_STRESS_BRIGHTNESS);
+
+        for (uint16_t i = 0; i < count; ++i) {
+            led_strip_set_pixel(s_strip, i, r, g, b);
+        }
+
+#if CONFIG_LUMEN_STRESS_REFRESH_ASYNC
+        int64_t t0 = esp_timer_get_time();
+        esp_err_t err = led_strip_refresh_async(s_strip);
+        lumen_stress_note_refresh(err, esp_timer_get_time() - t0);
+        if (err == ESP_OK) {
+            async_inflight = true;
+        } else {
+            ESP_LOGW(TAG, "refresh_async failed: %s", esp_err_to_name(err));
+        }
+#else
+        int64_t t0 = esp_timer_get_time();
+        esp_err_t err = led_strip_refresh(s_strip);
+        lumen_stress_note_refresh(err, esp_timer_get_time() - t0);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "refresh failed: %s", esp_err_to_name(err));
+        }
+#endif
+
+        frame++;
+    }
+
+#if CONFIG_LUMEN_STRESS_REFRESH_ASYNC
+    /* 退出前必须把在途事务收干净，之后普通渲染路径才能安全改像素。 */
+    if (async_inflight) {
+        int64_t wait_t0 = esp_timer_get_time();
+        esp_err_t werr = led_strip_refresh_async_done(s_strip);
+        lumen_stress_note_async_wait(werr, esp_timer_get_time() - wait_t0);
+    }
+#endif
+    lumen_stress_final_report();
+}
+#endif /* CONFIG_LUMEN_RMT_STRESS_MODE */
+
 static void render_task(void *arg)
 {
     (void)arg;
+
+#if CONFIG_LUMEN_RMT_STRESS_MODE
+    /* 压力阶段结束后自动回到普通 latest-wins 渲染路径。 */
+    run_stress_phase();
+#endif
+
     for (;;) {
         /* 空闲时阻塞在二值信号量上，不空转、不轮询。 */
         if (xSemaphoreTake(s_render_signal, portMAX_DELAY) != pdTRUE) {
@@ -158,7 +329,14 @@ esp_err_t lumen_led_engine_init(void)
 
     esp_err_t err = create_strip(s_state.led_count, &s_strip);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "strip init failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "strip init failed: %s (mem_block_symbols=%d, leds=%u)",
+                 esp_err_to_name(err), CONFIG_LUMEN_RMT_MEM_BLOCK_SYMBOLS, s_state.led_count);
+#if CONFIG_LUMEN_RMT_STRESS_MODE
+        if (CONFIG_LUMEN_RMT_MEM_BLOCK_SYMBOLS > 192) {
+            ESP_LOGE(TAG, "C3 每个 RMT group 只有 4x48=192 word，mem_block_symbols>192 "
+                          "无法分配；这是组 4（384）的预期失败，记录后换回 48/96/192");
+        }
+#endif
         return err;
     }
 
@@ -171,6 +349,14 @@ esp_err_t lumen_led_engine_init(void)
 
     /* 初始化后按当前（默认或恢复的）状态渲染一次，之后只等状态变化。 */
     xSemaphoreGive(s_render_signal);
+
+#if CONFIG_LUMEN_RMT_STRESS_MODE
+    /* 压力模式的心跳打印跑在独立低优先级任务里，必须晚于指标锁创建。 */
+    esp_err_t stress_err = lumen_stress_start();
+    if (stress_err != ESP_OK) {
+        ESP_LOGW(TAG, "压力指标心跳任务创建失败: %s", esp_err_to_name(stress_err));
+    }
+#endif
     return ESP_OK;
 }
 
