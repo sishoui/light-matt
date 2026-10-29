@@ -42,7 +42,9 @@
 
 已完成：riscv32-esp-elf / cmake / ninja / idf-exe 安装，`idf.py --version` = v5.4，hello_world 编译通过，`espressif/led_strip` 依赖拉取并编译通过，`docs/dev-environment.md` 已提交。
 
-待完成：接板子烧录 hello_world 看串口输出；微信开发者工具导入 `miniprogram/` 并真机预览。
+已补充：hello_world 已烧录到 COM6，串口确认 `Hello world!`、ESP-IDF v5.4、chip rev v0.4、4MB flash。
+
+待完成：微信开发者工具导入 `miniprogram/` 并真机预览。
 
 ## 交付
 

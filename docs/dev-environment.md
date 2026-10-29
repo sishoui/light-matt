@@ -115,14 +115,12 @@ idf.py build
 
 - [x] 工具链安装完成（riscv32-esp-elf 14.2.0、gdb 14.2、cmake 3.30.2、ninja 1.12.1、idf-exe 1.0.3、ccache 4.10.2）
 - [x] `idf.py --version` → `ESP-IDF v5.4`
-- [x] hello_world 对 esp32c3 编译通过（`hello_world.bin` 生成；烧录待接板子）
-- [x] `idf.py add-dependency espressif/led_strip` 成功，组件拉取并编译通过
-- [x] 微信开发者工具已安装，`miniprogram/` 最小工程已建好
-- [ ] hello_world 烧录 + 串口输出（接板子后执行）
+- [x] hello_world 烧录 + 串口输出（COM6，`Hello world!`，ESP-IDF v5.4，chip rev v0.4）
 - [ ] 真机预览打开页面（需要测试号 AppID 与手机扫码）
 
 ## 已知问题
 
 - `idf.py add-dependency` 之后如果 `build` 报 `led_strip.h: No such file or directory`，跑一次 `idf.py reconfigure` 再 build，让组件管理器拉取依赖。
-- 当前没有检测到已连接的串口（`Get-PnpDevice -PresentOnly -Class Ports` 为空）。接板子后确认 COM 口；系统里记录过 ESP32-C3 的 `USB 串行设备 (COM6)`、CH340 的 COM3/COM4、CH343 的 COM5。
+- **flash size 警告**：开发板实际是 4MB flash，但 hello_world 默认按 2MB 配置，启动会打印 `Detected size(4096k) larger than the size in the binary image header(2048k)`。实际固件工程按 C3FH4 配置 4MB：`CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y`。
+- 当前没有检测到已连接的串口时，先接板子；本次识别到的是原生 USB 的 `USB 串行设备 (COM6)`（VID `303A`）。系统里还记录过 CH340 的 COM3/COM4、CH343 的 COM5，注意别烧错口。
 - 系统 Python 是 3.12.10，但 IDF 工具链用自带的 3.11.2。`scripts/idf.cmd` 已把 IDF Python 放到 PATH 最前面；不要用系统 Python 直接跑 `idf_tools.py`。
