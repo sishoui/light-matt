@@ -33,6 +33,8 @@ static const uint8_t s_blob_magic[4] = {'L', 'M', 'E', 'N'};
 static SemaphoreHandle_t s_lock;
 static SemaphoreHandle_t s_wake;
 static lumen_state_t s_pending;
+static uint8_t s_pending_command;
+static lumen_store_event_cb s_event_cb;
 
 static esp_err_t write_blob(const lumen_state_t *state)
 {
@@ -74,16 +76,21 @@ static void store_task(void *arg)
         }
 
         lumen_state_t snapshot;
+        uint8_t command = 0;
         xSemaphoreTake(s_lock, portMAX_DELAY);
         snapshot = s_pending;
+        command = s_pending_command;
         xSemaphoreGive(s_lock);
 
         esp_err_t err = write_blob(&snapshot);
         if (err != ESP_OK) {
-            /* 异步失败上报（Event 0x81）在 #8 接；这里只记录。 */
-            ESP_LOGW(TAG, "nvs write failed: %s", esp_err_to_name(err));
+            /* ACK 已经发过了，失败只能异步上报（§10.3 Event 0x81）。 */
+            ESP_LOGW(TAG, "nvs write failed: %s (cmd=0x%02X)", esp_err_to_name(err), command);
+            if (s_event_cb != NULL) {
+                s_event_cb(command);
+            }
         } else {
-            ESP_LOGD(TAG, "state saved");
+            ESP_LOGD(TAG, "state saved (cmd=0x%02X)", command);
         }
     }
 }
@@ -146,13 +153,19 @@ bool lumen_state_store_load(lumen_state_t *out)
     return true;
 }
 
-void lumen_state_store_request_save(const lumen_state_t *state)
+void lumen_state_store_set_event_cb(lumen_store_event_cb cb)
+{
+    s_event_cb = cb;
+}
+
+void lumen_state_store_request_save(const lumen_state_t *state, uint8_t command)
 {
     if (state == NULL || s_lock == NULL) {
         return;
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_pending = *state;
+    s_pending_command = command;
     xSemaphoreGive(s_lock);
     xSemaphoreGive(s_wake);
 }

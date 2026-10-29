@@ -215,7 +215,7 @@ static bool stress_dispatch(uint8_t command, const uint8_t *payload, uint8_t pay
         /* 命令未被 reducer 实现（或与当前状态相同）。不 commit，不改灯带状态。 */
         return false;
     }
-    lumen_led_engine_commit(&outcome.next);
+    lumen_led_engine_commit(&outcome.next, command);
     *out = outcome.next;
     return true;
 }
@@ -501,7 +501,7 @@ void lumen_led_engine_snapshot(lumen_state_t *out)
     xSemaphoreGive(s_state_lock);
 }
 
-void lumen_led_engine_commit(const lumen_state_t *next)
+void lumen_led_engine_commit(const lumen_state_t *next, uint8_t command)
 {
     if (next == NULL) {
         return;
@@ -519,8 +519,13 @@ void lumen_led_engine_commit(const lumen_state_t *next)
     /* 二值信号量天然只保留一个 pending 唤醒，旧快照会被 s_mailbox 覆盖。 */
     xSemaphoreGive(s_render_signal);
 
-    /* 持久化失败由 #8 接 Event 0x81 上报；本票只做 debounce 骨架。 */
-    lumen_state_store_request_save(&accepted);
+    /* 写失败在 ACK 之后由 Event 0x81 异步上报（§10.3）。 */
+    lumen_state_store_request_save(&accepted, command);
+}
+
+void lumen_led_engine_set_store_event_cb(lumen_store_event_cb cb)
+{
+    lumen_state_store_set_event_cb(cb);
 }
 
 uint8_t lumen_led_engine_max_brightness(void)

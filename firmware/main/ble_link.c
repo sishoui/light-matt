@@ -55,6 +55,30 @@ static int gap_event(struct ble_gap_event *event, void *arg);
 static void advertise(void);
 
 /*
+ * 回一条 Event：载荷 [event_code, detail]，seq 固定 0x00（协议 §8）。
+ * 用于 ACK 之后才发生的异步失败，例如 NVS 写失败（§10.3）。
+ */
+static void send_event(uint8_t event, uint8_t detail)
+{
+    uint8_t frame[LUMEN_MAX_FRAME];
+    size_t len = lumen_protocol_encode_event(event, detail, frame, sizeof(frame));
+    if (len == 0 || lumen_ble_link_notify(frame, len) != ESP_OK) {
+        ESP_LOGW(TAG, "Event 0x%02X detail=0x%02X 发送失败", event, detail);
+        return;
+    }
+    ESP_LOGI(TAG, "Event event=0x%02X detail=0x%02X", event, detail);
+}
+
+/*
+ * 存储任务发现 NVS 写失败时回调到这里：ACK 早已发出，按 §10.3 用 Event 0x81
+ * 异步告知小程序。回调运行在存储任务上下文，只做一次 mbuf 拷贝与入队。
+ */
+static void on_store_failed(uint8_t command)
+{
+    send_event(LUMEN_EVENT_STORAGE_FAILED, command);
+}
+
+/*
  * 回一条 ACK：载荷 [原命令字, 结果码]，seq 回显请求。
  * 在 NimBLE 主机任务的 RX 回调里调用；notify 内部只做 mbuf 拷贝与入队，
  * 不等待射频发送完成，也不刷灯 / 写 NVS。
@@ -144,7 +168,7 @@ static void handle_frame(const uint8_t *data, size_t len)
 
     if (outcome.state_changed) {
         /* 写入 RAM + 发渲染信号 + 请求 debounce 持久化；本回调不刷灯、不写 NVS。 */
-        lumen_led_engine_commit(&outcome.next);
+        lumen_led_engine_commit(&outcome.next, frame.command);
     }
 
     /* 颜色也打进日志：真机排查错色时，App 日志与固件串口能按 seq 对齐 RGB。 */
@@ -453,6 +477,10 @@ esp_err_t lumen_ble_link_init(void)
         return ESP_FAIL;
     }
     ESP_LOGI(TAG, "GATT 服务已注册（Service 6c756d65-...-0001，RX/TX/State）");
+
+    /* NVS 写失败的异步上报通道（§10.3）。注册在启动主机任务之前，
+     * 避免开启广播后出现「失败已发生但回调还没接上」的窗口。 */
+    lumen_led_engine_set_store_event_cb(on_store_failed);
 
     nimble_port_freertos_init(host_task);
     return ESP_OK;

@@ -930,6 +930,30 @@ static void test_encode_ack_all_results(void)
     CHECK(lumen_protocol_encode_ack(0x03, 0x02, LUMEN_RESULT_OK, out, 7) == 0);
 }
 
+static void test_encode_event_storage_failed(void)
+{
+    /* §10.3：NVS 写失败用 Event 0x81 上报，载荷 [0x01, 原命令字]，seq 固定 0。
+     * 与向量 event_storage_failed 逐字节一致（detail = SetAll 0x04）。 */
+    uint8_t out[LUMEN_MAX_FRAME];
+    size_t len =
+        lumen_protocol_encode_event(LUMEN_EVENT_STORAGE_FAILED, 0x04, out, sizeof(out));
+    CHECK(len == 8);
+    CHECK(out[0] == 0xA5);
+    CHECK(out[1] == 0x01);
+    CHECK(out[2] == 0x81);
+    CHECK(out[3] == 0x00);
+    CHECK(out[4] == 2);
+    CHECK(out[5] == LUMEN_EVENT_STORAGE_FAILED);
+    CHECK(out[6] == 0x04);
+    CHECK(out[7] == 0xD1);
+
+    /* seq 不随连接序号变化：换 detail 也应始终是 0x00。 */
+    len = lumen_protocol_encode_event(LUMEN_EVENT_STORAGE_FAILED, 0x01, out, sizeof(out));
+    CHECK(len == 8);
+    CHECK(out[3] == 0x00);
+    CHECK(out[6] == 0x01);
+}
+
 static void test_encode_limits(void)
 {
     uint8_t payload[15] = {0};
@@ -1068,6 +1092,7 @@ int main(int argc, char **argv)
     test_set_all_atomicity();
     test_set_all_reducer();
     test_encode_ack_all_results();
+    test_encode_event_storage_failed();
     test_encode_limits();
     test_decode_short();
     test_decode_bad_frames_echo_header();

@@ -8,14 +8,23 @@
 #include "state.h"
 
 /*
- * state_store：NVS 持久化骨架。
- * 上电加载一次；状态变更后 500ms debounce 写一次。本票不接命令。
+ * state_store：NVS 持久化。
+ * 上电加载一次；状态变更后 500ms debounce 写一次。
+ *
+ * 写失败发生在 ACK 之后，按 docs/protocol.md §10.3 用 Event 0x81 上报：
+ * 注册的 event_cb 会被调用，参数是触发这次写入的命令字（detail 字段）。
  */
 
+typedef void (*lumen_store_event_cb)(uint8_t command);
+
 esp_err_t lumen_state_store_init(void);
+
+/* 注册异步写失败回调。回调在存储任务上下文执行，不得做耗时操作。 */
+void lumen_state_store_set_event_cb(lumen_store_event_cb cb);
 
 /* 读回上次保存的状态。没有历史、数据损坏或字段越界时返回 false。 */
 bool lumen_state_store_load(lumen_state_t *out);
 
-/* 线程安全：只记录最新快照并重置 debounce 计时，不在调用者上下文写 NVS。 */
-void lumen_state_store_request_save(const lumen_state_t *state);
+/* 线程安全：记录最新快照、触发它的命令字，并重置 debounce 计时。
+ * 不在调用者上下文写 NVS。命令字用于 Event 0x81 的 detail。 */
+void lumen_state_store_request_save(const lumen_state_t *state, uint8_t command);
