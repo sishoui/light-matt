@@ -12,6 +12,7 @@
 ## Notes
 
 - **架构基线**：[architecture-brief.md](./architecture-brief.md)。所有票的前提都在那里，开工前先读它。
+- **实现规格**：[spec.md](../spec.md)。由基线、本图与研究笔记合成，汇总 MVP 范围、实现决策与测试接缝；**不取代本图**，协议字节细节仍以 `docs/protocol.md` 为唯一真相。
 - **允许实现票**：wayfinder 默认只产出决策。本 effort 的 Destination 是「打通的原型」，所以 **Notes 显式覆盖该默认**：允许少量 task / prototype 票直接写代码，但**每张票的边界是「验证一个决策」**，做到能跑通即止，不做产品化打磨（不写错误恢复的边角分支、不做 UI 美化、不写文档站）。
 - **不做的事**：任何一票如果开始出现「重构」「优化」「美化」「补全异常分支」的冲动，说明已经越过边界，停下来收尾。
 - **协议是唯一真相**：两端只通过 `docs/protocol.md` 耦合。改协议 → 两端改动进同一个 commit。
@@ -30,7 +31,7 @@
 | # | 票 | 类型 | 阻塞于 | 状态 |
 |---|---|---|---|---|
 | 01 | [开发环境就绪](./tickets/01-dev-environment.md) | task | — | ready |
-| 02 | [协议规格定稿](./tickets/02-protocol-spec.md) | grilling | — | ready |
+| 02 | [协议规格定稿](./tickets/02-protocol-spec.md) | grilling | — | done |
 | 03 | [led_strip 点灯验证](./tickets/03-led-strip-smoke-test.md) | prototype | 01 | blocked |
 | 04 | [小程序 BLE 探测](./tickets/04-miniprogram-ble-probe.md) | prototype | 01 | blocked |
 | 05 | [固件 BLE 服务与分层骨架](./tickets/05-firmware-ble-skeleton.md) | task | 02, 03 | blocked |
@@ -40,7 +41,7 @@
 | 09 | [端到端真机联调与验收](./tickets/09-end-to-end-acceptance.md) | task | 06, 08, 10 | blocked |
 | 10 | [RMT × BLE 共存稳定性验证](./tickets/10-rmt-ble-coexistence.md) | prototype | 03, 05 | blocked |
 
-**现在的 frontier 只有两张：01 与 02。** 它们互相独立，可以并行。
+**现在的 frontier 只有 01（环境）。** 02（协议）已关闭；03/04 仍被 01 阻塞。
 
 依赖形状说明：01（环境）与 02（协议）是两条独立的地基——一条通固件，一条通两端。它们在 05/07 处汇合。03 与 04 是两条平行的风险探针，一个摸硬件、一个摸平台，都只依赖 01。
 
@@ -51,16 +52,14 @@
 <!-- 一票已关闭就追加一行：名称（链接）+ 一句话结论 -->
 
 - **BLE × 固件 × WS2812 事实核查**（调研，[研究笔记](./research/ble-and-firmware-facts.md)）：确认 20 字节是硬约束且 iOS 超长写会静默失败；C3 的 RMT 无 DMA 且单核，与 BLE 共存存在波形损坏风险；3.3V 驱动 5V WS2812B 在规格上不达标（VIH=3.5V）。详见研究笔记，已并入架构基线。
+- **协议规格定稿**（[GitHub #2](https://github.com/sishoui/light-matt/issues/2)，规格见 [protocol.md](../protocol.md)）：帧 ≤20 字节、小端、校验和覆盖 magic..payload 后取反；7 条命令 + ACK/Event/StateReport；State 固定 8 字节；结果码 0x00-0x09；ACK 在写入 RAM 后回，NVS 失败用 Event 0x81；自检与灯珠数量重建语义已定。测试向量在 `docs/protocol-testvectors.json`。
 
 ## Not yet specified
 
 雾里的东西：能看出在 Destination 前方，但现在还问不出精确的问题。等前沿推进后再毕业成票。
 
-- **帧预算是否需要分包**。研究确认单次写上限是 **20 字节**，而当前帧骨架开销 6 字节，payload 只剩 14 字节。MVP 的「一次设全部（开关+亮度+RGB）」正好卡在这个边缘上。如果【协议规格定稿】核算后发现塞不进 14 字节，就要么砍命令、要么加一层分包重组——分包在设备端要写流式解析器，复杂度上一个台阶。这条雾只有 02 跑完才知道要不要变成票。
 - **若 RMT × BLE 判定不可接受，SPI 驱动 WS2812 的迁移成本**。C3 可以用 SPI 硬件外设按 3.2MHz 生成 WS2812 波形（每 bit 扩展成 4 个 SPI bit），绕开 RMT 的 ISR 依赖。这是备选路线，但现在评估没意义——【RMT × BLE 共存稳定性验证】会给出答案。
 - **全白电流预算**。研究给出的数字：单灯全白 60mA，30 灯 ≈ 1.8A，而开发板 USB 5V 通常限流 500mA-1A。全白高亮度会拉爆电源。要么固件限亮度上限，要么接受「全白只短暂测试」。这条要不要变成票，取决于【led_strip 点灯验证】里实测的供电表现。
-- **灯珠数量在运行时变更的工程细节**。led_strip 句柄需要重建，重建期间的旧句柄释放、传输中的刷新、失败回滚都要想。现在不值得单独开票，等【固件协议实现与状态机】写到这里时会自然浮出来。
-- **协议版本号的实际用途**。帧头留了 version 字节，但「怎么用它做向后兼容」在只有两端、同时发版的现状下是个假问题。等真出现「固件先烧、小程序后更新」的现实约束时再谈。
 - **iOS 与 Android 的 BLE 行为差异**。已知形态：`setBLEMTU` 仅 Android；iOS 超长写静默失败；Android 上 notify 后立即写报 10008；Android 6.0+ 扫描需定位权限。这些已写进基线。但**具体机型**的差异（尤其国产 Android 的权限弹窗与蓝牙开关行为）要等【小程序 BLE 探测】真机摸过才知道要不要再票。
 - **灯效引擎的架构**。呼吸、彩虹、流光这类动画需要帧率驱动，和现在的 latest-wins 单帧模型不是一回事。明确是 MVP 之后的事，但现在放置顶决定（比如状态机字段怎么留）会影响后续成本。注意：固定帧率驱动会加重上面那条 RMT 风险。
 - **多设备管理**。广播名后缀已留好扩展位，但「一台手机管三条灯带」需要设备列表、分组、并发连接策略。微信 BLE 的同时连接上限**官方无数字**，只能实测。等单设备跑通再说。

@@ -1,0 +1,403 @@
+{
+  "protocol_version": 1,
+  "checksum": "~(sum of bytes from magic through last payload byte) & 0xFF",
+  "frame_layout": "magic(1) version(1) command(1) seq(1) length(1) payload(length) checksum(1)",
+  "state_read_example_hex": "0180FFB4781E00FF",
+  "state_read_fields": [
+    "power",
+    "brightness",
+    "r",
+    "g",
+    "b",
+    "led_count_lo",
+    "led_count_hi",
+    "max_brightness"
+  ],
+  "cases": [
+    {
+      "name": "set_power_on",
+      "direction": "app_to_device",
+      "command": 1,
+      "seq": 1,
+      "payload_hex": "01",
+      "frame_hex": "A5010101010155",
+      "command_name": "SetPower",
+      "frame_valid": true,
+      "result_code": 0
+    },
+    {
+      "name": "set_power_off",
+      "direction": "app_to_device",
+      "command": 1,
+      "seq": 2,
+      "payload_hex": "00",
+      "frame_hex": "A5010102010055",
+      "command_name": "SetPower",
+      "frame_valid": true,
+      "result_code": 0
+    },
+    {
+      "name": "set_brightness_128",
+      "direction": "app_to_device",
+      "command": 2,
+      "seq": 3,
+      "payload_hex": "80",
+      "frame_hex": "A50102030180D3",
+      "command_name": "SetBrightness",
+      "frame_valid": true,
+      "result_code": 0
+    },
+    {
+      "name": "set_brightness_0",
+      "direction": "app_to_device",
+      "command": 2,
+      "seq": 4,
+      "payload_hex": "00",
+      "frame_hex": "A5010204010052",
+      "command_name": "SetBrightness",
+      "frame_valid": true,
+      "result_code": 0
+    },
+    {
+      "name": "set_color_red",
+      "direction": "app_to_device",
+      "command": 3,
+      "seq": 5,
+      "payload_hex": "FF0000",
+      "frame_hex": "A501030503FF00004F",
+      "command_name": "SetColor",
+      "frame_valid": true,
+      "result_code": 0
+    },
+    {
+      "name": "set_color_warm_white",
+      "direction": "app_to_device",
+      "command": 3,
+      "seq": 6,
+      "payload_hex": "FFB478",
+      "frame_hex": "A501030603FFB47822",
+      "command_name": "SetColor",
+      "frame_valid": true,
+      "result_code": 0
+    },
+    {
+      "name": "set_all_on",
+      "direction": "app_to_device",
+      "command": 4,
+      "seq": 7,
+      "payload_hex": "0180FFB478",
+      "frame_hex": "A5010407050180FFB4789D",
+      "command_name": "SetAll",
+      "frame_valid": true,
+      "result_code": 0
+    },
+    {
+      "name": "set_all_off",
+      "direction": "app_to_device",
+      "command": 4,
+      "seq": 8,
+      "payload_hex": "0080FFB478",
+      "frame_hex": "A5010408050080FFB4789D",
+      "command_name": "SetAll",
+      "frame_valid": true,
+      "result_code": 0
+    },
+    {
+      "name": "query_state",
+      "direction": "app_to_device",
+      "command": 5,
+      "seq": 9,
+      "payload_hex": "",
+      "frame_hex": "A5010509004B",
+      "command_name": "QueryState",
+      "frame_valid": true,
+      "result_code": 0
+    },
+    {
+      "name": "set_led_count_30",
+      "direction": "app_to_device",
+      "command": 6,
+      "seq": 10,
+      "payload_hex": "1E00",
+      "frame_hex": "A501060A021E0029",
+      "command_name": "SetLedCount",
+      "frame_valid": true,
+      "result_code": 0
+    },
+    {
+      "name": "set_led_count_64",
+      "direction": "app_to_device",
+      "command": 6,
+      "seq": 11,
+      "payload_hex": "4000",
+      "frame_hex": "A501060B02400006",
+      "command_name": "SetLedCount",
+      "frame_valid": true,
+      "result_code": 0
+    },
+    {
+      "name": "self_test",
+      "direction": "app_to_device",
+      "command": 7,
+      "seq": 12,
+      "payload_hex": "",
+      "frame_hex": "A501070C0046",
+      "command_name": "SelfTest",
+      "frame_valid": true,
+      "result_code": 0
+    },
+    {
+      "name": "invalid_power_value",
+      "direction": "app_to_device",
+      "command": 1,
+      "seq": 13,
+      "payload_hex": "02",
+      "frame_hex": "A501010D010248",
+      "command_name": "SetPower",
+      "frame_valid": true,
+      "result_code": 1
+    },
+    {
+      "name": "invalid_led_count_0",
+      "direction": "app_to_device",
+      "command": 6,
+      "seq": 14,
+      "payload_hex": "0000",
+      "frame_hex": "A501060E02000043",
+      "command_name": "SetLedCount",
+      "frame_valid": true,
+      "result_code": 1
+    },
+    {
+      "name": "invalid_led_count_65",
+      "direction": "app_to_device",
+      "command": 6,
+      "seq": 15,
+      "payload_hex": "4100",
+      "frame_hex": "A501060F02410001",
+      "command_name": "SetLedCount",
+      "frame_valid": true,
+      "result_code": 1
+    },
+    {
+      "name": "unknown_command",
+      "direction": "app_to_device",
+      "command": 127,
+      "seq": 16,
+      "payload_hex": "",
+      "frame_hex": "A5017F1000CA",
+      "frame_valid": true,
+      "result_code": 2
+    },
+    {
+      "name": "reserved_command",
+      "direction": "app_to_device",
+      "command": 8,
+      "seq": 17,
+      "payload_hex": "",
+      "frame_hex": "A50108110040",
+      "frame_valid": true,
+      "result_code": 2
+    },
+    {
+      "name": "app_writes_ack_command",
+      "direction": "app_to_device",
+      "command": 128,
+      "seq": 18,
+      "payload_hex": "0100",
+      "frame_hex": "A5018012020100C4",
+      "frame_valid": true,
+      "result_code": 2
+    },
+    {
+      "name": "wrong_payload_size_power",
+      "direction": "app_to_device",
+      "command": 1,
+      "seq": 19,
+      "payload_hex": "0100",
+      "frame_hex": "A501011302010042",
+      "command_name": "SetPower",
+      "frame_valid": true,
+      "result_code": 4
+    },
+    {
+      "name": "ack_power_on_ok",
+      "direction": "device_to_app",
+      "command": 128,
+      "seq": 1,
+      "payload_hex": "0100",
+      "frame_hex": "A5018001020100D5",
+      "command_name": "Ack",
+      "frame_valid": true,
+      "result_code": 0
+    },
+    {
+      "name": "ack_invalid_param",
+      "direction": "device_to_app",
+      "command": 128,
+      "seq": 13,
+      "payload_hex": "0101",
+      "frame_hex": "A501800D020101C8",
+      "command_name": "Ack",
+      "frame_valid": true,
+      "result_code": 1
+    },
+    {
+      "name": "ack_unknown_command",
+      "direction": "device_to_app",
+      "command": 128,
+      "seq": 16,
+      "payload_hex": "7F02",
+      "frame_hex": "A5018010027F0246",
+      "command_name": "Ack",
+      "frame_valid": true,
+      "result_code": 2
+    },
+    {
+      "name": "ack_bad_checksum",
+      "direction": "device_to_app",
+      "command": 128,
+      "seq": 18,
+      "payload_hex": "0103",
+      "frame_hex": "A5018012020103C1",
+      "command_name": "Ack",
+      "frame_valid": true,
+      "result_code": 3
+    },
+    {
+      "name": "ack_bad_length",
+      "direction": "device_to_app",
+      "command": 128,
+      "seq": 19,
+      "payload_hex": "0104",
+      "frame_hex": "A5018013020104BF",
+      "command_name": "Ack",
+      "frame_valid": true,
+      "result_code": 4
+    },
+    {
+      "name": "ack_busy",
+      "direction": "device_to_app",
+      "command": 128,
+      "seq": 20,
+      "payload_hex": "0605",
+      "frame_hex": "A5018014020605B8",
+      "command_name": "Ack",
+      "frame_valid": true,
+      "result_code": 5
+    },
+    {
+      "name": "ack_storage_failed",
+      "direction": "device_to_app",
+      "command": 128,
+      "seq": 7,
+      "payload_hex": "0406",
+      "frame_hex": "A5018007020406C6",
+      "command_name": "Ack",
+      "frame_valid": true,
+      "result_code": 6
+    },
+    {
+      "name": "ack_unsupported_version",
+      "direction": "device_to_app",
+      "command": 128,
+      "seq": 21,
+      "payload_hex": "0107",
+      "frame_hex": "A5018015020107BA",
+      "command_name": "Ack",
+      "frame_valid": true,
+      "result_code": 7
+    },
+    {
+      "name": "ack_bad_magic",
+      "direction": "device_to_app",
+      "command": 128,
+      "seq": 22,
+      "payload_hex": "0108",
+      "frame_hex": "A5018016020108B8",
+      "command_name": "Ack",
+      "frame_valid": true,
+      "result_code": 8
+    },
+    {
+      "name": "ack_internal_error",
+      "direction": "device_to_app",
+      "command": 128,
+      "seq": 23,
+      "payload_hex": "0609",
+      "frame_hex": "A5018017020609B1",
+      "command_name": "Ack",
+      "frame_valid": true,
+      "result_code": 9
+    },
+    {
+      "name": "ack_query_ok",
+      "direction": "device_to_app",
+      "command": 128,
+      "seq": 9,
+      "payload_hex": "0500",
+      "frame_hex": "A5018009020500C9",
+      "command_name": "Ack",
+      "frame_valid": true,
+      "result_code": 0
+    },
+    {
+      "name": "state_report_query",
+      "direction": "device_to_app",
+      "command": 130,
+      "seq": 9,
+      "payload_hex": "0180FFB4781E00FF",
+      "frame_hex": "A5018209080180FFB4781E00FFFD",
+      "command_name": "StateReport",
+      "frame_valid": true
+    },
+    {
+      "name": "event_storage_failed",
+      "direction": "device_to_app",
+      "command": 129,
+      "seq": 0,
+      "payload_hex": "0104",
+      "frame_hex": "A5018100020104D1",
+      "command_name": "Event",
+      "frame_valid": true
+    },
+    {
+      "name": "bad_checksum_power_on",
+      "direction": "app_to_device",
+      "frame_hex": "A5010101010156",
+      "frame_valid": false,
+      "result_code": 3
+    },
+    {
+      "name": "bad_magic_power_on",
+      "direction": "app_to_device",
+      "frame_hex": "A4010101010156",
+      "frame_valid": false,
+      "result_code": 8
+    },
+    {
+      "name": "short_frame",
+      "direction": "app_to_device",
+      "frame_hex": "A501010101",
+      "frame_valid": false,
+      "note": "dropped silently",
+      "result_code": null
+    },
+    {
+      "name": "length_mismatch",
+      "direction": "app_to_device",
+      "frame_hex": "A50101010F00",
+      "frame_valid": false,
+      "result_code": 4,
+      "note": "declared payload 15, actual 1"
+    },
+    {
+      "name": "overlong_frame",
+      "direction": "app_to_device",
+      "frame_hex": "A50101180F00000000000000000000000000000031",
+      "frame_valid": false,
+      "result_code": 4,
+      "note": "payload 15 > 14, total 21 > 20"
+    }
+  ]
+}

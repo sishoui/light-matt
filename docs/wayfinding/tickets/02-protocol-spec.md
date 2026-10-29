@@ -56,3 +56,20 @@
 - [ ] checksum 有可执行的伪代码，能人工验算一个例子
 - [ ] 测试向量含至少「开灯 / 关灯 / 设亮度 / 设颜色 / 一次设全部 / 合法帧 / 坏校验帧」七类
 - [ ] 两端实现者读完后，不需要再问任何问题就能写出 codec
+
+## 状态
+
+`resolved`（2026-10-29）
+
+## Answer
+
+协议已定稿。字节级契约在 [protocol.md](../../protocol.md)，可执行副本在 [protocol-testvectors.json](../../protocol-testvectors.json)。GitHub 决议：[#2](https://github.com/sishoui/light-matt/issues/2)。
+
+关键结论：
+
+- 帧 `A5 | version | command | seq | length | payload | checksum`，总长 ≤20，`length` 是载荷长度，多字节小端。
+- 校验和覆盖 `magic..payload`，求和取低 8 位后按位取反；`A5 01 01 01 01 01` → `0x55`。
+- 7 条命令（`0x01-0x07`）+ ACK `0x80` / Event `0x81` / StateReport `0x82`；State 固定 8 字节。
+- 结果码 `0x00-0x09`；校验顺序 magic → version → length → checksum → command → payload。
+- ACK 在写入 RAM 后回；NVS 失败用 Event `0x81`；灯珠数量重建失败回 `0x09`，重建中再收到回 `0x05`。
+- 自检红 → 绿 → 蓝 → 白各 500ms，临时覆盖，不写 NVS。

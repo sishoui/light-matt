@@ -16,8 +16,12 @@ lumen/
 
 - **想了解架构**：[docs/wayfinding/architecture-brief.md](docs/wayfinding/architecture-brief.md)
 - **想知道还剩什么没定**：[docs/wayfinding/map.md](docs/wayfinding/map.md)
+- **想写 codec**：[docs/protocol.md](docs/protocol.md) —— 字节级协议规格与测试向量
+- **想实现**：[docs/spec.md](docs/spec.md) —— MVP 实现规格（用户故事、实现决策、测试接缝）
 - **想开工**：看 map 的「票（frontier 视图）」表格，从状态为 `ready` 的票开始
 
 ## 现状
 
-设计阶段。地图已建，前沿票为「开发环境就绪」与「协议规格定稿」。尚无可用代码。
+设计阶段。协议已定稿（[docs/protocol.md](docs/protocol.md)），实现规格在
+[docs/spec.md](docs/spec.md)，执行票在 GitHub Issues。地图的前沿只剩「开发环境就绪」。
+尚无可用代码。

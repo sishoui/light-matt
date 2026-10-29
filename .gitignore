@@ -14,3 +14,6 @@ miniprogram/project.private.config.json
 .DS_Store
 *.log
 .vscode/.browse.VSCodeCounter
+
+# 发布辅助（由脚本生成，不入库）
+.scratch/publish/
