@@ -36,7 +36,7 @@
 | 04 | [小程序 BLE 探测](./tickets/04-miniprogram-ble-probe.md) | prototype | 01 | done |
 | 05 | [固件 BLE 服务与分层骨架](./tickets/05-firmware-ble-skeleton.md) | task | 02, 03 | blocked |
 | 06 | [固件协议实现与状态机](./tickets/06-firmware-protocol-impl.md) | task | 02, 05 | blocked |
-| 07 | [小程序 BLE 传输层与协议 codec](./tickets/07-miniprogram-transport-codec.md) | task | 02, 04 | blocked |
+| 07 | [小程序 BLE 传输层与协议 codec](./tickets/07-miniprogram-transport-codec.md) | task | 02, 04 | ready |
 | 08 | [小程序控制界面](./tickets/08-miniprogram-ui.md) | prototype | 07 | blocked |
 | 09 | [端到端真机联调与验收](./tickets/09-end-to-end-acceptance.md) | task | 06, 08, 10 | blocked |
 | 10 | [RMT × BLE 共存稳定性验证](./tickets/10-rmt-ble-coexistence.md) | prototype | 03, 05 | blocked |
