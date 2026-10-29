@@ -203,56 +203,95 @@
   margin: 8rpx 0;
 }
 
-/* 色环占位 */
-.color-wheel-placeholder {
+/* 色环：单块 canvas，色相环 + 选中点都画在同一层（拖动时局部擦补） */
+.wheel-wrap {
   position: relative;
   align-self: center;
-  width: 360rpx;
-  height: 360rpx;
+  width: 420rpx;
+  height: 420rpx;
+}
+
+.wheel-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+/* 颜色读数：色块 + hex */
+.color-readout {
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 12rpx;
 }
 
-.color-wheel-ring {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  border-radius: 50%;
-  background: conic-gradient(
-    #ff0000,
-    #ffff00,
-    #00ff00,
-    #00ffff,
-    #0000ff,
-    #ff00ff,
-    #ff0000
-  );
-  opacity: 0.5;
-  -webkit-mask: radial-gradient(circle, transparent 58%, #000 59%);
-  mask: radial-gradient(circle, transparent 58%, #000 59%);
+/* 饱和度滑块行 */
+.sat-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
 }
 
-.color-wheel-center {
-  width: 220rpx;
-  height: 220rpx;
-  border-radius: 50%;
-  background: #101014;
+.sat-label {
+  font-size: 24rpx;
+  color: #9a9aa5;
+  flex-shrink: 0;
 }
 
-/* 预设占位 */
+.sat-slider {
+  flex: 1;
+  margin: 0;
+}
+
+.sat-value {
+  font-size: 24rpx;
+  color: #9a9aa5;
+  font-family: Menlo, Consolas, monospace;
+  width: 72rpx;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+/* 预设：6-8 个色块，等宽分布；选中用外环而不是改颜色 */
 .presets {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
+  gap: 12rpx 0;
+  padding: 20rpx;
+  background: #18181e;
+  border: 1rpx solid #2a2a32;
+  border-radius: 20rpx;
 }
 
 .preset {
-  width: 72rpx;
-  height: 72rpx;
+  width: 76rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8rpx;
+  padding: 4rpx 0;
+  border-radius: 16rpx;
+}
+
+.preset-dot {
+  width: 64rpx;
+  height: 64rpx;
   border-radius: 50%;
   border: 1rpx solid #3a3a44;
+  box-sizing: border-box;
+}
+
+/* 选中态：白色外环 + 留白，不动色块本身的颜色 */
+.preset.selected .preset-dot {
+  box-shadow: 0 0 0 4rpx #101014, 0 0 0 8rpx #f5f5f5;
+}
+
+.preset-name {
+  font-size: 20rpx;
+  color: #9a9aa5;
+}
+
+.preset.selected .preset-name {
+  color: #f5f5f5;
 }
 
 /* ---------------- 页脚 ---------------- */

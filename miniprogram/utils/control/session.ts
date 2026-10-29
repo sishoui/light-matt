@@ -16,8 +16,10 @@ import {
   clampBrightness,
   effectiveMaxBrightness,
 } from "./brightness";
+import { applyLocalColor, clampRgb, presetBrightness } from "./color";
 import {
   cmdQueryState,
+  cmdSetAll,
   cmdSetBrightness,
   cmdSetColor,
   cmdSetPower,
@@ -48,10 +50,30 @@ export interface SessionOptions {
   throttleTimer?: TimerApi;
 }
 
-export type PowerResult =
+/** 离散命令的统一结果：成功带回更新后的本地状态，失败区分 ACK 与异常。 */
+export type CommandResult =
   | { kind: "ok"; state: DeviceState }
   | { kind: "ack-error"; ack: AckResult }
   | { kind: "error"; message: string };
+
+/** #9 起沿用的名字；与 CommandResult 完全等价。 */
+export type PowerResult = CommandResult;
+
+/**
+ * 还没有设备状态时的兜底快照：只用于页面渲染，不写入设备。
+ * （正常路径下 latestState 在连接流水线读 State 后必然存在。）
+ */
+function fallbackState(rgb: RGB, power: 0 | 1 = 1, brightness = 0): DeviceState {
+  return {
+    power,
+    brightness,
+    r: rgb.r,
+    g: rgb.g,
+    b: rgb.b,
+    ledCount: 0,
+    maxBrightness: 255,
+  };
+}
 
 /** 从 wx 取平台；devtools 归到 other（BLE 能力只模拟一部分）。 */
 export function detectPlatform(): "android" | "ios" | "other" {
@@ -160,8 +182,8 @@ export class ControlSession {
     try {
       // 亮度 0 时直接开灯视觉上等于没开：先用最近一次非 0 亮度恢复。
       // 正常关灯（brightness > 0）不会走这里——SetPower 本身保留亮度（§7）。
-      // SetAll 尚未实现（#10），所以拆成 SetBrightness + SetPower 两帧；
-      // 两条都是绝对值命令，顺序保证最终状态一致。
+      // 这里拆成 SetBrightness + SetPower 两帧（#9 既有行为，保留）；
+      // 两条都是绝对值命令，顺序保证最终状态一致。预设走 SetAll 单帧（#10）。
       if (on && this.latestState !== null && this.latestState.brightness === 0) {
         const restored = brightnessForPowerOn(
           this.lastNonZeroBrightness,
@@ -189,15 +211,7 @@ export class ControlSession {
       }
       return {
         kind: "ok",
-        state: this.latestState ?? {
-          power: on ? 1 : 0,
-          brightness: 0,
-          r: 0,
-          g: 0,
-          b: 0,
-          ledCount: 0,
-          maxBrightness: 255,
-        },
+        state: this.latestState ?? fallbackState({ r: 0, g: 0, b: 0 }, on ? 1 : 0),
       };
     } catch (err) {
       return { kind: "error", message: errorText(err) };
@@ -266,15 +280,97 @@ export class ControlSession {
     }
   }
 
-  /** #10：色环移动。 */
+  /**
+   * #10：色环拖动（连续量）。走与亮度同一个 20Hz latest-wins 闸门，
+   * 绝不另开通道（否则两路各 20Hz 会叠成 40Hz）。
+   *
+   * 乐观更新：本地 RGB 立即跟随手指；不等 ACK、不重传（连续量语义）。
+   * 只改颜色，不动 power / brightness（§7：关灯时选色只保存，不点亮）。
+   */
   queueColor(rgb: RGB): void {
-    this.throttle.push({ kind: "color", rgb });
+    if (this.transport.linkState !== "ready") {
+      return;
+    }
+    const color = clampRgb(rgb);
+    this.rememberColor(color);
+    this.throttle.push({ kind: "color", rgb: color });
   }
 
-  /** #10：色环松手。 */
+  /** #10：色环松手——发最新值并 flush，保证最终颜色落地。 */
   commitColor(rgb: RGB): void {
-    this.throttle.push({ kind: "color", rgb });
+    if (this.transport.linkState !== "ready") {
+      return;
+    }
+    const color = clampRgb(rgb);
+    this.rememberColor(color);
+    this.throttle.push({ kind: "color", rgb: color });
     this.throttle.flush();
+  }
+
+  /**
+   * #10：预设点击 = 一次 SetAll（开关=1、亮度=当前、RGB=预设）。
+   *
+   * 为什么用 SetAll 而不是 SetPower + SetColor：
+   *  - 单帧原子生效，固件只渲染一次，灯带不出现「先变亮再变色」的中间态；
+   *  - 关灯态点预设也能一步点亮（预设 = 场景入口）；
+   *  - 当前亮度为 0 时用最近一次非 0 亮度恢复，避免「点了但没亮」。
+   *
+   * 关键顺序：先丢弃节流通道里还没发出的旧颜色，再发 SetAll。
+   * 否则拖动残留的颜色可能在 SetAll 之后落地，造成「旧色回跳」。
+   * SetAll 是离散绝对值命令，允许 ACK 超时重发一次。
+   *
+   * ACK 写回本地状态前要再核一次「本地颜色是否仍等于这次请求的颜色」：
+   * 若用户在这条 SetAll 飞行的过程中又拖了色环 / 点了别的预设，本地已经
+   * 是更新的值，旧 ACK 不得把颜色改回去。
+   */
+  async applyPreset(rgb: RGB): Promise<CommandResult> {
+    try {
+      const color = clampRgb(rgb);
+      const brightness = presetBrightness(this.latestState, this.lastNonZeroBrightness);
+      this.throttle.dropIf((update) => update.kind === "color");
+      this.rememberColor(color);
+      this.rememberBrightness(brightness);
+      const ack = await this.transport.sendAndWaitAck(cmdSetAll(1, brightness, color), {
+        retryOnTimeout: 1,
+      });
+      if (!ack.ok) {
+        return { kind: "ack-error", ack };
+      }
+      this.applyPresetLocally(color, brightness);
+      return { kind: "ok", state: this.latestState ?? fallbackState(color, 1, brightness) };
+    } catch (err) {
+      return { kind: "error", message: errorText(err) };
+    }
+  }
+
+  /**
+   * 预设 ACK 后的本地写回。
+   *
+   * power 一定置 1：SetAll(power=1) 已被设备接受，这是设备事实。
+   * 亮度与颜色只在「本地颜色仍是这次预设色」时覆盖——若用户在这条 SetAll
+   * 飞行过程中又拖了色环 / 点了别的预设，本地已是更新的值，旧 ACK 不得改回。
+   */
+  private applyPresetLocally(color: RGB, brightness: number): void {
+    const state = this.latestState;
+    if (state === null) {
+      return;
+    }
+    if (state.r !== color.r || state.g !== color.g || state.b !== color.b) {
+      this.latestState = { ...state, power: 1 };
+      return;
+    }
+    this.latestState = {
+      ...applyLocalColor(state, color),
+      power: 1,
+      brightness,
+    };
+  }
+
+  /** 乐观更新本地颜色：UI 立即跟手；不动 power / brightness。 */
+  private rememberColor(rgb: RGB): void {
+    if (this.latestState !== null) {
+      this.latestState = applyLocalColor(this.latestState, rgb);
+    }
   }
 
   onLink(fn: (state: LinkState, detail?: LinkDetail) => void): () => void {

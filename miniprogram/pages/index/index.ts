@@ -1,9 +1,13 @@
 /**
- * 单页控制界面（#8 开关 + #9 亮度）。
+ * 单页控制界面（#8 开关 + #9 亮度 + #10 颜色与预设）。
  *
  * 页面只做 view model 与事件转发，所有 BLE 细节经 ControlSession。
- * 亮度滑块：bindchanging 连续量进 20Hz latest-wins 节流，bindchange 松手
- * 用同一个节流实例 flush 一次最终值。色环 / 预设仍是 #10 的禁用占位。
+ * 亮度滑块与色环都进 session 里**同一个** 20Hz latest-wins 节流实例；
+ * 预设用一条 SetAll（开关 + 亮度 + RGB）原子下发。
+ *
+ * 色环用单块 2D canvas：色相环画一次，拖动时只擦/画选中点所在的小块并补回
+ * 该角区间的环弧（见 utils/color/wheel.ts）。setData 的取色读数按 20Hz 更新，
+ * 与 BLE 节流同一个节奏。
  */
 
 import { errorText, resultText } from "../../utils/ble/errors";
@@ -15,24 +19,41 @@ import {
   ControlSession,
   detectDevMode,
   detectPlatform,
-  type PowerResult,
+  type CommandResult,
 } from "../../utils/control/session";
-import type { DeviceState, DiscoveredDevice, LinkState } from "../../utils/protocol/types";
+import {
+  hsvForWheel,
+  hsvToRgb,
+  normalizeHue,
+  PRESETS,
+  rgbToHex,
+  rgbToHsv,
+} from "../../utils/color/hsv";
+import {
+  drawWheel,
+  hueAtPoint,
+  moveWheelMarker,
+  wheelGeometry,
+  type WheelContext2D,
+  type WheelGeometry,
+} from "../../utils/color/wheel";
+import type { DeviceState, DiscoveredDevice, LinkState, RGB } from "../../utils/protocol/types";
 
 /** 模块级单例：页面重入时复用同一条 BLE 会话。 */
 let session: ControlSession | null = null;
 let unsubscribers: Array<() => void> = [];
 
-const PRESETS = [
-  { name: "暖白", hex: "#FFB478" },
-  { name: "冷白", hex: "#E8F0FF" },
-  { name: "红", hex: "#FF4D4D" },
-  { name: "橙", hex: "#FF9A3D" },
-  { name: "绿", hex: "#4DD17A" },
-  { name: "青", hex: "#3DD1D1" },
-  { name: "蓝", hex: "#4D7DFF" },
-  { name: "紫", hex: "#A06DFF" },
-];
+/** 页面取色读数的刷新间隔：与 BLE 20Hz 对齐，避免每个 touchmove 都 setData。 */
+const COLOR_UI_INTERVAL_MS = 50;
+
+/** 首屏色环位置与暖白预设对齐（真值来自预设表，不另写一份）。 */
+const INITIAL_HSV = rgbToHsv(PRESETS[0].rgb);
+
+interface WheelCtx {
+  ctx: WheelContext2D;
+  geometry: WheelGeometry;
+  dpr: number;
+}
 
 interface StatusView {
   statusText: string;
@@ -87,9 +108,14 @@ Page({
     brightnessPercent: 0,
     maxBrightness: 255,
     brightnessHintText: "连接后可调节",
-    // 为 #10 预留
-    colorHex: "#FFB478",
-    presets: PRESETS,
+
+    // 颜色（#10）：色相环 + 饱和度滑块；RGB 始终是用户空间值（不做 gamma）
+    presetList: PRESETS,
+    colorHex: PRESETS[0].hex,
+    colorHue: INITIAL_HSV.h,
+    colorSaturation: Math.round(INITIAL_HSV.s * 100), // 0-100，映射到 S = 0..1
+    selectedPreset: PRESETS[0].name,
+    colorHintText: "连接后可选色",
 
     // 扫描 / 设备弹层
     sheetVisible: false,
@@ -101,6 +127,18 @@ Page({
 
     version: "0.1.0",
   },
+
+  /** canvas 上下文与几何：非响应式，放在页面实例上（不进 data）。 */
+  wheel: null as WheelCtx | null,
+  /** onReady 之后才允许 onShow 重建 canvas（首次 onShow 早于首次布局）。 */
+  pageReady: false,
+  /** 色环状态：唯一真相；data 里的 colorHue / colorSaturation 只是显示镜像。 */
+  wheelHue: INITIAL_HSV.h,
+  wheelSaturation: INITIAL_HSV.s,
+  /** 取色读数的上次 setData 时间。 */
+  lastColorUiAt: 0,
+  /** 预设请求序号：只让最新一次预设的结果回写 UI，避免旧色回跳。 */
+  presetToken: 0,
 
   onLoad() {
     const platform = detectPlatform();
@@ -127,11 +165,17 @@ Page({
     void session.boot();
   },
 
+  onReady() {
+    this.pageReady = true;
+    this.initWheel();
+  },
+
   onUnload() {
     for (const off of unsubscribers) {
       off();
     }
     unsubscribers = [];
+    this.wheel = null;
     // 页面生命周期结束，彻底断开并反注册 wx.on*（避免回调串入）。
     session?.destroy();
     session = null;
@@ -141,6 +185,16 @@ Page({
     // 本票不做静默回连（#11）；回到前台只复核一次链路状态文案。
     if (session !== null) {
       this.applyLink(session.linkState);
+    }
+    // 首次 onShow 早于 onReady（canvas 还没布局），交给 onReady 初始化；
+    // 之后回到前台时 canvas 可能被回收，补一次绘制。
+    if (!this.pageReady) {
+      return;
+    }
+    if (this.wheel === null) {
+      this.initWheel();
+    } else {
+      this.redrawWheel();
     }
   },
 
@@ -236,6 +290,8 @@ Page({
       brightnessDisplay: 0,
       brightnessPercent: 0,
       brightnessHintText: "连接后可调节",
+      colorHintText: "连接后可选色",
+      selectedPreset: "",
     });
   },
 
@@ -248,8 +304,8 @@ Page({
     const next = this.data.power === 1 ? 0 : 1;
     this.setData({ powerBusy: true });
     try {
-      const result: PowerResult = await session.setPower(next === 1);
-      this.applyPowerResult(result);
+      const result = await session.setPower(next === 1);
+      this.applyCommandResult(result);
     } finally {
       this.setData({ powerBusy: false });
     }
@@ -285,6 +341,225 @@ Page({
     session?.commitBrightness(value);
   },
 
+  // ---------------- 颜色（#10） ----------------
+
+  /** 取画布节点与尺寸，按 dpr 建上下文并画一次色相环。 */
+  initWheel() {
+    const query = wx.createSelectorQuery();
+    query
+      .select("#color-wheel")
+      .fields({ node: true, size: true })
+      .exec((res: any[]) => {
+        const node = res?.[0]?.node as WechatMiniprogram.Canvas | undefined;
+        const width = Number(res?.[0]?.width ?? 0);
+        if (!node || width <= 0) {
+          console.warn("[lumen] 取不到色环 canvas 节点，颜色只能靠预设");
+          return;
+        }
+
+        const dpr = this.pixelRatio();
+        // 物理像素 = CSS 像素 × dpr；绘制时统一 setTransform(dpr,...)。
+        node.width = Math.round(width * dpr);
+        node.height = Math.round(width * dpr);
+
+        this.wheel = {
+          ctx: node.getContext("2d") as unknown as WheelContext2D,
+          geometry: wheelGeometry(width),
+          dpr,
+        };
+        this.redrawWheel();
+      });
+  },
+
+  /** 设备像素比；取不到按 2（宁可放大，不可模糊）。 */
+  pixelRatio(): number {
+    try {
+      const info = wx.getWindowInfo?.() ?? wx.getSystemInfoSync();
+      const ratio = Number((info as { pixelRatio?: number }).pixelRatio ?? 2);
+      return Number.isFinite(ratio) && ratio > 0 ? ratio : 2;
+    } catch {
+      return 2;
+    }
+  },
+
+  /** 整块重画色环与选中点（首次绘制 / 页面回前台 / 状态同步时用）。 */
+  redrawWheel() {
+    if (this.wheel === null) {
+      return;
+    }
+    const { ctx, geometry, dpr } = this.wheel;
+    drawWheel(ctx, geometry, dpr, this.wheelHue, rgbToHex(this.wheelRgb()));
+  },
+
+  /** 色环 + 饱和度对应的用户空间 RGB（V 恒为 1，亮度由滑块负责）。 */
+  wheelRgb(): RGB {
+    return hsvToRgb(this.wheelHue, this.wheelSaturation, 1);
+  },
+
+  /** touchstart / touchmove 共用：把触摸点换算成色相并下发（20Hz 节流在 session）。 */
+  handleWheelTouch(e: WechatMiniprogram.TouchCanvas) {
+    if (this.wheel === null || !this.data.ready) {
+      return;
+    }
+    // 多指触摸容易误判，只处理单指。
+    if (Array.isArray(e.touches) && e.touches.length > 1) {
+      return;
+    }
+    const touch = e.touches?.[0];
+    if (!touch) {
+      return;
+    }
+    const hue = hueAtPoint(touch.x, touch.y, this.wheel.geometry);
+    if (hue === null) {
+      // 点在环内空白或环外：忽略，避免手指划过中心时颜色乱跳。
+      return;
+    }
+    this.applyHue(hue);
+  },
+
+  onWheelTouchStart(e: WechatMiniprogram.TouchCanvas) {
+    this.handleWheelTouch(e);
+  },
+
+  onWheelTouchMove(e: WechatMiniprogram.TouchCanvas) {
+    this.handleWheelTouch(e);
+  },
+
+  /** 松手：把当前颜色再推一次并 flush，保证最终颜色落地。 */
+  onWheelTouchEnd() {
+    if (!this.data.ready) {
+      return;
+    }
+    session?.commitColor(this.wheelRgb());
+  },
+
+  /** 色相变化：marker 立即重画；读数 setData 与 BLE 都按 20Hz 节流。 */
+  applyHue(hue: number) {
+    const previousHue = this.wheelHue;
+    this.wheelHue = normalizeHue(hue);
+    const rgb = this.wheelRgb();
+    const hex = rgbToHex(rgb);
+    if (this.wheel !== null) {
+      moveWheelMarker(
+        this.wheel.ctx,
+        this.wheel.geometry,
+        this.wheel.dpr,
+        this.wheelHue,
+        hex,
+        previousHue,
+      );
+    }
+    session?.queueColor(rgb);
+
+    const now = Date.now();
+    if (now - this.lastColorUiAt < COLOR_UI_INTERVAL_MS) {
+      return;
+    }
+    this.lastColorUiAt = now;
+    this.setData({
+      colorHue: this.wheelHue,
+      colorHex: hex,
+      selectedPreset: "",
+      colorHintText: this.colorHintText(this.data.ready),
+    });
+  },
+
+  onSaturationChanging(e: WechatMiniprogram.SliderChanging) {
+    this.applySaturation(Number(e.detail.value), false);
+  },
+
+  onSaturationChange(e: WechatMiniprogram.SliderChange) {
+    this.applySaturation(Number(e.detail.value), true);
+  },
+
+  /** 饱和度（0-100）→ S=0..1；V 恒为 1（亮度独立，不折进 RGB）。 */
+  applySaturation(value: number, commit: boolean) {
+    if (!Number.isFinite(value)) {
+      return;
+    }
+    this.wheelSaturation = Math.min(100, Math.max(0, Math.round(value))) / 100;
+    const rgb = this.wheelRgb();
+    const hex = rgbToHex(rgb);
+    if (this.wheel !== null) {
+      /* 饱和度只改 marker 的填充色，位置（色相）不变；走局部擦补比重画整环便宜。 */
+      moveWheelMarker(
+        this.wheel.ctx,
+        this.wheel.geometry,
+        this.wheel.dpr,
+        this.wheelHue,
+        hex,
+        this.wheelHue,
+      );
+    }
+    this.setData({
+      colorSaturation: Math.round(this.wheelSaturation * 100),
+      colorHex: hex,
+      selectedPreset: "",
+      colorHintText: this.colorHintText(this.data.ready),
+    });
+    if (commit) {
+      session?.commitColor(rgb);
+    } else {
+      session?.queueColor(rgb);
+    }
+  },
+
+  /**
+   * 预设点击：一次 SetAll（开关=1、亮度=当前、RGB=预设）原子下发。
+   *
+   * 快速连点不同预设时，只有最后一次请求的结果回写 UI（presetToken），
+   * 避免先发出的请求晚返回把颜色改回旧的。SetAll 是绝对值命令，FIFO 顺序
+   * 保证设备最终状态 = 最后一次点击。
+   */
+  async onPresetTap(e: WechatMiniprogram.TouchEvent) {
+    if (session === null || !this.data.ready) {
+      return;
+    }
+    const index = Number(e.currentTarget.dataset.index ?? -1);
+    const preset = PRESETS[index];
+    if (preset === undefined) {
+      return;
+    }
+
+    const token = ++this.presetToken;
+    // 先本地切换 UI：预设是离散动作，期望「点下即变」；ACK 回来后再按设备语义校准。
+    this.setData({
+      power: 1,
+      powerLabel: "已开",
+      colorHex: preset.hex,
+      selectedPreset: preset.name,
+      colorHintText: this.colorHintText(true),
+    });
+    this.syncWheelToRgb(preset.rgb);
+
+    const result = await session.applyPreset(preset.rgb);
+    if (token !== this.presetToken) {
+      return; // 已有更新的一次预设请求，丢弃这次结果
+    }
+    this.applyCommandResult(result);
+  },
+
+  /** 把设备/预设颜色反推回色环位置与饱和度（灰阶时保留当前色相）。 */
+  syncWheelToRgb(rgb: RGB) {
+    const hsv = hsvForWheel(rgb, this.wheelHue);
+    this.wheelHue = hsv.h;
+    this.wheelSaturation = hsv.s;
+    this.setData({
+      colorHue: hsv.h,
+      colorSaturation: Math.round(hsv.s * 100),
+    });
+    this.redrawWheel();
+  },
+
+  colorHintText(ready: boolean): string {
+    if (!ready) {
+      return "连接后可选色";
+    }
+    return "拖动色环实时跟随；预设一次原子切换";
+  },
+
+  // ---------------- 内部 ----------------
+
   /**
    * 亮度只影响 brightness：power 位不动（亮度 0 视觉等于关灯，但设备仍是「开」）。
    * bindValue 为 false 时不回写 slider.value（拖动中由原生控件跟手）。
@@ -313,8 +588,6 @@ Page({
     return "拖动实时跟随，松手确认";
   },
 
-  // ---------------- 内部 ----------------
-
   applyLink(state: LinkState, message?: string) {
     const view = statusView(state, this.data.deviceName, message);
     const ready = state === "ready";
@@ -325,6 +598,7 @@ Page({
       brightnessHintText: ready
         ? this.brightnessHintText(this.data.brightness, true)
         : this.data.brightnessHintText,
+      colorHintText: this.colorHintText(ready),
     });
     if (state !== "ready" && state !== "initializing") {
       // 断线后不显示过期设备状态（设备是权威）。
@@ -336,6 +610,8 @@ Page({
           brightnessDisplay: 0,
           brightnessPercent: 0,
           brightnessHintText: "连接后可调节",
+          colorHintText: "连接后可选色",
+          selectedPreset: "",
         });
       }
     }
@@ -344,6 +620,10 @@ Page({
   applyDeviceState(state: DeviceState) {
     const max = state.maxBrightness > 0 ? state.maxBrightness : 255;
     const brightness = clampBrightness(state.brightness, max);
+    const rgb: RGB = { r: state.r, g: state.g, b: state.b };
+    const hsv = hsvForWheel(rgb, this.wheelHue);
+    this.wheelHue = hsv.h;
+    this.wheelSaturation = hsv.s;
     this.setData({
       power: state.power,
       powerLabel: this.powerLabelText(state.power, brightness),
@@ -352,11 +632,23 @@ Page({
       brightnessPercent: percentOf(brightness, max),
       maxBrightness: max,
       brightnessHintText: this.brightnessHintText(brightness, this.data.ready),
-      colorHex: `#${[state.r, state.g, state.b]
-        .map((v) => v.toString(16).padStart(2, "0"))
-        .join("")
-        .toUpperCase()}`,
+      colorHex: rgbToHex(rgb),
+      colorHue: hsv.h,
+      colorSaturation: Math.round(hsv.s * 100),
+      selectedPreset: this.matchingPreset(rgb),
+      colorHintText: this.colorHintText(this.data.ready),
     });
+    this.redrawWheel();
+  },
+
+  /** 当前 RGB 与哪个预设完全一致（用于高亮）；都不匹配返回空串。 */
+  matchingPreset(rgb: RGB): string {
+    for (const preset of PRESETS) {
+      if (preset.rgb.r === rgb.r && preset.rgb.g === rgb.g && preset.rgb.b === rgb.b) {
+        return preset.name;
+      }
+    }
+    return "";
   },
 
   /** 亮度 0 且 power=1：灯是灭的但开关位仍为开，文案要如实说明（§7）。 */
@@ -367,7 +659,8 @@ Page({
     return brightness === 0 ? "已开 · 亮度 0" : "已开";
   },
 
-  applyPowerResult(result: PowerResult) {
+  /** 离散命令结果：成功用设备语义刷新 UI；失败提示并回读 State（设备权威）。 */
+  applyCommandResult(result: CommandResult) {
     if (result.kind === "ok") {
       this.applyDeviceState(result.state);
       return;

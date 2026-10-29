@@ -1,0 +1,65 @@
+/**
+ * 颜色语义（纯函数），#10 颜色与预设端到端。
+ *
+ * 与协议的关系（docs/protocol.md §6/§7）：
+ *  - SetColor 0x03 只写 RGB，不动 power / brightness；
+ *  - SetAll 0x04 把 power / brightness / RGB 一次原子写入；
+ *  - 颜色是用户空间 RGB：App 不做 gamma、不把亮度折进 RGB。
+ *
+ * 本模块不接触 wx / BLE，可在 vitest 里直接测。
+ */
+
+import type { DeviceState, RGB } from "../protocol/types";
+import { brightnessForPowerOn, clampBrightness, effectiveMaxBrightness } from "./brightness";
+
+/** 单通道钳成 0-255 的整数；非有限值按 0（与命令行参构造器的字节约束对齐）。 */
+export function clampChannel(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.min(255, Math.max(0, Math.round(value)));
+}
+
+/** 三个通道都钳到 0-255，返回新对象。 */
+export function clampRgb(rgb: RGB): RGB {
+  return {
+    r: clampChannel(rgb.r),
+    g: clampChannel(rgb.g),
+    b: clampChannel(rgb.b),
+  };
+}
+
+/** 两个颜色是否逐通道相同（预设高亮用）。 */
+export function sameRgb(a: RGB, b: RGB): boolean {
+  return a.r === b.r && a.g === b.g && a.b === b.b;
+}
+
+/**
+ * 本地乐观更新：只改 RGB，不动 power / brightness。
+ * 色环拖动时 UI 立即跟手，不等设备回包（设备仍是权威，重连/错误时读 State）。
+ */
+export function applyLocalColor(state: DeviceState, rgb: RGB): DeviceState {
+  const color = clampRgb(rgb);
+  return { ...state, r: color.r, g: color.g, b: color.b };
+}
+
+/**
+ * 预设点击时 SetAll 要下发的亮度。
+ *
+ * 常态用当前亮度；只有当前亮度为 0 时用「最近一次非 0 亮度」恢复——
+ * 否则 SetAll(power=1, brightness=0) 会让用户以为预设没生效。
+ * 上限取设备上报的 maxBrightness（不硬编码 255）。
+ */
+export function presetBrightness(
+  state: Pick<DeviceState, "brightness" | "maxBrightness"> | null,
+  lastNonZeroBrightness: number,
+): number {
+  if (state === null) {
+    return brightnessForPowerOn(lastNonZeroBrightness, 255);
+  }
+  const max = effectiveMaxBrightness(state.maxBrightness);
+  if (state.brightness > 0) {
+    return clampBrightness(state.brightness, max);
+  }
+  return brightnessForPowerOn(lastNonZeroBrightness, max);
+}
