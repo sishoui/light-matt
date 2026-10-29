@@ -443,6 +443,142 @@
   font-family: Menlo, Consolas, monospace;
 }
 
+/* ---------------- 隐藏协议日志面板（#13） ---------------- */
+
+/* 版本号是面板的唯一入口：连点 5 次；保留一点点击热区但视觉不变 */
+.version {
+  padding: 8rpx 0;
+}
+
+.log-mask {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex;
+  align-items: flex-end;
+}
+
+.log-panel {
+  width: 100%;
+  height: 78vh;
+  box-sizing: border-box;
+  padding: 20rpx 20rpx calc(20rpx + env(safe-area-inset-bottom));
+  background: #0c0c10;
+  border-radius: 28rpx 28rpx 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14rpx;
+}
+
+.log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.log-title {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: #f5f5f5;
+}
+
+.log-close {
+  font-size: 26rpx;
+  color: #9a9aa5;
+  padding: 4rpx 8rpx;
+}
+
+.log-toolbar {
+  display: flex;
+  gap: 12rpx;
+}
+
+.log-btn {
+  flex: 1;
+  height: 64rpx;
+  line-height: 64rpx;
+  text-align: center;
+  border-radius: 12rpx;
+  background: #1c1c23;
+  border: 1rpx solid #2f2f38;
+  font-size: 24rpx;
+  color: #f5f5f5;
+}
+
+.log-hint {
+  font-size: 22rpx;
+  color: #ffb478;
+}
+
+.log-list {
+  flex: 1;
+  min-height: 0;
+  border: 1rpx solid #22222a;
+  border-radius: 12rpx;
+  background: #101014;
+  padding: 8rpx;
+  box-sizing: border-box;
+}
+
+.log-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8rpx 12rpx;
+  padding: 8rpx 6rpx;
+  border-bottom: 1rpx solid #1c1c23;
+  font-family: Menlo, Consolas, monospace;
+  font-size: 20rpx;
+  line-height: 1.5;
+  color: #c9c9d1;
+}
+
+.log-row.tx .log-arrow {
+  color: #ffb478;
+}
+
+.log-row.rx .log-arrow {
+  color: #4dd17a;
+}
+
+.log-row.bad .log-parsed {
+  color: #ff8a8a;
+}
+
+.log-time {
+  color: #6f6f7a;
+}
+
+.log-hex {
+  color: #9a9aa5;
+  word-break: break-all;
+}
+
+.log-name {
+  color: #f5f5f5;
+}
+
+.log-parsed {
+  width: 100%;
+  color: #9a9aa5;
+  word-break: break-all;
+}
+
+.log-empty {
+  padding: 32rpx 12rpx;
+  font-size: 24rpx;
+  color: #6f6f7a;
+  line-height: 1.6;
+}
+
+.log-foot {
+  font-size: 20rpx;
+  color: #6f6f7a;
+}
+
 /* ---------------- 灯珠数量（#12，设备弹层内） ---------------- */
 
 .led-count-block {

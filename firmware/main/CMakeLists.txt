@@ -11,6 +11,7 @@ idf_component_register(
         "state.c"
         "gamma.c"
         "protocol.c"
+        "selftest.c"
         "stress_metrics.c"
     INCLUDE_DIRS "."
     REQUIRES

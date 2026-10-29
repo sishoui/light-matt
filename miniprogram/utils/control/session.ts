@@ -33,6 +33,7 @@ import { LED_COUNT_ACK_TIMEOUT_MS } from "./ledCount";
 import { MAX_LEDS, MIN_LEDS } from "../protocol/constants";
 import {
   cmdQueryState,
+  cmdSelfTest,
   cmdSetAll,
   cmdSetBrightness,
   cmdSetColor,
@@ -496,6 +497,36 @@ export class ControlSession {
   /** 调试兜底：QueryState（次要路径，主路径是 State read）。 */
   async queryState(): Promise<AckResult> {
     return this.sendCommand(cmdQueryState());
+  }
+
+  /**
+   * #13：自检。设备按 红→绿→蓝→白 各 500ms 临时覆盖灯带，2s 后自动恢复。
+   *
+   * 这里只发一帧并等 ACK：自检不改变设备状态，所以本地状态与 UI 都不动
+   * （避免「自检后 UI 显示自检颜色」）。允许 ACK 超时重发一次——重发会
+   * 让设备重启序列，结果仍是同一条 2s 自检，可接受；不重发则一次丢包就会
+   * 让用户觉得按钮没反应。
+   *
+   * 走 #11 的统一命令通道（错误分诊 + 10006 触发回连），并做 epoch 守卫：
+   * 旧连接上飞行的 ACK 晚到达时，不要在新连接上弹「自检失败」。
+   */
+  async selfTest(): Promise<CommandResult> {
+    const epoch = this.linkEpoch;
+    try {
+      const ack = await this.sendCommand(cmdSelfTest(), { retryOnTimeout: 1 });
+      if (this.isStaleEpoch(epoch)) {
+        return { kind: "stale" };
+      }
+      if (!ack.ok) {
+        return { kind: "ack-error", ack };
+      }
+      return {
+        kind: "ok",
+        state: this.latestState ?? fallbackState({ r: 0, g: 0, b: 0 }, 0, 0),
+      };
+    } catch (err) {
+      return { kind: "error", message: errorText(err) };
+    }
   }
 
   /**

@@ -8,7 +8,7 @@
  * mirrorToConsole（index.ts 用 wx.getAccountInfoSync 的 envVersion）。
  */
 
-import { commandName } from "../protocol/constants";
+import { formatLogLine } from "./log-panel";
 
 export type FrameDirection = "tx" | "rx";
 
@@ -54,13 +54,12 @@ export class FrameLog {
     }
 
     if (this.mirrorToConsole) {
-      const arrow = full.dir === "tx" ? "->" : "<-";
-      const name = full.command === undefined ? "?" : commandName(full.command);
-      console.log(
-        `[lumen][${full.dir}] ${arrow} ${full.hex} | ${name}` +
-          (full.seq === undefined ? "" : ` seq=${full.seq}`) +
-          ` | ${full.parsed}`,
-      );
+      /*
+       * console 镜像与面板用同一个 formatter：验收要求「看到的是同一份数据」，
+       * 各自格式化会让同一帧在两处出现不同文本。只是多一个 [lumen] 前缀便于
+       * 在开发者工具海量日志里过滤。
+       */
+      console.log(`[lumen] ${formatLogLine(full)}`);
     }
 
     for (const fn of this.listeners.slice()) {

@@ -1,5 +1,6 @@
 /**
- * 单页控制界面（#8 开关 + #9 亮度 + #10 颜色与预设 + #11 状态同步与回连）。
+ * 单页控制界面（#8 开关 + #9 亮度 + #10 颜色与预设 + #11 状态同步与回连
+ * + #12 灯珠数量 + #13 隐藏日志面板与自检）。
  *
  * 页面只做 view model 与事件转发，所有 BLE 细节经 ControlSession。
  * 亮度滑块与色环都进 session 里**同一个** 20Hz latest-wins 节流实例；
@@ -12,9 +13,17 @@
  * 色环用单块 2D canvas：色相环画一次，拖动时只擦/画选中点所在的小块并补回
  * 该角区间的环弧（见 utils/color/wheel.ts）。setData 的取色读数按 20Hz 更新，
  * 与 BLE 节流同一个节奏。
+ *
+ * 隐藏协议日志面板：连点版本号 5 次开启（spec §10）。面板只消费 FrameLog
+ * 这一份数据（console 镜像也在 FrameLog.push 里），暂停 = 冻结视图但继续
+ * 记录（理由见 utils/ble/log-panel.ts 顶部注释）。
  */
 
 import { errorText, eventText, resultText } from "../../utils/ble/errors";
+import {
+  LogPanelModel,
+  type LogPanelRow,
+} from "../../utils/ble/log-panel";
 import {
   brightnessPercent as percentOf,
   clampBrightness,
@@ -54,6 +63,9 @@ let unsubscribers: Array<() => void> = [];
 
 /** 页面取色读数的刷新间隔：与 BLE 20Hz 对齐，避免每个 touchmove 都 setData。 */
 const COLOR_UI_INTERVAL_MS = 50;
+
+/** 日志面板的刷新合并间隔：帧可能以 20Hz 到达，不能每帧都 setData。 */
+const LOG_PANEL_REFRESH_MS = 200;
 
 /** 首屏色环位置与暖白预设对齐（真值来自预设表，不另写一份）。 */
 const INITIAL_HSV = rgbToHsv(PRESETS[0].rgb);
@@ -100,6 +112,15 @@ Page({
     scanHint: "" as string,
     deviceName: "",
     deviceId: "",
+    selfTestBusy: false,
+
+    // 隐藏协议日志面板（#13）：连点版本号 5 次开启
+    logVisible: false,
+    logPaused: false,
+    logRows: [] as LogPanelRow[],
+    logCount: 0,
+    logHint: "",
+    logScrollTarget: "",
 
     // 灯珠数量（#12）：只在设备弹层里出现，是设备级低频设置
     ledCount: 0, // 设备当前生效的数量；未连接时为 0
@@ -121,12 +142,19 @@ Page({
   lastColorUiAt: 0,
   /** 预设请求序号：只让最新一次预设的结果回写 UI，避免旧色回跳。 */
   presetToken: 0,
+  /** 隐藏日志面板模型（页面实例持有；数据源是 session 的 FrameLog）。 */
+  logPanel: null as LogPanelModel | null,
+  /** 日志 setData 的合并计时器（20Hz 帧不能每帧都 setData）。 */
+  logFlushTimer: null as ReturnType<typeof setTimeout> | null,
 
   onLoad() {
     const platform = detectPlatform();
     const devMode = detectDevMode();
     session = new ControlSession({ platform, devMode });
     console.log(`[lumen] 平台 ${platform}，开发版日志 ${devMode ? "开启" : "关闭"}`);
+
+    // 面板与 console 共用 session.log 这一份 FrameLog（同源，不复制、不重格式化）。
+    this.logPanel = new LogPanelModel(session.log);
 
     unsubscribers = [
       session.onLink((state, detail) => {
@@ -152,6 +180,8 @@ Page({
           wx.showToast({ title: text, icon: "none" });
         }
       }),
+      // 新帧到达：只在面板可见且未暂停时合并刷新（暂停时冻结视图）。
+      session.log.onAppend(() => this.scheduleLogRefresh()),
     ];
 
     void session.boot();
@@ -168,6 +198,11 @@ Page({
     }
     unsubscribers = [];
     this.wheel = null;
+    if (this.logFlushTimer !== null) {
+      clearTimeout(this.logFlushTimer);
+      this.logFlushTimer = null;
+    }
+    this.logPanel = null;
     // 页面生命周期结束，彻底断开并反注册 wx.on*（避免回调串入）。
     session?.destroy();
     session = null;
@@ -407,6 +442,141 @@ Page({
       ledCountInput: "",
       ledCountHintText: "",
     });
+  },
+
+  // ---------------- 自检（#13） ----------------
+
+  /**
+   * 自检：设备按 红→绿→蓝→白 各 500ms 临时覆盖灯带，2s 后自动恢复。
+   * 放在设备弹层里，不占主控制流；自检不改设备状态，因此不刷新本地 UI。
+   */
+  async onSelfTest() {
+    if (session === null || !this.data.ready || this.data.selfTestBusy) {
+      return;
+    }
+    this.setData({ selfTestBusy: true });
+    try {
+      const result = await session.selfTest();
+      if (result.kind === "ok") {
+        wx.showToast({ title: "自检：红 → 绿 → 蓝 → 白", icon: "none" });
+      } else if (result.kind === "ack-error") {
+        wx.showToast({
+          title: `自检失败：${resultText(result.ack.resultCode)}`,
+          icon: "none",
+        });
+      } else if (result.kind === "stale") {
+        // #11：旧连接上飞行的 SelfTest 晚到。自检只是设备侧的一次性动作，
+        // 新连接上没有可回滚的状态，什么都不提示即可。
+      } else {
+        wx.showToast({ title: result.message, icon: "none" });
+      }
+    } finally {
+      this.setData({ selfTestBusy: false });
+    }
+  },
+
+  // ---------------- 隐藏协议日志面板（#13） ----------------
+
+  /**
+   * 版本号点击：2s 窗口内第 5 次切换面板可见性（spec §10）。
+   * 判定逻辑在 TapSequence 里，页面只负责应用结果。
+   */
+  onVersionTap() {
+    const panel = this.logPanel;
+    if (panel === null) {
+      return;
+    }
+    if (!panel.tapVersion(Date.now())) {
+      return;
+    }
+    const visible = panel.visible;
+    this.setData({ logVisible: visible, logHint: "" });
+    if (visible) {
+      this.refreshLogPanel();
+    }
+  },
+
+  /** 把面板模型当前视图同步到 data（行 + 计数 + 暂停态）。 */
+  refreshLogPanel() {
+    const panel = this.logPanel;
+    if (panel === null) {
+      return;
+    }
+    const entries = panel.entries();
+    const rows = panel.rows();
+    const last = rows.length > 0 ? rows[rows.length - 1] : null;
+    this.setData({
+      logRows: rows,
+      logCount: entries.length,
+      logPaused: panel.paused,
+      // 跟随最新一帧；暂停时不动视图，恢复后再跳到末尾。
+      logScrollTarget: !panel.paused && last !== null ? `log-row-${last.id}` : "",
+    });
+  },
+
+  /** 合并刷新：20Hz 的帧不能每帧 setData；暂停/隐藏时完全不动视图。 */
+  scheduleLogRefresh() {
+    if (!this.data.logVisible || this.data.logPaused) {
+      return;
+    }
+    if (this.logFlushTimer !== null) {
+      return;
+    }
+    this.logFlushTimer = setTimeout(() => {
+      this.logFlushTimer = null;
+      this.refreshLogPanel();
+    }, LOG_PANEL_REFRESH_MS);
+  },
+
+  /** 暂停 = 冻结视图但继续记录（理由见 log-panel.ts）。 */
+  onLogPauseTap() {
+    const panel = this.logPanel;
+    if (panel === null) {
+      return;
+    }
+    const paused = panel.togglePause();
+    this.setData({
+      logPaused: paused,
+      logHint: paused ? "已暂停视图（新帧仍在记录）" : "",
+    });
+    this.refreshLogPanel();
+  },
+
+  onLogClearTap() {
+    const panel = this.logPanel;
+    if (panel === null) {
+      return;
+    }
+    panel.clear();
+    this.setData({ logHint: "" });
+    this.refreshLogPanel();
+  },
+
+  /** 复制当前视图：暂停时复制冻结的那一段，否则复制整个环形缓冲。 */
+  onLogCopyTap() {
+    const panel = this.logPanel;
+    if (panel === null) {
+      return;
+    }
+    const text = panel.copyText();
+    if (text.length === 0) {
+      this.setData({ logHint: "没有可复制的帧" });
+      return;
+    }
+    const count = panel.entries().length;
+    wx.setClipboardData({
+      data: text,
+      success: () => this.setData({ logHint: `已复制 ${count} 帧` }),
+      fail: (err) => this.setData({ logHint: `复制失败：${errorText(err)}` }),
+    });
+  },
+
+  onLogCloseTap() {
+    const panel = this.logPanel;
+    if (panel !== null) {
+      panel.setVisible(false);
+    }
+    this.setData({ logVisible: false });
   },
 
   // ---------------- 开关 ----------------

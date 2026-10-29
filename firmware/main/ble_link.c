@@ -176,18 +176,51 @@ static void handle_frame(const uint8_t *data, size_t len)
     /* max_brightness 取构建期常量：SetBrightness / SetAll 在这里被钳位，而不是拒绝。 */
     lumen_command_dispatch(&frame, &current, lumen_led_engine_max_brightness(), &outcome);
 
+    /*
+     * 自检控制（协议 §11.2），必须在写共享状态之前处理：
+     *  - 改变状态的命令先取消自检，再 commit，渲染任务不会闪回自检色；
+     *  - SelfTest 只启动覆盖，不改状态（state_changed 恒为 false）。
+     * 记录「是否真的取消了」，否则每条 SetXxx 都会打出 selftest=cancel，
+     * 排查时会误以为自检被打断过。
+     */
+    bool cancelled_selftest = false;
+    if (outcome.cancels_selftest) {
+        cancelled_selftest = lumen_led_engine_cancel_selftest();
+    }
+    if (outcome.start_selftest) {
+        lumen_led_engine_start_selftest();
+    }
+
     if (outcome.state_changed) {
         /* 写入 RAM + 发渲染信号 + 请求 debounce 持久化；本回调不刷灯、不写 NVS。 */
         lumen_led_engine_commit(&outcome.next, frame.command);
     }
 
-    /* 颜色也打进日志：真机排查错色时，App 日志与固件串口能按 seq 对齐 RGB。 */
+    /*
+     * 每帧一行、字段固定：command / seq / len / result 是两端 seq 对齐的
+     * 主线索；power/brightness/rgb 是命令生效后的存储状态（自检期间也仍是
+     * 存储状态，不是自检颜色——§11.2 第 6 条）。
+     *
+     * selftest=start/cancel/on 是 §11.2 的串口证据：
+     *   start  = 这条命令启动了自检；
+     *   cancel = 这条命令确实打断了进行中的自检（没在自检时不会出现）；
+     *   on     = 命令处理完后自检仍在跑，即这条命令没有取消自检
+     *            （QueryState 期间出现 on 就证明查询不打断自检）。
+     */
+    const char *selftest_note = "";
+    if (outcome.start_selftest) {
+        selftest_note = " selftest=start";
+    } else if (cancelled_selftest) {
+        selftest_note = " selftest=cancel";
+    } else if (lumen_led_engine_selftest_active()) {
+        selftest_note = " selftest=on";
+    }
     ESP_LOGI(TAG,
              "RX cmd=0x%02X seq=0x%02X len=%u result=0x%02X power=%u brightness=%u "
-             "rgb=%u,%u,%u%s",
+             "rgb=%u,%u,%u%s%s",
              frame.command, frame.seq, frame.payload_len, outcome.result_code,
              outcome.next.power, outcome.next.brightness, outcome.next.r, outcome.next.g,
-             outcome.next.b, outcome.state_changed ? " changed" : "");
+             outcome.next.b, outcome.state_changed ? " changed" : "", selftest_note);
 
     if (outcome.led_count_rebuild) {
         /*

@@ -13,7 +13,6 @@
  */
 
 import {
-  CMD,
   DEVICE_CMD,
   RX_UUID,
   SERVICE_UUID,
@@ -24,6 +23,13 @@ import {
 import { bytesToHex } from "../protocol/hex";
 import { decodeFrame, encodeFrame } from "../protocol/frame";
 import { parseAck, parseState } from "../protocol/commands";
+import {
+  describeAck,
+  describeCommand,
+  describeEvent,
+  describeState,
+  describeStateRead,
+} from "../protocol/describe";
 import type {
   AckResult,
   CommandRequest,
@@ -742,7 +748,8 @@ export class BleTransport {
       return;
     }
     if (characteristicId === upper(this.stateId ?? STATE_UUID)) {
-      this.logFrame("rx", bytes, undefined, undefined, "State read 回值");
+      // State read 回值不是协议帧（直接 8 字节），但同样进日志、同样可解析。
+      this.logFrame("rx", bytes, undefined, undefined, this.describeStateRead(bytes));
       const waiter = this.stateWaiter;
       if (waiter !== null) {
         waiter.resolve(bytes.slice());
@@ -824,7 +831,7 @@ export class BleTransport {
         bytes,
         command,
         seq,
-        `ACK ${commandName(ack.command)} ${ack.ok ? "OK" : resultText(ack.resultCode)}`,
+        describeAck(ack),
         ack.ok,
       );
       const waiter = this.ackWaiters.get(seq);
@@ -859,14 +866,7 @@ export class BleTransport {
       }
       const code = payload[0];
       const detail = payload[1];
-      this.logFrame(
-        "rx",
-        bytes,
-        command,
-        seq,
-        code === 0x01 ? `存储失败（原命令 ${commandName(detail)}）` : `Event ${code}`,
-        code !== 0x01,
-      );
+      this.logFrame("rx", bytes, command, seq, describeEvent(code, detail), code !== 0x01);
       for (const fn of this.eventListeners.slice()) {
         fn(code, detail);
       }
@@ -1030,6 +1030,15 @@ export class BleTransport {
     }
   }
 
+  /** State read 的裸值：能解析就写出完整状态，不能解析也保留长度。 */
+  private describeStateRead(bytes: Uint8Array): string {
+    try {
+      return describeStateRead(parseState(bytes));
+    } catch {
+      return `State read（${bytes.length} 字节，无法解析）`;
+    }
+  }
+
   /** 写失败时补一条同 seq 的日志，保留「这一帧没发出去」的证据。 */
   private logFailure(
     bytes: Uint8Array,
@@ -1062,16 +1071,5 @@ export class BleTransport {
 }
 
 function describeTx(req: CommandRequest): string {
-  const name = commandName(req.command);
-  if (req.command === CMD.SET_POWER && req.payload.length === 1) {
-    return `${name} power=${req.payload[0]}`;
-  }
-  return `${name} ${bytesToHex(req.payload)}`.trim();
-}
-
-function describeState(state: DeviceState): string {
-  return (
-    `State power=${state.power} brightness=${state.brightness} ` +
-    `rgb=${state.r},${state.g},${state.b} leds=${state.ledCount} max=${state.maxBrightness}`
-  );
+  return describeCommand(req.command, req.payload);
 }

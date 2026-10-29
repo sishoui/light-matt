@@ -66,3 +66,24 @@ uint8_t lumen_led_engine_set_led_count(uint16_t count, uint8_t seq);
 
 /* 当前生效的亮度上限（构建期常量）。 */
 uint8_t lumen_led_engine_max_brightness(void);
+
+/*
+ * 自检（协议 §11.2）：红 → 绿 → 蓝 → 白，每色 500ms，2s 后自动结束。
+ *
+ * 自检是渲染层的临时覆盖：不写共享状态、不写 NVS、不改 s_state；结束后
+ * 渲染任务自动回到存储状态（关灯态回关灯）。即使存储状态是关灯，自检
+ * 期间也会点亮，亮度取当前 max_brightness。
+ *
+ * 调用顺序（ble_link 在命令分发后）：先 cancel（如命令改变状态）或 start，
+ * 再 commit 新状态。重复 start 会重新从红色计时。
+ */
+void lumen_led_engine_start_selftest(void);
+
+/*
+ * 立即取消自检并重绘存储状态；未在自检时无副作用。
+ * 返回 true 表示确实停掉了一个进行中的自检——串口日志据此区分
+ * 「这条命令取消了自检」与「命令到来时本来就没在自检」，避免排查时误判。
+ */
+bool lumen_led_engine_cancel_selftest(void);
+
+bool lumen_led_engine_selftest_active(void);

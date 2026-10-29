@@ -16,13 +16,25 @@
  *
  * #8 实现 SetPower 0x01；#9 实现 SetBrightness 0x02；#10 实现 SetColor 0x03
  * 与 SetAll 0x04；#12 实现 SetLedCount 0x06 的取值校验与「需要重建句柄」
- * 标记（真正的重建在 led_engine 的渲染任务里）。0x05 与 0x07 的语义属于
- * #13，仍回 0x02（UnknownCommand）——这是「明确未实现」路径，不是协议最终行为。
+ * 标记（真正的重建在 led_engine 的渲染任务里）；#13 实现 SelfTest 0x07 的
+ * 命令语义（ACK 0x00 + 启动自检）。0x05 QueryState 的语义属于 #11，仍回
+ * 0x02（UnknownCommand）——这是「明确未实现」路径，不是协议最终行为。
  */
 
 typedef struct {
     uint8_t result_code;   /* uint8_t 而非枚举，便于直接进 ACK 载荷 */
     bool state_changed;    /* false 时 next 与 current 相同，调用方不必 commit */
+    /*
+     * 自检控制（协议 §11.2）。调用方必须在写共享状态之前处理这两个标志：
+     *  - start_selftest：0x07 已被接受，立即开始（或重启）自检序列；
+     *  - cancels_selftest：该命令属于「改变状态」类别且已通过校验，必须
+     *    结束自检再应用 next。即使 state_changed 为 false 也要结束——例如
+     *    把开关设成当前值，它仍然是「改变状态的命令」，按 §11.2 第 5 条
+     *    会取消自检。
+     * 查询状态、读 State、自检命令本身都不置 cancels_selftest。
+     */
+    bool start_selftest;
+    bool cancels_selftest;
     /* SetLedCount 专用（§11.3）：合法取值时置 true。数量要等渲染任务重建
      * led_strip 句柄成功后才写入共享状态，ACK 也必须等重建结果。 */
     bool led_count_rebuild;
@@ -34,9 +46,11 @@ typedef struct {
  * 分发一条已通过信封校验的帧。
  *
  * current / outcome 不能为 NULL；调用方保证 frame 非 NULL。
- * 返回前总是填充 outcome->next（未生效时复制 current）与 led_count_rebuild /
- * led_count，因此调用方可以无条件读取；只有 state_changed 为 true 时才应
- * 写入共享状态，只有 led_count_rebuild 为 true 时才应请求重建句柄。
+ * 返回前总是填充 outcome->next（未生效时复制 current）、led_count_rebuild /
+ * led_count，以及 start_selftest / cancels_selftest，因此调用方可以无条件读取。
+ * 只有 state_changed 为 true 时才应写入共享状态，只有 led_count_rebuild 为
+ * true 时才应请求重建句柄，而 cancels_selftest 为 true 时必须在写入共享状态
+ * **之前**结束自检（SetLedCount 的 state_changed 恒为 false，但仍要取消自检）。
  *
  * max_brightness 是构建期亮度上限（协议 §11.4）：SetBrightness 与 SetAll
  * 载荷里的 brightness 会被钳位到这个值而不是拒绝。调用方传
@@ -49,6 +63,16 @@ void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *cur
 
 /* 协议 §6 定义的已知命令字（0x01-0x07）。保留字与设备→小程序方向不算。 */
 bool lumen_command_is_known(uint8_t command);
+
+/*
+ * 协议 §11.2 第 5 条：该命令是否属于「改变状态」的类别
+ * （SetPower / SetBrightness / SetColor / SetAll / SetLedCount）。
+ * QueryState 与 SelfTest 不算。
+ *
+ * 取消规则在 dispatch 的统一收尾里执行，因此任何新增的「改变状态」命令只要
+ * 加进本函数就会自动取消自检——不需要再去改 ble_link 或 led_engine。
+ */
+bool lumen_command_changes_state(uint8_t command);
 
 /* 已知命令的载荷长度（§6 命令表）。未知命令返回 0，调用方先判断 known。 */
 uint8_t lumen_command_payload_len(uint8_t command);

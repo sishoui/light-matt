@@ -148,6 +148,21 @@ static void dispatch_set_all(const lumen_frame_t *frame, const lumen_state_t *cu
     }
 }
 
+bool lumen_command_changes_state(uint8_t command)
+{
+    /* 协议 §11.2 第 5 条列出的五类命令；QueryState / SelfTest 不在其中。 */
+    switch (command) {
+    case LUMEN_CMD_SET_POWER:
+    case LUMEN_CMD_SET_BRIGHTNESS:
+    case LUMEN_CMD_SET_COLOR:
+    case LUMEN_CMD_SET_ALL:
+    case LUMEN_CMD_SET_LED_COUNT:
+        return true;
+    default:
+        return false;
+    }
+}
+
 /*
  * SetLedCount 0x06：载荷 2 字节小端，合法 1-64（§6）。
  *
@@ -178,9 +193,11 @@ void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *cur
         return;
     }
 
-    /* 默认：状态不变、结果码未知，等具体分支覆盖。 */
+    /* 默认：状态不变、结果码未知、不碰自检，等具体分支覆盖。 */
     outcome->result_code = LUMEN_RESULT_UNKNOWN_COMMAND;
     outcome->state_changed = false;
+    outcome->start_selftest = false;
+    outcome->cancels_selftest = false;
     outcome->led_count_rebuild = false;
     outcome->led_count = current->led_count;
     outcome->next = *current;
@@ -201,34 +218,53 @@ void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *cur
     switch (frame->command) {
     case LUMEN_CMD_SET_POWER:
         dispatch_set_power(frame, current, outcome);
-        return;
+        break;
 
     case LUMEN_CMD_SET_BRIGHTNESS:
         dispatch_set_brightness(frame, current, max_brightness, outcome);
-        return;
+        break;
 
     case LUMEN_CMD_SET_COLOR:
         dispatch_set_color(frame, current, outcome);
-        return;
+        break;
 
     case LUMEN_CMD_SET_ALL:
         dispatch_set_all(frame, current, max_brightness, outcome);
-        return;
+        break;
 
     case LUMEN_CMD_SET_LED_COUNT:
+        /*
+         * #12 实现重建语义；这里**不能 return**——必须走到下面的统一收尾，
+         * 否则 SetLedCount 不会置 cancels_selftest（§11.2 第 5 条要求灯珠
+         * 数量变更同样立即取消自检）。
+         */
         dispatch_set_led_count(frame, outcome);
-        return;
+        break;
 
     case LUMEN_CMD_QUERY_STATE:
-    case LUMEN_CMD_SELF_TEST:
-        /* 查询状态与自检的语义属于 #13。明确回「未实现」而不是假装成功，
-         * 状态保持不变。 */
+        /* 语义属于 #11，当前明确回「未实现」而不是假装成功。
+         * QueryState 不取消自检（§11.2 第 6 条）。 */
         outcome->result_code = LUMEN_RESULT_UNKNOWN_COMMAND;
-        return;
+        break;
+
+    case LUMEN_CMD_SELF_TEST:
+        /* §11.2 第 1 条：立即回 ACK 0x00；序列由调用方启动。
+         * 自检不改共享状态（不写 NVS），因此 state_changed 保持 false。 */
+        outcome->result_code = LUMEN_RESULT_OK;
+        outcome->start_selftest = true;
+        break;
 
     default:
         /* lumen_command_is_known 已过滤，走不到这里；防御性回 0x02。 */
         outcome->result_code = LUMEN_RESULT_UNKNOWN_COMMAND;
-        return;
+        break;
     }
+
+    /*
+     * 统一收尾（协议 §11.2 第 5 条）：只要命令属于「改变状态」的类别且已
+     * 被接受，就要求调用方结束自检——即使 state_changed 为 false（值没变）。
+     * 非法命令（0x01 / 0x02 / 0x04）不取消自检，因为新命令并未生效。
+     */
+    outcome->cancels_selftest =
+        outcome->result_code == LUMEN_RESULT_OK && lumen_command_changes_state(frame->command);
 }
