@@ -20,11 +20,31 @@ main/
   state_store/      NVS 读写，带 debounce
 ```
 
+### NimBLE 的标准初始化顺序（研究已确认，照这个来）
+
+```
+nvs_flash_init()
+→ nimble_port_init()
+→ 填 ble_hs_cfg（reset_cb / sync_cb / gatts_register_cb / store_status_cb）
+→ ble_svc_gap_init() / ble_svc_gatt_init()
+→ ble_gatts_count_cfg() + ble_gatts_add_svcs()
+→ ble_svc_gap_device_name_set()
+→ nimble_port_freertos_init(host_task)
+→ 在 sync_cb 里 ble_gap_adv_start()
+→ 主机任务里 nimble_port_run()
+```
+
+连接数：NimBLE 的 `BT_NIMBLE_MAX_CONNECTIONS` 默认 3，**本项目要显式设成 1**（基线里已经定了只允许单连接）。
+
 ### 要钉死的三个关键点
 
 1. **BLE 回调的边界**：回调里允许做什么、禁止做什么（禁止：刷灯、写 NVS、printf 大段日志）
 2. **latest-wins 邮箱的具体实现**：互斥锁 + 布尔 dirty 标志 + 二值信号量，还是别的方式；渲染任务怎么保证「醒来时总是取最新」
-3. **NimBLE 的 GATT 定义方式**：用 NimBLE 的 GATT server API，服务 UUID / 特征值 UUID 从哪里来（本票要产出具体 UUID 值），属性怎么配（RX = write-no-response，TX = notify，State = read）
+3. **NimBLE 的 GATT 定义方式**：用 `ble_gatt_svc_def` 数组描述服务与特征值；本票要产出**具体 UUID 值**；属性配置：RX = write-no-response，TX = notify，State = read
+
+### 注意：C3 是单核，任务优先级要小心
+
+C3 只有一个 32-bit RISC-V 核。NimBLE 主机任务和渲染任务共享这一个核。渲染任务的优先级**不应高于** NimBLE 主机任务，否则刷新期间阻塞协议栈；也不应太低，否则被饿死。本票要确定这两个任务的优先级与栈大小，并记录理由。
 
 ### 不做
 

@@ -26,6 +26,11 @@
 2. `export.bat` 后 `idf.py --version` 有输出且 `IDF_PATH` 正确
 3. 编译官方 `examples/get-started/hello_world` 并 `idf.py -p <COM> flash monitor`，串口看到输出
 4. 微信开发者工具新建一个测试号项目，真机预览能打开空页面
+5. 确认 `espressif/led_strip` 组件能从组件仓库拉取（`idf.py add-dependency`），这条决定 03 票能不能开工
+
+### 注意：版本对齐
+
+本机源码是 **v5.4**，而研究笔记引用的文档是 **v5.5**。v5.4 与 v5.5 在 NimBLE / led_strip 的 API 上没有破坏性差异，但**执行时以 v5.4 实际头文件为准**。如果遇到 API 不存在，先查 `C:\Users\13092\esp\v5.4\esp-idf\components` 下的实际定义，不要照 v5.5 文档硬写。
 
 ## Blocked by
 
@@ -44,5 +49,6 @@
 
 - [ ] `idf.py --version` 在新终端可用，无需手动 export
 - [ ] hello_world 编译 + 烧录 + 串口有输出
+- [ ] `idf.py add-dependency espressif/led_strip` 成功，能编译进工程
 - [ ] 微信开发者工具真机预览可用
 - [ ] `docs/dev-environment.md` 写完，别人照做能复现
