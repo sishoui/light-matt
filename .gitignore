@@ -1,0 +1,16 @@
+# ESP-IDF
+firmware/build/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/managed_components/
+firmware/dependencies.lock
+
+# 小程序
+miniprogram/node_modules/
+miniprogram/miniprogram_npm/
+miniprogram/project.private.config.json
+
+# 通用
+.DS_Store
+*.log
+.vscode/.browse.VSCodeCounter
