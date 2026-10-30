@@ -5,6 +5,7 @@ idf_component_register(
         "command.c"
         "effects.c"
         "segment_store.c"
+        "strip_planar.c"
         "led_engine.c"
         "led_render.c"
         "led_stress.c"
