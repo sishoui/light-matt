@@ -20,6 +20,12 @@
  *  - device-cache.ts：deviceId 缓存（只存身份，不存状态）；
  *  - platform.ts：平台/开发版探测 + 无状态兜底快照。
  * 本文件只保留「命令语义 + 本地状态镜像 + 节流通道」。
+ *
+ * v2（#21）退役了 SetColor 0x03 / SetAll 0x04，颜色由段配置（0x10 SetSegment）
+ * 承担；#25 已把颜色入口接到选中段（不再是占位实现）。
+ *
+ * #34：成功连接（ready）时向可选的使用日志落点记一条「谁 × 哪台 × 什么时候」。
+ * 日志是同步、吞异常、不 await 的旁路——BLE 控制不依赖后端，后端不可达也不影响它。
  */
 
 import { FrameLog } from "../ble/log";
@@ -38,8 +44,26 @@ import {
   clampBrightness,
   effectiveMaxBrightness,
 } from "./brightness";
+import {
+  abandonSwitch,
+  beginSwitch,
+  initialSwitchState,
+  isSwitching,
+  retrySwitch,
+  switchedDisconnected,
+  switchedReady,
+  switchFailed,
+  type SwitchState,
+} from "./device-switch";
+import {
+  forgetDevice,
+  loadRecentDevices,
+  recordConnection,
+  type RecentDevice,
+} from "./device-history";
 import { LED_COUNT_ACK_TIMEOUT_MS } from "./ledCount";
 import { MAX_LEDS, MIN_LEDS } from "../protocol/constants";
+import type { UsageLogSink } from "../usage/logger";
 import {
   cmdClearSegment,
   cmdQueryState,
@@ -119,6 +143,13 @@ export interface SessionOptions {
   retryAfterGapMs?: number;
   /** 仅测试用：deviceId 缓存后端；生产走 wx.storage。 */
   storage?: SessionStorage;
+  /**
+   * 使用日志落点（#34）。不传 = 不上报（配置缺失时页面就不注入）。
+   *
+   * 接口只有「记录一次成功连接」一个方法，且同步返回：日志是旁路，
+   * 传输层 / 控制流程永远不 await 它，也不感知它的失败。
+   */
+  usageLogger?: UsageLogSink;
 }
 
 /** 离散命令的统一结果：成功带回更新后的本地状态，失败区分 ACK 与异常。 */
@@ -158,12 +189,33 @@ export class ControlSession {
   /** 10008 间隔重试的计时器：与回连退避共用同一个注入实例。 */
   private readonly reconnectTimer: TimerApi;
   private readonly storage: SessionStorage;
+  /** #34：成功连接时记一条使用日志（可选，绝不参与控制路径）。 */
+  private readonly usageLogger: UsageLogSink | null;
+  private readonly platform: "android" | "ios" | "other";
+
   /** 缓存的设备身份：回连与进前台静默回连都用它（设备是状态权威，不缓存状态）。 */
   private cached: CachedDevice | null = null;
+  /**
+   * 当前正在建立/已建立的连接身份（#34 日志用）。
+   * `ready` 事件里拿不到 transport 的 deviceId，所以在发起 connect 时记下。
+   */
+  private activeDevice: CachedDevice | null = null;
+  /**
+   * #34：下一次 `ready` 是否要记一条使用日志。只有「发起一次连接」
+   * （手动 / 自动回连，同一条 host.connect）才置位；ready 消费后清掉，
+   * 保证一次连接会话一条记录。
+   */
+  private usageArmed = false;
   private readonly reconnect: ReconnectSupervisor;
+  /** #33 设备切换状态机（主动切换，与上面的自动回连完全分开）。 */
+  private switchState: SwitchState = initialSwitchState();
+  /** 「最近连过」列表：按最后连接时间降序，上限由 device-history 决定。 */
+  private recent: RecentDevice[];
 
   constructor(opts: SessionOptions) {
     const log = new FrameLog({ mirrorToConsole: opts.devMode });
+    this.platform = opts.platform;
+    this.usageLogger = opts.usageLogger ?? null;
     if (opts.transportOverride !== undefined) {
       this.transport = opts.transportOverride;
     } else {
@@ -176,12 +228,21 @@ export class ControlSession {
     this.retryAfterGapMs = opts.retryAfterGapMs ?? DEFAULT_RETRY_AFTER_GAP_MS;
     this.storage = opts.storage ?? createWxStorage();
     this.cached = loadCachedDevice(this.storage);
+    this.recent = loadRecentDevices(this.storage);
 
     this.reconnect = new ReconnectSupervisor(
       {
         linkState: () => this.transport.linkState,
         cached: () => this.cached,
-        connect: (deviceId, name) => this.transport.connect(deviceId, name),
+        connect: (deviceId, name) => {
+          // #34：自动回连也是「一次连接会话」，成功（ready）后同样记一条。
+          this.armUsageLog(deviceId, name);
+          return this.transport.connect(deviceId, name).catch((err: unknown) => {
+            // 这次回连失败：撤掉置位，别让后面不相干的 ready 补记一条假会话。
+            this.usageArmed = false;
+            throw err;
+          });
+        },
         disconnect: () => this.transport.disconnect(),
         refresh: () => this.refreshState(),
         clearDeviceState: () => this.clearDeviceState(),
@@ -234,7 +295,13 @@ export class ControlSession {
     );
 
     // 内部监听必须早于页面注册，保证断线时先清本地状态再通知 UI。
-    this.transport.onLink((state, detail) => this.reconnect.handleLinkChange(state, detail));
+    // #34：同一条 ready 事件上先记使用日志（成功的连接会话），再交回监督者。
+    this.transport.onLink((state, detail) => {
+      if (state === "ready") {
+        this.noteUsageOnce();
+      }
+      this.reconnect.handleLinkChange(state, detail);
+    });
 
     this.transport.onState((state) => {
       this.latestState = state;
@@ -306,20 +373,117 @@ export class ControlSession {
   async connect(deviceId: string, name?: string): Promise<DeviceState> {
     // 手动连接优先：取消退避计时器与回连意图，并重置尝试次数（spec #41）。
     this.reconnect.manualConnectBegin();
+    // #34：记下本次连接身份并置位——ready 事件据此写使用日志（一次会话一条）。
+    this.armUsageLog(deviceId, name);
     try {
       const state = await this.transport.connect(deviceId, name);
       this.latestState = state;
+      // 「已连同一台设备」时 transport.connect 只重读 State、不发 ready：
+      // 没有发生新的连接会话，撤掉置位，避免下一次 ready 补记一条假会话。
+      this.usageArmed = false;
       // 只有完整初始化成功后才缓存 deviceId（失败的下次扫描更可靠）。
       this.cached = saveCachedDevice(this.storage, deviceId, name);
+      this.recent = recordConnection(this.storage, deviceId, name, Date.now());
       return state;
     } catch (err) {
+      // 连接失败：撤掉日志置位，避免后面不相干的 ready 误记一条。
+      this.usageArmed = false;
       // 10002 / 10013：设备不在附近或 deviceId 失效（iOS UUID 会变），清缓存。
       if (err instanceof WxCallError && (err.errCode === 10002 || err.errCode === 10013)) {
         this.clearCachedDevice();
+        this.recent = forgetDevice(this.storage, deviceId);
       }
       throw err;
     } finally {
       this.reconnect.manualConnectEnd();
+    }
+  }
+
+  /**
+   * #33 切换到指定设备。
+   *
+   * 与 connect 的区别：这是**主动切换**，当前可能还连着别的设备。
+   * 流程：先断开（单连接约束）→ 再连新的 → 成功后把这个设备的配置从设备读回来。
+   *
+   * 失败时**停在未连接 + 保留目标供重试**，不自动回滚到上一台：
+   * 上一台此时可能也不可用，来回拨号会让用户不知道点哪个按钮
+   * （见 device-switch.ts 顶部注释）。也绝不进 1s/2s/4s 的自动回连退避。
+   */
+  async switchTo(deviceId: string, name?: string): Promise<DeviceState> {
+    if (isSwitching(this.switchState)) {
+      throw new Error("正在切换设备，请稍候");
+    }
+    this.switchState = beginSwitch(this.switchState, deviceId, name, this.transport.linkState);
+
+    if (this.switchState.phase === "disconnecting") {
+      try {
+        // 主动断开当前设备：取消节流与回连意图，避免旧连接的命令串到新连接上。
+        this.throttle.cancel();
+        await this.reconnect.disconnectIntent();
+        this.latestState = null;
+      } catch (err) {
+        // 断开报错也照样往下连：目标状态是「连上新设备」，
+        // 卡在 disconnecting 只会让用户看不到任何进展。
+        console.warn(`[lumen] 切换前断开失败：${errorText(err)}`);
+      }
+      this.switchState = switchedDisconnected(this.switchState);
+    }
+
+    try {
+      const state = await this.connect(deviceId, name);
+      this.switchState = switchedReady(this.switchState);
+      // 设备是权威：切换后所有设备级状态都来自新设备。
+      // 分段/剧本的读取在这里之后追加（#25/#32），见 refreshDeviceConfig 的接缝。
+      await this.refreshDeviceConfig();
+      return state;
+    } catch (err) {
+      this.switchState = switchFailed(this.switchState, errorText(err));
+      // 不清 cached：用户可能只是暂时连不上，重试入口还要用它。
+      throw err;
+    }
+  }
+
+  /**
+   * 重试上一次失败的切换。
+   * 没有失败目标时报错，由页面决定是否提示（通常不应该走到）。
+   */
+  async retrySwitch(): Promise<DeviceState> {
+    const next = retrySwitch(this.switchState, this.transport.linkState);
+    if (next === this.switchState || next.target === null) {
+      throw new Error("没有可重试的切换目标");
+    }
+    const target = next.target;
+    // 先回到 idle 再走完整流程，避免 isSwitching 守卫挡住自己。
+    this.switchState = initialSwitchState();
+    return this.switchTo(target.deviceId, target.name);
+  }
+
+  /** 放弃切换 / 页面卸载：清状态机，不再保留目标。 */
+  cancelSwitch(): void {
+    this.switchState = abandonSwitch();
+  }
+
+  get deviceSwitch(): SwitchState {
+    return { ...this.switchState, target: this.switchState.target && { ...this.switchState.target } };
+  }
+
+  /** 「最近连过」列表（按最后连接时间降序，不依赖后端）。 */
+  get recentDevices(): RecentDevice[] {
+    return this.recent.map((entry) => ({ ...entry }));
+  }
+
+  /**
+   * 切换成功后加载新设备的真实配置。
+   *
+   * #33 目前的义务是：设备级状态必须全部重置并重新从设备读，不能残留上一台。
+   * 分段配置与剧本库的读取在这个接缝之后接入（#25 / #32）——
+   * 它们各自会在这里追加一条读命令，而不是另建一条切换路径。
+   */
+  private async refreshDeviceConfig(): Promise<void> {
+    // 连接流水线里已经读过 State（transport.connect 内部），这里只需确保
+    // 本地镜像与设备一致；分段/剧本读取在后续票追加。
+    if (this.transport.linkState === "ready") {
+      await this.refreshState();
     }
   }
 
@@ -745,6 +909,45 @@ export class ControlSession {
     this.throttle.cancel();
     /* 断开后没有可写的段：颜色控件应回到禁用态。 */
     this.defaultSegment = null;
+  }
+
+  /**
+   * #34：一次成功的连接会话记一条使用日志。
+   *
+   * 三条纪律，全部体现在这里：
+   *  1. **只记成功**：`usageArmed` 只在发起一次 connect 时置位（手动 / 自动回连
+   *     走同一条 ready 事件），失败不置位、也不记录；
+   *  2. **一次会话一条**：ready 消费该标记，同一次连接不会写第二条；
+   *  3. **同步、吞异常、不 await**：日志落点是 fire-and-forget 的旁路，
+   *     BLE 连接与控制绝不等待它，后端挂了也感知不到。
+   */
+  private noteUsageOnce(): void {
+    if (!this.usageArmed) {
+      return;
+    }
+    this.usageArmed = false;
+
+    const logger = this.usageLogger;
+    if (logger === null) {
+      return;
+    }
+    const device = this.activeDevice;
+    const deviceId = device?.deviceId ?? this.transport.currentDeviceId ?? null;
+    const deviceName = device?.name ?? null;
+    try {
+      logger.recordConnection({ deviceName, deviceId, platform: this.platform });
+    } catch {
+      // 日志是旁路：任何异常都不能冒泡到连接状态机。
+    }
+  }
+
+  /** 发起一次连接：记下身份并置位「下一个 ready 要记一条使用日志」。 */
+  private armUsageLog(deviceId: string, name?: string): void {
+    this.activeDevice = {
+      deviceId,
+      ...(name !== undefined && name.length > 0 ? { name } : {}),
+    };
+    this.usageArmed = true;
   }
 
   private clearCachedDevice(): void {

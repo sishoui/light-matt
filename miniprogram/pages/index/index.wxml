@@ -178,6 +178,23 @@
       </view>
 
       <block wx:if="{{sheetMode === 'scan'}}">
+        <!-- #33：「最近连过」来自本地缓存，后端不可达时照样能渲染与连接 -->
+        <view wx:if="{{recentDevices.length > 0}}" class="device-section-title">最近连过</view>
+        <scroll-view wx:if="{{recentDevices.length > 0}}" scroll-y class="device-list recent-list">
+          <view
+            wx:for="{{recentDevices}}"
+            wx:key="deviceId"
+            class="device-row"
+            data-device-id="{{item.deviceId}}"
+            data-name="{{item.name}}"
+            bindtap="onDeviceTap"
+          >
+            <text class="device-name">{{item.name || item.deviceId}}</text>
+            <text class="device-meta">{{item.deviceId}}</text>
+          </view>
+        </scroll-view>
+
+        <view class="device-section-title">附近可用</view>
         <scroll-view scroll-y class="device-list">
           <view
             wx:for="{{devices}}"
@@ -195,7 +212,9 @@
           </view>
         </scroll-view>
         <view wx:if="{{scanHint && devices.length > 0}}" class="scan-hint">{{scanHint}}</view>
-        <button class="sheet-btn" bindtap="onRescan">重新扫描</button>
+        <button class="sheet-btn" bindtap="onRescan" disabled="{{switchBusy}}">
+          {{switchBusy ? '正在切换…' : '重新扫描'}}
+        </button>
       </block>
 
       <block wx:else>

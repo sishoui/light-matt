@@ -46,6 +46,10 @@ import {
 } from "../../utils/control/session";
 import { statusView } from "../../utils/control/status-view";
 import {
+  createDefaultUsageLogger,
+  type UsageLogSink,
+} from "../../utils/usage";
+import {
   ledCountResultHint,
   parseLedCountInput,
 } from "../../utils/control/ledCount";
@@ -78,6 +82,8 @@ import { COLOR_UI_INTERVAL_MS, WheelView } from "./wheel-view";
 
 /** 模块级单例：页面重入时复用同一条 BLE 会话。 */
 let session: ControlSession | null = null;
+/** 使用日志（#34）：未配置后端时为 null，控制路径完全不受影响。 */
+let usageLogger: UsageLogSink | null = null;
 let unsubscribers: Array<() => void> = [];
 
 /** 首屏色环位置与暖白预设对齐（真值来自预设表，不另写一份）。 */
@@ -132,6 +138,9 @@ Page({
     deviceName: "",
     deviceId: "",
     selfTestBusy: false,
+    // #33 设备列表：「最近连过」来自本地缓存，「附近可用」来自实时扫描
+    recentDevices: [] as Array<{ deviceId: string; name?: string; lastConnectedAt: number }>,
+    switchBusy: false,
 
     // 隐藏协议日志面板（#13）：连点版本号 5 次开启
     logVisible: false,
@@ -164,7 +173,13 @@ Page({
   onLoad() {
     const platform = detectPlatform();
     const devMode = detectDevMode();
-    session = new ControlSession({ platform, devMode });
+    // #34：未配置后端时 createDefaultUsageLogger 返回 null，logger 静默关闭。
+    usageLogger = createDefaultUsageLogger();
+    session = new ControlSession({
+      platform,
+      devMode,
+      ...(usageLogger !== null ? { usageLogger } : {}),
+    });
     console.log(`[lumen] 平台 ${platform}，开发版日志 ${devMode ? "开启" : "关闭"}`);
 
     // 面板与 console 共用 session.log 这一份 FrameLog（同源，不复制、不重格式化）。
@@ -239,9 +254,12 @@ Page({
     // 页面生命周期结束，彻底断开并反注册 wx.on*（避免回调串入）。
     session?.destroy();
     session = null;
+    usageLogger = null;
   },
 
   onShow() {
+    // #34：进前台补报本地待发记录（fire-and-forget，绝不影响 BLE）。
+    usageLogger?.replay();
     // #11：进前台静默回连。session 自己在内部判断是否该回连，
     // 并保证不打断正在进行的扫描 / 手动连接（扫描中、连接中直接返回）。
     if (session !== null) {
@@ -290,6 +308,11 @@ Page({
     }
     // 退避耗尽 / 主动断开后的手动入口：
     // 有 deviceId 缓存时直接重连（最快路径），否则回扫描。
+    // #33：上一次切换失败时，主按钮是「重试」，优先执行它。
+    if (session.deviceSwitch.phase === "failed") {
+      await this.onSwitchRetry();
+      return;
+    }
     const cached = session.cachedDevice;
     if (cached !== null && (state === "failed" || state === "idle")) {
       await this.manualReconnect();
@@ -319,7 +342,14 @@ Page({
   },
 
   openScanSheet() {
-    this.setData({ sheetVisible: true, sheetMode: "scan", scanHint: "" });
+    // #33：先渲染本地「最近连过」，再开扫描补「附近可用」。
+    // 后端不可达时列表照常可用——这里只读本地缓存，不碰网络。
+    this.setData({
+      sheetVisible: true,
+      sheetMode: "scan",
+      scanHint: "",
+      recentDevices: session?.recentDevices ?? [],
+    });
     void this.startScan();
   },
 
@@ -446,16 +476,82 @@ Page({
     if (!deviceId) {
       return;
     }
+    // #33：已连着别的设备时，点列表 = 切换，不是再连一次。
+    // 切换必须先断开（设备只允许 1 个连接），且失败时不自动回滚。
+    const switching = session.linkState === "ready" && session.transport.currentDeviceId !== deviceId;
+    if (switching) {
+      await this.runSwitch(deviceId, name);
+      return;
+    }
     try {
       const state = await session.connect(deviceId, name);
       this.applyDeviceState(state);
-      this.setData({ sheetVisible: false, deviceName: name, deviceId });
+      this.setData({ sheetVisible: false, deviceName: name, deviceId, switchBusy: false });
       // connect() 内发出 ready 时页面还没拿到设备名，这里补一次状态条。
       this.applyLink("ready");
       void this.refreshSegments();
     } catch (err) {
       this.setData({ scanHint: errorText(err) });
     }
+  },
+
+  /**
+   * 执行一次设备切换（#33）。切换过程中显示加载态并禁用重复点击。
+   *
+   * 失败时停在「未连接」并把重试入口交给状态条，**不自动回滚**：
+   * 上一台此时可能也不可用，来回拨号只会让用户不知道点哪个按钮。
+   */
+  async runSwitch(deviceId: string, name: string) {
+    if (session === null) {
+      return;
+    }
+    this.setData({ switchBusy: true, scanHint: "", sheetVisible: true, sheetMode: "device" });
+    try {
+      const state = await session.switchTo(deviceId, name);
+      this.applyDeviceState(state);
+      // 切换成功后设备级状态全部来自新设备，标题也换掉。
+      this.setData({
+        sheetVisible: false,
+        switchBusy: false,
+        deviceName: name,
+        deviceId,
+      });
+      this.applyLink("ready");
+    } catch (err) {
+      // 停在未连接：清掉所有设备级显示，只留重试入口。
+      const message = errorText(err);
+      this.setData({
+        switchBusy: false,
+        deviceName: name,
+        deviceId,
+        scanHint: message,
+        power: 0,
+        powerLabel: "已关",
+        brightness: 0,
+        brightnessDisplay: 0,
+        brightnessPercent: 0,
+        brightnessHintText: "连接后可调节",
+        colorHintText: "连接后可选色",
+        selectedPreset: "",
+        ledCount: 0,
+        ledCountInput: "",
+        ledCountHintText: "",
+      });
+      this.applySwitchFailure(message);
+    }
+  },
+
+  /** 重试上一次失败的切换（目标沿用失败时的那台）。 */
+  async onSwitchRetry() {
+    if (session === null) {
+      return;
+    }
+    const target = session.deviceSwitch.target;
+    if (target === null) {
+      this.openScanSheet();
+      return;
+    }
+    await this.runSwitch(target.deviceId, target.name ?? "");
   },
 
   async onDisconnect() {
@@ -1003,6 +1099,21 @@ Page({
         });
       }
     }
+  },
+
+  /**
+   * 切换失败：状态条停在「未连接」，主按钮变成「重试」（#33）。
+   * 不自动回滚——回滚只会在两台都不可用时来回震荡。
+   */
+  applySwitchFailure(message: string) {
+    this.setData({
+      statusText: "切换失败",
+      statusSub: message,
+      statusAction: "重试",
+      linkClass: "link-idle",
+      ready: false,
+      maxBrightness: effectiveMaxBrightness(undefined),
+    });
   },
 
   applyDeviceState(state: DeviceState) {
