@@ -3,6 +3,9 @@
  *
  * 抽出来的目的：index.ts 只留状态持有与事件转发，文案规则集中在这里，
  * 与 color/brightness 的纯函数同一层级。行为与拆分前逐字一致。
+ *
+ * #25 起颜色属于「段」：颜色区的提示要说明当前在改哪一段，没有段时明确
+ * 要求先划区间，而不是让用户拖动后以为没生效。
  */
 
 import {
@@ -10,7 +13,6 @@ import {
   clampBrightness,
 } from "../../utils/control/brightness";
 import { PRESETS } from "../../utils/color/hsv";
-import { SEGMENTS_UI_NOTICE } from "../../utils/control/session";
 import type { RGB } from "../../utils/protocol/types";
 
 /** 亮度提示文案：未连接 / 亮度 0 的语义都要如实说明（§7）。 */
@@ -25,16 +27,23 @@ export function brightnessHintText(value: number, ready: boolean): string {
 }
 
 /**
- * 颜色区提示文案。
+ * 颜色区提示文案（#25）。
  *
- * v2（#21）退役了 SetColor / SetAll，颜色由段配置承担。这里始终说明功能
- * 位置，避免用户拖动后以为没生效而反复尝试。TODO(#25)
+ * - 未连接：说明要连上才能改；
+ * - 已连接但没有选中段：明确要求先在下方划区间；
+ * - 有选中段：指出正在编辑哪一段（段号与区间）。
  */
-export function colorHintText(ready: boolean): string {
+export function colorHintText(
+  ready: boolean,
+  active: { segId: number; start: number; end: number } | null,
+): string {
   if (!ready) {
-    return `连接后可操作；${SEGMENTS_UI_NOTICE}`;
+    return "连接后可调节；颜色按灯珠区间下发";
   }
-  return SEGMENTS_UI_NOTICE;
+  if (active === null) {
+    return "先在上方划一个灯珠区间，再选颜色";
+  }
+  return `正在编辑 段 ${active.segId}（灯珠 ${active.start}-${active.end}）`;
 }
 
 /** 亮度 0 且 power=1：灯是灭的但开关位仍为开，文案要如实说明（§7）。 */

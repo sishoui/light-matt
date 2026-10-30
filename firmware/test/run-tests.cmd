@@ -14,6 +14,8 @@ gcc -std=c11 -Wall -Wextra -Werror -I"%MAIN%" ^
     "%~dp0test_skeleton.c" ^
     "%MAIN%\protocol.c" ^
     "%MAIN%\command.c" ^
+    "%MAIN%\effects.c" ^
+    "%MAIN%\segment_store.c" ^
     "%MAIN%\state.c" ^
     "%MAIN%\gamma.c" ^
     "%MAIN%\selftest.c" ^

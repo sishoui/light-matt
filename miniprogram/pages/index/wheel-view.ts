@@ -5,6 +5,9 @@
  * lastColorUiAt ...）。搬到独立类后 index.ts 只负责把页面事件转发进来、
  * 把回调里的补丁 setData 出去；绘制与节流规则不变。
  *
+ * #25 起颜色真正启用：手势把「选中段的静态颜色」写进设备（SetSegment 0x10）。
+ * 没有选中段时手势被忽略并提示先划区间——绝不在设备没收到命令时显示已变色。
+ *
  * 只依赖 utils/color（纯函数），不直接接触 wx 页面 API——canvas 节点由宿主
  * 通过 init() 传进来，setData 也由宿主回调完成。
  */
@@ -26,17 +29,6 @@ import {
 import type { RGB } from "../../utils/protocol/types";
 import { colorHintText } from "./view-model";
 
-/**
- * v2（#21）：颜色下发路径暂时禁用。
- *
- * SetColor 0x03 / SetAll 0x04 已退役，单色概念改由段配置承担。这里保留控件
- * （不静默删功能），但**不修改任何状态**：设备没收到命令，界面就不能显示
- * 已经变色。手势只弹一次提示。
- *
- * TODO(#25)：分段界面落地后删掉这个开关。
- */
-const COLOR_CONTROLS_ENABLED = false;
-
 interface WheelCtx {
   ctx: WheelContext2D;
   geometry: WheelGeometry;
@@ -48,14 +40,16 @@ export interface WheelHost {
   setData(patch: Record<string, unknown>): void;
   /** 页面是否已就绪（ready）。 */
   isReady(): boolean;
-  /** 当前 ready 位的展示用快照（hint 文案据此切换）。 */
+  /** 是否有可写的选中段；false 时手势被忽略并提示。 */
+  hasActiveSegment(): boolean;
+  /** 当前选中段的展示信息（hint 文案据此切换）。 */
+  activeSegmentRange(): { segId: number; start: number; end: number } | null;
+  /** 拖动中（连续量）：写选中段的颜色，走 20Hz 节流。 */
   queueColor(rgb: RGB): void;
+  /** 松手：写最终颜色并 flush。 */
   commitColor(rgb: RGB): void;
-  /**
-   * v2（#21）：颜色下发禁用期间，手势结束时由宿主弹一次「该功能在 v2 分段
-   * 界面中提供（#25）」。可选，缺省时静默。TODO(#25)
-   */
-  notifySegmentsNotice?(): void;
+  /** 没有选中段时的提示。 */
+  notifySelectSegment?(): void;
 }
 
 /** 取色读数的刷新间隔：与 BLE 20Hz 对齐，避免每个 touchmove 都 setData。 */
@@ -126,14 +120,17 @@ export class WheelView {
    * 多指 / 环外点击都忽略（避免手指划过中心时颜色乱跳）。
    */
   handleTouch(e: WechatMiniprogram.TouchCanvas): void {
-    if (!COLOR_CONTROLS_ENABLED) {
+    if (!this.host.isReady()) {
+      return;
+    }
+    if (!this.host.hasActiveSegment()) {
       // 每次手势只提示一次（touchstart），避免 touchmove 高频弹 toast。
       if (e.type === "touchstart") {
-        this.host.notifySegmentsNotice?.();
+        this.host.notifySelectSegment?.();
       }
       return;
     }
-    if (this.ctx === null || !this.host.isReady()) {
+    if (this.ctx === null) {
       return;
     }
     if (Array.isArray(e.touches) && e.touches.length > 1) {
@@ -152,7 +149,7 @@ export class WheelView {
 
   /** 色相变化：marker 立即重画；读数 setData 与 BLE 都按 20Hz 节流。 */
   applyHue(hue: number): void {
-    if (!COLOR_CONTROLS_ENABLED) {
+    if (!this.host.hasActiveSegment()) {
       return;
     }
     const previousHue = this.hue;
@@ -180,16 +177,16 @@ export class WheelView {
       colorHue: this.hue,
       colorHex: hex,
       selectedPreset: "",
-      colorHintText: colorHintText(this.host.isReady()),
+      colorHintText: colorHintText(this.host.isReady(), this.host.activeSegmentRange()),
     });
   }
 
   /** 饱和度（0-100）→ S=0..1；V 恒为 1（亮度独立，不折进 RGB）。 */
   applySaturation(value: number, commit: boolean): void {
-    if (!COLOR_CONTROLS_ENABLED) {
+    if (!this.host.hasActiveSegment()) {
       // 松手时提示一次；拖动过程中静默忽略（避免每帧弹 toast）。
       if (commit) {
-        this.host.notifySegmentsNotice?.();
+        this.host.notifySelectSegment?.();
       }
       return;
     }
@@ -214,7 +211,7 @@ export class WheelView {
       colorSaturation: Math.round(this.saturation * 100),
       colorHex: hex,
       selectedPreset: "",
-      colorHintText: colorHintText(this.host.isReady()),
+      colorHintText: colorHintText(this.host.isReady(), this.host.activeSegmentRange()),
     });
     if (commit) {
       this.host.commitColor(rgb);
@@ -248,7 +245,7 @@ export class WheelView {
 
   /** 松手：把当前颜色再推一次并 flush，保证最终颜色落地。 */
   commit(): void {
-    if (!this.host.isReady()) {
+    if (!this.host.isReady() || !this.host.hasActiveSegment()) {
       return;
     }
     this.host.commitColor(this.rgb());

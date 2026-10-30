@@ -132,6 +132,73 @@ export function hsvForWheel(rgb: RGB, fallbackHue: number): HSV {
   return hsv;
 }
 
+
+/**
+ * 段颜色（协议 hue 0-65535 + sat 0-255）→ 用户空间 RGB，供分段列表展示。
+ *
+ * 与固件 effects.c 的 static 分支同一套扇区映射（V 恒为 1）；两端不做同一套
+ * gamma，展示色只是近似。写成整数运算，方便与 firmware 的 65536 刻度对齐。
+ */
+function channelByte(value: number): number {
+  return Math.min(255, Math.max(0, Math.round(value)));
+}
+
+export function segmentHueSatToRgb(hue: number, sat: number): RGB {
+  const h = ((hue % 0x10000) + 0x10000) % 0x10000; // 归一化到 0-65535
+  const s = Math.min(255, Math.max(0, Math.round(sat)));
+  const scaled = h * 6;
+  const sector = Math.min(5, Math.floor(scaled / 0x10000));
+  const frac = scaled % 0x10000;
+  const c = s;
+  const m = 255 - s;
+  const u = sector % 2 === 1 ? 0x10000 - frac : frac;
+  const x = Math.round((c * u) / 0x10000);
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  switch (sector) {
+    case 0:
+      r = c;
+      g = x;
+      break;
+    case 1:
+      r = x;
+      g = c;
+      break;
+    case 2:
+      g = c;
+      b = x;
+      break;
+    case 3:
+      g = x;
+      b = c;
+      break;
+    case 4:
+      r = x;
+      b = c;
+      break;
+    default:
+      r = c;
+      b = x;
+      break;
+  }
+  return { r: channelByte(r + m), g: channelByte(g + m), b: channelByte(b + m) };
+}
+
+/**
+ * 用户空间 RGB → 协议段参数（hue 0-65535 + sat 0-255）。
+ *
+ * V 恒为 1（饱和度承载明暗），与色环一致：色环只产生色相 + 饱和度，
+ * 亮度由独立滑块负责。灰阶（s≈0）时 hue 无定义，返回 0。
+ */
+export function rgbToSegmentParams(rgb: RGB): { hue: number; sat: number } {
+  const hsv = rgbToHsv(rgb);
+  return {
+    hue: Math.round((hsv.h / 360) * 0x10000) & 0xffff,
+    sat: Math.round(hsv.s * 255),
+  };
+}
+
 /** 单通道钳成 0-255 的整数；非有限值按 0。 */
 function channel(value: number): number {
   if (!Number.isFinite(value)) {

@@ -42,9 +42,71 @@
     <text class="section-hint">{{brightnessHintText}}</text>
   </view>
 
-  <!-- 4. 颜色：色相环（单块 canvas）+ 饱和度。V 恒为 1，亮度由上面的滑块负责。
-       v2（#21）：SetColor/SetAll 已退役，这里的下发路径是禁用占位，#25 重建为分段界面。
-       控件保留是为了不静默删功能；提示文案由 colorHintText 给出。 -->
+  <!-- 4. 分段（#25）：一条灯带切成最多 8 个灯珠区间，每段一个静态颜色。
+       未覆盖的灯珠必须熄灭（固件 memset 保证）；这里的重叠预检只是即时反馈，
+       真正的拒绝是设备回 InvalidParam。 -->
+  <view class="section {{ready ? '' : 'disabled'}}">
+    <view class="section-head">
+      <text class="section-title">分段</text>
+      <text class="section-value">{{segmentRows.length}} / {{segmentMaxCount}} 段</text>
+    </view>
+
+    <view class="seg-list">
+      <view
+        wx:for="{{segmentRows}}"
+        wx:key="segId"
+        class="seg-row {{item.selected ? 'selected' : ''}}"
+        data-seg-id="{{item.segId}}"
+        bindtap="onSegmentTap"
+      >
+        <view class="seg-swatch" style="background: {{item.hex}}"></view>
+        <text class="seg-index">段 {{item.segId}}</text>
+        <text class="seg-range">{{item.rangeText}}</text>
+        <text class="seg-tag" wx:if="{{!item.editable}}">非静态</text>
+        <text
+          class="seg-delete"
+          data-seg-id="{{item.segId}}"
+          catchtap="onSegmentDelete"
+        >删除</text>
+      </view>
+      <view wx:if="{{segmentRows.length === 0}}" class="seg-empty">
+        还没有段。输入起点与终点后点「新建区间」；未覆盖的灯珠保持熄灭。
+      </view>
+    </view>
+
+    <view class="range-row">
+      <input
+        class="range-input"
+        type="number"
+        value="{{rangeStartInput}}"
+        maxlength="2"
+        placeholder="起点"
+        disabled="{{!ready || segmentBusy}}"
+        bindinput="onRangeStartInput"
+      />
+      <text class="range-dash">–</text>
+      <input
+        class="range-input"
+        type="number"
+        value="{{rangeEndInput}}"
+        maxlength="2"
+        placeholder="终点"
+        disabled="{{!ready || segmentBusy}}"
+        bindinput="onRangeEndInput"
+      />
+      <button
+        class="range-apply {{segmentBusy ? 'busy' : ''}}"
+        disabled="{{!ready || segmentBusy}}"
+        bindtap="onApplyRange"
+      >
+        {{segmentBusy ? '下发中…' : '新建区间'}}
+      </button>
+    </view>
+    <text class="section-hint">{{segmentHintText || '区间是闭区间，例如 0 – 15；选了某段后再划区间会改它的范围'}}</text>
+  </view>
+
+  <!-- 5. 颜色：色相环（单块 canvas）+ 饱和度。V 恒为 1，亮度由上面的滑块负责。
+       #25 起写入**选中段**的静态颜色；没有选中段时手势被忽略并提示。 -->
   <view class="section {{ready ? '' : 'disabled'}}">
     <view class="section-head">
       <text class="section-title">颜色</text>
@@ -87,7 +149,7 @@
     <text class="section-hint">{{colorHintText}}</text>
   </view>
 
-  <!-- 5. 预设：v2 起不再下发 SetAll（已退役），点击后提示「该功能在 v2 分段界面中提供（#25）」 -->
+  <!-- 6. 预设：点击后把**选中段**改成该颜色（SetSegment 0x10），等 ACK -->
   <view class="presets {{ready ? '' : 'disabled'}}">
     <view
       wx:for="{{presetList}}"
@@ -101,7 +163,7 @@
     </view>
   </view>
 
-  <!-- 6. 页脚：版本 + 提示；版本号连点 5 次开启隐藏日志面板 -->
+  <!-- 7. 页脚：版本 + 提示；版本号连点 5 次开启隐藏日志面板 -->
   <view class="footer">
     <text class="version" bindtap="onVersionTap">v{{version}}</text>
     <text class="footer-hint">开关与设备状态以设备为准</text>

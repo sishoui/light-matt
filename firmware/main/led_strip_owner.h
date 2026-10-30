@@ -42,3 +42,13 @@ void lumen_led_strip_owner_destroy(led_strip_handle_t strip);
  */
 esp_err_t lumen_led_strip_owner_push_frame(led_strip_handle_t strip, uint8_t r, uint8_t g,
                                            uint8_t b, uint16_t count);
+
+/*
+ * 把一整帧像素（count × 3 字节，RGB 排列、已含 gamma 与亮度）写进驱动并阻塞等
+ * RMT 发完。只有渲染任务调用（灯带句柄唯一所有者）。
+ *
+ * 与 push_frame 的关系：push_frame 是 v1 的「整条同色」便捷封装，内部走本函数。
+ * 是 #25 分段渲染的唯一入口——未被任何段覆盖的灯珠由调用方写入 0。
+ */
+esp_err_t lumen_led_strip_owner_push_pixels(led_strip_handle_t strip, const uint8_t *frame,
+                                            uint16_t count);

@@ -8,9 +8,28 @@
 
 import { DEVICE_CMD } from "../protocol/constants";
 import { decodeFrame, encodeFrame } from "../protocol/frame";
-import { parseAck, parseState } from "../protocol/commands";
-import { describeAck, describeCommand, describeEvent, describeState, describeStateRead } from "../protocol/describe";
-import type { AckResult, CommandRequest, DeviceState } from "../protocol/types";
+import {
+  parseAck,
+  parseSegmentListEnd,
+  parseSegmentReport,
+  parseState,
+} from "../protocol/commands";
+import {
+  describeAck,
+  describeCommand,
+  describeEvent,
+  describeSegmentListEnd,
+  describeSegmentReport,
+  describeState,
+  describeStateRead,
+} from "../protocol/describe";
+import type {
+  AckResult,
+  CommandRequest,
+  DeviceState,
+  SegmentListEnd,
+  SegmentReport,
+} from "../protocol/types";
 import { errorText } from "./errors";
 
 /** 入站帧解析后要执行的动作；`none` 表示只看日志、无需改状态。 */
@@ -18,7 +37,10 @@ export type InboundAction =
   | { kind: "none" }
   | { kind: "ack"; ack: AckResult }
   | { kind: "state"; state: DeviceState }
-  | { kind: "event"; code: number; detail: number };
+  | { kind: "event"; code: number; detail: number }
+  /* #25：QueryStrip 的多帧回包。小程序按命令字区分类型、按 SegmentListEnd 收尾。 */
+  | { kind: "segment-report"; report: SegmentReport }
+  | { kind: "segment-list-end"; end: SegmentListEnd };
 
 /** 一条入站帧的日志字段 + 动作。日志字段与拆分前逐字一致。 */
 export interface InboundFrame {
@@ -105,6 +127,37 @@ export function routeInboundFrame(bytes: Uint8Array): InboundFrame {
       ok: code !== 0x01,
       action: { kind: "event", code, detail },
     };
+  }
+
+  /* #25：QueryStrip 的多帧回包。 */
+  if (command === DEVICE_CMD.SEGMENT_REPORT) {
+    try {
+      const report = parseSegmentReport(payload);
+      return {
+        command,
+        seq,
+        text: describeSegmentReport(report),
+        ok: true,
+        action: { kind: "segment-report", report },
+      };
+    } catch (err) {
+      return { command, seq, text: errorText(err), ok: false, action: { kind: "none" } };
+    }
+  }
+
+  if (command === DEVICE_CMD.SEGMENT_LIST_END) {
+    try {
+      const end = parseSegmentListEnd(payload);
+      return {
+        command,
+        seq,
+        text: describeSegmentListEnd(end),
+        ok: true,
+        action: { kind: "segment-list-end", end },
+      };
+    } catch (err) {
+      return { command, seq, text: errorText(err), ok: false, action: { kind: "none" } };
+    }
   }
 
   return { command, seq, text: "未知的设备→小程序命令", ok: false, action: { kind: "none" } };

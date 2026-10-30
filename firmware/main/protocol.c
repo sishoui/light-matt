@@ -135,3 +135,31 @@ size_t lumen_protocol_encode_state_report(uint8_t seq,
     return lumen_protocol_encode(LUMEN_CMD_STATE_REPORT, seq, state, LUMEN_STATE_BYTES, out,
                                  out_cap);
 }
+
+size_t lumen_protocol_encode_segment_report(uint8_t seq, uint8_t strip_id, uint8_t seg_id,
+                                            uint8_t start, uint8_t end, uint8_t type,
+                                            const uint8_t *params, uint8_t param_len,
+                                            uint8_t *out, size_t out_cap)
+{
+    /* 载荷 = strip_id + seg_id + start + end + type + params（docs/protocol.md §8）。 */
+    if (param_len == 0 || param_len > 7 || (param_len > 0 && params == NULL)) {
+        return 0;
+    }
+    uint8_t payload[5 + 7];
+    payload[0] = strip_id;
+    payload[1] = seg_id;
+    payload[2] = start;
+    payload[3] = end;
+    payload[4] = type;
+    memcpy(&payload[5], params, param_len);
+    return lumen_protocol_encode(LUMEN_CMD_SEGMENT_REPORT, seq, payload,
+                                 (uint8_t)(5u + param_len), out, out_cap);
+}
+
+size_t lumen_protocol_encode_segment_list_end(uint8_t seq, uint8_t strip_id, uint8_t seg_mask,
+                                              uint8_t *out, size_t out_cap)
+{
+    uint8_t payload[2] = {strip_id, seg_mask};
+    return lumen_protocol_encode(LUMEN_CMD_SEGMENT_LIST_END, seq, payload, sizeof(payload), out,
+                                 out_cap);
+}

@@ -35,10 +35,10 @@ static uint32_t now_ms(void)
     return (uint32_t)(esp_timer_get_time() >> 10);
 }
 
-static esp_err_t write_blob(const lumen_state_t *state)
+static esp_err_t write_blob(const lumen_persist_t *snapshot)
 {
     uint8_t blob[LUMEN_STATE_BLOB_SIZE];
-    if (lumen_state_blob_encode(state, blob) != LUMEN_STATE_BLOB_SIZE) {
+    if (lumen_state_blob_encode(snapshot, blob) != LUMEN_STATE_BLOB_SIZE) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -82,7 +82,7 @@ static void store_task(void *arg)
             (void)xSemaphoreTake(s_wake, pdMS_TO_TICKS(wait_ms));
         }
 
-        lumen_state_t snapshot;
+        lumen_persist_t snapshot;
         uint8_t command = 0;
         bool due;
         xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -100,8 +100,9 @@ static void store_task(void *arg)
                 s_event_cb(command);
             }
         } else {
-            ESP_LOGD(TAG, "state saved (leds=%u power=%u brightness=%u cmd=0x%02X)",
-                     snapshot.led_count, snapshot.power, snapshot.brightness, command);
+            ESP_LOGD(TAG, "state saved (leds=%u power=%u brightness=%u segs=%u cmd=0x%02X)",
+                     snapshot.state.led_count, snapshot.state.power,
+                     snapshot.state.brightness, snapshot.state.seg_count, command);
         }
     }
 }
@@ -126,7 +127,7 @@ esp_err_t lumen_state_store_init(void)
     return ESP_OK;
 }
 
-bool lumen_state_store_load(lumen_state_t *out)
+bool lumen_state_store_load(lumen_persist_t *out)
 {
     if (out == NULL) {
         return false;
@@ -156,13 +157,13 @@ void lumen_state_store_set_event_cb(lumen_store_event_cb cb)
     s_event_cb = cb;
 }
 
-void lumen_state_store_request_save(const lumen_state_t *state, uint8_t command)
+void lumen_state_store_request_save(const lumen_persist_t *snapshot, uint8_t command)
 {
-    if (state == NULL || s_lock == NULL) {
+    if (snapshot == NULL || s_lock == NULL) {
         return;
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    lumen_save_scheduler_request(&s_sched, state, command, now_ms());
+    lumen_save_scheduler_request(&s_sched, snapshot, command, now_ms());
     xSemaphoreGive(s_lock);
     xSemaphoreGive(s_wake);
 }

@@ -49,9 +49,28 @@ describe("describeCommand", () => {
     expect(describeCommand(CMD.SELF_TEST, new Uint8Array(0))).toBe("SelfTest");
   });
 
-  it("v2 新命令在构造器落地前只显示名字或 hex，不猜参数", () => {
+  it("#25 段命令按载荷解析参数；长度不足时保留 hex 不猜", () => {
+    /* 静态段：strip, seg, start, end, type, hue_lo, hue_hi, sat */
+    expect(describeCommand(CMD.SET_SEGMENT, new Uint8Array([0, 0, 0, 29, 0, 0, 0, 255]))).toBe(
+      "SetSegment strip=0 seg=0 range=0-29 type=0x00 hue=0 sat=255",
+    );
+    /* 动画段多 4 字节（period / p5 / flags）。 */
+    expect(
+      describeCommand(
+        CMD.SET_SEGMENT,
+        new Uint8Array([0, 1, 0, 9, 1, 0x09, 0x01, 0x60, 0x0E, 0xFF, 0xF4, 0x01]),
+      ),
+    ).toBe(
+      "SetSegment strip=0 seg=1 range=0-9 type=0x01 hue=265 sat=96 " +
+        "period=65294 p5=244 flags=0x01",
+    );
+    /* 长度不足只给 hex，不猜半截参数。 */
     expect(describeCommand(CMD.SET_SEGMENT, new Uint8Array(0))).toBe("SetSegment");
     expect(describeCommand(CMD.SET_SEGMENT, new Uint8Array([1, 2]))).toBe("SetSegment 01 02");
+    expect(describeCommand(CMD.CLEAR_SEGMENT, new Uint8Array([0, 3]))).toBe(
+      "ClearSegment strip=0 seg=3",
+    );
+    expect(describeCommand(CMD.QUERY_STRIP, new Uint8Array([0]))).toBe("QueryStrip strip=0");
     expect(describeCommand(CMD.QUERY_SCRIPT, new Uint8Array([0]))).toBe("QueryScript 00");
   });
 

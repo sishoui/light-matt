@@ -2,9 +2,9 @@
  * 颜色语义（纯函数）。
  *
  * v2（#21）退役了 v1 的 SetColor 0x03 / SetAll 0x04，颜色改由段配置
- * （0x10 SetSegment）承担。这里的纯函数（钳位、本地乐观写回、预设亮度）
- * 仍然有效，但**下发路径**在 #25 重建分段界面之前是禁用的：
- * `ControlSession.queueColor / commitColor / applyPreset` 都是占位实现。
+ * （0x10 SetSegment）承担；#25 已把下发路径接上：`ControlSession.queueColor /
+ * commitColor / applyPreset` 都写进**选中段**。这里的纯函数（钳位、本地乐观
+ * 写回、预设亮度）保留给分段 UI 复用。
  *
  * 与协议的关系（docs/protocol.md §7）：
  *  - State 字节 2-4 是 **strip 0 / seg 0 的基准色**（hue+sat 转 RGB，

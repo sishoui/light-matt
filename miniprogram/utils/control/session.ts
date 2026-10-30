@@ -10,6 +10,11 @@
  * 初始化流水线（MTU → services → chars → 重新订阅 notify → 读 State），
  * 本模块只在拿到 State 后更新本地镜像，绝不用本地缓存覆盖设备。
  *
+ * #25 分段：段配置由 SetSegment 0x10 / ClearSegment 0x11 下发，
+ * 用 QueryStrip 0x12 读回（重连重建 UI 的权威路径，protocol §10.1）。
+ * 颜色入口（queueColor / commitColor / applyPreset）不再禁用，改为「写入
+ * strip 0 的选中段」；段列表由页面持有并驱动。
+ *
  * 拆分后的协作模块（同级 utils/control/）：
  *  - reconnect.ts：连接生命周期监督者（退避回连 / epoch / 手动/自动互斥）；
  *  - device-cache.ts：deviceId 缓存（只存身份，不存状态）；
@@ -17,8 +22,7 @@
  * 本文件只保留「命令语义 + 本地状态镜像 + 节流通道」。
  *
  * v2（#21）退役了 SetColor 0x03 / SetAll 0x04，颜色由段配置（0x10 SetSegment）
- * 承担。#25 会围绕分段重建 UI；在那之前 queueColor / commitColor / applyPreset
- * 是**明确禁用**的占位实现：不发帧、不改本地状态，只让页面给出可见提示。
+ * 承担；#25 已把颜色入口接到选中段（不再是占位实现）。
  *
  * #34：成功连接（ready）时向可选的使用日志落点记一条「谁 × 哪台 × 什么时候」。
  * 日志是同步、吞异常、不 await 的旁路——BLE 控制不依赖后端，后端不可达也不影响它。
@@ -61,12 +65,16 @@ import { LED_COUNT_ACK_TIMEOUT_MS } from "./ledCount";
 import { MAX_LEDS, MIN_LEDS } from "../protocol/constants";
 import type { UsageLogSink } from "../usage/logger";
 import {
+  cmdClearSegment,
   cmdQueryState,
   cmdSelfTest,
   cmdSetBrightness,
   cmdSetLedCount,
   cmdSetPower,
+  cmdSetSegment,
+  staticSegment,
 } from "../protocol/commands";
+import { rgbToHsv } from "../color/hsv";
 import type {
   AckResult,
   CommandRequest,
@@ -74,6 +82,10 @@ import type {
   DiscoveredDevice,
   LinkState,
   RGB,
+  SegmentConfig,
+  SegmentListEnd,
+  SegmentReport,
+  SegmentTarget,
 } from "../protocol/types";
 import {
   clearCachedDevice,
@@ -91,16 +103,23 @@ export { DEVICE_CACHE_KEY, detectDevMode, detectPlatform };
 export type { CachedDevice, SessionStorage };
 
 /**
- * 连续量只有亮度。v2 退役 SetColor 后，20Hz 通道不再承载颜色
- * （段配置是离散命令，由 #25 的下发流程负责）。
+ * 连续量通道（20Hz latest-wins）。**亮度与段颜色共用同一个闸门**：
+ * 两条各自 20Hz 会叠成 40Hz，BLE 写入串行化会被拖慢（docs/ble-notes.md）。
+ * 两帧都是绝对值命令，互相覆盖的语义安全——最后一帧决定最终观感。
  */
-export type ContinuousUpdate = { kind: "brightness"; value: number };
+export type ContinuousUpdate =
+  | { kind: "brightness"; value: number }
+  | { kind: "color"; target: SegmentTarget; hue: number; sat: number };
 
 /**
- * 颜色 / 预设入口在 v2 的占位提示。#25 把这部分重建为分段界面，
- * 在此之前 UI 必须明确告诉用户功能去哪儿了，而不是静默什么都不做。
+ * 段命令的专用结果。段配置不在 State 里，所以成功时不返回 DeviceState，
+ * 而是返回设备权威的段列表（由 QueryStrip 读回）。
  */
-export const SEGMENTS_UI_NOTICE = "该功能在 v2 分段界面中提供（#25）";
+export type SegmentResult =
+  | { kind: "ok"; reports: SegmentReport[]; end: SegmentListEnd }
+  | { kind: "ack-error"; ack: AckResult }
+  | { kind: "stale" }
+  | { kind: "error"; message: string };
 
 /** 每套灯带在 State 里的 strip_id；多灯带 #29 之前固定 0。 */
 const PRIMARY_STRIP_ID = 0;
@@ -163,6 +182,8 @@ export class ControlSession {
   private latestState: DeviceState | null = null;
   /** 亮度 0 时开灯，用最近一次非 0 亮度恢复（#9）。 */
   private lastNonZeroBrightness = 128;
+  /** 颜色控件的当前目标段（页面在选中/新建段时设置）。 */
+  private defaultSegment: SegmentTarget | null = null;
 
   private readonly retryAfterGapMs: number;
   /** 10008 间隔重试的计时器：与回连退避共用同一个注入实例。 */
@@ -238,12 +259,31 @@ export class ControlSession {
       },
     );
 
-    // 20Hz latest-wins 闸门：v2 只剩亮度这一路连续量。
+    /*
+     * 20Hz latest-wins 闸门：亮度与段颜色共用一条。
+     *
+     * 为什么共用：两条独立的 20Hz 通道会在拖动时叠成 40Hz，把串行化的 BLE
+     * 写队列压满（docs/ble-notes.md 的结论）。两者都是绝对值命令、互相覆盖
+     * 的语义安全，因此「只保留最新一帧」对两者都成立。
+     *
+     * 连续量只等写回调；ACK 会异步进日志。写失败不重传（spec §9），
+     * 但 10006 等链路错误要触发回连检查。
+     */
     this.throttle = new LatestWinsThrottle<ContinuousUpdate>(
       (update) => {
-        const req: CommandRequest = cmdSetBrightness(update.value);
-        // 连续量只等写回调；ACK 会异步进日志。写失败不重传连续量（spec §9），
-        // 但 10006 等链路错误要触发回连检查。
+        const req: CommandRequest =
+          update.kind === "brightness"
+            ? cmdSetBrightness(update.value)
+            : cmdSetSegment(
+                staticSegment(
+                  update.target.stripId,
+                  update.target.segId,
+                  update.target.start,
+                  update.target.end,
+                  update.hue,
+                  update.sat,
+                ),
+              );
         return this.transport.write(req).then(
           () => undefined,
           (err) => {
@@ -291,6 +331,24 @@ export class ControlSession {
   /** 是否还有未完成的自动回连意图（UI/测试可观察）。 */
   get reconnectPending(): boolean {
     return this.reconnect.pending;
+  }
+
+  /** 颜色控件的当前目标段（未选中 / 没有段时为 null）。 */
+  get activeSegment(): SegmentTarget | null {
+    return this.defaultSegment === null ? null : { ...this.defaultSegment };
+  }
+
+  /**
+   * 设置颜色控件的目标段。页面在「选中某段」或「新建区间」时调用；
+   * 传 null 表示当前没有可写的段（颜色控件应给提示而不是假装成功）。
+   */
+  setActiveSegment(target: SegmentTarget | null): void {
+    this.defaultSegment = target === null ? null : { ...target };
+  }
+
+  /** 目标段的兼容别名（内部使用）。 */
+  private get defaultSegmentTarget(): SegmentTarget | null {
+    return this.defaultSegment === null ? null : { ...this.defaultSegment };
   }
 
   /** 进页面：只打开适配器；有 deviceId 缓存时由 onShow 触发静默回连。 */
@@ -432,6 +490,7 @@ export class ControlSession {
   async disconnect(): Promise<void> {
     // 主动断开：不触发自动回连，也不再让 onShow 擅自重连。
     this.throttle.cancel();
+    this.defaultSegment = null;
     await this.reconnect.disconnectIntent();
     this.latestState = null;
   }
@@ -620,37 +679,152 @@ export class ControlSession {
   }
 
   /**
-   * 色环拖动（连续量）——v2 占位实现，**不发帧**。
+   * 色环拖动（连续量）——#25 起改为写入**选中段**的静态颜色。
    *
-   * v1 的 SetColor 0x03 已退役；单个「颜色」概念在 v2 里属于 strip 0 / seg 0
-   * 的静态段，由 #25 的分段界面处理。这里保持方法签名让页面继续编译，
-   * 但不改动设备状态，也不做乐观更新（避免 UI 显示一个设备上不存在的颜色）。
+   * 为什么不走 20Hz 节流：段配置是离散命令（每帧一条 SetSegment，带完整的
+   * 区间 + 参数），设备侧是 O(1) 内存写；而且它没有「绝对值合并」之外的连续
+   * 语义（同段重复写只会覆盖自己）。但拖动会产生大量帧，所以这里**仍然**
+   * 复用 20Hz latest-wins 闸门，只是 sink 换成 SetSegment。
    *
-   * TODO(#25)：改名/替换为「下发 strip 0 seg 0 的静态段」的正式路径。
+   * rgb 是用户空间颜色（不做 gamma、不折亮度）。hue/sat 由调用方给出
+   * （色环本身就是 HSV，避免往返量化误差）；缺省时由 rgb 反推。
    */
-  queueColor(_rgb: RGB): void {
-    /* 有意为空：v2 没有单色命令。 */
+  queueColor(rgb: RGB, target?: SegmentTarget): void {
+    this.pushSegmentColor(rgb, target, false);
   }
 
-  /** 色环松手——同 queueColor，v2 占位实现不发帧。TODO(#25) */
-  commitColor(_rgb: RGB): void {
-    /* 有意为空：v2 没有单色命令。 */
+  /** 色环松手——同 queueColor，并立即 flush（保证最终颜色落地）。 */
+  commitColor(rgb: RGB, target?: SegmentTarget): void {
+    this.pushSegmentColor(rgb, target, true);
   }
 
   /**
-   * 预设点击——v2 占位实现，**不发帧**。
+   * 预设点击——写入选中段的静态颜色（#25）。
    *
-   * v1 用一条 SetAll（0x04）原子写开关 + 亮度 + RGB；0x04 已退役。
-   * 返回 error 而不是 ok，页面据此提示「该功能在 v2 分段界面中提供（#25）」，
-   * 绝不能假装成功。
-   *
-   * TODO(#25)：预设应改成「写入一个静态段」，并沿用亮度恢复规则。
+   * v1 的 SetAll 0x04 已退役；现在预设只是「给当前选中的段换个颜色」，
+   * 开关与亮度都不动（亮度是独立字段，见 protocol §7）。
    */
-  async applyPreset(_rgb: RGB): Promise<CommandResult> {
-    return { kind: "error", message: SEGMENTS_UI_NOTICE };
+  async applyPreset(rgb: RGB, target?: SegmentTarget): Promise<CommandResult> {
+    const seg = target ?? this.defaultSegmentTarget;
+    if (seg === null) {
+      return { kind: "error", message: "请先新建一个灯珠区间" };
+    }
+    try {
+      const result = await this.setSegmentColor(seg, rgb);
+      if (result.kind !== "ok") {
+        return result;
+      }
+      return {
+        kind: "ok",
+        state: this.latestState ?? fallbackState({ r: rgb.r, g: rgb.g, b: rgb.b }),
+      };
+    } catch (err) {
+      return { kind: "error", message: errorText(err) };
+    }
   }
 
-  /** 开关：离散路径，等 ACK。成功时用设备语义更新本地状态。 */
+  /**
+   * 写一个静态段（#25 的主入口）：SetSegment + 等 ACK。
+   *
+   * 成功只代表「设备已接受并写入 RAM」；界面要显示权威段列表请用
+   * queryStrip()。失败区分 ACK（InvalidParam：重叠 / 越界 / 类型不支持）与
+   * 传输异常——前者要给用户明确原因，后者交给统一错误分诊。
+   */
+  async setSegment(segment: SegmentConfig, opts: SendOptions = {}): Promise<AckResult> {
+    return this.sendCommand(cmdSetSegment(segment), opts);
+  }
+
+  /** 清一个段槽位（ClearSegment 0x11）。 */
+  async clearSegment(segId: number, stripId = PRIMARY_STRIP_ID): Promise<AckResult> {
+    return this.sendCommand(cmdClearSegment(stripId, segId));
+  }
+
+  /**
+   * 读回某灯带的段列表（QueryStrip 0x12）：seg_count 条 SegmentReport +
+   * SegmentListEnd，同 seq 多帧。这是重连重建 UI 的权威路径
+   * （protocol §10.1 第 2 步）。
+   */
+  async queryStrip(stripId = PRIMARY_STRIP_ID): Promise<SegmentResult> {
+    if (this.transport.linkState !== "ready") {
+      return { kind: "error", message: "设备未连接" };
+    }
+    const epoch = this.reconnect.epoch;
+    try {
+      const result = await this.transport.queryStrip(stripId);
+      if (this.reconnect.isStale(epoch)) {
+        return { kind: "stale" };
+      }
+      return { kind: "ok", reports: result.reports, end: result.end };
+    } catch (err) {
+      if (this.reconnect.isStale(epoch)) {
+        return { kind: "stale" };
+      }
+      return { kind: "error", message: errorText(err) };
+    }
+  }
+
+  /**
+   * 把选中段改成 rgb 并等 ACK——页面与预设共用的一条路径。
+   * 返回 ACK 结果（InvalidParam 表示设备拒绝了区间或与其它段重叠）。
+   */
+  async setSegmentColor(target: SegmentTarget, rgb: RGB): Promise<SegmentResult> {
+    if (this.transport.linkState !== "ready") {
+      return { kind: "error", message: "设备未连接" };
+    }
+    // 色环给的是 RGB；协议的静态参数是 hue+sat。用 HSV 反推（V 恒为 1）。
+    const hsv = rgbToHsv(rgb);
+    const segment = staticSegment(
+      target.stripId,
+      target.segId,
+      target.start,
+      target.end,
+      Math.round((hsv.h / 360) * 0x10000) & 0xffff,
+      Math.round(hsv.s * 255),
+    );
+    const epoch = this.reconnect.epoch;
+    try {
+      const ack = await this.setSegment(segment);
+      if (this.reconnect.isStale(epoch)) {
+        return { kind: "stale" };
+      }
+      if (!ack.ok) {
+        return { kind: "ack-error", ack };
+      }
+      return { kind: "ok", reports: [], end: { stripId: target.stripId, segMask: 0 } };
+    } catch (err) {
+      return { kind: "error", message: errorText(err) };
+    }
+  }
+
+  /**
+   * 色环拖动 / 松手的统一入口（#25）：把用户空间 RGB 写进目标段的静态颜色。
+   *
+   * - 没有目标段：静默忽略（页面在 UI 上禁用颜色控件，这里只是兜底）。
+   * - 连续拖动：20Hz latest-wins；松手 flush 一次确保最终颜色落地。
+   * - 不做本地乐观更新：段配置不在 State 里，界面只显示「已选颜色」，
+   *   设备权威的段列表由 queryStrip 拉取。
+   */
+  private pushSegmentColor(rgb: RGB, target: SegmentTarget | undefined, commit: boolean): void {
+    const seg = target ?? this.defaultSegmentTarget;
+    if (seg === null || this.transport.linkState !== "ready") {
+      return;
+    }
+    const hsv = rgbToHsv(rgb);
+    this.throttle.push({
+      kind: "color",
+      target: seg,
+      hue: Math.round((hsv.h / 360) * 0x10000) & 0xffff,
+      // 饱和度用 0-255：协议 sat 的刻度（effects-spec §2.1）。
+      sat: Math.round(hsv.s * 255),
+    });
+    if (commit) {
+      this.throttle.flush();
+    }
+  }
+
+  /**
+   * 开关：离散路径，等 ACK。成功时用设备语义更新本地状态。
+   */
   async setPower(on: boolean): Promise<PowerResult> {
     const epoch = this.reconnect.epoch;
     try {
@@ -733,6 +907,8 @@ export class ControlSession {
   private clearDeviceState(): void {
     this.latestState = null;
     this.throttle.cancel();
+    /* 断开后没有可写的段：颜色控件应回到禁用态。 */
+    this.defaultSegment = null;
   }
 
   /**

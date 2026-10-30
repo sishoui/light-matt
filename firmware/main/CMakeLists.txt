@@ -3,6 +3,8 @@ idf_component_register(
         "app_main.c"
         "ble_link.c"
         "command.c"
+        "effects.c"
+        "segment_store.c"
         "led_engine.c"
         "led_render.c"
         "led_stress.c"

@@ -18,6 +18,7 @@
 #include "services/gatt/ble_svc_gatt.h"
 
 #include "command.h"
+#include "effects.h"
 #include "led_engine.h"
 #include "protocol.h"
 #include "state_store.h"
@@ -140,6 +141,58 @@ static void reject_oversized(const struct os_mbuf *om, uint16_t mbuf_len)
 }
 
 /*
+ * QueryStrip 0x12 的多帧响应（docs/protocol.md §9 / §10.1）：
+ * seg_count 条 SegmentReport(0x83) + 1 条 SegmentListEnd(0x84)，
+ * **全部回显同一个 seq**。小程序按命令字区分帧类型，按 SegmentListEnd 收尾。
+ *
+ * 在 NimBLE 主机任务的 RX 回调里同步发出：每帧只做一次编码 + notify 入队，
+ * 不刷灯、不写 NVS。单灯带 3 段场景约 70 字节，不会把主机任务拖住。
+ */
+static void send_strip_reports(uint8_t seq, uint8_t strip_id)
+{
+    lumen_segment_t segments[LUMEN_MAX_SEGMENTS];
+    uint8_t count = lumen_led_engine_segments(strip_id, segments, LUMEN_MAX_SEGMENTS);
+    uint8_t mask = lumen_led_engine_segment_mask(strip_id);
+
+    uint8_t frame[LUMEN_MAX_FRAME];
+    uint8_t sent = 0;
+    for (uint8_t i = 0; i < count; ++i) {
+        const lumen_segment_t *seg = &segments[i];
+        /* 参数块按 type 解释（docs/effects-spec.md §2）：静态 hue(2)+sat(1)。 */
+        uint8_t params[7] = {0};
+        uint8_t param_len = lumen_effect_param_len(seg->type);
+        if (param_len == 0) {
+            continue; /* 未知类型不回报（不该出现在权威段表里） */
+        }
+        params[0] = (uint8_t)(seg->hue & 0xFF);
+        params[1] = (uint8_t)(seg->hue >> 8);
+        params[2] = seg->sat;
+        if (param_len > 3) {
+            params[3] = (uint8_t)(seg->period_ms & 0xFF);
+            params[4] = (uint8_t)(seg->period_ms >> 8);
+            params[5] = seg->p5;
+            params[6] = seg->flags;
+        }
+        size_t len = lumen_protocol_encode_segment_report(
+            seq, strip_id, i, seg->start, seg->end, seg->type, params, param_len, frame,
+            sizeof(frame));
+        if (len == 0 || lumen_ble_link_notify(frame, len) != ESP_OK) {
+            ESP_LOGW(TAG, "SegmentReport 发送失败 strip=%u seg=%u", strip_id, i);
+            continue;
+        }
+        ++sent;
+    }
+
+    size_t end_len = lumen_protocol_encode_segment_list_end(seq, strip_id, mask, frame,
+                                                            sizeof(frame));
+    if (end_len == 0 || lumen_ble_link_notify(frame, end_len) != ESP_OK) {
+        ESP_LOGW(TAG, "SegmentListEnd 发送失败 strip=%u", strip_id);
+    }
+    ESP_LOGI(TAG, "QueryStrip strip=%u -> %u SegmentReport + SegmentListEnd mask=0x%02X seq=0x%02X",
+             strip_id, sent, mask, seq);
+}
+
+/*
  * 处理一条完整写到 RX 的帧：
  *   解码（§10.2 magic→version→length→checksum）
  *   → 命令分发（§10.2 command→payload 长度→payload 取值）
@@ -174,9 +227,43 @@ static void handle_frame(const uint8_t *data, size_t len)
     lumen_state_t current;
     lumen_led_engine_snapshot(&current);
 
+    /*
+     * 段配置快照只给段命令用：0x10 / 0x11 / 0x12。
+     * 1KB 拷贝放在栈上会吃掉主机任务的栈余量，所以用静态缓冲——RX 回调
+     * 在 NimBLE 主机任务里串行执行，不存在并发进入。
+     */
+    static lumen_segment_store_t s_segment_scratch;
+    const lumen_segment_store_t *segments = NULL;
+    switch (frame.command) {
+    case LUMEN_CMD_SET_SEGMENT:
+    case LUMEN_CMD_CLEAR_SEGMENT:
+    case LUMEN_CMD_QUERY_STRIP:
+        lumen_led_engine_segments_snapshot(&s_segment_scratch);
+        segments = &s_segment_scratch;
+        break;
+    default:
+        break;
+    }
+
     lumen_command_outcome_t outcome;
     /* max_brightness 取构建期常量：SetBrightness 在这里被钳位，而不是拒绝。 */
-    lumen_command_dispatch(&frame, &current, lumen_led_engine_max_brightness(), &outcome);
+    lumen_command_dispatch(&frame, &current, segments, lumen_led_engine_max_brightness(),
+                           &outcome);
+
+    /*
+     * 段配置写入 / 清除（#25）。命令层已完成 §11.3 第 4-9 步校验，
+     * 引擎在锁内做最终写入并重算 State 摘要（seg_count 与 seg 0 基准色）。
+     * 引擎的最终结果码是权威（可能因为期间状态变化而被再拒一次）。
+     */
+    if (outcome.segment_op && outcome.result_code == LUMEN_RESULT_OK) {
+        if (outcome.segment_clear) {
+            outcome.result_code = lumen_led_engine_clear_segment(
+                outcome.segment_strip, outcome.segment_id, frame.command);
+        } else {
+            outcome.result_code = lumen_led_engine_set_segment(
+                outcome.segment_strip, outcome.segment_id, &outcome.segment, frame.command);
+        }
+    }
 
     /*
      * 自检控制（协议 §11.2），必须在写共享状态之前处理：
@@ -224,10 +311,11 @@ static void handle_frame(const uint8_t *data, size_t len)
     /* 每帧只打一行：命令字 / seq / 结果码 / 关键状态。 */
     ESP_LOGI(TAG,
              "RX cmd=0x%02X seq=0x%02X len=%u result=0x%02X power=%u brightness=%u "
-             "rgb=%u,%u,%u%s%s",
+             "rgb=%u,%u,%u segs=%u%s%s",
              frame.command, frame.seq, frame.payload_len, outcome.result_code,
              outcome.next.power, outcome.next.brightness, outcome.next.r, outcome.next.g,
-             outcome.next.b, outcome.state_changed ? " changed" : "", selftest_note);
+             outcome.next.b, outcome.next.seg_count, outcome.state_changed ? " changed" : "",
+             selftest_note);
 
     if (outcome.led_count_rebuild) {
         /*
@@ -267,6 +355,11 @@ static void handle_frame(const uint8_t *data, size_t len)
         if (len == 0 || lumen_ble_link_notify(buf, len) != ESP_OK) {
             ESP_LOGW(TAG, "StateReport 发送失败 seq=0x%02X", frame.seq);
         }
+    }
+
+    /* QueryStrip：seg_count 条 SegmentReport + 1 条 SegmentListEnd，同 seq（§10.1）。 */
+    if (outcome.strip_query) {
+        send_strip_reports(frame.seq, outcome.query_strip_id);
     }
 }
 
