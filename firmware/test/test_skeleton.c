@@ -247,9 +247,25 @@ typedef struct {
     char frame_hex[128];
     char payload_hex[64];
     char prior_segments[64]; /* 可选：段命令的前置段表，如 "0:0-15"（仅 host 测试用） */
+    /*
+     * 可选：#32 剧本命令的**设备侧前置状态**，形如
+     *   "14:000401;15:0000E803;15:0100F401;17:00"
+     * 每一项是 `命令字(十进制):载荷hex`，按顺序重放到一个本地剧本表上。
+     * 这让「整份下发 → commit → 上一套是否还在」能被向量驱动，而不是只在
+     * 下面的独立断言里覆盖。
+     */
+    char prior_script[512];
     int command;
     int seq;
     int result_code; /* -1 = 缺失或 null（静默丢弃） */
+    /*
+     * 可选：设备侧（引擎整份校验后）的最终结果码。命令层只做形状校验，
+     * ScriptCommit 的越界 / 重叠 / 缺阶段只有引擎能判——两者不同时用这个
+     * 字段钉住设备真实回的结果码。
+     */
+    int device_ack;
+    /* 可选：本帧处理完后，script_id:stage_count 形式的前一套必须仍完好。 */
+    char keep_script[32];
     bool frame_valid;
 } vector_case_t;
 
@@ -319,6 +335,7 @@ static int for_each_case(const char *path, void (*fn)(const vector_case_t *))
         c.command = -1;
         c.seq = -1;
         c.result_code = -1;
+        c.device_ack = -1;
         if (!json_get_string(object, "name", c.name, sizeof(c.name)) ||
             !json_get_string(object, "direction", c.direction, sizeof(c.direction)) ||
             !json_get_string(object, "frame_hex", c.frame_hex, sizeof(c.frame_hex)) ||
@@ -329,9 +346,12 @@ static int for_each_case(const char *path, void (*fn)(const vector_case_t *))
         }
         json_get_string(object, "payload_hex", c.payload_hex, sizeof(c.payload_hex));
         json_get_string(object, "prior_segments", c.prior_segments, sizeof(c.prior_segments));
+        json_get_string(object, "prior_script", c.prior_script, sizeof(c.prior_script));
+        json_get_string(object, "keep_script", c.keep_script, sizeof(c.keep_script));
         json_get_int(object, "command", &c.command);
         json_get_int(object, "seq", &c.seq);
         json_get_int(object, "result_code", &c.result_code);
+        json_get_int(object, "device_ack", &c.device_ack);
 
         fn(&c);
         ++count;
@@ -340,6 +360,167 @@ static int for_each_case(const char *path, void (*fn)(const vector_case_t *))
 
     free(text);
     return count;
+}
+
+/*
+ * 在 host 上重放一串剧本命令（"cmd:payloadhex;cmd:payloadhex;…"）到本地剧本表。
+ *
+ * 这不是完整的引擎：它只做 §10.4 的下发流程（Begin → Stage → Segment → Commit），
+ * 用来把一个用例的**设备侧前置状态**表达成向量数据。解析失败返回 false。
+ */
+static bool apply_prior_script(lumen_script_store_t *store, const char *spec)
+{
+    lumen_script_store_init(store);
+    if (spec == NULL || spec[0] == '\0') {
+        return true;
+    }
+
+    const char *p = spec;
+    while (*p != '\0') {
+        /* 取一项直到 ';'（不含）。 */
+        const char *item_begin = p;
+        while (*p != '\0' && *p != ';') {
+            ++p;
+        }
+        size_t item_len = (size_t)(p - item_begin);
+        if (*p == ';') {
+            ++p;
+        }
+        if (item_len == 0) {
+            continue;
+        }
+
+        /* 拆 `cmd:payloadhex`（就地复制到局部缓冲，不改原串）。 */
+        char item[128];
+        if (item_len >= sizeof(item)) {
+            return false;
+        }
+        memcpy(item, item_begin, item_len);
+        item[item_len] = '\0';
+        char *colon = strchr(item, ':');
+        if (colon == NULL) {
+            return false;
+        }
+        *colon = '\0';
+        long cmd = strtol(item, NULL, 10);
+        uint8_t payload[LUMEN_MAX_PAYLOAD];
+        size_t len = hex_to_bytes(colon + 1, payload, sizeof(payload));
+        if (len == (size_t)-1) {
+            return false;
+        }
+
+        switch (cmd) {
+        case LUMEN_CMD_SCRIPT_BEGIN:
+            if (len != 3 || !lumen_script_begin(store, payload[0], payload[1], payload[2])) {
+                return false;
+            }
+            break;
+        case LUMEN_CMD_SCRIPT_STAGE: {
+            uint16_t duration = (uint16_t)(payload[2] | ((uint16_t)payload[3] << 8));
+            if (len != 4 || !lumen_script_stage(store, payload[0], payload[1], duration)) {
+                return false;
+            }
+            break;
+        }
+        case LUMEN_CMD_SCRIPT_SEGMENT: {
+            if (len < 7) {
+                return false;
+            }
+            lumen_segment_t seg;
+            memset(&seg, 0, sizeof(seg));
+            seg.active = true;
+            seg.start = payload[4];
+            seg.end = payload[5];
+            seg.type = payload[6];
+            seg.hue = (uint16_t)(payload[7] | ((uint16_t)payload[8] << 8));
+            seg.sat = payload[9];
+            if (len > 10) {
+                seg.period_ms = (uint16_t)(payload[10] | ((uint16_t)payload[11] << 8));
+                seg.p5 = payload[12];
+                seg.flags = payload[13];
+            }
+            if (!lumen_script_segment(store, payload[0], payload[1], payload[2], payload[3], &seg,
+                                      NULL)) {
+                return false;
+            }
+            break;
+        }
+        case LUMEN_CMD_SCRIPT_COMMIT: {
+            uint16_t counts[LUMEN_MAX_STRIPS] = {30, 0, 0, 0, 0, 0, 0, 0};
+            if (len != 1 || !lumen_script_commit(store, payload[0], counts)) {
+                return false;
+            }
+            break;
+        }
+        case LUMEN_CMD_SCRIPT_ABORT:
+            if (len != 1) {
+                return false;
+            }
+            lumen_script_abort(store, payload[0]);
+            break;
+        default:
+            return false;
+        }
+    }
+    return true;
+}
+
+/* 把命令层的剧本意图重放到本地剧本表（与 ble_link 的 script dispatch 同构）。
+ * 返回引擎级结果码。 */
+static uint8_t apply_script_op(lumen_script_store_t *store,
+                               const lumen_command_outcome_t *outcome)
+{
+    switch (outcome->script_op) {
+    case LUMEN_SCRIPT_OP_BEGIN:
+        return lumen_script_begin(store, outcome->script_id, outcome->script_stage_count,
+                                  outcome->script_strip_count)
+                   ? LUMEN_RESULT_OK
+                   : LUMEN_RESULT_INVALID_PARAM;
+    case LUMEN_SCRIPT_OP_STAGE:
+        return lumen_script_stage(store, outcome->script_id, outcome->script_stage_index,
+                                  outcome->script_duration_ms)
+                   ? LUMEN_RESULT_OK
+                   : LUMEN_RESULT_INVALID_PARAM;
+    case LUMEN_SCRIPT_OP_SEGMENT:
+        return lumen_script_segment(store, outcome->script_id, outcome->script_stage_index,
+                                    outcome->script_strip, outcome->script_seg,
+                                    &outcome->script_segment, NULL)
+                   ? LUMEN_RESULT_OK
+                   : LUMEN_RESULT_INVALID_PARAM;
+    case LUMEN_SCRIPT_OP_COMMIT: {
+        uint16_t counts[LUMEN_MAX_STRIPS] = {30, 0, 0, 0, 0, 0, 0, 0};
+        return lumen_script_commit(store, outcome->script_id, counts) ? LUMEN_RESULT_OK
+                                                                     : LUMEN_RESULT_INVALID_PARAM;
+    }
+    case LUMEN_SCRIPT_OP_ABORT:
+        lumen_script_abort(store, outcome->script_id);
+        return LUMEN_RESULT_OK;
+    case LUMEN_SCRIPT_OP_ACTIVATE:
+        return lumen_script_is_committed(store, outcome->script_id) ? LUMEN_RESULT_OK
+                                                                   : LUMEN_RESULT_INVALID_PARAM;
+    case LUMEN_SCRIPT_OP_QUERY:
+    case LUMEN_SCRIPT_OP_PLAYBACK:
+        return LUMEN_RESULT_OK;
+    default:
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+}
+
+/* 解析 "id:count"（keep_script 字段）。 */
+static bool parse_keep_script(const char *spec, uint8_t *id, uint8_t *count)
+{
+    if (spec == NULL || spec[0] == '\0') {
+        return false;
+    }
+    char *end = NULL;
+    long parsed_id = strtol(spec, &end, 10);
+    if (end == NULL || *end != ':') {
+        return false;
+    }
+    long parsed_count = strtol(end + 1, NULL, 10);
+    *id = (uint8_t)parsed_id;
+    *count = (uint8_t)parsed_count;
+    return true;
 }
 
 static void run_app_case(const vector_case_t *c)
@@ -377,6 +558,14 @@ static void run_app_case(const vector_case_t *c)
          */
         lumen_segment_store_t segments;
         apply_prior_segments(&segments, c->prior_segments);
+
+        /*
+         * #32：剧本命令前置状态。prior_script 用同一套纯模块重放
+         * Begin/Stage/Segment/Commit，得到「上一套已提交剧本」。
+         * 这让失败路径可以断言「旧剧本还在」，而不是只在别处单独测。
+         */
+        lumen_script_store_t scripts;
+        CHECK(apply_prior_script(&scripts, c->prior_script));
 
         /* 向量不涉及构建期上限，按 255 跑 reducer。 */
         lumen_command_dispatch(&frame, &before, &segments, NULL, 255, &outcome);
@@ -503,6 +692,121 @@ static void run_app_case(const vector_case_t *c)
                 CHECK(!outcome.segment_op);
                 CHECK(!outcome.strip_query);
                 CHECK(!outcome.cancels_selftest);
+            }
+        } else if (frame.command == LUMEN_CMD_SET_PLAYBACK ||
+                   frame.command == LUMEN_CMD_SCRIPT_BEGIN ||
+                   frame.command == LUMEN_CMD_SCRIPT_STAGE ||
+                   frame.command == LUMEN_CMD_SCRIPT_SEGMENT ||
+                   frame.command == LUMEN_CMD_SCRIPT_COMMIT ||
+                   frame.command == LUMEN_CMD_SCRIPT_ABORT ||
+                   frame.command == LUMEN_CMD_ACTIVATE_SCRIPT ||
+                   frame.command == LUMEN_CMD_QUERY_SCRIPT) {
+            /*
+             * #32 剧本命令：命令层只做形状校验（id / 下标 / type / 长度 /
+             * 时长非 0），真正的暂存 / 提交 / 激活在引擎里。所以这里断言
+             * 结果码与向量一致、产生了正确类型的操作意图、共享状态不变。
+             */
+            CHECK(c->result_code >= 0);
+            CHECK(outcome.result_code == (uint8_t)c->result_code);
+            CHECK(!outcome.state_changed);
+            CHECK(!outcome.led_count_rebuild);
+            CHECK(outcome.next.power == before.power);
+            CHECK(outcome.next.brightness == before.brightness);
+            CHECK(outcome.next.led_count == before.led_count);
+
+            if (outcome.result_code == LUMEN_RESULT_OK) {
+                CHECK(outcome.script_op != LUMEN_SCRIPT_OP_NONE);
+                switch (frame.command) {
+                case LUMEN_CMD_SET_PLAYBACK:
+                    CHECK(outcome.script_op == LUMEN_SCRIPT_OP_PLAYBACK);
+                    CHECK(outcome.script_action == frame.payload[0]);
+                    CHECK(outcome.script_loop == (frame.payload[1] != 0));
+                    break;
+                case LUMEN_CMD_SCRIPT_BEGIN:
+                    CHECK(outcome.script_op == LUMEN_SCRIPT_OP_BEGIN);
+                    CHECK(outcome.script_id == frame.payload[0]);
+                    CHECK(outcome.script_stage_count == frame.payload[1]);
+                    CHECK(outcome.script_strip_count == frame.payload[2]);
+                    break;
+                case LUMEN_CMD_SCRIPT_STAGE:
+                    CHECK(outcome.script_op == LUMEN_SCRIPT_OP_STAGE);
+                    CHECK(outcome.script_id == frame.payload[0]);
+                    CHECK(outcome.script_stage_index == frame.payload[1]);
+                    CHECK(outcome.script_duration_ms ==
+                          (uint16_t)(frame.payload[2] | (frame.payload[3] << 8)));
+                    break;
+                case LUMEN_CMD_SCRIPT_SEGMENT:
+                    CHECK(outcome.script_op == LUMEN_SCRIPT_OP_SEGMENT);
+                    CHECK(outcome.script_id == frame.payload[0]);
+                    CHECK(outcome.script_stage_index == frame.payload[1]);
+                    CHECK(outcome.script_strip == frame.payload[2]);
+                    CHECK(outcome.script_seg == frame.payload[3]);
+                    CHECK(outcome.script_segment.start == frame.payload[4]);
+                    CHECK(outcome.script_segment.end == frame.payload[5]);
+                    CHECK(outcome.script_segment.type == frame.payload[6]);
+                    CHECK(outcome.script_segment.hue ==
+                          (uint16_t)(frame.payload[7] | (frame.payload[8] << 8)));
+                    CHECK(outcome.script_segment.sat == frame.payload[9]);
+                    break;
+                case LUMEN_CMD_SCRIPT_COMMIT:
+                    CHECK(outcome.script_op == LUMEN_SCRIPT_OP_COMMIT);
+                    CHECK(outcome.script_id == frame.payload[0]);
+                    break;
+                case LUMEN_CMD_SCRIPT_ABORT:
+                    CHECK(outcome.script_op == LUMEN_SCRIPT_OP_ABORT);
+                    break;
+                case LUMEN_CMD_ACTIVATE_SCRIPT:
+                    CHECK(outcome.script_op == LUMEN_SCRIPT_OP_ACTIVATE);
+                    CHECK(outcome.script_id == frame.payload[0]);
+                    CHECK(outcome.script_loop == (frame.payload[1] != 0));
+                    break;
+                case LUMEN_CMD_QUERY_SCRIPT:
+                    CHECK(outcome.script_op == LUMEN_SCRIPT_OP_QUERY);
+                    CHECK(outcome.script_id == frame.payload[0]);
+                    break;
+                default:
+                    CHECK(false);
+                    break;
+                }
+                /*
+                 * 剧本命令全部属于「改变状态」类别，要取消自检（§10.6 第 5 条）；
+                 * QueryScript 例外——查询不改状态，不取消自检。
+                 */
+                if (frame.command == LUMEN_CMD_QUERY_SCRIPT) {
+                    CHECK(!outcome.cancels_selftest);
+                } else {
+                    CHECK(outcome.cancels_selftest);
+                }
+            } else {
+                CHECK(outcome.script_op == LUMEN_SCRIPT_OP_NONE);
+                CHECK(!outcome.cancels_selftest);
+            }
+
+            /*
+             * 设备侧（引擎整份校验）的结果码。命令层只判形状，ScriptCommit
+             * 的缺阶段 / 越界 / 重叠只有引擎能判，所以有 device_ack 时以它为准。
+             *
+             * 命令层已拒的帧根本到不了引擎（ble_link 只在 result_code == OK
+             * 时调用引擎），所以这里只在命令层放行时比较。
+             */
+            if (outcome.result_code == LUMEN_RESULT_OK) {
+                uint8_t engine_result = apply_script_op(&scripts, &outcome);
+                if (c->device_ack >= 0) {
+                    CHECK(engine_result == (uint8_t)c->device_ack);
+                } else {
+                    CHECK(engine_result == outcome.result_code);
+                }
+            }
+
+            /*
+             * 失败回滚的向量级证据：本帧处理完后，keep_script 指定的那套
+             * 剧本必须仍然存在且阶段数不变。
+             */
+            uint8_t keep_id = 0;
+            uint8_t keep_count = 0;
+            if (parse_keep_script(c->keep_script, &keep_id, &keep_count)) {
+                CHECK(lumen_script_is_committed(&scripts, keep_id));
+                CHECK(lumen_script_stage_count(&scripts, keep_id) == keep_count);
             }
         } else {
             /* 已知命令的兜底：结果码必须与向量一致，状态一律不变。
@@ -676,9 +980,10 @@ static void test_set_power_reducer(void)
     CHECK(memcmp(&outcome.next, &state, sizeof(state)) == 0);
 
     /* 保留 / 未知 / 退役 / 设备→小程序命令字：0x02。
-     * v2 退役的 0x03 SetColor / 0x04 SetAll 与尚未实现的剧本命令都走这里。
-     * #25 起 0x10 / 0x11 / 0x12 已实现，不再属于未知命令。 */
-    const uint8_t unknown[] = {0x00, 0x03, 0x04, 0x08, 0x13, 0x1A, 0x7F,
+     * v2 退役的 0x03 SetColor / 0x04 SetAll 走这里。
+     * #25 起 0x10 / 0x11 / 0x12 已实现，#32 起 0x13–0x1A 也已实现，
+     * 都不再属于未知命令。 */
+    const uint8_t unknown[] = {0x00, 0x03, 0x04, 0x08, 0x09, 0x0F, 0x1B, 0x7F,
                                0x80, 0x81, 0x82, 0xFF};
     for (size_t i = 0; i < sizeof(unknown); ++i) {
         lumen_frame_t f = {0};
@@ -867,20 +1172,33 @@ static void test_retired_commands(void)
     CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
     CHECK(!outcome.state_changed);
 
-    /* 未实现的 v2 命令（#32 剧本）：回 0x02 UnknownCommand。
-     * #25 已实现 0x10 / 0x11 / 0x12，所以它们不在这个列表里。 */
-    const uint8_t future[] = {LUMEN_CMD_SET_PLAYBACK, LUMEN_CMD_SCRIPT_BEGIN,
-                              LUMEN_CMD_SCRIPT_STAGE, LUMEN_CMD_SCRIPT_SEGMENT,
-                              LUMEN_CMD_SCRIPT_COMMIT, LUMEN_CMD_SCRIPT_ABORT,
-                              LUMEN_CMD_ACTIVATE_SCRIPT, LUMEN_CMD_QUERY_SCRIPT};
-    for (size_t i = 0; i < sizeof(future); ++i) {
-        CHECK(!lumen_command_is_known(future[i]));
+    /* #32 剧本命令已实现：不能再出现在「未知命令」列表里，
+     * 但空载荷仍应回 BadLength（长度校验先于取值）。0x1B 起仍是保留字。 */
+    const uint8_t implemented[] = {LUMEN_CMD_SET_PLAYBACK, LUMEN_CMD_SCRIPT_BEGIN,
+                                   LUMEN_CMD_SCRIPT_STAGE, LUMEN_CMD_SCRIPT_SEGMENT,
+                                   LUMEN_CMD_SCRIPT_COMMIT, LUMEN_CMD_SCRIPT_ABORT,
+                                   LUMEN_CMD_ACTIVATE_SCRIPT, LUMEN_CMD_QUERY_SCRIPT};
+    for (size_t i = 0; i < sizeof(implemented); ++i) {
+        CHECK(lumen_command_is_known(implemented[i]));
         lumen_frame_t f = {0};
-        f.command = future[i];
+        f.command = implemented[i];
+        f.payload_len = 0;
+        lumen_command_dispatch(&f, &state, NULL, NULL, 255, &outcome);
+        /* ScriptSegment 载荷 < 7 也是 BadLength；其余命令期望长度 > 0。 */
+        CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
+        CHECK(!outcome.state_changed);
+        CHECK(outcome.script_op == LUMEN_SCRIPT_OP_NONE);
+    }
+
+    /* 0x1B 起的保留字仍回 0x02。 */
+    const uint8_t reserved[] = {0x1B, 0x20, 0x7F};
+    for (size_t i = 0; i < sizeof(reserved); ++i) {
+        CHECK(!lumen_command_is_known(reserved[i]));
+        lumen_frame_t f = {0};
+        f.command = reserved[i];
         f.payload_len = 0;
         lumen_command_dispatch(&f, &state, NULL, NULL, 255, &outcome);
         CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
-        CHECK(!outcome.state_changed);
     }
 }
 

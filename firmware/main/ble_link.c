@@ -193,6 +193,46 @@ static void send_strip_reports(uint8_t seq, uint8_t strip_id)
 }
 
 /*
+ * ScriptProgress 0x86：每接受 8 帧 ScriptSegment 补一条（docs/protocol.md §10.4）。
+ *
+ * 「每 8 帧」是设备侧补充证据；权威进度是小程序自己数的逐帧 ACK。
+ * 每帧都发会把 BLE 带宽吃掉（下发一帧本身就 20 字节），所以按 8 帧节流。
+ */
+static void send_script_progress(uint8_t seq, uint8_t script_id, uint16_t frames_written)
+{
+    uint8_t frame[LUMEN_MAX_FRAME];
+    size_t len = lumen_protocol_encode_script_progress(seq, script_id, frames_written, frame,
+                                                       sizeof(frame));
+    if (len == 0 || lumen_ble_link_notify(frame, len) != ESP_OK) {
+        ESP_LOGW(TAG, "ScriptProgress 发送失败 id=%u frames=%u", script_id, frames_written);
+    }
+}
+
+/* QueryScript 0x1A → ScriptSummary 0x85（回显请求 seq）。 */
+static void send_script_summary(uint8_t seq, uint8_t script_id)
+{
+    uint8_t stage_count = 0;
+    uint8_t flags = 0;
+    if (!lumen_led_engine_script_summary(script_id, &stage_count, &flags)) {
+        /* 未提交的剧本：回 stage_count 0、flags 0、active 0，让 UI 明确显示「没有」。 */
+        ESP_LOGI(TAG, "QueryScript id=%u -> 未提交", script_id);
+        stage_count = 0;
+        flags = 0;
+    }
+    uint8_t active = (uint8_t)((flags & 0x02u) != 0 ? 1 : 0);
+    uint8_t frame[LUMEN_MAX_FRAME];
+    size_t len = lumen_protocol_encode_script_summary(seq, script_id, stage_count,
+                                                      (uint8_t)(flags & 0x01u), active, frame,
+                                                      sizeof(frame));
+    if (len == 0 || lumen_ble_link_notify(frame, len) != ESP_OK) {
+        ESP_LOGW(TAG, "ScriptSummary 发送失败 id=%u", script_id);
+        return;
+    }
+    ESP_LOGI(TAG, "QueryScript id=%u -> stages=%u flags=0x%02X active=%u seq=0x%02X", script_id,
+             stage_count, flags, active, seq);
+}
+
+/*
  * 处理一条完整写到 RX 的帧：
  *   解码（§10.2 magic→version→length→checksum）
  *   → 命令分发（§10.2 command→payload 长度→payload 取值）
@@ -265,6 +305,66 @@ static void handle_frame(const uint8_t *data, size_t len)
         } else {
             outcome.result_code = lumen_led_engine_set_segment(
                 outcome.segment_strip, outcome.segment_id, &outcome.segment, frame.command);
+        }
+    }
+
+    /*
+     * #32 剧本命令（0x13–0x1A）。命令层只做形状校验，暂存 / 提交 / 激活在引擎
+     * 的锁内执行。引擎的返回码是权威：它可能因为「没有对应的 Begin」「未提交」
+     * 等上下文原因再拒一次。
+     *
+     * ScriptCommit 失败额外补一条 Event 0x02（detail = script_id）：ACK 里只有
+     * 结果码 0x01，小程序分不清是哪个剧本、哪种校验失败。
+     */
+    if (outcome.script_op != LUMEN_SCRIPT_OP_NONE && outcome.result_code == LUMEN_RESULT_OK) {
+        switch (outcome.script_op) {
+        case LUMEN_SCRIPT_OP_PLAYBACK:
+            outcome.result_code =
+                lumen_led_engine_set_playback(outcome.script_action, outcome.script_loop);
+            break;
+        case LUMEN_SCRIPT_OP_BEGIN:
+            outcome.result_code = lumen_led_engine_script_begin(
+                outcome.script_id, outcome.script_stage_count, outcome.script_strip_count);
+            break;
+        case LUMEN_SCRIPT_OP_STAGE:
+            outcome.result_code = lumen_led_engine_script_stage(
+                outcome.script_id, outcome.script_stage_index, outcome.script_duration_ms);
+            break;
+        case LUMEN_SCRIPT_OP_SEGMENT: {
+            uint16_t written = 0;
+            outcome.result_code = lumen_led_engine_script_segment(
+                outcome.script_id, outcome.script_stage_index, outcome.script_strip,
+                outcome.script_seg, &outcome.script_segment, &written);
+            if (outcome.result_code == LUMEN_RESULT_OK) {
+                /*
+                 * 进度：每接受 8 帧补一条 0x86（§10.4）。第 8、16、24… 帧各发一次，
+                 * 回显这次下发请求的 seq。
+                 */
+                if (written > 0 && (written % 8u) == 0u) {
+                    send_script_progress(frame.seq, outcome.script_id, written);
+                }
+            }
+            break;
+        }
+        case LUMEN_SCRIPT_OP_COMMIT:
+            outcome.result_code = lumen_led_engine_script_commit(outcome.script_id);
+            if (outcome.result_code != LUMEN_RESULT_OK) {
+                send_event(LUMEN_EVENT_SCRIPT_COMMIT_FAILED, outcome.script_id);
+            }
+            break;
+        case LUMEN_SCRIPT_OP_ABORT:
+            outcome.result_code = lumen_led_engine_script_abort(outcome.script_id);
+            break;
+        case LUMEN_SCRIPT_OP_ACTIVATE:
+            outcome.result_code =
+                lumen_led_engine_activate_script(outcome.script_id, outcome.script_loop);
+            break;
+        case LUMEN_SCRIPT_OP_QUERY:
+            /* 查询不改状态；ACK 之后补 ScriptSummary（与 QueryStrip 同一模式）。 */
+            outcome.result_code = LUMEN_RESULT_OK;
+            break;
+        default:
+            break;
         }
     }
 
@@ -364,6 +464,12 @@ static void handle_frame(const uint8_t *data, size_t len)
     /* QueryStrip：seg_count 条 SegmentReport + 1 条 SegmentListEnd，同 seq（§10.1）。 */
     if (outcome.strip_query) {
         send_strip_reports(frame.seq, outcome.query_strip_id);
+    }
+
+    /* QueryScript：ACK 之后一条 ScriptSummary 0x85（§10.1 第 3 步）。 */
+    if (outcome.script_op == LUMEN_SCRIPT_OP_QUERY &&
+        outcome.result_code == LUMEN_RESULT_OK) {
+        send_script_summary(frame.seq, outcome.script_id);
     }
 }
 

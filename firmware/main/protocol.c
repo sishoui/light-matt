@@ -163,3 +163,24 @@ size_t lumen_protocol_encode_segment_list_end(uint8_t seq, uint8_t strip_id, uin
     return lumen_protocol_encode(LUMEN_CMD_SEGMENT_LIST_END, seq, payload, sizeof(payload), out,
                                  out_cap);
 }
+
+size_t lumen_protocol_encode_script_summary(uint8_t seq, uint8_t script_id, uint8_t stage_count,
+                                            uint8_t flags, uint8_t active, uint8_t *out,
+                                            size_t out_cap)
+{
+    /* 载荷 [script_id, stage_count, flags, active]（docs/protocol.md §8）。 */
+    uint8_t payload[4] = {script_id, stage_count, flags, active};
+    return lumen_protocol_encode(LUMEN_CMD_SCRIPT_SUMMARY, seq, payload, sizeof(payload), out,
+                                 out_cap);
+}
+
+size_t lumen_protocol_encode_script_progress(uint8_t seq, uint8_t script_id,
+                                             uint16_t frames_written, uint8_t *out,
+                                             size_t out_cap)
+{
+    /* 载荷 [script_id, frames_lo, frames_hi]（docs/protocol.md §8）。 */
+    uint8_t payload[3] = {script_id, (uint8_t)(frames_written & 0xFF),
+                          (uint8_t)(frames_written >> 8)};
+    return lumen_protocol_encode(LUMEN_CMD_SCRIPT_PROGRESS, seq, payload, sizeof(payload), out,
+                                 out_cap);
+}

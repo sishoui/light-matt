@@ -134,4 +134,32 @@ void lumen_led_engine_start_selftest(void);
  */
 bool lumen_led_engine_cancel_selftest(void);
 
+/*
+ * #32 剧本下发与播放控制。全部返回 LUMEN_RESULT_OK / LUMEN_RESULT_INVALID_PARAM。
+ *
+ * 暂存 / 提交 / 激活都在引擎的锁内完成：剧本表是引擎持有的唯一权威。
+ * commit 失败时只丢弃暂存，已提交剧本与静态配置都不动（验收点）。
+ * commit / activate 成功后请求持久化（500ms debounce）；**播放位置不持久化**。
+ */
+uint8_t lumen_led_engine_script_begin(uint8_t script_id, uint8_t stage_count,
+                                      uint8_t strip_count);
+uint8_t lumen_led_engine_script_stage(uint8_t script_id, uint8_t stage_index,
+                                      uint16_t duration_ms);
+uint8_t lumen_led_engine_script_segment(uint8_t script_id, uint8_t stage_index, uint8_t strip_id,
+                                        uint8_t seg_id, const lumen_segment_t *segment,
+                                        uint16_t *frames_written);
+uint8_t lumen_led_engine_script_commit(uint8_t script_id);
+uint8_t lumen_led_engine_script_abort(uint8_t script_id);
+uint8_t lumen_led_engine_activate_script(uint8_t script_id, bool loop);
+
+/* ScriptSummary 0x85 的数据源：stage_count / flags(bit0 loop) / active(bit1)。
+ * 未提交返回 false。 */
+bool lumen_led_engine_script_summary(uint8_t script_id, uint8_t *stage_count, uint8_t *flags);
+
+/* 本次下发的累计接受帧数（ScriptProgress 0x86 的数据源）。 */
+uint16_t lumen_led_engine_script_frames(uint8_t script_id, uint16_t *frames_written);
+
+/* SetPlayback 0x13：action 0 stop / 1 play / 2 pause。 */
+uint8_t lumen_led_engine_set_playback(uint8_t action, bool loop);
+
 bool lumen_led_engine_selftest_active(void);

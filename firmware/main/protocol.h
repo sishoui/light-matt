@@ -147,3 +147,17 @@ size_t lumen_protocol_encode_segment_report(uint8_t seq, uint8_t strip_id, uint8
 /* SegmentListEnd 0x84：载荷 [strip_id, seg_mask]，seq 回显 QueryStrip。 */
 size_t lumen_protocol_encode_segment_list_end(uint8_t seq, uint8_t strip_id, uint8_t seg_mask,
                                               uint8_t *out, size_t out_cap);
+
+/*
+ * ScriptSummary 0x85：载荷 [script_id, stage_count, flags, active]，seq 回显 QueryScript。
+ * flags bit0 = loop，bit1 = active；active 是 0/1 的独立字节（与 State 的 flags
+ * 同位掩码不同，这里是显式字段，按 §8 的字段顺序编码）。
+ */
+size_t lumen_protocol_encode_script_summary(uint8_t seq, uint8_t script_id, uint8_t stage_count,
+                                            uint8_t flags, uint8_t active, uint8_t *out,
+                                            size_t out_cap);
+
+/* ScriptProgress 0x86：载荷 [script_id, frames_lo, frames_hi]，seq 回显下发请求。 */
+size_t lumen_protocol_encode_script_progress(uint8_t seq, uint8_t script_id,
+                                             uint16_t frames_written, uint8_t *out,
+                                             size_t out_cap);

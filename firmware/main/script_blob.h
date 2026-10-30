@@ -38,11 +38,15 @@
 #define LUMEN_SCRIPT_SEGMENT_SIZE 10
 
 /*
- * 编码输出上限。NVS 分区 24KB，留足余量给状态 blob 与 NVS 自身开销。
- * 1 条灯带 × 8 阶段 × 8 段 × 4 套约 1.7KB；8 条灯带的最坏情况会超过这里，
- * 此时 encode 返回 0，调用方跳过持久化并告警（RAM 状态仍然有效）。
+ * 编码输出上限：4KB，正好是 NVS 一个 page 的容量，避免 blob 跨 page 分块
+ * （NVS 分区 24KB = 6 page，跨页 blob 会吃掉 GC 预留）。
+ *
+ * 典型 1 条灯带的 4 阶段剧本约 340 字节，4 套约 1.4KB，远低于上限。
+ * 只有「8 条灯带 × 8 阶段 × 8 段 × 4 套」这种极端组合会超限：此时 encode
+ * 返回 0，调用方跳过这次持久化并告警——RAM 状态仍然完全有效，只是断电后
+ * 会回到上一次成功持久化的剧本（不会是半套）。
  */
-#define LUMEN_SCRIPT_BLOB_MAX 8192
+#define LUMEN_SCRIPT_BLOB_MAX 4096
 
 /*
  * 编码已提交剧本 + 激活 id + loop。
