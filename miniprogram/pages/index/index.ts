@@ -37,6 +37,10 @@ import {
 } from "../../utils/control/session";
 import { statusView } from "../../utils/control/status-view";
 import {
+  createDefaultUsageLogger,
+  type UsageLogSink,
+} from "../../utils/usage";
+import {
   ledCountResultHint,
   parseLedCountInput,
 } from "../../utils/control/ledCount";
@@ -60,6 +64,8 @@ import type { DeviceState, DiscoveredDevice, LinkState, RGB } from "../../utils/
 
 /** 模块级单例：页面重入时复用同一条 BLE 会话。 */
 let session: ControlSession | null = null;
+/** 使用日志（#34）：未配置后端时为 null，控制路径完全不受影响。 */
+let usageLogger: UsageLogSink | null = null;
 let unsubscribers: Array<() => void> = [];
 
 /** 页面取色读数的刷新间隔：与 BLE 20Hz 对齐，避免每个 touchmove 都 setData。 */
@@ -153,7 +159,13 @@ Page({
   onLoad() {
     const platform = detectPlatform();
     const devMode = detectDevMode();
-    session = new ControlSession({ platform, devMode });
+    // #34：未配置后端时 createDefaultUsageLogger 返回 null，logger 静默关闭。
+    usageLogger = createDefaultUsageLogger();
+    session = new ControlSession({
+      platform,
+      devMode,
+      ...(usageLogger !== null ? { usageLogger } : {}),
+    });
     console.log(`[lumen] 平台 ${platform}，开发版日志 ${devMode ? "开启" : "关闭"}`);
 
     // 面板与 console 共用 session.log 这一份 FrameLog（同源，不复制、不重格式化）。
@@ -209,9 +221,12 @@ Page({
     // 页面生命周期结束，彻底断开并反注册 wx.on*（避免回调串入）。
     session?.destroy();
     session = null;
+    usageLogger = null;
   },
 
   onShow() {
+    // #34：进前台补报本地待发记录（fire-and-forget，绝不影响 BLE）。
+    usageLogger?.replay();
     // #11：进前台静默回连。session 自己在内部判断是否该回连，
     // 并保证不打断正在进行的扫描 / 手动连接（扫描中、连接中直接返回）。
     if (session !== null) {

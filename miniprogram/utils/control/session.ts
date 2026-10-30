@@ -10,6 +10,9 @@
  * 状态权威：设备。任何连接建立（首次 / 回连）都由 transport.connect 走完整
  * 初始化流水线（MTU → services → chars → 重新订阅 notify → 读 State），
  * 本模块只在拿到 State 后更新本地镜像，绝不用本地缓存覆盖设备。
+ *
+ * #34：成功连接（ready）时向可选的使用日志落点记一条「谁 × 哪台 × 什么时候」。
+ * 日志是同步、吞异常、不 await 的旁路——BLE 控制不依赖后端，后端不可达也不影响它。
  */
 
 import { FrameLog } from "../ble/log";
@@ -31,6 +34,7 @@ import {
 import { applyLocalColor, clampRgb, presetBrightness } from "./color";
 import { LED_COUNT_ACK_TIMEOUT_MS } from "./ledCount";
 import { MAX_LEDS, MIN_LEDS } from "../protocol/constants";
+import type { UsageLogSink } from "../usage/logger";
 import {
   cmdQueryState,
   cmdSelfTest,
@@ -79,6 +83,13 @@ export interface SessionOptions {
   retryAfterGapMs?: number;
   /** 仅测试用：deviceId 缓存后端；生产走 wx.storage。 */
   storage?: SessionStorage;
+  /**
+   * 使用日志落点（#34）。不传 = 不上报（配置缺失时页面就不注入）。
+   *
+   * 接口只有「记录一次成功连接」一个方法，且同步返回：日志是旁路，
+   * 传输层 / 控制流程永远不 await 它，也不感知它的失败。
+   */
+  usageLogger?: UsageLogSink;
 }
 
 /** 离散命令的统一结果：成功带回更新后的本地状态，失败区分 ACK 与异常。 */
@@ -200,9 +211,19 @@ export class ControlSession {
   private readonly reconnectDelaysMs: number[];
   private readonly retryAfterGapMs: number;
   private readonly storage: SessionStorage;
+  /** #34：成功连接时记一条使用日志（可选，绝不参与控制路径）。 */
+  private readonly usageLogger: UsageLogSink | null;
+  private readonly platform: "android" | "ios" | "other";
 
   /** 缓存的设备身份：回连与进前台静默回连都用它（设备是状态权威，不缓存状态）。 */
   private cached: CachedDevice | null = null;
+  /**
+   * 当前正在建立/已建立的连接身份（#34 日志用）。
+   * ready 事件里拿不到 transport 的 deviceId，所以在发起 connect 时记下。
+   */
+  private activeDevice: CachedDevice | null = null;
+  /** #34：已为哪个连接代次记过使用日志，保证一次连接会话只记一条。 */
+  private usageLoggedEpoch = -1;
   /** 有回连意图时为 true；主动断开 / 用户扫描 / 手动连接都会清掉。 */
   private reconnectDesired = false;
   /** 已发起的自动回连次数（0 表示还没重试过）。 */
@@ -228,6 +249,8 @@ export class ControlSession {
 
   constructor(opts: SessionOptions) {
     const log = new FrameLog({ mirrorToConsole: opts.devMode });
+    this.platform = opts.platform;
+    this.usageLogger = opts.usageLogger ?? null;
     if (opts.transportOverride !== undefined) {
       this.transport = opts.transportOverride;
     } else {
@@ -322,6 +345,11 @@ export class ControlSession {
     this.abandonReconnect();
     this.suppressAutoReconnect = false;
     this.manualConnecting = true;
+    // #34：记下本次连接身份；ready 事件据此写使用日志（一次会话一条）。
+    this.activeDevice = {
+      deviceId,
+      ...(name !== undefined && name.length > 0 ? { name } : {}),
+    };
     try {
       const state = await this.transport.connect(deviceId, name);
       this.latestState = state;
@@ -767,6 +795,8 @@ export class ControlSession {
       this.reconnectExhausted = false;
       this.suppressAutoReconnect = false;
       this.clearReconnectTimer();
+      // #34：一次成功的连接会话 = 一条使用日志（心跳/失败尝试都不记）。
+      this.noteUsageOnce();
       return;
     }
 
@@ -832,6 +862,37 @@ export class ControlSession {
     this.throttle.cancel();
   }
 
+  /**
+   * #34：一次成功的连接会话记一条使用日志。
+   *
+   * 三条纪律，全部体现在这个函数里：
+   *  1. **只记成功**：调用点只在 `ready`（首次连接 / 自动回连 / 手动重连都走
+   *     同一条 ready 事件），失败的连接尝试、退避重试本身都不产生记录；
+   *  2. **一次会话一条**：用连接代次去重，同一代次重复的 ready 不会写第二条；
+   *  3. **同步、吞异常、不 await**：日志落点是 fire-and-forget 的旁路，
+   *     BLE 连接与控制绝不等待它，后端挂了也感知不到。
+   */
+  private noteUsageOnce(): void {
+    const logger = this.usageLogger;
+    if (logger === null) {
+      return;
+    }
+    const epoch = this.linkEpoch;
+    if (this.usageLoggedEpoch === epoch) {
+      return;
+    }
+    this.usageLoggedEpoch = epoch;
+
+    const device = this.activeDevice;
+    const deviceId = device?.deviceId ?? this.transport.currentDeviceId ?? null;
+    const deviceName = device?.name ?? null;
+    try {
+      logger.recordConnection({ deviceName, deviceId, platform: this.platform });
+    } catch {
+      // 日志是旁路：任何异常都不能冒泡到连接状态机。
+    }
+  }
+
   /** 取消当前这一轮自动回连（用户扫描 / 手动连接 / 主动断开时调用）。 */
   private abandonReconnect(): void {
     this.reconnectDesired = false;
@@ -883,6 +944,8 @@ export class ControlSession {
     this.reconnectRunning = true;
     this.reconnectAttempts += 1;
     const target = this.cached;
+    // #34：回连也是「一次连接会话」，成功后同样记一条（失败不记）。
+    this.activeDevice = { ...target };
     let failed = false;
     try {
       const state = await this.transport.connect(target.deviceId, target.name);
