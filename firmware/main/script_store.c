@@ -53,31 +53,16 @@ static bool stage_has_overlap(const lumen_script_stage_t *stage, uint8_t strip)
 /*
  * 单个段的 commit 级校验：区间越界 / flags 保留位 / 周期下限。
  *
- * 复用 lumen_segment_store_validate 的「单段」部分：把它塞进一个临时空表里，
- * 用该灯带自己的灯珠数校验区间，重叠已由 stage_has_overlap 单独判过。
- * 这样命令层与剧本层的拒收规则永远一致，不会各写一份。
+ * 复用 segment_store 的**单段**规则（不含重叠），这样命令层与剧本层的拒收
+ * 规则永远一致，不会各写一份。重叠由 stage_has_overlap 单独判过。
+ *
+ * 这里刻意**不**构造 1KB 的临时 lumen_segment_store_t：commit 跑在 NimBLE
+ * 主机任务的 4KB 栈上，而 lumen_script_store_t 本身（~40KB）在静态区。
  */
-static uint8_t validate_stage_segment(const lumen_script_stage_t *stage, uint8_t strip_id,
-                                      uint8_t seg_id, uint8_t strip_count, uint16_t led_count,
+static uint8_t validate_stage_segment(uint8_t strip_id, uint8_t strip_count, uint16_t led_count,
                                       const lumen_segment_t *seg)
 {
-    /*
-     * 把「同灯带其它段」填进 probe，让 validate 的重叠判定与 SetSegment 的
-     * 规则完全一致（同一份实现，不各写一份）。
-     */
-    lumen_segment_store_t probe;
-    lumen_segment_store_init(&probe);
-    for (uint8_t i = 0; i < LUMEN_MAX_SEGMENTS; ++i) {
-        if (i == seg_id) {
-            continue;
-        }
-        const lumen_segment_t *other = &stage->segments[strip_id][i];
-        if (other->active) {
-            probe.slot[strip_id][i] = *other;
-        }
-    }
-    return lumen_segment_store_validate(&probe, strip_id, strip_count, seg_id, (uint8_t)led_count,
-                                        seg);
+    return lumen_segment_store_validate_single(strip_id, strip_count, (uint8_t)led_count, seg);
 }
 
 void lumen_script_store_init(lumen_script_store_t *store)
@@ -210,8 +195,8 @@ bool lumen_script_commit(lumen_script_store_t *store, uint8_t script_id,
                     if (!candidate_seg->active) {
                         continue;
                     }
-                    if (validate_stage_segment(stage, strip, seg, candidate->strip_count,
-                                               led_count, candidate_seg) != LUMEN_RESULT_OK) {
+                    if (validate_stage_segment(strip, candidate->strip_count, led_count,
+                                               candidate_seg) != LUMEN_RESULT_OK) {
                         ok = false;
                         break;
                     }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -55,6 +56,11 @@ bool lumen_state_store_load_scripts(const uint16_t strip_counts[LUMEN_MAX_STRIPS
                                     lumen_script_store_t *store, uint8_t *active_script_id,
                                     bool *loop);
 
-/* 记录最新剧本快照并重置 500ms debounce。回调在存储任务里写 NVS。 */
-void lumen_state_store_request_script_save(const lumen_script_store_t *store,
-                                           uint8_t active_script_id, bool loop);
+/*
+ * 记录最新剧本 blob 并重置 500ms debounce。回调在存储任务里写 NVS。
+ *
+ * 传**已编码的 blob** 而不是整个 store：一套剧本表 4 套 × 8 阶段 × 8 段
+ * 约 41KB，引擎已经持有一份；存储侧再存一份会白吃 41KB DRAM。
+ * 编码在持引擎锁的调用者那边做，存储侧只拷 4KB。
+ */
+void lumen_state_store_request_script_save(const uint8_t *blob, size_t len);

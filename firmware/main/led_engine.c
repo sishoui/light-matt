@@ -17,6 +17,7 @@
 #include "led_stress.h"
 #include "led_strip_owner.h"
 #include "protocol.h"
+#include "script_blob.h"
 #include "script_store.h"
 #include "segment_store.h"
 #include "selftest.h"
@@ -159,6 +160,17 @@ static const lumen_segment_store_t *active_segments_locked(void)
 static void refresh_state_summary_from_active_locked(void)
 {
     state_summary_apply(&s_state, active_segments_locked());
+    /*
+     * 剧本播放中「这一阶段没给 strip 0 段」意味着该条应当熄灭，而不是沿用
+     * 静态配置的 v1 单色。静态配置里 seg_count == 0 保留单色是刻意的向后
+     * 兼容（现有单灯带功能不退化），剧本里则必须报 0（协议 §7：无 seg 0 时
+     * 基准色为 0），否则暂停/播完时 State 会显示一个并不存在的颜色。
+     */
+    if (script_rendering_locked() && s_state.seg_count == 0) {
+        s_state.r = 0;
+        s_state.g = 0;
+        s_state.b = 0;
+    }
 }
 
 /*
@@ -176,6 +188,32 @@ static lumen_persist_t persist_snapshot_locked(void)
         snapshot.strip_counts[i] = cfg != NULL ? cfg->count : 0;
     }
     return snapshot;
+}
+
+/*
+ * 请求持久化剧本表 + 激活 id + loop（**调用者必须持锁**）。
+ *
+ * 在这里就地编码成 blob（4KB 静态缓冲）再交给 state_store：剧本表本身约
+ * 41KB，存储侧再存一份会白吃 41KB DRAM，而编码是纯函数、只读表。
+ * 锁序固定「引擎锁 → 存储锁」，存储任务从不反过来取引擎锁。
+ *
+ * 播放位置不在快照里，所以播放/暂停不会改变持久化内容（loop 会）。
+ */
+static uint8_t s_script_persist_blob[LUMEN_SCRIPT_BLOB_MAX];
+
+static void persist_scripts_locked(void)
+{
+    size_t len = lumen_script_blob_encode(&s_scripts, s_playback.script_id, s_playback.loop,
+                                          s_script_persist_blob,
+                                          sizeof(s_script_persist_blob));
+    if (len == 0) {
+        /* 极端组合超出 4KB（8 条灯带 × 8 阶段 × 8 段 × 4 套）：跳过本次持久化，
+         * RAM 状态仍然有效，断电后回到上一次成功保存的剧本。 */
+        ESP_LOGW(TAG, "剧本 blob 超出 %u 字节，跳过本次持久化",
+                 (unsigned)sizeof(s_script_persist_blob));
+        return;
+    }
+    lumen_state_store_request_script_save(s_script_persist_blob, len);
 }
 
 /* 每条灯带自己的灯珠数（**调用者必须持锁**，与 lumen_led_engine_strip_counts 同源）。 */
@@ -1275,11 +1313,20 @@ uint8_t lumen_led_engine_script_segment(uint8_t script_id, uint8_t stage_index, 
 uint8_t lumen_led_engine_script_commit(uint8_t script_id)
 {
     uint16_t counts[LUMEN_MAX_STRIPS];
+    uint8_t stage_count = 0;
     bool ok;
 
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
     strip_counts_locked(counts);
     ok = lumen_script_commit(&s_scripts, script_id, counts);
+    if (ok) {
+        /*
+         * commit 成功就持久化：已提交剧本必须能跨断电存活（「设备存多套剧本」
+         * 的前提）。播放位置仍然不写。
+         */
+        persist_scripts_locked();
+        stage_count = lumen_script_stage_count(&s_scripts, script_id);
+    }
     xSemaphoreGive(s_state_lock);
 
     if (!ok) {
@@ -1292,8 +1339,7 @@ uint8_t lumen_led_engine_script_commit(uint8_t script_id)
     }
 
     xSemaphoreGive(s_render_signal);
-    ESP_LOGI(TAG, "ScriptCommit ok id=%u stages=%u（已原子替换）", script_id,
-             lumen_script_stage_count(&s_scripts, script_id));
+    ESP_LOGI(TAG, "ScriptCommit ok id=%u stages=%u（已原子替换）", script_id, stage_count);
     return LUMEN_RESULT_OK;
 }
 
@@ -1328,10 +1374,11 @@ uint8_t lumen_led_engine_activate_script(uint8_t script_id, bool loop)
     refresh_state_summary_from_active_locked();
     s_mailbox = s_state;
     s_mailbox_dirty = true;
+    /* 激活的剧本 id 与 loop 要跨断电（§12）；播放位置不写。 */
+    persist_scripts_locked();
     xSemaphoreGive(s_state_lock);
 
     xSemaphoreGive(s_render_signal);
-    lumen_state_store_request_script_save(&s_scripts, script_id, loop);
     ESP_LOGI(TAG, "ActivateScript id=%u loop=%u（播放头回 0，待播放）", script_id, loop ? 1 : 0);
     return LUMEN_RESULT_OK;
 }
@@ -1366,12 +1413,19 @@ uint8_t lumen_led_engine_set_playback(uint8_t action, bool loop)
     /* State 变了：邮箱同步一份，State read 立刻能看到新的 playback_state。 */
     s_mailbox = s_state;
     s_mailbox_dirty = true;
+    /*
+     * loop 属于持久化字段（§12），三种 action 下都要写；播放位置不写。
+     * debounce 500ms，连续点 play/pause 只会写最后一次。
+     */
+    persist_scripts_locked();
+    uint8_t state_after = s_state.playback_state;
+    uint8_t stage_after = s_state.stage_index;
+    uint8_t script_after = s_state.script_id;
     xSemaphoreGive(s_state_lock);
 
     xSemaphoreGive(s_render_signal);
-    /* 播放控制不写 NVS：播放位置不持久化（docs/protocol.md §12）。 */
     ESP_LOGI(TAG, "SetPlayback action=%u loop=%u -> state=%u stage=%u script=%u", action,
-             loop ? 1 : 0, s_playback.state, s_playback.stage_index, s_playback.script_id);
+             loop ? 1 : 0, state_after, stage_after, script_after);
     return LUMEN_RESULT_OK;
 }
 

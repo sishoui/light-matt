@@ -32,12 +32,10 @@ static lumen_store_event_cb s_event_cb;
  *
  * 放在静态区而不是栈上：一套剧本约 1KB，存储任务栈只有 3KB。
  */
-static lumen_script_store_t s_script_snapshot;
-static uint8_t s_script_active_id = LUMEN_NO_SCRIPT;
-static bool s_script_loop;
+static uint8_t s_script_blob[LUMEN_SCRIPT_BLOB_MAX];
+static size_t s_script_blob_len;
 static bool s_script_pending;
 static uint32_t s_script_deadline_ms;
-static uint8_t s_script_blob[LUMEN_SCRIPT_BLOB_MAX];
 
 /* 剧本写入的剩余 debounce 毫秒；UINT32_MAX = 没有待写。 */
 static uint32_t script_next_delay_ms(uint32_t now)
@@ -82,27 +80,17 @@ static esp_err_t write_blob(const lumen_persist_t *snapshot)
 }
 
 /*
- * 写剧本 blob（#32）。只在存储任务里调用，缓冲是静态区（s_script_blob），
- * 因为 8KB 放不进 3KB 的任务栈。
+ * 写剧本 blob（#32）。blob 已由引擎编码好并拷进 s_script_blob（静态区，3KB 的
+ * 存储任务栈放不下 4KB 缓冲）。
  */
-static esp_err_t write_script_blob(const lumen_script_store_t *store, uint8_t active_script_id,
-                                   bool loop)
+static esp_err_t write_script_blob(const uint8_t *blob, size_t len)
 {
-    size_t len = lumen_script_blob_encode(store, active_script_id, loop, s_script_blob,
-                                          sizeof(s_script_blob));
-    if (len == 0) {
-        /* 编码失败（缓冲不足 / 参数非法）：跳过本次写入，RAM 状态仍然有效。 */
-        ESP_LOGW(TAG, "剧本 blob 编码失败（>%u 字节？），跳过持久化",
-                 (unsigned)sizeof(s_script_blob));
-        return ESP_ERR_INVALID_SIZE;
-    }
-
     nvs_handle_t handle;
     esp_err_t err = nvs_open(LUMEN_NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
         return err;
     }
-    err = nvs_set_blob(handle, LUMEN_NVS_SCRIPT_KEY, s_script_blob, len);
+    err = nvs_set_blob(handle, LUMEN_NVS_SCRIPT_KEY, blob, len);
     if (err == ESP_OK) {
         err = nvs_commit(handle);
     }
@@ -145,9 +133,6 @@ static void store_task(void *arg)
         lumen_persist_t snapshot;
         uint8_t command = 0;
         bool due;
-        lumen_script_store_t script_snapshot;
-        uint8_t script_active_id;
-        bool script_loop;
         bool script_pending;
         xSemaphoreTake(s_lock, portMAX_DELAY);
         due = lumen_save_scheduler_take_due(&s_sched, now_ms(), &snapshot, &command);
@@ -157,9 +142,7 @@ static void store_task(void *arg)
          * 已到期，否则把它放回待写状态继续等。
          */
         script_pending = s_script_pending && script_next_delay_ms(now_ms()) == 0;
-        script_snapshot = s_script_snapshot;
-        script_active_id = s_script_active_id;
-        script_loop = s_script_loop;
+        size_t script_len = s_script_blob_len;
         if (script_pending) {
             s_script_pending = false;
         }
@@ -186,7 +169,7 @@ static void store_task(void *arg)
         }
 
         if (script_pending) {
-            esp_err_t err = write_script_blob(&script_snapshot, script_active_id, script_loop);
+            esp_err_t err = write_script_blob(s_script_blob, script_len);
             if (err != ESP_OK) {
                 ESP_LOGW(TAG, "nvs script write failed: %s", esp_err_to_name(err));
                 if (s_event_cb != NULL) {
@@ -194,8 +177,7 @@ static void store_task(void *arg)
                     s_event_cb(LUMEN_CMD_SCRIPT_COMMIT);
                 }
             } else {
-                ESP_LOGD(TAG, "scripts saved (active=%u loop=%u)", script_active_id,
-                         script_loop ? 1 : 0);
+                ESP_LOGD(TAG, "scripts saved (%u bytes)", (unsigned)script_len);
             }
         }
     }
@@ -293,16 +275,14 @@ bool lumen_state_store_load_scripts(const uint16_t strip_counts[LUMEN_MAX_STRIPS
     return lumen_script_blob_decode(blob, size, strip_counts, store, active_script_id, loop);
 }
 
-void lumen_state_store_request_script_save(const lumen_script_store_t *store,
-                                           uint8_t active_script_id, bool loop)
+void lumen_state_store_request_script_save(const uint8_t *blob, size_t len)
 {
-    if (store == NULL || s_lock == NULL) {
+    if (blob == NULL || len == 0 || len > sizeof(s_script_blob) || s_lock == NULL) {
         return;
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_script_snapshot = *store;
-    s_script_active_id = active_script_id;
-    s_script_loop = loop;
+    memcpy(s_script_blob, blob, len);
+    s_script_blob_len = len;
     s_script_pending = true;
     s_script_deadline_ms = now_ms() + LUMEN_SAVE_DEBOUNCE_MS;
     xSemaphoreGive(s_lock);
