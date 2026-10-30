@@ -15,7 +15,7 @@ import {
   WAVEFORM_NAMES,
   commandName,
 } from "./constants";
-import { breathingWaveform, segmentParamLength } from "./commands";
+import { breathingWaveform, segmentParamLength, segmentReverse } from "./commands";
 import { bytesToHex } from "./hex";
 import type { AckResult, DeviceState, SegmentListEnd, SegmentReport } from "./types";
 
@@ -32,7 +32,11 @@ function waveformName(waveform: number): string {
  * 段参数的展示文本，按 type 解释同一个 p5 字段：
  *   0x00 静态：没有参数（hue/sat 已在外面）；
  *   0x01 呼吸：period / min_level / waveform；
- *   0x02/0x03：period / span|tail / flags（#31 落地，日志先能读）。
+ *   0x02 彩虹：period / span / reverse；
+ *   0x03 流光：period / tail / reverse。
+ *
+ * 彩虹与流光的 flags 只有 bit0 有语义（reverse），bit1-7 保留；日志里直接
+ * 写 `reverse=0|1` 比裸 flags 更好读，同时保留 hex 便于对照原始字节。
  */
 function describeSegmentParams(type: number, periodMs: number, p5: number, flags: number): string {
   if (type === SEGMENT_TYPE.STATIC) {
@@ -45,7 +49,10 @@ function describeSegmentParams(type: number, periodMs: number, p5: number, flags
     );
   }
   const p5Name = type === SEGMENT_TYPE.RAINBOW ? "span" : "tail";
-  return ` period=${periodMs} ${p5Name}=${p5} flags=${hex2(flags)}`;
+  return (
+    ` period=${periodMs} ${p5Name}=${p5} ` +
+    `reverse=${segmentReverse(flags) ? 1 : 0} flags=${hex2(flags)}`
+  );
 }
 
 /** 小程序 → 设备命令：命令名 + 从载荷解析出的参数。 */
