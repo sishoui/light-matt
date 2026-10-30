@@ -26,6 +26,7 @@
 #include "led_count_job.h"
 #include "protocol.h"
 #include "save_scheduler.h"
+#include "script_store.h"
 #include "segment_store.h"
 #include "selftest.h"
 #include "state.h"
@@ -3645,6 +3646,323 @@ static void test_set_segment_uses_own_strip_count(void)
     CHECK(lumen_command_strip_count(&state, strip_counts, 0) == 64);
 }
 
+/* ---------------- #32 剧本 ---------------- */
+
+/* 下发一套 stages 阶段的最小剧本（每阶段一个静态段）。 */
+static bool script_download(lumen_script_store_t *store, uint8_t script_id, uint8_t stages,
+                            uint16_t duration_ms)
+{
+    if (!lumen_script_begin(store, script_id, stages, 1)) {
+        return false;
+    }
+    for (uint8_t st = 0; st < stages; ++st) {
+        if (!lumen_script_stage(store, script_id, st, duration_ms)) {
+            return false;
+        }
+        lumen_segment_t seg = make_static(0, 9, (uint16_t)(st * 4096u), 255);
+        if (!lumen_script_segment(store, script_id, st, 0, 0, &seg, NULL)) {
+            return false;
+        }
+    }
+    uint16_t counts[LUMEN_MAX_STRIPS] = {30, 0, 0, 0, 0, 0, 0, 0};
+    return lumen_script_commit(store, script_id, counts);
+}
+
+static void test_script_store_download(void)
+{
+    lumen_script_store_t store;
+    lumen_script_store_init(&store);
+
+    CHECK(lumen_script_get(&store, 0) == NULL);
+    CHECK(!lumen_script_is_committed(&store, 0));
+
+    /* 4 阶段剧本：每阶段各自的时长与各段灯效。 */
+    CHECK(lumen_script_begin(&store, 0, 4, 1));
+    CHECK(lumen_script_stage(&store, 0, 0, 1000));
+    CHECK(lumen_script_stage(&store, 0, 1, 2000));
+    CHECK(lumen_script_stage(&store, 0, 2, 1500));
+    CHECK(lumen_script_stage(&store, 0, 3, 2500));
+    for (uint8_t st = 0; st < 4; ++st) {
+        lumen_segment_t seg = make_static(0, 29, (uint16_t)(st * 5000u), 255);
+        uint16_t written = 0;
+        CHECK(lumen_script_segment(&store, 0, st, 0, 0, &seg, &written));
+        /* 每接受一帧，进度累加（0x86 的数据源）。 */
+        CHECK(written == (uint16_t)(st + 1u));
+    }
+    uint16_t counts[LUMEN_MAX_STRIPS] = {30, 0, 0, 0, 0, 0, 0, 0};
+    CHECK(lumen_script_commit(&store, 0, counts));
+
+    const lumen_script_t *script = lumen_script_get(&store, 0);
+    CHECK(script != NULL);
+    CHECK(lumen_script_stage_count(&store, 0) == 4);
+    CHECK(script != NULL && script->stages[0].duration_ms == 1000);
+    CHECK(script != NULL && script->stages[3].duration_ms == 2500);
+    CHECK(script != NULL && script->stages[2].segments[0][0].hue == 10000);
+    CHECK(script != NULL && script->stages[2].segments[0][0].active);
+    /* 未写的段槽位保持非活动。 */
+    CHECK(script != NULL && !script->stages[0].segments[0][1].active);
+
+    /* 结构校验：id / 阶段下标 / 段形状。 */
+    CHECK(!lumen_script_begin(&store, LUMEN_MAX_SCRIPTS, 4, 1));
+    CHECK(!lumen_script_begin(&store, 0, 0, 1));
+    CHECK(!lumen_script_begin(&store, 0, LUMEN_MAX_STAGES + 1, 1));
+    CHECK(!lumen_script_begin(&store, 0, 4, 0));
+    CHECK(!lumen_script_begin(&store, 0, 4, LUMEN_MAX_STRIPS + 1));
+    CHECK(lumen_script_begin(&store, 0, 2, 1));
+    CHECK(!lumen_script_stage(&store, 0, 2, 100));   /* 超出 stage_count */
+    CHECK(!lumen_script_stage(&store, 0, 0, 0));     /* 时长 0 */
+    CHECK(!lumen_script_stage(&store, 1, 0, 100));   /* 不是本次暂存的 id */
+    lumen_segment_t seg = make_static(0, 9, 0, 255);
+    CHECK(!lumen_script_segment(&store, 0, 0, 1, 0, &seg, NULL)); /* strip 越界 */
+    CHECK(!lumen_script_segment(&store, 0, 0, 0, LUMEN_MAX_SEGMENTS, &seg, NULL));
+    lumen_segment_t bad_type = seg;
+    bad_type.type = 0x09;
+    CHECK(!lumen_script_segment(&store, 0, 0, 0, 0, &bad_type, NULL));
+    lumen_segment_t inverted = seg;
+    inverted.start = 9;
+    inverted.end = 0;
+    CHECK(!lumen_script_segment(&store, 0, 0, 0, 0, &inverted, NULL));
+
+    /* Abort 丢弃暂存，已提交剧本不动。 */
+    lumen_script_abort(&store, 0);
+    CHECK(lumen_script_get(&store, 0) != NULL);
+    CHECK(lumen_script_stage_count(&store, 0) == 4);
+
+    /* Begin 会覆盖暂存（不需要先 Abort），但已提交剧本仍然不动。 */
+    CHECK(lumen_script_begin(&store, 0, 1, 1));
+    CHECK(lumen_script_get(&store, 0) != NULL);
+    CHECK(lumen_script_stage_count(&store, 0) == 4);
+}
+
+/*
+ * 提交失败必须保留上一套可用配置（#32 的核心验收点）。
+ * 四种失败路径各测一遍：阶段数非法、时长 0、段越界、段重叠。
+ */
+static void test_script_commit_failure_keeps_previous(void)
+{
+    lumen_script_store_t store;
+    lumen_script_store_init(&store);
+
+    uint16_t counts[LUMEN_MAX_STRIPS] = {30, 0, 0, 0, 0, 0, 0, 0};
+
+    /* 先提交一套 2 阶段的好剧本。 */
+    CHECK(script_download(&store, 0, 2, 500));
+    const lumen_script_t *good = lumen_script_get(&store, 0);
+    CHECK(good != NULL);
+    CHECK(good != NULL && good->stage_count == 2);
+    CHECK(good != NULL && good->stages[0].duration_ms == 500);
+    const lumen_segment_t before = good != NULL ? good->stages[0].segments[0][0]
+                                                : (lumen_segment_t){0};
+
+    /* (a) 缺阶段时长为 0 → commit 失败，旧剧本完整。 */
+    CHECK(lumen_script_begin(&store, 0, 3, 1));
+    CHECK(lumen_script_stage(&store, 0, 0, 800));
+    CHECK(lumen_script_stage(&store, 0, 1, 800));
+    /* stage 2 不写时长 */
+    CHECK(lumen_script_segment(&store, 0, 0, 0, 0, &before, NULL));
+    CHECK(!lumen_script_commit(&store, 0, counts));
+    CHECK(store.staging_active == false);
+    CHECK(lumen_script_get(&store, 0) != NULL);
+    CHECK(lumen_script_stage_count(&store, 0) == 2);
+    good = lumen_script_get(&store, 0);
+    CHECK(good != NULL && good->stages[0].segments[0][0].hue == before.hue);
+    CHECK(good != NULL && good->stages[0].duration_ms == 500);
+
+    /* (b) 段越界（end >= 该灯带灯珠数）→ 失败，旧剧本完整。 */
+    CHECK(lumen_script_begin(&store, 0, 1, 1));
+    CHECK(lumen_script_stage(&store, 0, 0, 800));
+    lumen_segment_t out_of_range = make_static(0, 40, 0, 255); /* 30 灯 */
+    CHECK(lumen_script_segment(&store, 0, 0, 0, 0, &out_of_range, NULL));
+    CHECK(!lumen_script_commit(&store, 0, counts));
+    CHECK(lumen_script_stage_count(&store, 0) == 2);
+
+    /* (c) 同灯带段重叠 → 失败，旧剧本完整。 */
+    CHECK(lumen_script_begin(&store, 0, 1, 1));
+    CHECK(lumen_script_stage(&store, 0, 0, 800));
+    lumen_segment_t first = make_static(0, 15, 0, 255);
+    lumen_segment_t second = make_static(10, 20, 0, 255);
+    CHECK(lumen_script_segment(&store, 0, 0, 0, 0, &first, NULL));
+    CHECK(lumen_script_segment(&store, 0, 0, 0, 1, &second, NULL));
+    CHECK(!lumen_script_commit(&store, 0, counts));
+    CHECK(lumen_script_stage_count(&store, 0) == 2);
+
+    /* (d) stage_count 越界（begin 就拒）与 strip_counts 全 0 → 失败。 */
+    CHECK(!lumen_script_begin(&store, 0, 0, 1));
+    CHECK(lumen_script_begin(&store, 0, 1, 1));
+    CHECK(lumen_script_stage(&store, 0, 0, 800));
+    uint16_t no_counts[LUMEN_MAX_STRIPS] = {0};
+    CHECK(!lumen_script_commit(&store, 0, no_counts));
+    CHECK(lumen_script_stage_count(&store, 0) == 2);
+
+    /* 失败之后重新下一次好剧本仍然成功（暂存已清，可以重来）。 */
+    CHECK(script_download(&store, 0, 3, 700));
+    CHECK(lumen_script_stage_count(&store, 0) == 3);
+}
+
+/* 多套剧本互不覆盖：切换激活不丢另一套的配置。 */
+static void test_script_multiple_scripts(void)
+{
+    lumen_script_store_t store;
+    lumen_script_store_init(&store);
+
+    CHECK(script_download(&store, 0, 4, 1000));
+    CHECK(script_download(&store, 1, 2, 400));
+
+    CHECK(lumen_script_is_committed(&store, 0));
+    CHECK(lumen_script_is_committed(&store, 1));
+    CHECK(!lumen_script_is_committed(&store, 2));
+    CHECK(lumen_script_stage_count(&store, 0) == 4);
+    CHECK(lumen_script_stage_count(&store, 1) == 2);
+
+    const lumen_script_t *s0 = lumen_script_get(&store, 0);
+    CHECK(s0 != NULL && s0->stages[0].segments[0][0].hue == 0);
+    const lumen_script_t *s1 = lumen_script_get(&store, 1);
+    CHECK(s1 != NULL && s1->stages[1].segments[0][0].hue == 4096);
+
+    /* 覆盖 0 号不影响 1 号。 */
+    CHECK(script_download(&store, 0, 1, 900));
+    CHECK(lumen_script_stage_count(&store, 0) == 1);
+    CHECK(lumen_script_stage_count(&store, 1) == 2);
+    s1 = lumen_script_get(&store, 1);
+    CHECK(s1 != NULL && s1->stages[1].segments[0][0].hue == 4096);
+}
+
+/*
+ * 播放头推进：到点自动切、循环回绕、非循环停在最后阶段。
+ * 用 4 阶段 × 1000ms 的剧本，按 500ms 步进推进。
+ */
+static void test_script_playback_advance(void)
+{
+    lumen_script_store_t store;
+    lumen_script_store_init(&store);
+    CHECK(script_download(&store, 0, 4, 1000));
+    const lumen_script_t *script = lumen_script_get(&store, 0);
+    CHECK(script != NULL);
+
+    lumen_script_playback_t pb;
+    lumen_script_playback_init(&pb);
+    CHECK(pb.script_id == LUMEN_NO_SCRIPT);
+    CHECK(!lumen_script_playback_active(&pb));
+
+    /* --- 循环会回绕：走完 4 个阶段后回到 stage 0 --- */
+    lumen_script_playback_select(&pb, 0, true, 0);
+    CHECK(pb.stage_index == 0);
+    CHECK(pb.state == LUMEN_PLAYBACK_STOPPED);
+    lumen_script_playback_play(&pb, 0);
+    CHECK(pb.state == LUMEN_PLAYBACK_PLAYING);
+    CHECK(lumen_script_playback_active(&pb));
+
+    uint32_t t = 0;
+    int changes = 0;
+    for (t = 500; t <= 4500; t += 500) {
+        uint32_t script_time = 0;
+        if (lumen_script_playback_tick(script, &pb, t, &script_time)) {
+            ++changes;
+        }
+        /* script_time 就是 now（从未暂停过）。 */
+        CHECK(script_time == t);
+    }
+    /* 4500ms：过了 4 个整阶段 → 回到 stage 0（绕一圈）。 */
+    CHECK(pb.stage_index == 0);
+    CHECK(pb.state == LUMEN_PLAYBACK_PLAYING);
+    CHECK(pb.loop);
+    CHECK(changes == 4);
+
+    /* 非循环：走完最后一阶段 → STOPPED，停在最后一阶段（hold_last）。 */
+    lumen_script_playback_select(&pb, 0, false, 0);
+    lumen_script_playback_play(&pb, 0);
+    for (t = 500; t <= 4000; t += 500) {
+        (void)lumen_script_playback_tick(script, &pb, t, NULL);
+    }
+    CHECK(pb.state == LUMEN_PLAYBACK_STOPPED);
+    CHECK(pb.stage_index == 3);
+    CHECK(pb.hold_last);
+    /* 停止后不再推进（继续 tick 也不改阶段）。 */
+    (void)lumen_script_playback_tick(script, &pb, 9000, NULL);
+    CHECK(pb.stage_index == 3);
+
+    /* 延迟一轮：渲染任务被推迟 3500ms，一次追上 3 个阶段而不是卡住。 */
+    lumen_script_playback_select(&pb, 0, false, 0);
+    lumen_script_playback_play(&pb, 0);
+    int caught = lumen_script_playback_tick(script, &pb, 3500, NULL) ? 1 : 0;
+    CHECK(caught == 1);
+    CHECK(pb.stage_index == 3);
+    CHECK(pb.state == LUMEN_PLAYBACK_PLAYING);
+    CHECK(pb.elapsed_ms == 500);
+
+    /* stop：播放头回 0、停止态。 */
+    lumen_script_playback_stop(&pb, 4000);
+    CHECK(pb.stage_index == 0);
+    CHECK(pb.state == LUMEN_PLAYBACK_STOPPED);
+    CHECK(pb.elapsed_ms == 0);
+    CHECK(pb.hold_last == false);
+}
+
+/*
+ * 暂停后继续必须从暂停点继续（#32 的另一个核心验收点）。
+ * 1000ms/阶段、4 阶段：在 1200ms（阶段 1 内 200ms）暂停，暂停 5 秒后继续，
+ * 再推 800ms 应当刚好进入阶段 2，而不是回到阶段 0。
+ */
+static void test_script_playback_pause_resume(void)
+{
+    lumen_script_store_t store;
+    lumen_script_store_init(&store);
+    CHECK(script_download(&store, 0, 4, 1000));
+    const lumen_script_t *script = lumen_script_get(&store, 0);
+    CHECK(script != NULL);
+
+    lumen_script_playback_t pb;
+    lumen_script_playback_init(&pb);
+    lumen_script_playback_select(&pb, 0, true, 0);
+    lumen_script_playback_play(&pb, 0);
+
+    uint32_t script_time = 0;
+    (void)lumen_script_playback_tick(script, &pb, 1200, &script_time);
+    CHECK(pb.stage_index == 1);
+    CHECK(pb.elapsed_ms == 200);
+    CHECK(script_time == 1200);
+
+    /* 暂停：画面与时间轴冻结。 */
+    lumen_script_playback_pause(&pb, 1200);
+    CHECK(pb.state == LUMEN_PLAYBACK_PAUSED);
+    CHECK(lumen_script_playback_active(&pb));
+    CHECK(lumen_script_playback_time(&pb, 3000) == 1200);
+    (void)lumen_script_playback_tick(script, &pb, 5000, &script_time);
+    CHECK(pb.stage_index == 1);
+    CHECK(pb.elapsed_ms == 200);
+    CHECK(script_time == 1200); /* 暂停期间时间轴不前进 */
+
+    /* 继续：播放头与 elapsed 原样保留（不回到阶段 0 / 不重置阶段内进度）。 */
+    lumen_script_playback_play(&pb, 6200);
+    CHECK(pb.state == LUMEN_PLAYBACK_PLAYING);
+    CHECK(pb.stage_index == 1);
+    CHECK(pb.elapsed_ms == 200);
+
+    /* 继续后 700ms：阶段 1 内 900ms，仍在阶段 1。 */
+    (void)lumen_script_playback_tick(script, &pb, 6900, &script_time);
+    CHECK(pb.stage_index == 1);
+    CHECK(script_time == 1900); /* 1200 + 700，暂停的 5000ms 没有被计入 */
+
+    /* 再 200ms：阶段 1 走完 → 阶段 2。证明是从暂停点继续算的。 */
+    (void)lumen_script_playback_tick(script, &pb, 7100, &script_time);
+    CHECK(pb.stage_index == 2);
+    CHECK(script_time == 2100);
+
+    /* 暂停 → 反复 play 幂等。 */
+    lumen_script_playback_pause(&pb, 7100);
+    lumen_script_playback_play(&pb, 8000);
+    lumen_script_playback_play(&pb, 8100);
+    CHECK(pb.state == LUMEN_PLAYBACK_PLAYING);
+    CHECK(pb.stage_index == 2);
+
+    /* 停止后再 play：从阶段 0 重新开始（与暂停恢复不同）。 */
+    lumen_script_playback_stop(&pb, 8200);
+    lumen_script_playback_play(&pb, 8300);
+    CHECK(pb.stage_index == 0);
+    CHECK(pb.elapsed_ms == 0);
+    CHECK(lumen_script_playback_time(&pb, 8300) == 8300);
+}
+
 int main(int argc, char **argv)
 {
     const char *vectors = argc > 1 ? argv[1] : "docs/protocol-testvectors.json";
@@ -3696,6 +4014,11 @@ int main(int argc, char **argv)
     test_effects_rainbow_comet_coexist();
     test_blob_strip_counts();
     test_set_segment_uses_own_strip_count();
+    test_script_store_download();
+    test_script_commit_failure_keeps_previous();
+    test_script_multiple_scripts();
+    test_script_playback_advance();
+    test_script_playback_pause_resume();
     test_planar_parse_list();
     test_planar_init_validation();
     test_planar_round_robin();
