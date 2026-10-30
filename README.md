@@ -6,7 +6,7 @@
 
 ```
 lumen/
-  firmware/     ESP-IDF v5.4 工程（NimBLE + led_strip）
+  firmware/     ESP-IDF v6.1 工程（NimBLE + led_strip）
   miniprogram/  微信小程序（原生 + TypeScript）
   docs/
     wayfinding/ 设计决策地图与决策票

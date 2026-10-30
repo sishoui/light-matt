@@ -69,8 +69,8 @@ v1（MVP）的 wayfinder 地图与决策票仍在 `docs/wayfinding/`（历史产
 
 - **小程序切后台 5 秒 JS 挂起、BLE 连接无法后台维持**，回前台必须重连。这是「单连接 + 切换」而非多连并发的根本理由（#18）。
 - **官方明确记载 C3 的 RMT 在开 BLE 时会出现数据帧异常**（无 DMA + ISR 切缓冲，C3 不能用「换核」缓解）。动画持续刷新会放大这条风险，#20 必须实测。
-- **C3 只有 2 个 RMT TX 通道**（`SOC_RMT_TX_CANDIDATES_PER_GROUP=2`），8 条灯带必须走 TDM 轮询（`led_strip_switch_gpio()`）。
-- **TDM 的前置已解除**：ESP-IDF 已升到 **v5.4.4**，`rmt_tx_switch_gpio` 确认可链接（`nm lumen.elf` → `T rmt_tx_switch_gpio`）。升级细节与两个坑见 `docs/dev-environment.md`。
+- **C3 只有 2 个 RMT TX 通道**（v6.1 中为 `RMT_LL_TX_CANDIDATES_PER_INST=2`），8 条灯带必须走 TDM 轮询（`led_strip_switch_gpio()`）。
+- **工具链基线 = ESP-IDF v6.1（最新稳定版）**，`idf_component.yml` 已钉 `idf: ">=6.1"`，`rmt_tx_switch_gpio` 确认可链接。**不做旧版本兼容**：MVP 只是试验，不维护降级路径与版本条件编译。详见 `docs/dev-environment.md`。
 
 **v2 不向后兼容**：现场那台 64 灯设备需重刷固件。个人测试阶段没有第三方在用，无迁移代价。
 
