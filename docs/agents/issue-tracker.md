@@ -46,7 +46,25 @@ Issue 与 spec 住在 GitHub Issues。所有操作走 `gh` CLI；在仓库目录
 - **frontier**：列出地图的 open sub-issues，去掉有未关闭 blocker 的与已有 assignee 的，按地图顺序取第一张
 - **回答**：评论写结论，然后 close，再在地图的 Decisions so far 追加指针
 
-现有的 wayfinder 地图与决策票仍在 `docs/wayfinding/`（历史产物）；之后新开的 wayfinder effort 走 GitHub Issues。
+v1（MVP）的 wayfinder 地图与决策票仍在 `docs/wayfinding/`（历史产物）。之后新开的 wayfinder effort 走 GitHub Issues。
+
+### 当前 effort：v2 扩展
+
+- **地图**：[#16 地图：lumen v2 — 多用户 / 多设备 / 多灯效 / 多阶段 / 多分段](https://github.com/sishoui/light-matt/issues/16)
+- **决策票**：地图的 sub-issues，label `wayfinder:research` / `grilling` / `prototype` / `task`
+- **已定前提**（多分段自由划、逐段下发、固件跑时间轴、升 v2 不兼容等）写在地图的 Notes 里，开工前必须先读。
+
+依赖形状：
+
+- **frontier（无阻塞）**：#17（个人资质）、#18（BLE 并发）、#19（灯效规格）、#20（RMT 实测）、#23（后端模型）
+- #21 协议 v2 ← #19
+- #22 动画引擎 ← #19 + #20
+- #24 多设备切换 ← #18 + #23
+- #25 纵切 ← #21
+
+**关键前提**：当前是**个人测试**阶段，不上架、不发布，所以 #17 不阻塞任何设计。**不做设备归属**——任何人扫到都能连，后端只记日志、不做业务处理，后台纯只读。
+
+**v2 不向后兼容**：现场那台 64 灯设备需重刷固件。个人测试阶段没有第三方在用，无迁移代价。
 
 ## Pull requests as a triage surface
 
