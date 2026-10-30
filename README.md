@@ -14,6 +14,7 @@ lumen/
 
 ## 从这里开始
 
+- **接手/继续开发**：[docs/handoff.md](docs/handoff.md) —— 当前状态、下一步、必须知道的坑
 - **想了解架构**：[docs/wayfinding/architecture-brief.md](docs/wayfinding/architecture-brief.md)
 - **想知道还剩什么没定**：[docs/wayfinding/map.md](docs/wayfinding/map.md)
 - **想写 codec**：[docs/protocol.md](docs/protocol.md) —— 字节级协议规格与测试向量
