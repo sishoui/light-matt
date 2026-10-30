@@ -17,13 +17,23 @@
  * 隐藏协议日志面板：连点版本号 5 次开启（spec §10）。面板只消费 FrameLog
  * 这一份数据（console 镜像也在 FrameLog.push 里），暂停 = 冻结视图但继续
  * 记录（理由见 utils/ble/log-panel.ts 顶部注释）。
+ *
+ * 拆分后的协作模块（本目录）：
+ *  - view-model.ts：文案与滑块视图补丁（纯函数）；
+ *  - wheel-view.ts：色环 canvas、几何与触摸换算；
+ *  - log-panel-view.ts：日志面板模型 + setData 合并计时器。
+ * 本文件只保留状态持有与事件处理。
  */
 
 import { errorText, eventText, resultText } from "../../utils/ble/errors";
+import type { LogPanelRow } from "../../utils/ble/log-panel";
 import {
-  LogPanelModel,
-  type LogPanelRow,
-} from "../../utils/ble/log-panel";
+  brightnessHintText,
+  brightnessViewPatch,
+  colorHintText,
+  matchingPreset,
+  powerLabelText,
+} from "./view-model";
 import {
   brightnessPercent as percentOf,
   clampBrightness,
@@ -40,42 +50,17 @@ import {
   ledCountResultHint,
   parseLedCountInput,
 } from "../../utils/control/ledCount";
-import {
-  hsvForWheel,
-  hsvToRgb,
-  normalizeHue,
-  PRESETS,
-  rgbToHex,
-  rgbToHsv,
-} from "../../utils/color/hsv";
-import {
-  drawWheel,
-  hueAtPoint,
-  moveWheelMarker,
-  wheelGeometry,
-  type WheelContext2D,
-  type WheelGeometry,
-} from "../../utils/color/wheel";
+import { hsvForWheel, PRESETS, rgbToHex, rgbToHsv } from "../../utils/color/hsv";
 import type { DeviceState, DiscoveredDevice, LinkState, RGB } from "../../utils/protocol/types";
+import { LogPanelView } from "./log-panel-view";
+import { COLOR_UI_INTERVAL_MS, WheelView } from "./wheel-view";
 
 /** 模块级单例：页面重入时复用同一条 BLE 会话。 */
 let session: ControlSession | null = null;
 let unsubscribers: Array<() => void> = [];
 
-/** 页面取色读数的刷新间隔：与 BLE 20Hz 对齐，避免每个 touchmove 都 setData。 */
-const COLOR_UI_INTERVAL_MS = 50;
-
-/** 日志面板的刷新合并间隔：帧可能以 20Hz 到达，不能每帧都 setData。 */
-const LOG_PANEL_REFRESH_MS = 200;
-
 /** 首屏色环位置与暖白预设对齐（真值来自预设表，不另写一份）。 */
 const INITIAL_HSV = rgbToHsv(PRESETS[0].rgb);
-
-interface WheelCtx {
-  ctx: WheelContext2D;
-  geometry: WheelGeometry;
-  dpr: number;
-}
 
 Page({
   data: {
@@ -133,22 +118,15 @@ Page({
   },
 
   /** canvas 上下文与几何：非响应式，放在页面实例上（不进 data）。 */
-  wheel: null as WheelCtx | null,
+  wheelView: null as WheelView | null,
   /** onReady 之后才允许 onShow 重建 canvas（首次 onShow 早于首次布局）。 */
   pageReady: false,
-  /** 色环状态：唯一真相；data 里的 colorHue / colorSaturation 只是显示镜像。 */
-  wheelHue: INITIAL_HSV.h,
-  wheelSaturation: INITIAL_HSV.s,
-  /** 取色读数的上次 setData 时间。 */
-  lastColorUiAt: 0,
   /** 亮度读数的上次 setData 时间（与取色共用 50ms 闸门）。 */
   lastBrightnessUiAt: 0,
   /** 预设请求序号：只让最新一次预设的结果回写 UI，避免旧色回跳。 */
   presetToken: 0,
-  /** 隐藏日志面板模型（页面实例持有；数据源是 session 的 FrameLog）。 */
-  logPanel: null as LogPanelModel | null,
-  /** 日志 setData 的合并计时器（20Hz 帧不能每帧都 setData）。 */
-  logFlushTimer: null as ReturnType<typeof setTimeout> | null,
+  /** 隐藏日志面板控制器（页面实例持有；数据源是 session 的 FrameLog）。 */
+  logView: null as LogPanelView | null,
 
   onLoad() {
     const platform = detectPlatform();
@@ -157,7 +135,19 @@ Page({
     console.log(`[lumen] 平台 ${platform}，开发版日志 ${devMode ? "开启" : "关闭"}`);
 
     // 面板与 console 共用 session.log 这一份 FrameLog（同源，不复制、不重格式化）。
-    this.logPanel = new LogPanelModel(session.log);
+    this.logView = new LogPanelView(session.log, {
+      setData: (patch) => this.setData(patch),
+    });
+
+    this.wheelView = new WheelView(
+      {
+        setData: (patch) => this.setData(patch),
+        isReady: () => this.data.ready,
+        queueColor: (rgb) => session?.queueColor(rgb),
+        commitColor: (rgb) => session?.commitColor(rgb),
+      },
+      { hue: INITIAL_HSV.h, saturation: INITIAL_HSV.s },
+    );
 
     unsubscribers = [
       session.onLink((state, detail) => {
@@ -184,7 +174,7 @@ Page({
         }
       }),
       // 新帧到达：只在面板可见且未暂停时合并刷新（暂停时冻结视图）。
-      session.log.onAppend(() => this.scheduleLogRefresh()),
+      session.log.onAppend(() => this.logView?.onAppend()),
     ];
 
     void session.boot();
@@ -200,12 +190,9 @@ Page({
       off();
     }
     unsubscribers = [];
-    this.wheel = null;
-    if (this.logFlushTimer !== null) {
-      clearTimeout(this.logFlushTimer);
-      this.logFlushTimer = null;
-    }
-    this.logPanel = null;
+    this.wheelView = null;
+    this.logView?.destroy();
+    this.logView = null;
     // 页面生命周期结束，彻底断开并反注册 wx.on*（避免回调串入）。
     session?.destroy();
     session = null;
@@ -222,10 +209,10 @@ Page({
     if (!this.pageReady) {
       return;
     }
-    if (this.wheel === null) {
+    if (this.wheelView === null || !this.wheelView.canDraw) {
       this.initWheel();
     } else {
-      this.redrawWheel();
+      this.wheelView.redraw();
     }
   },
 
@@ -480,106 +467,27 @@ Page({
 
   // ---------------- 隐藏协议日志面板（#13） ----------------
 
-  /**
-   * 版本号点击：2s 窗口内第 5 次切换面板可见性（spec §10）。
-   * 判定逻辑在 TapSequence 里，页面只负责应用结果。
-   */
+  /** 版本号点击：2s 窗口内第 5 次切换面板可见性（spec §10）。 */
   onVersionTap() {
-    const panel = this.logPanel;
-    if (panel === null) {
-      return;
-    }
-    if (!panel.tapVersion(Date.now())) {
-      return;
-    }
-    const visible = panel.visible;
-    this.setData({ logVisible: visible, logHint: "" });
-    if (visible) {
-      this.refreshLogPanel();
-    }
-  },
-
-  /** 把面板模型当前视图同步到 data（行 + 计数 + 暂停态）。 */
-  refreshLogPanel() {
-    const panel = this.logPanel;
-    if (panel === null) {
-      return;
-    }
-    const entries = panel.entries();
-    const rows = panel.rows();
-    const last = rows.length > 0 ? rows[rows.length - 1] : null;
-    this.setData({
-      logRows: rows,
-      logCount: entries.length,
-      logPaused: panel.paused,
-      // 跟随最新一帧；暂停时不动视图，恢复后再跳到末尾。
-      logScrollTarget: !panel.paused && last !== null ? `log-row-${last.id}` : "",
-    });
-  },
-
-  /** 合并刷新：20Hz 的帧不能每帧 setData；暂停/隐藏时完全不动视图。 */
-  scheduleLogRefresh() {
-    if (!this.data.logVisible || this.data.logPaused) {
-      return;
-    }
-    if (this.logFlushTimer !== null) {
-      return;
-    }
-    this.logFlushTimer = setTimeout(() => {
-      this.logFlushTimer = null;
-      this.refreshLogPanel();
-    }, LOG_PANEL_REFRESH_MS);
+    this.logView?.onVersionTap(Date.now());
   },
 
   /** 暂停 = 冻结视图但继续记录（理由见 log-panel.ts）。 */
   onLogPauseTap() {
-    const panel = this.logPanel;
-    if (panel === null) {
-      return;
-    }
-    const paused = panel.togglePause();
-    this.setData({
-      logPaused: paused,
-      logHint: paused ? "已暂停视图（新帧仍在记录）" : "",
-    });
-    this.refreshLogPanel();
+    this.logView?.onPauseTap();
   },
 
   onLogClearTap() {
-    const panel = this.logPanel;
-    if (panel === null) {
-      return;
-    }
-    panel.clear();
-    this.setData({ logHint: "" });
-    this.refreshLogPanel();
+    this.logView?.onClearTap();
   },
 
   /** 复制当前视图：暂停时复制冻结的那一段，否则复制整个环形缓冲。 */
   onLogCopyTap() {
-    const panel = this.logPanel;
-    if (panel === null) {
-      return;
-    }
-    const text = panel.copyText();
-    if (text.length === 0) {
-      this.setData({ logHint: "没有可复制的帧" });
-      return;
-    }
-    const count = panel.entries().length;
-    wx.setClipboardData({
-      data: text,
-      success: () => this.setData({ logHint: `已复制 ${count} 帧` }),
-      fail: (err) => this.setData({ logHint: `复制失败：${errorText(err)}` }),
-    });
+    this.logView?.onCopyTap();
   },
 
   onLogCloseTap() {
-    const panel = this.logPanel;
-    if (panel !== null) {
-      panel.setVisible(false);
-    }
-    this.setData({ logVisible: false });
+    this.logView?.onCloseTap();
   },
 
   // ---------------- 开关 ----------------
@@ -639,6 +547,10 @@ Page({
 
   /** 取画布节点与尺寸，按 dpr 建上下文并画一次色相环。 */
   initWheel() {
+    const view = this.wheelView;
+    if (view === null) {
+      return;
+    }
     const query = wx.createSelectorQuery();
     query
       .select("#color-wheel")
@@ -646,22 +558,7 @@ Page({
       .exec((res: any[]) => {
         const node = res?.[0]?.node as WechatMiniprogram.Canvas | undefined;
         const width = Number(res?.[0]?.width ?? 0);
-        if (!node || width <= 0) {
-          console.warn("[lumen] 取不到色环 canvas 节点，颜色只能靠预设");
-          return;
-        }
-
-        const dpr = this.pixelRatio();
-        // 物理像素 = CSS 像素 × dpr；绘制时统一 setTransform(dpr,...)。
-        node.width = Math.round(width * dpr);
-        node.height = Math.round(width * dpr);
-
-        this.wheel = {
-          ctx: node.getContext("2d") as unknown as WheelContext2D,
-          geometry: wheelGeometry(width),
-          dpr,
-        };
-        this.redrawWheel();
+        view.attach(node ?? null, width, this.pixelRatio());
       });
   },
 
@@ -678,37 +575,12 @@ Page({
 
   /** 整块重画色环与选中点（首次绘制 / 页面回前台 / 状态同步时用）。 */
   redrawWheel() {
-    if (this.wheel === null) {
-      return;
-    }
-    const { ctx, geometry, dpr } = this.wheel;
-    drawWheel(ctx, geometry, dpr, this.wheelHue, rgbToHex(this.wheelRgb()));
-  },
-
-  /** 色环 + 饱和度对应的用户空间 RGB（V 恒为 1，亮度由滑块负责）。 */
-  wheelRgb(): RGB {
-    return hsvToRgb(this.wheelHue, this.wheelSaturation, 1);
+    this.wheelView?.redraw();
   },
 
   /** touchstart / touchmove 共用：把触摸点换算成色相并下发（20Hz 节流在 session）。 */
   handleWheelTouch(e: WechatMiniprogram.TouchCanvas) {
-    if (this.wheel === null || !this.data.ready) {
-      return;
-    }
-    // 多指触摸容易误判，只处理单指。
-    if (Array.isArray(e.touches) && e.touches.length > 1) {
-      return;
-    }
-    const touch = e.touches?.[0];
-    if (!touch) {
-      return;
-    }
-    const hue = hueAtPoint(touch.x, touch.y, this.wheel.geometry);
-    if (hue === null) {
-      // 点在环内空白或环外：忽略，避免手指划过中心时颜色乱跳。
-      return;
-    }
-    this.applyHue(hue);
+    this.wheelView?.handleTouch(e);
   },
 
   onWheelTouchStart(e: WechatMiniprogram.TouchCanvas) {
@@ -721,81 +593,15 @@ Page({
 
   /** 松手：把当前颜色再推一次并 flush，保证最终颜色落地。 */
   onWheelTouchEnd() {
-    if (!this.data.ready) {
-      return;
-    }
-    session?.commitColor(this.wheelRgb());
-  },
-
-  /** 色相变化：marker 立即重画；读数 setData 与 BLE 都按 20Hz 节流。 */
-  applyHue(hue: number) {
-    const previousHue = this.wheelHue;
-    this.wheelHue = normalizeHue(hue);
-    const rgb = this.wheelRgb();
-    const hex = rgbToHex(rgb);
-    if (this.wheel !== null) {
-      moveWheelMarker(
-        this.wheel.ctx,
-        this.wheel.geometry,
-        this.wheel.dpr,
-        this.wheelHue,
-        hex,
-        previousHue,
-      );
-    }
-    session?.queueColor(rgb);
-
-    const now = Date.now();
-    if (now - this.lastColorUiAt < COLOR_UI_INTERVAL_MS) {
-      return;
-    }
-    this.lastColorUiAt = now;
-    this.setData({
-      colorHue: this.wheelHue,
-      colorHex: hex,
-      selectedPreset: "",
-      colorHintText: this.colorHintText(this.data.ready),
-    });
+    this.wheelView?.commit();
   },
 
   onSaturationChanging(e: WechatMiniprogram.SliderChanging) {
-    this.applySaturation(Number(e.detail.value), false);
+    this.wheelView?.applySaturation(Number(e.detail.value), false);
   },
 
   onSaturationChange(e: WechatMiniprogram.SliderChange) {
-    this.applySaturation(Number(e.detail.value), true);
-  },
-
-  /** 饱和度（0-100）→ S=0..1；V 恒为 1（亮度独立，不折进 RGB）。 */
-  applySaturation(value: number, commit: boolean) {
-    if (!Number.isFinite(value)) {
-      return;
-    }
-    this.wheelSaturation = Math.min(100, Math.max(0, Math.round(value))) / 100;
-    const rgb = this.wheelRgb();
-    const hex = rgbToHex(rgb);
-    if (this.wheel !== null) {
-      /* 饱和度只改 marker 的填充色，位置（色相）不变；走局部擦补比重画整环便宜。 */
-      moveWheelMarker(
-        this.wheel.ctx,
-        this.wheel.geometry,
-        this.wheel.dpr,
-        this.wheelHue,
-        hex,
-        this.wheelHue,
-      );
-    }
-    this.setData({
-      colorSaturation: Math.round(this.wheelSaturation * 100),
-      colorHex: hex,
-      selectedPreset: "",
-      colorHintText: this.colorHintText(this.data.ready),
-    });
-    if (commit) {
-      session?.commitColor(rgb);
-    } else {
-      session?.queueColor(rgb);
-    }
+    this.wheelView?.applySaturation(Number(e.detail.value), true);
   },
 
   /**
@@ -822,34 +628,15 @@ Page({
       powerLabel: "已开",
       colorHex: preset.hex,
       selectedPreset: preset.name,
-      colorHintText: this.colorHintText(true),
+      colorHintText: colorHintText(true),
     });
-    this.syncWheelToRgb(preset.rgb);
+    this.wheelView?.syncToRgb(preset.rgb);
 
     const result = await session.applyPreset(preset.rgb);
     if (token !== this.presetToken) {
       return; // 已有更新的一次预设请求，丢弃这次结果
     }
     this.applyCommandResult(result);
-  },
-
-  /** 把设备/预设颜色反推回色环位置与饱和度（灰阶时保留当前色相）。 */
-  syncWheelToRgb(rgb: RGB) {
-    const hsv = hsvForWheel(rgb, this.wheelHue);
-    this.wheelHue = hsv.h;
-    this.wheelSaturation = hsv.s;
-    this.setData({
-      colorHue: hsv.h,
-      colorSaturation: Math.round(hsv.s * 100),
-    });
-    this.redrawWheel();
-  },
-
-  colorHintText(ready: boolean): string {
-    if (!ready) {
-      return "连接后可选色";
-    }
-    return "拖动色环实时跟随；预设一次原子切换";
   },
 
   // ---------------- 内部 ----------------
@@ -859,27 +646,9 @@ Page({
    * bindValue 为 false 时不回写 slider.value（拖动中由原生控件跟手）。
    */
   setBrightnessView(rawValue: number, bindValue: boolean) {
-    const max = this.data.maxBrightness;
-    const value = clampBrightness(rawValue, max);
-    const patch: Record<string, unknown> = {
-      brightnessDisplay: value,
-      brightnessPercent: percentOf(value, max),
-      brightnessHintText: this.brightnessHintText(value, this.data.ready),
-    };
-    if (bindValue) {
-      patch.brightness = value;
-    }
-    this.setData(patch);
-  },
-
-  brightnessHintText(value: number, ready: boolean): string {
-    if (!ready) {
-      return "连接后可调节";
-    }
-    if (value === 0) {
-      return "亮度 0 视觉上等于关灯；开关状态保持为开";
-    }
-    return "拖动实时跟随，松手确认";
+    this.setData(
+      brightnessViewPatch(rawValue, this.data.maxBrightness, this.data.ready, bindValue),
+    );
   },
 
   applyLink(state: LinkState, message?: string) {
@@ -893,9 +662,9 @@ Page({
       ready,
       // ready 时提示文案要反映当前亮度（连接流水线先写 state 再置 ready）。
       brightnessHintText: ready
-        ? this.brightnessHintText(this.data.brightness, true)
+        ? brightnessHintText(this.data.brightness, true)
         : this.data.brightnessHintText,
-      colorHintText: this.colorHintText(ready),
+      colorHintText: colorHintText(ready),
     });
     if (state !== "ready" && state !== "initializing") {
       // 断线后不显示过期设备状态（设备是权威）。
@@ -925,44 +694,25 @@ Page({
     const max = effectiveMaxBrightness(state.maxBrightness);
     const brightness = clampBrightness(state.brightness, max);
     const rgb: RGB = { r: state.r, g: state.g, b: state.b };
-    const hsv = hsvForWheel(rgb, this.wheelHue);
-    this.wheelHue = hsv.h;
-    this.wheelSaturation = hsv.s;
+    // 色环状态先对齐（不单独 setData/重绘），下面的 setData 一次带全。
+    const hsv = this.wheelView?.assign(rgb) ?? hsvForWheel(rgb, INITIAL_HSV.h);
     this.setData({
       power: state.power,
-      powerLabel: this.powerLabelText(state.power, brightness),
+      powerLabel: powerLabelText(state.power, brightness),
       brightness,
       brightnessDisplay: brightness,
       brightnessPercent: percentOf(brightness, max),
       maxBrightness: max,
-      brightnessHintText: this.brightnessHintText(brightness, this.data.ready),
+      brightnessHintText: brightnessHintText(brightness, this.data.ready),
       colorHex: rgbToHex(rgb),
       colorHue: hsv.h,
       colorSaturation: Math.round(hsv.s * 100),
-      selectedPreset: this.matchingPreset(rgb),
-      colorHintText: this.colorHintText(this.data.ready),
+      selectedPreset: matchingPreset(rgb),
+      colorHintText: colorHintText(this.data.ready),
       // 设备权威：State read / StateReport 里的数量总是覆盖本地值。
       ledCount: state.ledCount,
     });
     this.redrawWheel();
-  },
-
-  /** 当前 RGB 与哪个预设完全一致（用于高亮）；都不匹配返回空串。 */
-  matchingPreset(rgb: RGB): string {
-    for (const preset of PRESETS) {
-      if (preset.rgb.r === rgb.r && preset.rgb.g === rgb.g && preset.rgb.b === rgb.b) {
-        return preset.name;
-      }
-    }
-    return "";
-  },
-
-  /** 亮度 0 且 power=1：灯是灭的但开关位仍为开，文案要如实说明（§7）。 */
-  powerLabelText(power: 0 | 1, brightness: number): string {
-    if (power === 0) {
-      return "已关";
-    }
-    return brightness === 0 ? "已开 · 亮度 0" : "已开";
   },
 
   /** 离散命令结果：成功用设备语义刷新 UI；失败提示并回读 State（设备权威）。 */

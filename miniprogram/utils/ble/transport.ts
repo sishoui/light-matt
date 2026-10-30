@@ -10,26 +10,18 @@
  *  - 断线时清空写队列与所有等待者。
  *
  * UI 层不直接调用任何 BLE API；#11 的自动退避回连只需在同一状态机上补状态。
+ *
+ * 拆分后的协作模块（同级 utils/ble/）：
+ *  - frame-codec.ts：入站帧解码与出站日志描述（纯函数，不碰 wx）；
+ *  - ack-waiters.ts：ACK 等待表；
+ *  - state-read.ts：State read 的 value 等待者；
+ *  - scan-controller.ts：扫描结果缓存与合并派发；
+ *  - link-listeners.ts：订阅表与派发。
  */
 
-import {
-  DEVICE_CMD,
-  RX_UUID,
-  SERVICE_UUID,
-  STATE_UUID,
-  TX_UUID,
-  commandName,
-} from "../protocol/constants";
+import { RX_UUID, SERVICE_UUID, STATE_UUID, TX_UUID, commandName } from "../protocol/constants";
 import { bytesToHex } from "../protocol/hex";
-import { decodeFrame, encodeFrame } from "../protocol/frame";
-import { parseAck, parseState } from "../protocol/commands";
-import {
-  describeAck,
-  describeCommand,
-  describeEvent,
-  describeState,
-  describeStateRead,
-} from "../protocol/describe";
+import { parseState } from "../protocol/commands";
 import type {
   AckResult,
   CommandRequest,
@@ -37,10 +29,22 @@ import type {
   DiscoveredDevice,
   LinkState,
 } from "../protocol/types";
+import { AckWaiters } from "./ack-waiters";
 import { errorText, iosStateText, resultText, triage } from "./errors";
+import {
+  describeStateReadBytes,
+  describeTx,
+  encodeTxFrame,
+  routeInboundFrame,
+} from "./frame-codec";
+import { TransportListeners, type LinkDetail } from "./link-listeners";
 import { FrameLog } from "./log";
+import { DeviceScanner } from "./scan-controller";
+import { StateReadSlot } from "./state-read";
 import { WxCallError, WxCallTimeoutError, wxCall } from "./wx-promise";
 import { SerialWriter } from "./writer";
+
+export type { LinkDetail } from "./link-listeners";
 
 export interface BleTransportOptions {
   log: FrameLog;
@@ -55,39 +59,16 @@ export interface BleTransportOptions {
   scanHintMs?: number;
 }
 
-export interface LinkDetail {
-  message?: string;
-  deviceName?: string;
-  /**
-   * true = 非用户主动的断线（设备断电 / 超出范围 / 10006）。
-   * 会话层据此启动 1s/2s/4s 自动回连；主动 disconnect 不带这个标记。
-   */
-  reconnectable?: boolean;
-}
-
 export interface SendOptions {
   timeoutMs?: number;
   /** ACK 超时后重发次数（开关允许 1 次；连续量必须是 0）。 */
   retryOnTimeout?: number;
 }
 
-interface AckWaiter {
-  command: number;
-  resolve: (ack: AckResult) => void;
-  reject: (err: unknown) => void;
-  timer: ReturnType<typeof setTimeout>;
-}
-
-interface StateWaiter {
-  resolve: (value: Uint8Array) => void;
-  reject: (err: unknown) => void;
-}
-
 const DEFAULT_INIT_SETTLE_MS = 500;
 const DEFAULT_ACK_TIMEOUT_MS = 600;
 const DEFAULT_STATE_READ_TIMEOUT_MS = 2000;
 const DEFAULT_SCAN_HINT_MS = 10000;
-const DEVICE_FLUSH_MS = 300;
 
 function upper(value: string | undefined): string {
   return (value ?? "").toUpperCase();
@@ -104,7 +85,6 @@ export class BleTransport {
   private readonly initSettleMs: number;
   private readonly ackTimeoutMs: number;
   private readonly stateReadTimeoutMs: number;
-  private readonly scanHintMs: number;
 
   private link: LinkState = "uninitialized";
   private adapterOpened = false;
@@ -123,23 +103,14 @@ export class BleTransport {
   /** 每条连接从 0x01 开始；发送时分配，回绕 0xFF → 0x00。 */
   private nextSeq = 1;
 
-  private readonly devices = new Map<string, DiscoveredDevice>();
-  private deviceFlushTimer: ReturnType<typeof setTimeout> | null = null;
-  private scanTimer: ReturnType<typeof setTimeout> | null = null;
-  private scanHint: string | null = null;
+  private readonly listeners = new TransportListeners();
+  private readonly scanner: DeviceScanner;
   /** 用户想扫描但适配器不可用：蓝牙打开后自动继续（spec 用户故事 8）。 */
   private scanRequested = false;
 
   private readonly writer: SerialWriter;
-  private readonly ackWaiters = new Map<number, AckWaiter>();
-  private stateWaiter: StateWaiter | null = null;
-  private stateReadPromise: Promise<DeviceState> | null = null;
-
-  private readonly linkListeners: Array<(state: LinkState, detail?: LinkDetail) => void> = [];
-  private readonly deviceListeners: Array<(list: DiscoveredDevice[]) => void> = [];
-  private readonly stateListeners: Array<(state: DeviceState) => void> = [];
-  private readonly eventListeners: Array<(code: number, detail: number) => void> = [];
-  private readonly scanHintListeners: Array<(hint: string | null) => void> = [];
+  private readonly ackWaiters = new AckWaiters();
+  private readonly stateRead = new StateReadSlot();
 
   private destroyed = false;
 
@@ -149,7 +120,10 @@ export class BleTransport {
     this.initSettleMs = opts.initSettleMs ?? DEFAULT_INIT_SETTLE_MS;
     this.ackTimeoutMs = opts.ackTimeoutMs ?? DEFAULT_ACK_TIMEOUT_MS;
     this.stateReadTimeoutMs = opts.stateReadTimeoutMs ?? DEFAULT_STATE_READ_TIMEOUT_MS;
-    this.scanHintMs = opts.scanHintMs ?? DEFAULT_SCAN_HINT_MS;
+    this.scanner = new DeviceScanner(
+      this.listeners,
+      opts.scanHintMs ?? DEFAULT_SCAN_HINT_MS,
+    );
 
     this.writer = new SerialWriter((bytes) => this.sendOne(bytes));
 
@@ -173,43 +147,23 @@ export class BleTransport {
   // ------------------------------------------------------------------
 
   onLink(fn: (state: LinkState, detail?: LinkDetail) => void): () => void {
-    this.linkListeners.push(fn);
-    return () => {
-      const i = this.linkListeners.indexOf(fn);
-      if (i >= 0) this.linkListeners.splice(i, 1);
-    };
+    return this.listeners.onLink(fn);
   }
 
   onDevices(fn: (list: DiscoveredDevice[]) => void): () => void {
-    this.deviceListeners.push(fn);
-    return () => {
-      const i = this.deviceListeners.indexOf(fn);
-      if (i >= 0) this.deviceListeners.splice(i, 1);
-    };
+    return this.listeners.onDevices(fn);
   }
 
   onState(fn: (state: DeviceState) => void): () => void {
-    this.stateListeners.push(fn);
-    return () => {
-      const i = this.stateListeners.indexOf(fn);
-      if (i >= 0) this.stateListeners.splice(i, 1);
-    };
+    return this.listeners.onState(fn);
   }
 
   onDeviceEvent(fn: (code: number, detail: number) => void): () => void {
-    this.eventListeners.push(fn);
-    return () => {
-      const i = this.eventListeners.indexOf(fn);
-      if (i >= 0) this.eventListeners.splice(i, 1);
-    };
+    return this.listeners.onDeviceEvent(fn);
   }
 
   onScanHint(fn: (hint: string | null) => void): () => void {
-    this.scanHintListeners.push(fn);
-    return () => {
-      const i = this.scanHintListeners.indexOf(fn);
-      if (i >= 0) this.scanHintListeners.splice(i, 1);
-    };
+    return this.listeners.onScanHint(fn);
   }
 
   // ------------------------------------------------------------------
@@ -269,9 +223,8 @@ export class BleTransport {
       throw new Error("请打开蓝牙");
     }
 
-    this.devices.clear();
-    this.emitDevices();
-    this.setScanHint(null);
+    this.scanner.reset();
+    this.scanner.setHint(null);
     this.setLink("scanning", { message: "扫描中…" });
 
     try {
@@ -290,22 +243,19 @@ export class BleTransport {
       throw err;
     }
 
-    this.clearScanTimer();
-    this.scanTimer = setTimeout(() => {
-      this.scanTimer = null;
-      if (this.link === "scanning" && this.devices.size === 0) {
-        this.setScanHint(
-          this.platform === "android"
-            ? "10 秒未发现设备：请检查定位权限与定位开关"
-            : "10 秒未发现设备：请检查微信的蓝牙授权",
-        );
+    this.scanner.scheduleHint(() => {
+      if (this.link === "scanning" && this.scanner.size === 0) {
+        return this.platform === "android"
+          ? "10 秒未发现设备：请检查定位权限与定位开关"
+          : "10 秒未发现设备：请检查微信的蓝牙授权";
       }
-    }, this.scanHintMs);
+      return null;
+    });
   }
 
   async stopScan(): Promise<void> {
     this.scanRequested = false;
-    this.clearScanTimer();
+    this.scanner.clearHintTimer();
     if (this.link !== "scanning") {
       return;
     }
@@ -322,7 +272,7 @@ export class BleTransport {
     if (this.link === "scanning") {
       this.setLink("idle");
     }
-    this.setScanHint(null);
+    this.scanner.setHint(null);
   }
 
   // ------------------------------------------------------------------
@@ -510,7 +460,7 @@ export class BleTransport {
   async write(req: CommandRequest): Promise<{ seq: number }> {
     this.ensureWritable();
     const seq = this.allocateSeq();
-    const frame = encodeFrame(req.command, seq, req.payload);
+    const frame = encodeTxFrame(req.command, seq, req.payload);
     this.logFrame("tx", frame, req.command, seq, describeTx(req));
     try {
       await this.writer.enqueue(frame);
@@ -552,36 +502,17 @@ export class BleTransport {
   ): Promise<AckResult> {
     this.ensureWritable();
     const seq = this.allocateSeq();
-    const frame = encodeFrame(req.command, seq, req.payload);
+    const frame = encodeTxFrame(req.command, seq, req.payload);
 
     const timeoutMs = timeoutOverride ?? this.ackTimeoutMs;
-    const ackPromise = new Promise<AckResult>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.ackWaiters.delete(seq);
-        reject(new WxCallTimeoutError("ACK", timeoutMs));
-      }, timeoutMs);
-      this.ackWaiters.set(seq, {
-        command: req.command,
-        resolve,
-        reject: (err) => reject(err),
-        timer,
-      });
-    });
-    // 写失败时我们会先 throw、不 await ackPromise；挂一个空 catch 防止
-    // Node/开发者工具把这次 reject 报成 UnhandledPromiseRejection。
-    ackPromise.catch(() => undefined);
+    const ackPromise = this.ackWaiters.register(seq, req.command, timeoutMs);
 
     this.logFrame("tx", frame, req.command, seq, describeTx(req));
     try {
       await this.writer.enqueue(frame);
     } catch (err) {
       this.logFailure(frame, req.command, seq, errorText(err));
-      const waiter = this.ackWaiters.get(seq);
-      if (waiter !== undefined) {
-        clearTimeout(waiter.timer);
-        this.ackWaiters.delete(seq);
-        waiter.reject(err);
-      }
+      this.ackWaiters.fail(seq, err);
       this.noteWriteFailure(err);
       throw err;
     }
@@ -600,8 +531,9 @@ export class BleTransport {
 
   /** 读 State：注册 waiter → 调 read → 等 value 事件（success ≠ 数据到达）。 */
   readState(): Promise<DeviceState> {
-    if (this.stateReadPromise !== null) {
-      return this.stateReadPromise;
+    const inflight = this.stateRead.inflight;
+    if (inflight !== null) {
+      return inflight;
     }
     const deviceId = this.deviceId;
     const serviceId = this.serviceId;
@@ -610,35 +542,11 @@ export class BleTransport {
       return Promise.reject(new Error("未连接"));
     }
 
-    const promise = new Promise<DeviceState>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.stateWaiter = null;
-        this.stateReadPromise = null;
-        reject(new WxCallTimeoutError("State read", this.stateReadTimeoutMs));
-      }, this.stateReadTimeoutMs);
-
-      this.stateWaiter = {
-        resolve: (value: Uint8Array) => {
-          clearTimeout(timer);
-          this.stateWaiter = null;
-          this.stateReadPromise = null;
-          try {
-            const state = parseState(value);
-            this.emitState(state);
-            resolve(state);
-          } catch (err) {
-            reject(err);
-          }
-        },
-        reject: (err: unknown) => {
-          clearTimeout(timer);
-          this.stateWaiter = null;
-          this.stateReadPromise = null;
-          reject(err);
-        },
-      };
+    const promise = this.stateRead.open(this.stateReadTimeoutMs, (value) => {
+      const state = parseState(value);
+      this.listeners.emitState(state);
+      return state;
     });
-    this.stateReadPromise = promise;
 
     wxCall(
       "readBLECharacteristicValue",
@@ -646,7 +554,7 @@ export class BleTransport {
       { deviceId, serviceId, characteristicId },
       this.stateReadTimeoutMs,
     ).catch((err) => {
-      this.stateWaiter?.reject(err);
+      this.stateRead.reject(err);
     });
 
     return promise;
@@ -661,11 +569,7 @@ export class BleTransport {
       return;
     }
     this.destroyed = true;
-    this.clearScanTimer();
-    if (this.deviceFlushTimer !== null) {
-      clearTimeout(this.deviceFlushTimer);
-      this.deviceFlushTimer = null;
-    }
+    this.scanner.clearTimers();
     this.resetLinkWaiters(new Error("页面已销毁"));
 
     // 反注册必须传同一个函数对象，否则 off 不生效。
@@ -691,11 +595,7 @@ export class BleTransport {
     }
     this.deviceId = null;
     this.filterDeviceId = null;
-    this.linkListeners.length = 0;
-    this.deviceListeners.length = 0;
-    this.stateListeners.length = 0;
-    this.eventListeners.length = 0;
-    this.scanHintListeners.length = 0;
+    this.listeners.clear();
   }
 
   // ------------------------------------------------------------------
@@ -707,21 +607,10 @@ export class BleTransport {
       return;
     }
     const found: any[] = res?.devices ?? [];
-    let changed = false;
-    for (const dev of found) {
-      const id = dev?.deviceId;
-      if (!id) {
-        continue;
-      }
-      // 广播名优先取扫描响应里的 localName，name 仅兜底。
-      const name = dev.localName || dev.name || "(无名)";
-      this.devices.set(id, { deviceId: id, name, rssi: dev.RSSI ?? 0 });
-      changed = true;
-    }
+    const changed = this.scanner.addDevices(found);
     if (changed) {
-      this.scheduleDeviceFlush();
-      if (this.link === "scanning" && this.devices.size > 0) {
-        this.setScanHint(null);
+      if (this.link === "scanning" && this.scanner.size > 0) {
+        this.scanner.setHint(null);
       }
     }
   };
@@ -749,13 +638,10 @@ export class BleTransport {
     }
     if (characteristicId === upper(this.stateId ?? STATE_UUID)) {
       // State read 回值不是协议帧（直接 8 字节），但同样进日志、同样可解析。
-      this.logFrame("rx", bytes, undefined, undefined, this.describeStateRead(bytes));
-      const waiter = this.stateWaiter;
-      if (waiter !== null) {
-        waiter.resolve(bytes.slice());
-      } else {
+      this.logFrame("rx", bytes, undefined, undefined, describeStateReadBytes(bytes));
+      if (!this.stateRead.deliver(bytes)) {
         try {
-          this.emitState(parseState(bytes));
+          this.listeners.emitState(parseState(bytes));
         } catch {
           /* 非 8 字节的 State 回值：记录日志已足够 */
         }
@@ -811,69 +697,22 @@ export class BleTransport {
   // ------------------------------------------------------------------
 
   private handleDeviceFrame(bytes: Uint8Array): void {
-    const result = decodeFrame(bytes);
-    if (!result.ok) {
-      this.logFrame("rx", bytes, undefined, undefined, `解码失败（${result.reason}）`, false);
-      return;
-    }
+    const frame = routeInboundFrame(bytes);
+    this.logFrame("rx", bytes, frame.command, frame.seq, frame.text, frame.ok);
 
-    const { command, seq, payload } = result;
-    if (command === DEVICE_CMD.ACK) {
-      let ack: AckResult;
-      try {
-        ack = parseAck(payload, seq);
-      } catch (err) {
-        this.logFrame("rx", bytes, command, seq, errorText(err), false);
+    switch (frame.action.kind) {
+      case "ack":
+        this.ackWaiters.settle(frame.seq as number, frame.action.ack);
         return;
-      }
-      this.logFrame(
-        "rx",
-        bytes,
-        command,
-        seq,
-        describeAck(ack),
-        ack.ok,
-      );
-      const waiter = this.ackWaiters.get(seq);
-      if (waiter !== undefined) {
-        if (waiter.command === ack.command) {
-          clearTimeout(waiter.timer);
-          this.ackWaiters.delete(seq);
-          waiter.resolve(ack);
-        } else {
-          // seq 对上但原命令字不符：协议异常，记录但不兑现。
-          console.warn(`[lumen] ACK 原命令字不匹配 seq=${seq}`);
-        }
-      }
-      return;
-    }
-
-    if (command === DEVICE_CMD.STATE_REPORT) {
-      try {
-        const state = parseState(payload);
-        this.logFrame("rx", bytes, command, seq, describeState(state), true);
-        this.emitState(state);
-      } catch (err) {
-        this.logFrame("rx", bytes, command, seq, errorText(err), false);
-      }
-      return;
-    }
-
-    if (command === DEVICE_CMD.EVENT) {
-      if (payload.length !== 2) {
-        this.logFrame("rx", bytes, command, seq, "Event 载荷长度错误", false);
+      case "state":
+        this.listeners.emitState(frame.action.state);
         return;
-      }
-      const code = payload[0];
-      const detail = payload[1];
-      this.logFrame("rx", bytes, command, seq, describeEvent(code, detail), code !== 0x01);
-      for (const fn of this.eventListeners.slice()) {
-        fn(code, detail);
-      }
-      return;
+      case "event":
+        this.listeners.emitEvent(frame.action.code, frame.action.detail);
+        return;
+      default:
+        return;
     }
-
-    this.logFrame("rx", bytes, command, seq, "未知的设备→小程序命令", false);
   }
 
   /**
@@ -954,89 +793,13 @@ export class BleTransport {
 
   private resetLinkWaiters(reason: Error): void {
     this.writer.reset(reason);
-    for (const waiter of this.ackWaiters.values()) {
-      clearTimeout(waiter.timer);
-      waiter.reject(reason);
-    }
-    this.ackWaiters.clear();
-    if (this.stateWaiter !== null) {
-      this.stateWaiter.reject(reason);
-      this.stateWaiter = null;
-    }
-    this.stateReadPromise = null;
+    this.ackWaiters.reset(reason);
+    this.stateRead.reset(reason);
   }
 
   private setLink(state: LinkState, detail?: LinkDetail): void {
     this.link = state;
-    for (const fn of this.linkListeners.slice()) {
-      try {
-        fn(state, detail);
-      } catch {
-        /* 监听者异常不能影响状态机 */
-      }
-    }
-  }
-
-  private emitDevices(): void {
-    const list = Array.from(this.devices.values()).sort((a, b) => b.rssi - a.rssi);
-    for (const fn of this.deviceListeners.slice()) {
-      try {
-        fn(list);
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-
-  private emitState(state: DeviceState): void {
-    for (const fn of this.stateListeners.slice()) {
-      try {
-        fn(state);
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-
-  private setScanHint(hint: string | null): void {
-    this.scanHint = hint;
-    this.emitScanHint();
-  }
-
-  private emitScanHint(): void {
-    for (const fn of this.scanHintListeners.slice()) {
-      try {
-        fn(this.scanHint);
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-
-  private scheduleDeviceFlush(): void {
-    if (this.deviceFlushTimer !== null) {
-      return;
-    }
-    this.deviceFlushTimer = setTimeout(() => {
-      this.deviceFlushTimer = null;
-      this.emitDevices();
-    }, DEVICE_FLUSH_MS);
-  }
-
-  private clearScanTimer(): void {
-    if (this.scanTimer !== null) {
-      clearTimeout(this.scanTimer);
-      this.scanTimer = null;
-    }
-  }
-
-  /** State read 的裸值：能解析就写出完整状态，不能解析也保留长度。 */
-  private describeStateRead(bytes: Uint8Array): string {
-    try {
-      return describeStateRead(parseState(bytes));
-    } catch {
-      return `State read（${bytes.length} 字节，无法解析）`;
-    }
+    this.listeners.emitLink(state, detail);
   }
 
   /** 写失败时补一条同 seq 的日志，保留「这一帧没发出去」的证据。 */
@@ -1068,8 +831,4 @@ export class BleTransport {
   ): void {
     this.log.push({ ts: Date.now(), dir, hex: bytesToHex(bytes), command, seq, parsed, ok });
   }
-}
-
-function describeTx(req: CommandRequest): string {
-  return describeCommand(req.command, req.payload);
 }
