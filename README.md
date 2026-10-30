@@ -18,29 +18,33 @@ lumen/
 - **想知道还剩什么没定**：[docs/wayfinding/map.md](docs/wayfinding/map.md)
 - **想写 codec**：[docs/protocol.md](docs/protocol.md) —— 字节级协议规格与测试向量
 - **想实现**：[docs/spec.md](docs/spec.md) —— MVP 实现规格（用户故事、实现决策、测试接缝）
+- **想跑真机验收**：[docs/end-to-end-acceptance.md](docs/end-to-end-acceptance.md) —— 7 条清单的操作步骤与记录表
 - **想跑 RMT × BLE 共存实验**：[docs/rmt-ble-stability.md](docs/rmt-ble-stability.md) —— 五组实验方案、待填数据表与判定流程
-- **想开工**：看 map 的「票（frontier 视图）」表格，从状态为 `ready` 的票开始
+- **想继续开工**：看 map 的「票（frontier 视图）」表格
 
 ## 现状
 
-固件骨架已落地：`ble_link → led_engine → state_store` 三层，NimBLE GATT 服务与单连接、
-latest-wins 渲染任务、NVS debounce 都已就位（[firmware-architecture.md](docs/firmware-architecture.md)）。
-灯带 bring-up 已烧录并通过 5 分钟 soak（[led-bringup.md](docs/led-bringup.md)），颜色顺序与
-全白供电结论待肉眼确认。「设开关」（#8）、「设亮度」（#9）、「颜色与预设」（#10）三条
-路径已端到端打通：固件命令层 + ACK、小程序传输层/codec/单页开关、亮度滑块与色环
-（20Hz latest-wins 单通道、连续量不重传、亮度按设备 `max_brightness` 钳位、预设用
-一条 SetAll 原子下发）。色相准确性、色环触控精度与低亮度色相待真机确认。协议与测试向量见
-[docs/protocol.md](docs/protocol.md)，执行票在 GitHub Issues。
+**代码侧已完整，剩下的是真机验证。**
 
-RMT × BLE 共存验证（#7）已交付**实验固件 + 方案**：`CONFIG_LUMEN_RMT_STRESS_MODE`
-（默认关闭）在同一份固件里提供 20Hz 刷新压力、串口可判定指标（refresh 返回码/耗时、
-循环间隔抖动、heap、复位原因、BLE 连接/MTU/写入时间戳），五组实验与待填数据表见
-[docs/rmt-ble-stability.md](docs/rmt-ble-stability.md)。**实测结论尚空，等真机数据。**
+13 张实现票（#2–#13）全部落地在 `integration/lumen-mvp`。两端共用 37 条协议测试向量：
+固件 host 1426 项断言、小程序 159 个 vitest 用例、`tsc --noEmit` 干净，固件分区余量 62%。
 
-诊断工具（#13）两条线都已就位：固件侧 `SelfTest 0x07` 让灯带按 红→绿→蓝→白
-各 500ms 走一遍（临时覆盖、不写 NVS、不依赖小程序，串口同步打印每一步，用于验证
-接线与通道顺序），串口每帧打印 `cmd / seq / len / result / 状态` 并标注
-`selftest=start|cancel|on`；小程序侧有 200 帧环形缓冲 + 隐藏协议日志面板
-（连点页脚版本号 5 次开启，支持暂停/清空/复制），面板与开发版 console 消费同一份
-`FrameLogEntry`，每行 seq 同时给十进制与十六进制，方便与串口按 seq 对齐。
-自检的视觉顺序与面板在真机上的可读性待真机确认。
+- **固件**：`ble_link → led_engine → state_store` 三层单向依赖；7 条命令全部实现
+  （含 QueryState 的 StateReport、SetLedCount 的句柄重建与延迟 ACK、SelfTest 的临时覆盖）；
+  latest-wins 邮箱；单连接；NVS 500ms debounce（写失败用 Event `0x81` 异步上报）。
+  见 [firmware-architecture.md](docs/firmware-architecture.md)。
+- **小程序**：transport / codec / throttle / log / session 分层；20Hz latest-wins 单通道
+  （亮度与颜色共用，不会叠成 40Hz）；写入串行化；错误码分诊（10006 回连、10008 间隔重试
+  一次、10001 非致命）；1s/2s/4s 退避回连；State 是唯一权威。
+- **诊断**：自检 `0x07` 按 红→绿→蓝→白 各 500ms 走一遍（不依赖小程序即可验证接线与通道
+  顺序）；串口每帧一行 `cmd / seq / len / result / 状态`；小程序 200 帧环形缓冲 + 隐藏面板
+  （连点版本号 5 次开启）。
+
+**仍在等你确认的两件事**（见 [验收手册 §0.2](docs/end-to-end-acceptance.md)）：
+
+1. **颜色通道顺序** —— 是 GRB 还是 RGB。不确认则第 4 条颜色验收没有意义。
+2. **全白 255 是否掉压** —— 30 灯全白约 1.8A，开发板 USB 5V 通常限流 500mA–1A。
+   若掉压就把 `LUMEN_MAX_BRIGHTNESS` 改成安全值，固件会自动钳位并同步给小程序。
+
+RMT × BLE 共存（#7）交付的是**实验固件 + 方案**（`CONFIG_LUMEN_RMT_STRESS_MODE`，默认关闭），
+五组实验与判定线见 [docs/rmt-ble-stability.md](docs/rmt-ble-stability.md)。**实测结论尚空。**
