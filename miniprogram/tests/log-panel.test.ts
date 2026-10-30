@@ -15,7 +15,7 @@ function entry(i: number, overrides: Partial<Parameters<FrameLog["push"]>[0]> = 
   return {
     ts: new Date(2026, 0, 2, 3, 4, 5, 678).getTime() + i,
     dir: "tx" as const,
-    hex: `A5 01 01 ${i.toString(16).padStart(2, "0").toUpperCase()}`,
+    hex: `A5 02 01 ${i.toString(16).padStart(2, "0").toUpperCase()}`,
     command: 0x01,
     seq: i,
     parsed: `SetPower power=1`,
@@ -92,7 +92,7 @@ describe("LogPanelModel", () => {
     expect(txRow.time).toBe("03:04:05.685");
     expect(txRow.dir).toBe("tx");
     expect(txRow.arrow).toBe("->");
-    expect(txRow.hex).toBe("A5 01 01 07");
+    expect(txRow.hex).toBe("A5 02 01 07");
     expect(txRow.name).toBe("SetPower");
     expect(txRow.seq).toBe("7 (0x07)");
     expect(txRow.parsed).toBe("SetPower power=1");
@@ -149,7 +149,7 @@ describe("LogPanelModel", () => {
     expect(pausedText.split("\n").length).toBe(2);
     expect(pausedText).toContain("seq=1 (0x01)");
     expect(pausedText).not.toContain("seq=3 (0x03)");
-    expect(pausedText).not.toContain("A5 01 01 03");
+    expect(pausedText).not.toContain("A5 02 01 03");
 
     panel.resume();
     const fullText = panel.copyText();
@@ -162,7 +162,7 @@ describe("LogPanelModel", () => {
     const log = new FrameLog();
     const e = log.push(entry(9));
     expect(formatLogLine(e)).toBe(
-      "03:04:05.687 -> A5 01 01 09 | SetPower seq=9 (0x09) | SetPower power=1",
+      "03:04:05.687 -> A5 02 01 09 | SetPower seq=9 (0x09) | SetPower power=1",
     );  });
 
   it("formatFrameTime 补零到毫秒", () => {

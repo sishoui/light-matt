@@ -366,7 +366,7 @@ esp_err_t lumen_led_engine_init(void)
     return ESP_OK;
 }
 
-void lumen_led_engine_state_bytes(uint8_t out[8])
+void lumen_led_engine_state_bytes(uint8_t out[LUMEN_STATE_BYTES])
 {
     if (out == NULL) {
         return;

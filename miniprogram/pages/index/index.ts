@@ -3,8 +3,11 @@
  * + #12 灯珠数量 + #13 隐藏日志面板与自检）。
  *
  * 页面只做 view model 与事件转发，所有 BLE 细节经 ControlSession。
- * 亮度滑块与色环都进 session 里**同一个** 20Hz latest-wins 节流实例；
- * 预设用一条 SetAll（开关 + 亮度 + RGB）原子下发。
+ * 亮度滑块进 session 的 20Hz latest-wins 节流实例。
+ *
+ * v2（#21）退役了 SetColor / SetAll：颜色与预设的下发路径暂时禁用，
+ * 手势只弹「该功能在 v2 分段界面中提供（#25）」。控件保留、页面照常
+ * 编译渲染——**不静默删掉用户可见的功能**，只是明确说明还没接上。
  *
  * #11：连接状态以设备为准。断线立即清空控件（不显示过期状态）；自动回连由
  * session 的 1s/2s/4s 退避负责；onShow 时静默回连（不打断扫描/手动连接）；
@@ -43,6 +46,7 @@ import {
   ControlSession,
   detectDevMode,
   detectPlatform,
+  SEGMENTS_UI_NOTICE,
   type CommandResult,
 } from "../../utils/control/session";
 import { statusView } from "../../utils/control/status-view";
@@ -123,8 +127,6 @@ Page({
   pageReady: false,
   /** 亮度读数的上次 setData 时间（与取色共用 50ms 闸门）。 */
   lastBrightnessUiAt: 0,
-  /** 预设请求序号：只让最新一次预设的结果回写 UI，避免旧色回跳。 */
-  presetToken: 0,
   /** 隐藏日志面板控制器（页面实例持有；数据源是 session 的 FrameLog）。 */
   logView: null as LogPanelView | null,
 
@@ -145,6 +147,7 @@ Page({
         isReady: () => this.data.ready,
         queueColor: (rgb) => session?.queueColor(rgb),
         commitColor: (rgb) => session?.commitColor(rgb),
+        notifySegmentsNotice: () => this.showSegmentsNotice(),
       },
       { hue: INITIAL_HSV.h, saturation: INITIAL_HSV.s },
     );
@@ -605,38 +608,29 @@ Page({
   },
 
   /**
-   * 预设点击：一次 SetAll（开关=1、亮度=当前、RGB=预设）原子下发。
+   * 预设点击——v2 占位：不再下发 SetAll（0x04 已退役）。
    *
-   * 快速连点不同预设时，只有最后一次请求的结果回写 UI（presetToken），
-   * 避免先发出的请求晚返回把颜色改回旧的。SetAll 是绝对值命令，FIFO 顺序
-   * 保证设备最终状态 = 最后一次点击。
+   * **不改任何本地状态**：设备没有收到命令，界面就不能显示「已切换」。
+   * 只弹「该功能在 v2 分段界面中提供（#25）」的提示——宁可明确说没接上，
+   * 也不能假装成功。
+   *
+   * TODO(#25)：预设改为「写入 strip 0 / seg 0 的静态段」。
    */
-  async onPresetTap(e: WechatMiniprogram.TouchEvent) {
+  onPresetTap(e: WechatMiniprogram.TouchEvent) {
     if (session === null || !this.data.ready) {
       return;
     }
     const index = Number(e.currentTarget.dataset.index ?? -1);
-    const preset = PRESETS[index];
-    if (preset === undefined) {
+    if (PRESETS[index] === undefined) {
       return;
     }
+    // 只提示，不动 UI 的颜色/开关：设备状态没变，界面也不能变。
+    this.showSegmentsNotice();
+  },
 
-    const token = ++this.presetToken;
-    // 先本地切换 UI：预设是离散动作，期望「点下即变」；ACK 回来后再按设备语义校准。
-    this.setData({
-      power: 1,
-      powerLabel: "已开",
-      colorHex: preset.hex,
-      selectedPreset: preset.name,
-      colorHintText: colorHintText(true),
-    });
-    this.wheelView?.syncToRgb(preset.rgb);
-
-    const result = await session.applyPreset(preset.rgb);
-    if (token !== this.presetToken) {
-      return; // 已有更新的一次预设请求，丢弃这次结果
-    }
-    this.applyCommandResult(result);
+  /** 统一的 v2 占位提示（颜色 / 预设区域）。TODO(#25) */
+  showSegmentsNotice() {
+    wx.showToast({ title: SEGMENTS_UI_NOTICE, icon: "none" });
   },
 
   // ---------------- 内部 ----------------

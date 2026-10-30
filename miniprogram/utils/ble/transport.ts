@@ -637,13 +637,13 @@ export class BleTransport {
       return;
     }
     if (characteristicId === upper(this.stateId ?? STATE_UUID)) {
-      // State read 回值不是协议帧（直接 8 字节），但同样进日志、同样可解析。
+      // State read 回值不是协议帧（直接 14 字节），但同样进日志、同样可解析。
       this.logFrame("rx", bytes, undefined, undefined, describeStateReadBytes(bytes));
       if (!this.stateRead.deliver(bytes)) {
         try {
           this.listeners.emitState(parseState(bytes));
         } catch {
-          /* 非 8 字节的 State 回值：记录日志已足够 */
+          /* 非 14 字节的 State 回值：记录日志已足够 */
         }
       }
     }

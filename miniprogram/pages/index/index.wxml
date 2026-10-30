@@ -42,7 +42,9 @@
     <text class="section-hint">{{brightnessHintText}}</text>
   </view>
 
-  <!-- 4. 颜色：色相环（单块 canvas）+ 饱和度。V 恒为 1，亮度由上面的滑块负责 -->
+  <!-- 4. 颜色：色相环（单块 canvas）+ 饱和度。V 恒为 1，亮度由上面的滑块负责。
+       v2（#21）：SetColor/SetAll 已退役，这里的下发路径是禁用占位，#25 重建为分段界面。
+       控件保留是为了不静默删功能；提示文案由 colorHintText 给出。 -->
   <view class="section {{ready ? '' : 'disabled'}}">
     <view class="section-head">
       <text class="section-title">颜色</text>
@@ -85,7 +87,7 @@
     <text class="section-hint">{{colorHintText}}</text>
   </view>
 
-  <!-- 5. 预设：一次 SetAll（开关 + 亮度 + RGB）原子下发 -->
+  <!-- 5. 预设：v2 起不再下发 SetAll（已退役），点击后提示「该功能在 v2 分段界面中提供（#25）」 -->
   <view class="presets {{ready ? '' : 'disabled'}}">
     <view
       wx:for="{{presetList}}"
@@ -154,7 +156,7 @@
           </view>
           <view class="info-row">
             <text class="info-label">协议版本</text>
-            <text class="info-value">v1</text>
+            <text class="info-value">v2</text>
           </view>
         </view>
         <!-- 自检放在设备弹层里，不占主控制流（#13） -->

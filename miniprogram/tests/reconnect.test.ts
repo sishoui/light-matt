@@ -24,7 +24,8 @@ import type { BleTransport, LinkDetail } from "../utils/ble/transport";
 import type { CommandRequest, DeviceState, LinkState } from "../utils/protocol/types";
 
 const CMD_SET_POWER = 0x01;
-const CMD_SET_ALL = 0x04;
+/* v2 退役了 SetAll（0x04）；事件文案测试用仍然存在的命令字。 */
+const CMD_SET_LED_COUNT = 0x06;
 
 function wxErr(errCode: number): WxCallError {
   return new WxCallError("test", { errCode, errMsg: "mock" });
@@ -39,6 +40,12 @@ function baseState(overrides: Partial<DeviceState> = {}): DeviceState {
     b: 120,
     ledCount: 30,
     maxBrightness: 255,
+    stripCount: 1,
+    segCount: 0,
+    scriptId: 0xff,
+    stageIndex: 0,
+    playbackState: 0,
+    flags: 0,
     ...overrides,
   };
 }
@@ -674,7 +681,7 @@ describe("#11 错误分诊", () => {
     await connectOnce(h);
     h.transport.ackErrors = [wxErr(10008)];
 
-    const pending = h.session.applyPreset({ r: 0, g: 0, b: 0 }); // 离散命令本带 retryOnTimeout: 1
+    const pending = h.session.setPower(false); // 离散命令本带 retryOnTimeout: 1
     await settle();
     h.clock.advance(500);
     await settle();
@@ -734,13 +741,14 @@ describe("#11 错误分诊", () => {
 });
 
 describe("#11 旧 ACK 不覆盖新 State", () => {
-  it("断线前在飞的 SetAll 晚到，回连后读到的新 State 保持不变", async () => {
+  it("断线前在飞的 SetPower 晚到，回连后读到的新 State 保持不变", async () => {
     const h = makeSession();
     await connectOnce(h);
 
-    // 让第一条 SetAll 挂起（模拟旧连接上在飞）
+    // 让第一条 SetPower 挂起（模拟旧连接上在飞）。
+    // v2 没有 SetAll / SetColor 了，用仍存在的离散命令覆盖同一段逻辑。
     h.transport.pendingAck = { resolve: () => undefined, reject: () => undefined };
-    const presetPromise = h.session.applyPreset({ r: 255, g: 0, b: 0 });
+    const presetPromise = h.session.setPower(false);
     await settle();
     expect(h.transport.ackCalls).toHaveLength(1);
 
@@ -757,17 +765,17 @@ describe("#11 旧 ACK 不覆盖新 State", () => {
     const result = await presetPromise;
 
     expect(result.kind).toBe("stale");
-    // 新 State 未被旧 ACK 的红色覆盖
+    // 新 State 未被旧 ACK 覆盖（设备仍是回连后读到的那套）。
     expect(h.session.deviceState).toEqual(afterReconnect);
   });
 
   it("同一连接内的正常 ACK 仍然回写（不会被误判 stale）", async () => {
     const h = makeSession();
     await connectOnce(h);
-    const result = await h.session.applyPreset({ r: 0, g: 0, b: 255 });
+    const result = await h.session.setPower(false);
     expect(result.kind).toBe("ok");
     if (result.kind === "ok") {
-      expect(result.state.b).toBe(255);
+      expect(result.state.power).toBe(0);
     }
   });
 });
@@ -811,14 +819,20 @@ describe("#11 deviceId 缓存", () => {
 
 describe("#11 设备事件 Event 0x81（存储失败）", () => {
   it("0x01 映射成非阻塞警告，含原命令名", () => {
-    const text = eventText(0x01, CMD_SET_ALL);
-    expect(text).toContain("SetAll");
+    const text = eventText(0x01, CMD_SET_LED_COUNT);
+    expect(text).toContain("SetLedCount");
     expect(text).toContain("保存失败");
     expect(eventText(0x01, CMD_SET_POWER)).toContain("SetPower");
   });
 
+  it("0x02 剧本提交失败：提示保留上一套配置", () => {
+    const text = eventText(0x02, 3);
+    expect(text).toContain("剧本 3");
+    expect(text).toContain("上一套配置");
+  });
+
   it("保留码不打扰用户（返回 null，只记日志）", () => {
-    expect(eventText(0x02, 0)).toBeNull();
+    expect(eventText(0x03, 0)).toBeNull();
     expect(eventText(0xff, 0)).toBeNull();
   });
 

@@ -6,18 +6,33 @@ export interface RGB {
   b: number;
 }
 
-/** 设备 8 字节 State 的内存表示，字段顺序见 docs/protocol.md §7。 */
+/** 设备 14 字节 State 的内存表示，字段顺序见 docs/protocol.md §7。 */
 export interface DeviceState {
   power: 0 | 1;
   /** 已按设备 maxBrightness 钳位后的生效值。 */
   brightness: number;
+  /** strip 0 / seg 0 的基准色（不含动画包络）；无 seg 0 时为 0。 */
   r: number;
   g: number;
   b: number;
-  /** 1-64。 */
+  /** 1-64，strip 0 的灯珠数。 */
   ledCount: number;
   /** 滑块上限，不许在 UI 里硬编码 255。 */
   maxBrightness: number;
+
+  /* ---- v2 摘要（State 字节 8-13） ---- */
+  /** 1-8，当前配置的灯带数。 */
+  stripCount: number;
+  /** strip 0 的活动段数。 */
+  segCount: number;
+  /** 0xFF = 无激活剧本。 */
+  scriptId: number;
+  /** 当前阶段；无剧本时 0。 */
+  stageIndex: number;
+  /** 0 停止 / 1 播放 / 2 暂停。 */
+  playbackState: number;
+  /** bit0 loop；bit1 script_active；bit2-7 保留 = 0。 */
+  flags: number;
 }
 
 /** 一条待下发的命令。payload 由 commands.ts 的构造器生成。 */

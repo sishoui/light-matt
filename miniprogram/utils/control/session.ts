@@ -2,8 +2,7 @@
  * 控制会话：页面与传输层之间唯一的门面。
  *
  * 页面只 import 本模块；BLE 细节、节流、命令构造都在这里或其下层。
- * #8 开关走离散路径；#9 亮度走 20Hz latest-wins 连续路径；#10 颜色复用同一条
- * 连续通道（一个 throttle 实例，避免两路各 20Hz 叠成 40Hz）；#11 在会话层补
+ * #8 开关走离散路径；#9 亮度走 20Hz latest-wins 连续路径；#11 在会话层补
  * 连接生命周期的最后一块：断线通知、1s/2s/4s 有限次退避回连、前台静默回连、
  * deviceId 缓存，以及 10006 / 10008 / 10001 的错误分诊。
  *
@@ -16,6 +15,10 @@
  *  - device-cache.ts：deviceId 缓存（只存身份，不存状态）；
  *  - platform.ts：平台/开发版探测 + 无状态兜底快照。
  * 本文件只保留「命令语义 + 本地状态镜像 + 节流通道」。
+ *
+ * v2（#21）退役了 SetColor 0x03 / SetAll 0x04，颜色由段配置（0x10 SetSegment）
+ * 承担。#25 会围绕分段重建 UI；在那之前 queueColor / commitColor / applyPreset
+ * 是**明确禁用**的占位实现：不发帧、不改本地状态，只让页面给出可见提示。
  */
 
 import { FrameLog } from "../ble/log";
@@ -34,15 +37,12 @@ import {
   clampBrightness,
   effectiveMaxBrightness,
 } from "./brightness";
-import { applyLocalColor, clampRgb, presetBrightness } from "./color";
 import { LED_COUNT_ACK_TIMEOUT_MS } from "./ledCount";
 import { MAX_LEDS, MIN_LEDS } from "../protocol/constants";
 import {
   cmdQueryState,
   cmdSelfTest,
-  cmdSetAll,
   cmdSetBrightness,
-  cmdSetColor,
   cmdSetLedCount,
   cmdSetPower,
 } from "../protocol/commands";
@@ -69,9 +69,20 @@ import { ReconnectSupervisor } from "./reconnect";
 export { DEVICE_CACHE_KEY, detectDevMode, detectPlatform };
 export type { CachedDevice, SessionStorage };
 
-export type ContinuousUpdate =
-  | { kind: "brightness"; value: number }
-  | { kind: "color"; rgb: RGB };
+/**
+ * 连续量只有亮度。v2 退役 SetColor 后，20Hz 通道不再承载颜色
+ * （段配置是离散命令，由 #25 的下发流程负责）。
+ */
+export type ContinuousUpdate = { kind: "brightness"; value: number };
+
+/**
+ * 颜色 / 预设入口在 v2 的占位提示。#25 把这部分重建为分段界面，
+ * 在此之前 UI 必须明确告诉用户功能去哪儿了，而不是静默什么都不做。
+ */
+export const SEGMENTS_UI_NOTICE = "该功能在 v2 分段界面中提供（#25）";
+
+/** 每套灯带在 State 里的 strip_id；多灯带 #29 之前固定 0。 */
+const PRIMARY_STRIP_ID = 0;
 
 export interface SessionOptions {
   platform: "android" | "ios" | "other";
@@ -169,13 +180,10 @@ export class ControlSession {
       },
     );
 
-    // 单一 20Hz 闸门服务亮度与颜色，避免两路各 20Hz 叠成 40Hz。
+    // 20Hz latest-wins 闸门：v2 只剩亮度这一路连续量。
     this.throttle = new LatestWinsThrottle<ContinuousUpdate>(
       (update) => {
-        const req: CommandRequest =
-          update.kind === "brightness"
-            ? cmdSetBrightness(update.value)
-            : cmdSetColor(update.rgb);
+        const req: CommandRequest = cmdSetBrightness(update.value);
         // 连续量只等写回调；ACK 会异步进日志。写失败不重传连续量（spec §9），
         // 但 10006 等链路错误要触发回连检查。
         return this.transport.write(req).then(
@@ -332,7 +340,8 @@ export class ControlSession {
       // 走 #11 的统一命令通道（10008 加间隔重试 / 断线触发重连），
       // 但 ACK 超时仍是 3000ms，且不设 retryOnTimeout：重建是重操作，
       // 超时重发只会撞上 0x05 Busy。
-      const ack = await this.sendCommand(cmdSetLedCount(count), {
+      // v2 载荷带 strip_id；多灯带（#29）之前固定 strip 0。
+      const ack = await this.sendCommand(cmdSetLedCount(PRIMARY_STRIP_ID, count), {
         timeoutMs: LED_COUNT_ACK_TIMEOUT_MS,
       });
       // #11：旧连接上飞行的 ACK 晚到，不得覆盖回连后读到的新 State。
@@ -450,102 +459,34 @@ export class ControlSession {
   }
 
   /**
-   * #10：色环拖动（连续量）。走与亮度同一个 20Hz latest-wins 闸门，
-   * 绝不另开通道（否则两路各 20Hz 会叠成 40Hz）。
+   * 色环拖动（连续量）——v2 占位实现，**不发帧**。
    *
-   * 乐观更新：本地 RGB 立即跟随手指；不等 ACK、不重传（连续量语义）。
-   * 只改颜色，不动 power / brightness（§7：关灯时选色只保存，不点亮）。
+   * v1 的 SetColor 0x03 已退役；单个「颜色」概念在 v2 里属于 strip 0 / seg 0
+   * 的静态段，由 #25 的分段界面处理。这里保持方法签名让页面继续编译，
+   * 但不改动设备状态，也不做乐观更新（避免 UI 显示一个设备上不存在的颜色）。
+   *
+   * TODO(#25)：改名/替换为「下发 strip 0 seg 0 的静态段」的正式路径。
    */
-  queueColor(rgb: RGB): void {
-    if (this.transport.linkState !== "ready") {
-      return;
-    }
-    const color = clampRgb(rgb);
-    this.rememberColor(color);
-    this.throttle.push({ kind: "color", rgb: color });
+  queueColor(_rgb: RGB): void {
+    /* 有意为空：v2 没有单色命令。 */
   }
 
-  /** #10：色环松手——发最新值并 flush，保证最终颜色落地。 */
-  commitColor(rgb: RGB): void {
-    if (this.transport.linkState !== "ready") {
-      return;
-    }
-    const color = clampRgb(rgb);
-    this.rememberColor(color);
-    this.throttle.push({ kind: "color", rgb: color });
-    this.throttle.flush();
+  /** 色环松手——同 queueColor，v2 占位实现不发帧。TODO(#25) */
+  commitColor(_rgb: RGB): void {
+    /* 有意为空：v2 没有单色命令。 */
   }
 
   /**
-   * #10：预设点击 = 一次 SetAll（开关=1、亮度=当前、RGB=预设）。
+   * 预设点击——v2 占位实现，**不发帧**。
    *
-   * 为什么用 SetAll 而不是 SetPower + SetColor：
-   *  - 单帧原子生效，固件只渲染一次，灯带不出现「先变亮再变色」的中间态；
-   *  - 关灯态点预设也能一步点亮（预设 = 场景入口）；
-   *  - 当前亮度为 0 时用最近一次非 0 亮度恢复，避免「点了但没亮」。
+   * v1 用一条 SetAll（0x04）原子写开关 + 亮度 + RGB；0x04 已退役。
+   * 返回 error 而不是 ok，页面据此提示「该功能在 v2 分段界面中提供（#25）」，
+   * 绝不能假装成功。
    *
-   * 关键顺序：先丢弃节流通道里还没发出的旧颜色，再发 SetAll。
-   * 否则拖动残留的颜色可能在 SetAll 之后落地，造成「旧色回跳」。
-   * SetAll 是离散绝对值命令，允许 ACK 超时重发一次。
-   *
-   * ACK 写回本地状态前要再核一次「本地颜色是否仍等于这次请求的颜色」：
-   * 若用户在这条 SetAll 飞行的过程中又拖了色环 / 点了别的预设，本地已经
-   * 是更新的值，旧 ACK 不得把颜色改回去。
+   * TODO(#25)：预设应改成「写入一个静态段」，并沿用亮度恢复规则。
    */
-  async applyPreset(rgb: RGB): Promise<CommandResult> {
-    const epoch = this.reconnect.epoch;
-    try {
-      const color = clampRgb(rgb);
-      const brightness = presetBrightness(this.latestState, this.lastNonZeroBrightness);
-      this.throttle.dropIf((update) => update.kind === "color");
-      this.rememberColor(color);
-      this.rememberBrightness(brightness);
-      const ack = await this.sendCommand(cmdSetAll(1, brightness, color), {
-        retryOnTimeout: 1,
-      });
-      if (this.reconnect.isStale(epoch)) {
-        return { kind: "stale" };
-      }
-      if (!ack.ok) {
-        return { kind: "ack-error", ack };
-      }
-      this.applyPresetLocally(color, brightness);
-      return { kind: "ok", state: this.latestState ?? fallbackState(color, 1, brightness) };
-    } catch (err) {
-      // 异常不折成 stale：用户需要看到「连接已断开」之类的提示。
-      // 只有成功的旧 ACK 才会覆盖新 State，那种情况才丢弃。
-      return { kind: "error", message: errorText(err) };
-    }
-  }
-
-  /**
-   * 预设 ACK 后的本地写回。
-   *
-   * power 一定置 1：SetAll(power=1) 已被设备接受，这是设备事实。
-   * 亮度与颜色只在「本地颜色仍是这次预设色」时覆盖——若用户在这条 SetAll
-   * 飞行过程中又拖了色环 / 点了别的预设，本地已是更新的值，旧 ACK 不得改回。
-   */
-  private applyPresetLocally(color: RGB, brightness: number): void {
-    const state = this.latestState;
-    if (state === null) {
-      return;
-    }
-    if (state.r !== color.r || state.g !== color.g || state.b !== color.b) {
-      this.latestState = { ...state, power: 1 };
-      return;
-    }
-    this.latestState = {
-      ...applyLocalColor(state, color),
-      power: 1,
-      brightness,
-    };
-  }
-
-  /** 乐观更新本地颜色：UI 立即跟手；不动 power / brightness。 */
-  private rememberColor(rgb: RGB): void {
-    if (this.latestState !== null) {
-      this.latestState = applyLocalColor(this.latestState, rgb);
-    }
+  async applyPreset(_rgb: RGB): Promise<CommandResult> {
+    return { kind: "error", message: SEGMENTS_UI_NOTICE };
   }
 
   /** 开关：离散路径，等 ACK。成功时用设备语义更新本地状态。 */
@@ -555,7 +496,7 @@ export class ControlSession {
       // 亮度 0 时直接开灯视觉上等于没开：先用最近一次非 0 亮度恢复。
       // 正常关灯（brightness > 0）不会走这里——SetPower 本身保留亮度（§7）。
       // 这里拆成 SetBrightness + SetPower 两帧（#9 既有行为，保留）；
-      // 两条都是绝对值命令，顺序保证最终状态一致。预设走 SetAll 单帧（#10）。
+      // 两条都是绝对值命令，顺序保证最终状态一致。
       if (on && this.latestState !== null && this.latestState.brightness === 0) {
         const restored = brightnessForPowerOn(
           this.lastNonZeroBrightness,

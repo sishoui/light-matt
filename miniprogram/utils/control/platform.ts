@@ -43,5 +43,12 @@ export function fallbackState(rgb: RGB, power: 0 | 1 = 1, brightness = 0): Devic
     b: rgb.b,
     ledCount: 0,
     maxBrightness: 255,
+    // v2（#21）：State 扩到 14 字节，兜底快照也要填满。
+    stripCount: 1,
+    segCount: 0,
+    scriptId: 0xff,
+    stageIndex: 0,
+    playbackState: 0,
+    flags: 0,
   };
 }

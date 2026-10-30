@@ -1,9 +1,14 @@
 /**
- * 颜色语义（纯函数），#10 颜色与预设端到端。
+ * 颜色语义（纯函数）。
  *
- * 与协议的关系（docs/protocol.md §6/§7）：
- *  - SetColor 0x03 只写 RGB，不动 power / brightness；
- *  - SetAll 0x04 把 power / brightness / RGB 一次原子写入；
+ * v2（#21）退役了 v1 的 SetColor 0x03 / SetAll 0x04，颜色改由段配置
+ * （0x10 SetSegment）承担。这里的纯函数（钳位、本地乐观写回、预设亮度）
+ * 仍然有效，但**下发路径**在 #25 重建分段界面之前是禁用的：
+ * `ControlSession.queueColor / commitColor / applyPreset` 都是占位实现。
+ *
+ * 与协议的关系（docs/protocol.md §7）：
+ *  - State 字节 2-4 是 **strip 0 / seg 0 的基准色**（hue+sat 转 RGB，
+ *    不含动画包络），无 seg 0 时为 0；
  *  - 颜色是用户空间 RGB：App 不做 gamma、不把亮度折进 RGB。
  *
  * 本模块不接触 wx / BLE，可在 vitest 里直接测。
@@ -44,10 +49,10 @@ export function applyLocalColor(state: DeviceState, rgb: RGB): DeviceState {
 }
 
 /**
- * 预设点击时 SetAll 要下发的亮度。
+ * 预设点击时要下发的亮度（亮度 0 时用「最近一次非 0 亮度」恢复）。
  *
- * 常态用当前亮度；只有当前亮度为 0 时用「最近一次非 0 亮度」恢复——
- * 否则 SetAll(power=1, brightness=0) 会让用户以为预设没生效。
+ * v2 暂时没有下发路径（SetAll 已退役，预设改由 #25 的静态段承担）；
+ * 这个函数保留给 #25 复用，单测仍覆盖其边界。
  * 上限取设备上报的 maxBrightness（不硬编码 255）。
  */
 export function presetBrightness(

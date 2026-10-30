@@ -4,11 +4,14 @@
 
 bool lumen_command_is_known(uint8_t command)
 {
+    /*
+     * 只包含「已实现」的命令（docs/protocol.md §11）。0x03 / 0x04 在 v2 退役，
+     * 0x10-0x1A 由 #25 / #32 逐票加入；两者现在都落到 default → 0x02 未知命令，
+     * 小程序能明确看到「该命令需要升级固件」。
+     */
     switch (command) {
     case LUMEN_CMD_SET_POWER:
     case LUMEN_CMD_SET_BRIGHTNESS:
-    case LUMEN_CMD_SET_COLOR:
-    case LUMEN_CMD_SET_ALL:
     case LUMEN_CMD_QUERY_STATE:
     case LUMEN_CMD_SET_LED_COUNT:
     case LUMEN_CMD_SELF_TEST:
@@ -24,15 +27,12 @@ uint8_t lumen_command_payload_len(uint8_t command)
     case LUMEN_CMD_SET_POWER:
     case LUMEN_CMD_SET_BRIGHTNESS:
         return 1;
-    case LUMEN_CMD_SET_COLOR:
-        return 3;
-    case LUMEN_CMD_SET_ALL:
-        return 5;
     case LUMEN_CMD_QUERY_STATE:
     case LUMEN_CMD_SELF_TEST:
         return 0;
     case LUMEN_CMD_SET_LED_COUNT:
-        return 2;
+        /* v2：strip_id + count 小端（docs/protocol.md §6）。 */
+        return 3;
     default:
         return 0;
     }
@@ -84,78 +84,13 @@ static void dispatch_set_brightness(const lumen_frame_t *frame,
     }
 }
 
-/*
- * SetColor 0x03：载荷 3 字节 R, G, B，各 0-255，没有非法取值。
- *
- * 关键语义：
- *  - 颜色是用户空间 RGB，命令层不做 gamma；gamma 只发生在渲染路径
- *    （led_engine → lumen_gamma_apply），见 protocol §7 与 spec §6。
- *  - 只写 r/g/b，绝不动 power 与 brightness：关灯时选颜色也会保存下来，
- *    开灯即生效；调色不会顺带开灯或改亮度。
- *  - 三个字节都与当前值相同时不 commit（ACK 仍为 0x00）。
- */
-static void dispatch_set_color(const lumen_frame_t *frame, const lumen_state_t *current,
-                               lumen_command_outcome_t *outcome)
-{
-    uint8_t r = frame->payload[0];
-    uint8_t g = frame->payload[1];
-    uint8_t b = frame->payload[2];
-
-    outcome->result_code = LUMEN_RESULT_OK;
-    if (current->r != r || current->g != g || current->b != b) {
-        outcome->next.r = r;
-        outcome->next.g = g;
-        outcome->next.b = b;
-        outcome->state_changed = true;
-    }
-}
-
-/*
- * SetAll 0x04：载荷 5 字节 power, brightness, R, G, B，按 §11.1 原子生效。
- *
- * 关键语义：
- *  - 原子性：power 不是 0/1 时回 0x01，brightness / RGB 一个都不写。
- *    实现方式就是「先校验，后赋值」——任何字段校验失败都在第一次赋值之前返回。
- *  - brightness 与 SetBrightness 同一条钳位规则（§11.4）：越界不拒绝，钳位后回 0x00。
- *  - 即使 power = 0，载荷里的 brightness / RGB 也会被保存（§7）：关灯保留颜色与亮度。
- *  - RGB 是用户空间颜色，命令层不做 gamma。
- *  - 五个字段（钳位后的 brightness）与当前值全部相同则不 commit。
- */
-static void dispatch_set_all(const lumen_frame_t *frame, const lumen_state_t *current,
-                             uint8_t max_brightness, lumen_command_outcome_t *outcome)
-{
-    uint8_t power = frame->payload[0];
-    if (power > 1) {
-        /* §11.1：power 非法 → 0x01，整帧不生效。 */
-        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
-        return;
-    }
-
-    uint8_t brightness = lumen_state_clamp_brightness(frame->payload[1], max_brightness);
-    uint8_t r = frame->payload[2];
-    uint8_t g = frame->payload[3];
-    uint8_t b = frame->payload[4];
-
-    outcome->result_code = LUMEN_RESULT_OK;
-    if (current->power != power || current->brightness != brightness || current->r != r ||
-        current->g != g || current->b != b) {
-        outcome->next.power = power;
-        outcome->next.brightness = brightness;
-        outcome->next.r = r;
-        outcome->next.g = g;
-        outcome->next.b = b;
-        outcome->state_changed = true;
-    }
-}
-
 bool lumen_command_changes_state(uint8_t command)
 {
-    /* 协议 §11.2 第 5 条列出的五类命令；QueryState / SelfTest 不在其中。 */
+    /* 协议 §11.2 第 5 条列出的改变状态命令；QueryState / SelfTest 不在其中。
+     * v2 的 0x03 / 0x04 已退役，不再属于这一类别。 */
     switch (command) {
     case LUMEN_CMD_SET_POWER:
     case LUMEN_CMD_SET_BRIGHTNESS:
-    case LUMEN_CMD_SET_COLOR:
-    case LUMEN_CMD_SET_ALL:
     case LUMEN_CMD_SET_LED_COUNT:
         return true;
     default:
@@ -164,19 +99,27 @@ bool lumen_command_changes_state(uint8_t command)
 }
 
 /*
- * SetLedCount 0x06：载荷 2 字节小端，合法 1-64（§6）。
+ * SetLedCount 0x06：v2 载荷 3 字节 strip_id, count_lo, count_hi，合法数量 1-64（§6）。
  *
  * 关键语义（§11.3）：
  *  - 这里只校验并标记「需要重建」。数量必须在渲染任务重建 led_strip 成功后
  *    才写入共享状态，ACK 也要等重建结果——所以本 reducer 不改 next、
  *    state_changed 保持 false，由 led_engine 在重建完成时提交 / 回滚。
+ *  - strip_id 目前只接受 0：多灯带（#29）尚未实现，其它值回 0x01。
+ *    先校验 strip_id 再校验数量，保证「这条命令到底改哪条灯带」先被确认。
  *  - 越界（0、>64、小端读出的 65535 等）→ 0x01，不请求重建、不改状态。
  *  - 与当前数量相同时由 led_engine 判为「无需重建」，直接回 0x00。
  */
 static void dispatch_set_led_count(const lumen_frame_t *frame,
                                    lumen_command_outcome_t *outcome)
 {
-    uint16_t count = (uint16_t)(frame->payload[0] | ((uint16_t)frame->payload[1] << 8));
+    uint8_t strip_id = frame->payload[0];
+    if (strip_id != 0) {
+        /* 多灯带 #29 落地；现在设备只有一条灯带，拒绝而不是静默忽略。 */
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    uint16_t count = (uint16_t)(frame->payload[1] | ((uint16_t)frame->payload[2] << 8));
     if (count < 1 || count > LUMEN_MAX_LEDS) {
         outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
         return;
@@ -223,14 +166,6 @@ void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *cur
 
     case LUMEN_CMD_SET_BRIGHTNESS:
         dispatch_set_brightness(frame, current, max_brightness, outcome);
-        break;
-
-    case LUMEN_CMD_SET_COLOR:
-        dispatch_set_color(frame, current, outcome);
-        break;
-
-    case LUMEN_CMD_SET_ALL:
-        dispatch_set_all(frame, current, max_brightness, outcome);
         break;
 
     case LUMEN_CMD_SET_LED_COUNT:
