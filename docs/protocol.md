@@ -145,15 +145,18 @@ v1 已稳定语义的命令字保持不变；`0x03` / `0x04` **退役**；新命
 `lumen_command_is_known()` **只包含已实现的命令**。未实现的 v2 命令回 `UnknownCommand (0x02)`，因此小程序会明确看到「该命令需要升级固件」而不是静默成功。
 
 **#21 交付后已实现**：`0x01` `0x02` `0x05` `0x06` `0x07`。
-**#25 交付后新增实现**：`0x10 SetSegment`（仅静态 type `0x00`）、`0x11 ClearSegment`、`0x12 QueryStrip`，
+**#25 交付后新增实现**：`0x10 SetSegment`（静态 type `0x00`）、`0x11 ClearSegment`、`0x12 QueryStrip`，
 以及设备回报 `0x83 SegmentReport` / `0x84 SegmentListEnd`。
+**#30 交付后新增实现**：`0x10 SetSegment` 支持呼吸 `type 0x01`（12 字节载荷；`period_ms ≥ 334`
+与 flags 保留位按 §11.3 第 8/9 步校验），固件侧加入静态/动画双模帧循环
+（`CONFIG_LUMEN_ANIM_FPS`，默认 10，区间 5-30）。
 `0x03` / `0x04` 退役 → 回 `0x02`。
 `0x13`–`0x1A`（播放控制与剧本）由 #32 加入；在它落地前，这些命令字**已分配但未实现**，设备回 `0x02`。
 
-> **动画类型（`0x01`-`0x03`）的现状**：字节布局已固定（12 字节载荷），但像素实现由
-> #30 / #31 交付。当前设备对这三类**回 `0x02 UnknownCommand`**——不是 `InvalidParam`，
-> 也不是静默变黑：类型是协议已知的，只是固件还没实现那个灯效。小程序据此提示
-> 「该灯效需要升级固件」（D7 不静默降级）。
+> **动画类型的现状**：呼吸 `0x01` 已实现；彩虹 `0x02` / 流光 `0x03` 的字节布局同样固定
+> （12 字节载荷），但像素实现由 #31 交付。当前设备对这两类**回 `0x02 UnknownCommand`**——
+> 不是 `InvalidParam`，也不是静默变黑：类型是协议已知的，只是固件还没实现那个灯效。
+> 小程序据此提示「该灯效需要升级固件」（D7 不静默降级）。
 
 ### 6.2 SetPower / SetBrightness / SetLedCount
 
@@ -456,18 +459,25 @@ magic (0x08) → version (0x07) → length (0x04) → checksum (0x03)
   `SetPlayback`、`ScriptBegin`、`ScriptStage`、
   `ScriptCommit`、`ScriptAbort`、`ActivateScript`、`QueryScript`；
   **#25 已把 `SetSegment`（静态 8B）/ `ClearSegment` / `QueryStrip` 的结果码从 2 改为 0**，
-  `set_segment_breathing` 仍为 2（动画像素由 #30 实现）；
+  **#30 已把 `set_segment_breathing` 改为 0**（呼吸像素已实现）；
 - **#25 新增的段校验用例**：`set_segment_overlap`（带 `prior_segments: "0:0-15"` 前置段表，回 1）、
   `set_segment_out_of_range`（回 1）、`set_segment_bad_length`（7 字节静态载荷，回 4）、
   `set_segment_unknown_type`（type 0x07，回 1）；
+- **#30 新增的呼吸用例**：
+  `set_segment_breathing_period_too_short`（period 333 < 334，回 1）、
+  `set_segment_breathing_bad_flags`（flags bit3 置位，回 1）、
+  `set_segment_breathing_with_static`（同一灯带一段呼吸 + 一段静态，带
+  `prior_segments: "0:20-29"`，回 0）、
+  `set_segment_breathing_period_zero`（period 0 = 静止，回 0）、
+  `set_segment_breathing_period_max`（period 65535 = 相位天花板，回 0）；
 - **设备回报**：ACK 各结果码、Event、14 字节 StateReport、`SegmentReport`、
   `SegmentListEnd`、`ScriptSummary`、`ScriptProgress`；
 - **信封失败**：坏校验、坏 magic、短帧、长度不符、超长。
 
 > **布局钉死用例的 `result_code: 2` 只是当下事实**：#21 时 `0x10`–`0x1A` 尚未实现，设备回 UnknownCommand。
 > 向量把**字节布局**固定下来（`frame_hex` 是权威），实现票落地后只需把 `result_code` 改成 `0`。
-> #25 已把 `SetSegment`（静态）/ `ClearSegment` / `QueryStrip` 翻成 `0`；剧本类命令字
-> 与 `set_segment_breathing`（动画像素待 #30）仍为 `2`。
+> #25 已把 `SetSegment`（静态）/ `ClearSegment` / `QueryStrip` 翻成 `0`；#30 把
+> `set_segment_breathing` 翻成 `0`；剧本类命令字（`0x13`–`0x1A`）仍为 `2`，等 #32。
 
 ## 14. 变更规则
 

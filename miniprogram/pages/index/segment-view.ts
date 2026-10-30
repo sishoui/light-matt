@@ -10,7 +10,8 @@
  *    空闲槽位；空闲与否以设备最近一次 QueryStrip 的 seg_mask 为准。
  */
 
-import { MAX_SEGMENTS } from "../../utils/protocol/constants";
+import { MAX_SEGMENTS, SEGMENT_TYPE, WAVEFORM_NAMES } from "../../utils/protocol/constants";
+import { breathingWaveform } from "../../utils/protocol/commands";
 import type { RGB, SegmentReport, SegmentTarget } from "../../utils/protocol/types";
 import { rgbToHex } from "../../utils/color/hsv";
 
@@ -19,13 +20,20 @@ export interface SegmentRow {
   segId: number;
   start: number;
   end: number;
-  /** 展示色。静态段由 hue+sat 算出；动画段不参与 #25 的颜色编辑。 */
+  /** 展示色。四种灯效都有 hue+sat 基准色，静态段即其像素色。 */
   hex: string;
   /** 区间文本，如 "0-15"。 */
   rangeText: string;
+  /** 类型标签（"静态" / "呼吸·正弦 1000ms" / …）。 */
+  typeText: string;
+  /** 选中态。 */
   selected: boolean;
-  /** 是否是可编辑的静态段（#25 只有静态）。 */
+  /** 是否可编辑（目前四种类型都可选中编辑）。 */
   editable: boolean;
+  /** 是否动画类（UI 据此显示 / 隐藏呼吸参数区）。 */
+  animated: boolean;
+  /** 呼吸专属参数展示（非呼吸段为空串）。 */
+  breathText: string;
 }
 
 export interface RangeInputResult {
@@ -114,8 +122,11 @@ export function overlapError(
 /**
  * 把设备的 SegmentReport 列表转成行视图。
  *
- * 颜色只对静态段有意义（hue+sat → RGB）；动画段由 #30/#31 交付，这里给
- * 一个中性灰并要求固件支持后才能编辑颜色。
+ * 四种灯效都有 hue+sat 基准色（effects-spec §2），所以色块对任何类型都可用：
+ * 静态段就是它的像素色，呼吸段是它脉动的基色。
+ *
+ * #30：呼吸段额外带周期 / 波形 / 最暗亮度的可读文本，UI 据此显示参数；
+ * 动画类型标记 animated = true，只有静态段是 false。
  */
 export function buildSegmentRows(
   reports: readonly SegmentReport[],
@@ -126,18 +137,75 @@ export function buildSegmentRows(
     .slice()
     .sort((a, b) => a.segId - b.segId)
     .map((report) => {
-      const editable = report.type === 0x00;
       const rgb = hueSatToRgb(report.hue, report.sat);
-      return {
-        segId: report.segId,
-        start: report.start,
-        end: report.end,
-        hex: editable ? rgbToHex(rgb) : "#3A3A44",
-        rangeText: `${report.start}-${report.end}`,
-        selected: selectedSegId === report.segId,
-        editable,
-      };
+      const animated = report.type !== SEGMENT_TYPE.STATIC;
+      switch (report.type) {
+        case SEGMENT_TYPE.BREATHING:
+          return {
+            segId: report.segId,
+            start: report.start,
+            end: report.end,
+            hex: rgbToHex(rgb),
+            rangeText: `${report.start}-${report.end}`,
+            typeText: "呼吸",
+            selected: selectedSegId === report.segId,
+            editable: true,
+            animated: true,
+            breathText: breathingLabel(report),
+          };
+        case SEGMENT_TYPE.RAINBOW:
+          return baseRow(report, rgb, selectedSegId, "彩虹", true);
+        case SEGMENT_TYPE.COMET:
+          return baseRow(report, rgb, selectedSegId, "流光", true);
+        default:
+          return baseRow(report, rgb, selectedSegId, "静态", animated);
+      }
     });
+}
+
+/** 非呼吸类型的统一行构造（不含 breathText）。 */
+function baseRow(
+  report: SegmentReport,
+  rgb: RGB,
+  selectedSegId: number | null,
+  typeText: string,
+  animated: boolean,
+): SegmentRow {
+  return {
+    segId: report.segId,
+    start: report.start,
+    end: report.end,
+    hex: rgbToHex(rgb),
+    rangeText: `${report.start}-${report.end}`,
+    typeText,
+    selected: selectedSegId === report.segId,
+    editable: true,
+    animated,
+    breathText: "",
+  };
+}
+
+/**
+ * 呼吸参数的可读文本，如 "正弦 · 1000ms · 最暗 24%"。
+ *
+ * period_ms = 0 是「静止」（effects-spec §3.2），要明确说出来，
+ * 否则用户会以为周期设置没生效。
+ */
+export function breathingLabel(report: SegmentReport): string {
+  if (report.periodMs === 0) {
+    return `静止 · 最暗 ${percentOf255(report.p5)}`;
+  }
+  return `${waveformName(report.flags)} · ${report.periodMs}ms · 最暗 ${percentOf255(report.p5)}`;
+}
+
+/** flags → 波形名（bits1-2）。 */
+export function waveformName(flags: number): string {
+  return WAVEFORM_NAMES[breathingWaveform(flags)] ?? "正弦";
+}
+
+/** p5（0-255）→ 百分比文本。 */
+export function percentOf255(value: number): string {
+  return `${Math.round((value / 255) * 100)}%`;
 }
 
 /** 从行视图里摘出目标段（颜色控件要写的位置）。 */

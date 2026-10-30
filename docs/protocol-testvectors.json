@@ -421,8 +421,69 @@
       "frame_hex": "A50210190C0001000901100EFFF4016000A6",
       "command_name": "SetSegment",
       "frame_valid": true,
-      "result_code": 2,
-      "note": "布局固定；呼吸像素由 #30 实现，当前回 UnknownCommand（不静默变黑）"
+      "result_code": 0,
+      "note": "已实现（#30）：呼吸段 12B 载荷，设备回 OK；period 500ms / min_level 0x60 / 正弦"
+    },
+    {
+      "name": "set_segment_breathing_period_max",
+      "direction": "app_to_device",
+      "command": 16,
+      "seq": 38,
+      "payload_hex": "0001000901100EFFFFFF0000",
+      "command_name": "SetSegment",
+      "frame_valid": true,
+      "result_code": 0,
+      "note": "period_ms = 65535（相位计算的天花板，effects-spec §6）→ OK",
+      "frame_hex": "A50210260C0001000901100EFFFFFF0000F0"
+    },
+    {
+      "name": "set_segment_breathing_with_static",
+      "direction": "app_to_device",
+      "command": 16,
+      "seq": 36,
+      "payload_hex": "0001000901100EFFF4016000",
+      "command_name": "SetSegment",
+      "frame_valid": true,
+      "result_code": 0,
+      "prior_segments": "0:20-29",
+      "note": "同一灯带一段呼吸 [0-9] + 已有静态段 [20-29] 共存 → OK（不重叠）",
+      "frame_hex": "A50210240C0001000901100EFFF40160009B"
+    },
+    {
+      "name": "set_segment_breathing_bad_flags",
+      "direction": "app_to_device",
+      "command": 16,
+      "seq": 35,
+      "payload_hex": "0001000901100EFFF4016008",
+      "command_name": "SetSegment",
+      "frame_valid": true,
+      "result_code": 1,
+      "note": "呼吸 flags 保留位 bit3 置位 → InvalidParam（§11.3 第 8 步）",
+      "frame_hex": "A50210230C0001000901100EFFF401600894"
+    },
+    {
+      "name": "set_segment_breathing_period_zero",
+      "direction": "app_to_device",
+      "command": 16,
+      "seq": 37,
+      "payload_hex": "0001000901100EFF00000100",
+      "command_name": "SetSegment",
+      "frame_valid": true,
+      "result_code": 0,
+      "note": "period_ms = 0 是合法的「静止」，不受 334 下限约束 → OK",
+      "frame_hex": "A50210250C0001000901100EFF00000100EE"
+    },
+    {
+      "name": "set_segment_breathing_period_too_short",
+      "direction": "app_to_device",
+      "command": 16,
+      "seq": 34,
+      "payload_hex": "0001000901100EFF4D016000",
+      "command_name": "SetSegment",
+      "frame_valid": true,
+      "result_code": 1,
+      "note": "period_ms = 333 < 334（3Hz 下限）→ InvalidParam，旧配置不变",
+      "frame_hex": "A50210220C0001000901100EFF4D01600044"
     },
     {
       "name": "script_segment_static",

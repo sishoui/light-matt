@@ -174,7 +174,12 @@ static void dispatch_set_led_count(const lumen_frame_t *frame, const lumen_state
  *
  * 载荷布局（docs/protocol.md §6）：
  *   0 strip_id | 1 seg_id | 2 start | 3 end | 4 type | 5.. params
- * 静态参数（§2.1）：5-6 hue 小端 | 7 sat。
+ *
+ * 静态参数（§2.1，3 字节）：5-6 hue 小端 | 7 sat。
+ * 动画参数（§2.2-§2.4，7 字节）：5-6 hue | 7 sat | 8-9 period_ms 小端 | 10 p5 | 11 flags。
+ *
+ * 调用方已确认 payload_len 与 type 的期望长度一致（第 3 步），所以这里
+ * 按 param_len 而不是按 payload_len 读取——未知 type 走不到这里。
  */
 static void parse_segment_payload(const lumen_frame_t *frame, lumen_segment_t *seg)
 {
@@ -188,19 +193,26 @@ static void parse_segment_payload(const lumen_frame_t *frame, lumen_segment_t *s
     seg->p5 = 0;
     seg->flags = 0;
     seg->t0_ms = 0; /* 生效时刻由 led_engine 在真正写入时填 */
+
+    if (lumen_effect_param_len(seg->type) > 3u) {
+        /* 动画类共用 hue(2)+sat(1)+period(2)+p5(1)+flags(1) 的前缀布局。 */
+        seg->period_ms = (uint16_t)(frame->payload[8] | ((uint16_t)frame->payload[9] << 8));
+        seg->p5 = frame->payload[10];
+        seg->flags = frame->payload[11];
+    }
 }
 
 /*
- * SetSegment 0x10（#25）。
+ * SetSegment 0x10（#25 / #30）。
  *
  * 校验顺序严格按 docs/protocol.md §11.3：
- *   3 载荷长度（在 lumen_command_payload_len_ok / 上方完成）
+ *   3 载荷长度（在 lumen_command_payload_len_ok / 上方完成，先读 type 再定长）
  *   4 type 已知
  *   5-9 strip 范围 / 区间 / 重叠 / flags / 周期 —— lumen_segment_store_validate
  *
- * type 属于协议定义的四种但像素实现尚未落地（0x01-0x03，由 #30/#31 交付）时
- * 回 UnknownCommand 而不是静默变黑：与 §6.1「未实现的 v2 命令回 0x02」同一原则，
- * 小程序据此提示「该灯效需要升级固件」（D7 不静默降级）。
+ * #30 起呼吸（0x01）可下发；彩虹 / 流光（0x02/0x03）仍由 #31 交付，
+ * 此时回 UnknownCommand 而不是静默变黑：与 §6.1「未实现的 v2 命令回 0x02」
+ * 同一原则，小程序据此提示「该灯效需要升级固件」（D7 不静默降级）。
  */
 static void dispatch_set_segment(const lumen_frame_t *frame, const lumen_state_t *current,
                                  const lumen_segment_store_t *segments,

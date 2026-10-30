@@ -68,14 +68,23 @@ import type {
   SegmentReport,
   SegmentTarget,
 } from "../../utils/protocol/types";
-import { MAX_SEGMENTS } from "../../utils/protocol/constants";
+import {
+  BREATHING_MIN_PERIOD_MS,
+  MAX_PERIOD_MS,
+  MAX_SEGMENTS,
+  SEGMENT_TYPE,
+  WAVEFORM,
+  WAVEFORM_NAMES,
+} from "../../utils/protocol/constants";
 import { LogPanelView } from "./log-panel-view";
 import {
   activeCount,
+  breathingLabel,
   buildSegmentRows,
   firstFreeSegId,
   overlapError,
   parseRangeInput,
+  waveformName,
   type SegmentRow,
 } from "./segment-view";
 import { COLOR_UI_INTERVAL_MS, WheelView } from "./wheel-view";
@@ -129,6 +138,29 @@ Page({
     rangeEndInput: "",
     segmentHintText: "",
     segmentBusy: false,
+
+    // 呼吸参数（#30）：选中呼吸段时显示。
+    // period 是滑块值（毫秒）；0 = 静止，其余从 334 起（3Hz 下限）。
+    // segmentMode 是新段 / 当前编辑段的灯效模式：静态单色 vs 呼吸。
+    segmentMode: "static" as "static" | "breathing",
+    breathingVisible: false,
+    breathingPeriod: 1000,
+    breathingPeriodText: "1000ms",
+    breathingMinLevel: 0,
+    breathingMinLevelText: "0%",
+    breathingWaveform: WAVEFORM.SINE as number,
+    breathingWaveformName: WAVEFORM_NAMES[WAVEFORM.SINE],
+    breathingBusy: false,
+    breathingHintText: "",
+    breathingMinPeriod: BREATHING_MIN_PERIOD_MS,
+    breathingMaxPeriod: MAX_PERIOD_MS,
+    // 波形选择器的展示项（索引 = 枚举值）
+    waveformOptions: [
+      { value: WAVEFORM.SINE, name: WAVEFORM_NAMES[WAVEFORM.SINE] },
+      { value: WAVEFORM.TRIANGLE, name: WAVEFORM_NAMES[WAVEFORM.TRIANGLE] },
+      { value: WAVEFORM.SAWTOOTH, name: WAVEFORM_NAMES[WAVEFORM.SAWTOOTH] },
+      { value: WAVEFORM.SQUARE, name: WAVEFORM_NAMES[WAVEFORM.SQUARE] },
+    ],
 
     // 扫描 / 设备弹层
     sheetVisible: false,
@@ -811,15 +843,11 @@ Page({
     this.setData({ rangeEndInput: String(e.detail.value ?? ""), segmentHintText: "" });
   },
 
-  /** 点选某一行：把颜色控件切到该段。 */
+  /** 点选某一行：把颜色控件（与呼吸参数区）切到该段。 */
   onSegmentTap(e: WechatMiniprogram.TouchEvent) {
     const segId = Number(e.currentTarget.dataset.segId ?? -1);
     const report = this.segmentReports.find((item) => item.segId === segId);
     if (report === undefined) {
-      return;
-    }
-    if (report.type !== 0x00) {
-      wx.showToast({ title: "该段是动画灯效，颜色由灯效参数决定", icon: "none" });
       return;
     }
     this.applySegmentRows(segId);
@@ -910,7 +938,17 @@ Page({
       if (session === null) {
         return;
       }
-      const result = await session.setSegmentColor(target, rgb);
+      /* 模式决定下发哪一类段（#30）：呼吸走 type=0x01 + 参数块，否则静态。 */
+      const result =
+        this.data.segmentMode === "breathing"
+          ? await session.setSegmentBreathing(
+              target,
+              rgb,
+              this.data.breathingPeriod,
+              this.data.breathingMinLevel,
+              this.data.breathingWaveform,
+            )
+          : await session.setSegmentColor(target, rgb);
       if (result.kind === "ok") {
         this.setData({
           segmentHintText: `段 ${segId} 已生效：灯珠 ${parsed.start}-${parsed.end}`,
@@ -973,6 +1011,139 @@ Page({
     await this.refreshSegments(this.data.selectedSegId >= 0 ? this.data.selectedSegId : -1);
   },
 
+  // ---------------- 呼吸参数（#30） ----------------
+
+  /**
+   * 切换「新段灯效模式」：静态单色 vs 呼吸。
+   *
+   * 只影响下一次「新建区间」下发哪种类型；已有段要改类型就选中它、
+   * 切模式再点参数区的「应用」。
+   */
+  onSegmentModeTap(e: WechatMiniprogram.TouchEvent) {
+    const mode = e.currentTarget.dataset.mode === "breathing" ? "breathing" : "static";
+    this.setData({
+      segmentMode: mode,
+      breathingVisible: mode === "breathing",
+      segmentHintText:
+        mode === "breathing"
+          ? "呼吸模式：划区间后即按下面的周期 / 波形 / 最暗亮度下发"
+          : "",
+    });
+  },
+
+  /**
+   * 周期滑块（拖动中，仅更新读数，不发帧）。
+   *
+   * 滑块值 0 表示「静止」；其它值一律钳到 334ms 以上（3Hz 下限）。
+   * 拖动中不发 SetSegment：呼吸参数是绝对值，松手才提交，避免 20Hz 级
+   * 写入把 BLE 写队列塞满（连续量只有色环走节流通道）。
+   */
+  onBreathingPeriodChanging(e: WechatMiniprogram.SliderChange) {
+    const raw = Number(e.detail.value ?? 0);
+    const period = raw === 0 ? 0 : Math.max(raw, BREATHING_MIN_PERIOD_MS);
+    this.setData({
+      breathingPeriod: period,
+      breathingPeriodText: period === 0 ? "静止" : `${period}ms`,
+      breathingHintText:
+        raw !== 0 && raw < BREATHING_MIN_PERIOD_MS
+          ? `周期下限 ${BREATHING_MIN_PERIOD_MS}ms（约 3Hz）`
+          : "",
+    });
+  },
+
+  /** 周期滑块松手：提交呼吸段。 */
+  async onBreathingPeriodChange(e: WechatMiniprogram.SliderChange) {
+    const raw = Number(e.detail.value ?? 0);
+    const period = raw === 0 ? 0 : Math.max(raw, BREATHING_MIN_PERIOD_MS);
+    this.setData({
+      breathingPeriod: period,
+      breathingPeriodText: period === 0 ? "静止" : `${period}ms`,
+    });
+    await this.applyBreathing();
+  },
+
+  /** 最暗亮度滑块（0-255）：拖动中仅显示百分比。 */
+  onBreathingMinLevelChanging(e: WechatMiniprogram.SliderChange) {
+    const value = clampByte(Number(e.detail.value ?? 0));
+    this.setData({
+      breathingMinLevel: value,
+      breathingMinLevelText: percentText(value),
+    });
+  },
+
+  /** 最暗亮度滑块松手：提交。 */
+  async onBreathingMinLevelChange(e: WechatMiniprogram.SliderChange) {
+    const value = clampByte(Number(e.detail.value ?? 0));
+    this.setData({
+      breathingMinLevel: value,
+      breathingMinLevelText: percentText(value),
+    });
+    await this.applyBreathing();
+  },
+
+  /** 波形选择：0 正弦 / 1 三角 / 2 锯齿 / 3 方波，点选即提交。 */
+  async onBreathingWaveformTap(e: WechatMiniprogram.TouchEvent) {
+    const value = Number(e.currentTarget.dataset.value ?? WAVEFORM.SINE);
+    if (value < 0 || value > 3) {
+      return;
+    }
+    this.setData({
+      breathingWaveform: value,
+      breathingWaveformName: WAVEFORM_NAMES[value],
+    });
+    await this.applyBreathing();
+  },
+
+  /**
+   * 把当前选中段改成呼吸（或更新它的呼吸参数）：SetSegment type=0x01。
+   *
+   * 语义与颜色一致：设备是权威，成功后重新 QueryStrip 拉回并重建行视图；
+   * 被拒（InvalidParam）时**不改本地列表**，提示原因。
+   * 基准色用色环当前 RGB —— 呼吸只是在那个色上脉冲。
+   */
+  async applyBreathing() {
+    if (session === null || this.data.breathingBusy || !this.data.ready) {
+      return;
+    }
+    const target = this.activeTarget();
+    if (target === null) {
+      wx.showToast({ title: "先选择或新建一个灯珠区间", icon: "none" });
+      return;
+    }
+    const rgb = this.wheelView?.rgb() ?? PRESETS[0].rgb;
+    this.setData({ breathingBusy: true, breathingHintText: "正在下发…" });
+    try {
+      const result = await session.setSegmentBreathing(
+        target,
+        rgb,
+        this.data.breathingPeriod,
+        this.data.breathingMinLevel,
+        this.data.breathingWaveform,
+      );
+      if (result.kind === "ok") {
+        this.setData({
+          breathingHintText: `已切换为呼吸：${this.data.breathingPeriod === 0 ? "静止" : `${this.data.breathingPeriod}ms`} · ${WAVEFORM_NAMES[this.data.breathingWaveform]}`,
+        });
+        await this.refreshSegments(target.segId);
+        return;
+      }
+      if (result.kind === "ack-error") {
+        const message = segmentRejectHint(result.ack.resultCode);
+        this.setData({ breathingHintText: message });
+        wx.showToast({ title: message, icon: "none" });
+        return;
+      }
+      if (result.kind === "stale") {
+        this.setData({ breathingHintText: "" });
+        return;
+      }
+      this.setData({ breathingHintText: result.message });
+      wx.showToast({ title: result.message, icon: "none" });
+    } finally {
+      this.setData({ breathingBusy: false });
+    }
+  },
+
   /**
    * 从设备拉取段列表（QueryStrip）并重建行视图。
    *
@@ -1001,21 +1172,28 @@ Page({
     this.applySegmentRows(stillThere ? current : -1);
   },
 
-  /** 统一写行视图 + 选中态 + 颜色控件目标（设备权威的数据）。 */
+  /**
+   * 统一写行视图 + 选中态 + 颜色控件目标（设备权威的数据）。
+   *
+   * #30：选中呼吸段时同时刷新呼吸参数区（周期 / 最暗亮度 / 波形），
+   * 选中静态段或没有段时隐藏该区。颜色控件对四种类型都可用（都有
+   * hue+sat 基准色），但只有呼吸段显示波形等专属参数。
+   */
   applySegmentRows(segId: number) {
     const rows = buildSegmentRows(this.segmentReports, segId >= 0 ? segId : null, segmentHueSatToRgb);
     const report = this.segmentReports.find((item) => item.segId === segId);
-    let activeTarget: SegmentTarget | null = null;
-    if (report !== undefined && report.type === 0x00) {
-      activeTarget = {
-        stripId: PRIMARY_STRIP_ID,
-        segId: report.segId,
-        start: report.start,
-        end: report.end,
-      };
-    }
+    const activeTarget: SegmentTarget | null =
+      report === undefined
+        ? null
+        : {
+            stripId: PRIMARY_STRIP_ID,
+            segId: report.segId,
+            start: report.start,
+            end: report.end,
+          };
     session?.setActiveSegment(activeTarget);
-    this.setData({
+
+    const patch: Record<string, unknown> = {
       segmentRows: rows,
       selectedSegId: activeTarget === null ? -1 : activeTarget.segId,
       colorHintText: colorHintText(this.data.ready, activeTarget),
@@ -1023,7 +1201,31 @@ Page({
         rows.length === 0
           ? "还没有段。输入起点与终点，再点「新建区间」"
           : `共 ${activeCount(rows)} / ${MAX_SEGMENTS} 段`,
-    });
+    };
+    if (report !== undefined && report.type === SEGMENT_TYPE.BREATHING) {
+      const period = report.periodMs;
+      patch.segmentMode = "breathing";
+      patch.breathingVisible = true;
+      patch.breathingPeriod = period;
+      patch.breathingPeriodText = period === 0 ? "静止" : `${period}ms`;
+      patch.breathingMinLevel = report.p5;
+      patch.breathingMinLevelText = percentText(report.p5);
+      patch.breathingWaveform = breathingWaveformOf(report.flags);
+      patch.breathingWaveformName = waveformName(report.flags);
+      patch.breathingHintText = breathingLabel(report);
+    } else {
+      patch.segmentMode = "static";
+      patch.breathingVisible = false;
+      /* 新建区间时默认值：1s、能暗到全黑、正弦（与 UI 初始值一致）。 */
+      patch.breathingPeriod = 1000;
+      patch.breathingPeriodText = "1000ms";
+      patch.breathingMinLevel = 0;
+      patch.breathingMinLevelText = "0%";
+      patch.breathingWaveform = WAVEFORM.SINE;
+      patch.breathingWaveformName = WAVEFORM_NAMES[WAVEFORM.SINE];
+      patch.breathingHintText = "";
+    }
+    this.setData(patch);
   },
 
   /** 当前选中段（颜色控件的目标），没有则为 null。 */
@@ -1096,6 +1298,8 @@ Page({
           segmentRows: [],
           selectedSegId: -1,
           segmentHintText: "",
+          breathingVisible: false,
+          breathingHintText: "",
         });
       }
     }
@@ -1171,7 +1375,7 @@ Page({
 function segmentRejectHint(resultCode: number): string {
   switch (resultCode) {
     case 0x01:
-      return "设备拒绝：区间越界或与其它段重叠";
+      return "设备拒绝：区间越界、与其它段重叠，或周期短于 334ms";
     case 0x02:
       return "该灯效需要升级固件";
     case 0x04:
@@ -1179,4 +1383,22 @@ function segmentRejectHint(resultCode: number): string {
     default:
       return `设置失败：${resultText(resultCode)}`;
   }
+}
+
+/** 0-255 的整数钳位（滑块的 value 来自事件，未必是整数）。 */
+function clampByte(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.min(255, Math.max(0, Math.round(value)));
+}
+
+/** p5（0-255）→ 百分比文本。 */
+function percentText(value: number): string {
+  return `${Math.round((clampByte(value) / 255) * 100)}%`;
+}
+
+/** flags bits1-2 → 波形枚举。 */
+function breathingWaveformOf(flags: number): number {
+  return (flags >> 1) & 0x03;
 }

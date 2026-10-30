@@ -60,3 +60,21 @@ bool lumen_led_render_strip_is_animated(const lumen_segment_store_t *segments,
  * 新句柄的像素缓冲是空的（重建后）以及上电补发窗口内都必须调用。
  */
 void lumen_led_render_invalidate(void);
+
+/*
+ * 帧循环的累计计数（#30）：
+ *   drawn   —— 真正写进灯带的帧数（refresh 成功）
+ *   skipped —— 像素与上一帧逐字节相同而跳过 refresh 的次数
+ *
+ * 用途是让「静态不空转、动画持续刷」在串口上可判定：动画模式下 drawn
+ * 随帧率增长；纯静态模式根本没有帧循环，两个计数都不动。
+ * 任一参数可为 NULL。
+ */
+void lumen_led_render_counters(uint32_t *drawn, uint32_t *skipped);
+
+/*
+ * 让多灯带 TDM 路径（#29）把每条灯带的「真刷 / 跳过」记进同一组计数。
+ * 单灯带路径已在 lumen_led_render_snapshot 内部记，不需要调用。
+ */
+void lumen_led_render_note_drawn(void);
+void lumen_led_render_note_skipped(void);

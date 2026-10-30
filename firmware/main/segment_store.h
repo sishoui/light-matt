@@ -69,6 +69,16 @@ uint8_t lumen_segment_store_mask(const lumen_segment_store_t *store, uint8_t str
 bool lumen_segment_store_any_active(const lumen_segment_store_t *store, uint8_t strip_id);
 
 /*
+ * 帧循环判据（docs/v2-effects-engine.md §3.1）：
+ * 任一 strip < strip_count 上存在**动画类**活动段（type != 0x00）时为真。
+ *
+ * 渲染任务只在为真时带超时等待（动画帧率）；为假时阻塞在信号量上，
+ * 与 v1 的静态场景完全一致（零额外 CPU / RMT）。剧本播放（#32）会在
+ * 调用方 OR 进来，本函数不管剧本。
+ */
+bool lumen_segment_store_needs_frames(const lumen_segment_store_t *store, uint8_t strip_count);
+
+/*
  * 把 seg 0 的基准色写进 out_rgb（docs/protocol.md §7：State 字节 2-4）。
  * 段 0 不活动或没有段时写全 0。不包含动画包络（静态段本来就没有）。
  */

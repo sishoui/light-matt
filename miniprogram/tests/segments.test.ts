@@ -11,6 +11,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import { bytesToCompactHex, hexToBytes } from "../utils/protocol/hex";
 import {
+  breathingFlags,
+  breathingSegment,
+  breathingWaveform,
   cmdClearSegment,
   cmdQueryStrip,
   cmdSetSegment,
@@ -24,10 +27,15 @@ import {
   describeSegmentReport,
 } from "../utils/protocol/describe";
 import { encodeFrame } from "../utils/protocol/frame";
-import { SEGMENT_TYPE } from "../utils/protocol/constants";
+import {
+  BREATHING_MIN_PERIOD_MS,
+  SEGMENT_TYPE,
+  WAVEFORM,
+} from "../utils/protocol/constants";
 import { rgbToSegmentParams, segmentHueSatToRgb } from "../utils/color/hsv";
 import {
   activeCount,
+  breathingLabel,
   buildSegmentRows,
   firstFreeSegId,
   overlapError,
@@ -266,7 +274,12 @@ describe("分段编辑器纯逻辑", () => {
     expect(rows.map((r) => r.segId)).toEqual([0, 1, 2]);
     expect(rows[0].hex).toBe("#00FF00");
     expect(rows[0].editable).toBe(true);
-    expect(rows[1].editable).toBe(false);
+    expect(rows[0].animated).toBe(false);
+    expect(rows[0].typeText).toBe("静态");
+    /* #30：动画段（呼吸）也可选中编辑，色块用它的 hue+sat 基色。 */
+    expect(rows[1].editable).toBe(true);
+    expect(rows[1].animated).toBe(true);
+    expect(rows[1].typeText).toBe("呼吸");
     expect(rows[2].selected).toBe(true);
     expect(rows[2].rangeText).toBe("40-63");
     expect(activeCount(rows)).toBe(3);
@@ -315,5 +328,110 @@ describe("StripQueryCollector：同 seq 多帧收尾", () => {
     await expect(second).rejects.toThrow("断线");
     expect(collector.size).toBe(0);
     vi.useRealTimers();
+  });
+});
+
+describe("#30 呼吸：flags / 构造器下限 / 波形 / 行视图", () => {
+  it("flags 打包与解包（bit0 reverse，bit1-2 waveform）", () => {
+    expect(breathingFlags(WAVEFORM.SINE)).toBe(0x00);
+    expect(breathingFlags(WAVEFORM.TRIANGLE)).toBe(0x02);
+    expect(breathingFlags(WAVEFORM.SAWTOOTH)).toBe(0x04);
+    expect(breathingFlags(WAVEFORM.SQUARE)).toBe(0x06);
+    expect(breathingFlags(WAVEFORM.SQUARE, true)).toBe(0x07);
+    /* 波形只有 2 位：越界值被掩掉，不会污染保留位。 */
+    expect(breathingFlags(0x0f)).toBe(0x06);
+
+    for (const wave of [0, 1, 2, 3]) {
+      expect(breathingWaveform(breathingFlags(wave))).toBe(wave);
+      /* 保留位 bit3-7 恒为 0。 */
+      expect(breathingFlags(wave) & 0xf8).toBe(0);
+    }
+  });
+
+  it("set_segment_breathing 向量逐字节复现（12B 载荷）", () => {
+    const c = vector("set_segment_breathing");
+    /* 向量载荷 0001000901100EFFF4016000：
+     * strip 0 / seg 1 / [0-9] / 呼吸 / hue 0x0E10 / sat 0xFF /
+     * period 500 / min_level 0x60 / flags 0x00（正弦） */
+    const seg = breathingSegment(0, 1, 0, 9, 0x0e10, 0xff, 500, 0x60, WAVEFORM.SINE);
+    const req = cmdSetSegment(seg);
+    expect(req.payload.length).toBe(12);
+    expect(bytesToCompactHex(req.payload)).toBe(c.payload_hex);
+    expect(bytesToCompactHex(encodeFrame(req.command, c.seq as number, req.payload))).toBe(
+      c.frame_hex,
+    );
+  });
+
+  it("新增呼吸向量：周期过短 / 保留位 / 共存 / 周期 0 / 上限 65535", () => {
+    const checks: Array<[string, ReturnType<typeof breathingSegment>]> = [
+      ["set_segment_breathing_period_too_short", breathingSegment(0, 1, 0, 9, 0x0e10, 0xff, 333, 0x60)],
+      ["set_segment_breathing_period_max", breathingSegment(0, 1, 0, 9, 0x0e10, 0xff, 65535, 0x00)],
+      ["set_segment_breathing_with_static", breathingSegment(0, 1, 0, 9, 0x0e10, 0xff, 500, 0x60)],
+    ];
+    for (const [name, seg] of checks) {
+      if (name === "set_segment_breathing_period_too_short") {
+        /* 构造器在本端就拒绝 < 334 的周期（不等设备回 InvalidParam）。 */
+        expect(() => cmdSetSegment(seg)).toThrow(RangeError);
+        continue;
+      }
+      const c = vector(name);
+      const req = cmdSetSegment(seg);
+      expect(bytesToCompactHex(req.payload)).toBe(c.payload_hex);
+      expect(bytesToCompactHex(encodeFrame(req.command, c.seq as number, req.payload))).toBe(
+        c.frame_hex,
+      );
+    }
+
+    /* period = 0 是合法的「静止」。 */
+    const zero = vector("set_segment_breathing_period_zero");
+    const zeroReq = cmdSetSegment(breathingSegment(0, 1, 0, 9, 0x0e10, 0xff, 0, 0x01));
+    expect(bytesToCompactHex(zeroReq.payload)).toBe(zero.payload_hex);
+    expect(bytesToCompactHex(encodeFrame(zeroReq.command, zero.seq as number, zeroReq.payload))).toBe(
+      zero.frame_hex,
+    );
+
+    /* flags 保留位：构造器拒绝 bit3。 */
+    expect(() =>
+      cmdSetSegment({ ...breathingSegment(0, 1, 0, 9, 0, 0xff, 500, 0), flags: 0x08 }),
+    ).toThrow(RangeError);
+  });
+
+  it("周期下限边界：333 拒绝、334 接受、0 接受", () => {
+    expect(() =>
+      cmdSetSegment(breathingSegment(0, 0, 0, 5, 0, 0xff, BREATHING_MIN_PERIOD_MS - 1, 0)),
+    ).toThrow(RangeError);
+    expect(() =>
+      cmdSetSegment(breathingSegment(0, 0, 0, 5, 0, 0xff, BREATHING_MIN_PERIOD_MS, 0)),
+    ).not.toThrow();
+    expect(() => cmdSetSegment(breathingSegment(0, 0, 0, 5, 0, 0xff, 0, 0))).not.toThrow();
+    /* 上限 65535（相位天花板）。 */
+    expect(() => cmdSetSegment(breathingSegment(0, 0, 0, 5, 0, 0xff, 65535, 0))).not.toThrow();
+    expect(() => cmdSetSegment(breathingSegment(0, 0, 0, 5, 0, 0xff, 65536, 0))).toThrow(
+      RangeError,
+    );
+  });
+
+  it("呼吸行视图：标签、波形名与最暗亮度百分比", () => {
+    const report = {
+      stripId: 0,
+      segId: 1,
+      start: 0,
+      end: 9,
+      type: SEGMENT_TYPE.BREATHING,
+      hue: 0,
+      sat: 255,
+      periodMs: 1000,
+      p5: 64,
+      flags: breathingFlags(WAVEFORM.TRIANGLE),
+    };
+    const rows = buildSegmentRows([report], 1, segmentHueSatToRgb);
+    expect(rows[0].typeText).toBe("呼吸");
+    expect(rows[0].animated).toBe(true);
+    expect(rows[0].breathText).toBe("三角 · 1000ms · 最暗 25%");
+    expect(breathingLabel(report)).toBe("三角 · 1000ms · 最暗 25%");
+
+    /* period = 0 → 「静止」，不显示 0ms（避免用户以为没生效）。 */
+    const still = { ...report, periodMs: 0 };
+    expect(breathingLabel(still)).toBe("静止 · 最暗 25%");
   });
 });

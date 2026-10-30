@@ -40,9 +40,9 @@ function payloadOf(c: VectorCase): Uint8Array {
 }
 
 describe("协议测试向量", () => {
-  it("向量文件本身是 v2 且包含 60 个用例（#25 新增 4 条段命令用例）", () => {
+  it("向量文件本身是 v2 且包含 65 个用例（#25 新增 4 条段命令用例，#30 新增 5 条呼吸用例）", () => {
     expect(vectors.protocol_version).toBe(2);
-    expect(vectors.cases.length).toBe(60);
+    expect(vectors.cases.length).toBe(65);
   });
 
   it("app_to_device 有效帧：encode 逐字节复现 frame_hex", () => {
@@ -109,7 +109,7 @@ describe("协议测试向量", () => {
     }
   });
 
-  it("60 条向量逐条被覆盖（每条都属于下面三类之一）", () => {
+  it("65 条向量逐条被覆盖（每条都属于下面三类之一）", () => {
     const appValid = vectors.cases.filter(
       (c) => c.direction === "app_to_device" && c.frame_valid,
     ).length;
@@ -118,7 +118,7 @@ describe("协议测试向量", () => {
     ).length;
     const device = vectors.cases.filter((c) => c.direction === "device_to_app").length;
     expect(appValid + appInvalid + device).toBe(vectors.cases.length);
-    expect(vectors.cases.length).toBe(60);
+    expect(vectors.cases.length).toBe(65);
 
     // 直接逐条 decode：任何一条的 ok 与 frame_valid 不符都视为失败。
     for (const c of vectors.cases) {
