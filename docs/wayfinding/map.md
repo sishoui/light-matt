@@ -38,12 +38,17 @@
 | 06 | [固件协议实现与状态机](./tickets/06-firmware-protocol-impl.md) | task | 02, 05 | done（合并进 #8/#9/#10） |
 | 07 | [小程序 BLE 传输层与协议 codec](./tickets/07-miniprogram-transport-codec.md) | task | 02, 04 | done（合并进 #8） |
 | 08 | [小程序控制界面](./tickets/08-miniprogram-ui.md) | prototype | 07 | done（合并进 #8/#9/#10） |
-| 09 | [端到端真机联调与验收](./tickets/09-end-to-end-acceptance.md) | task | 06, 08, 10 | 待真机 |
-| 10 | [RMT × BLE 共存稳定性验证](./tickets/10-rmt-ble-coexistence.md) | prototype | 03, 05 | 方案与固件完成，待用户实测 |
+| 09 | [端到端真机联调与验收](./tickets/09-end-to-end-acceptance.md) | task | 06, 08, 10 | done（GitHub #14 七条全过） |
+| 10 | [RMT × BLE 共存稳定性验证](./tickets/10-rmt-ble-coexistence.md) | prototype | 03, 05 | **跳过实测，用户决定（未验证）** |
 
-**frontier：10 的五组长跑实测、09 的端到端验收。** 两者都需要真机与人眼；
-代码侧的实现票（05–08 与 GitHub #11–#13）已全部落到 `integration/lumen-mvp`，
-03 的硬件基线已确认：64 灯点亮、自检四色正确（GRB）。
+**frontier 已清空。** 09 已关闭（#14 七条全部通过）。10 的风险**未排除但被接受**：
+实验固件、五组方案与判定工具（`scripts/analyze-strip-video.py`）都已就绪，
+用户在 2026-10-30 决定不上机跑 2.5 小时长跑，直接完成 MVP。
+
+这意味着 **RMT × BLE 共存是已知的未验证风险**，不是已证伪的风险。研究已确认 C3 的
+RMT 无 DMA 且单核、官方缓解措施（换核）不可用，所以「偶发错色」属于默认应当怀疑的
+一类。已知缓解已落在产品里：`mem_block_symbols=48`、单渲染任务独占句柄、
+20Hz 上限 + latest-wins。若后续出现「偶发闪一下 / 单颗灯变色」，第一嫌疑就是它。
 
 GitHub 实现票（13 张）与本地 wayfinder 票的对应关系：本地 06/07/08 被拆成了更细的 GitHub 票
 （#8 开关、#9 亮度、#10 颜色、#11 状态同步、#12 灯珠数与持久化、#13 日志与自检），按纵向切片
@@ -75,6 +80,8 @@ GitHub 实现票（13 张）与本地 wayfinder 票的对应关系：本地 06/0
 - **协议日志与自检**（[GitHub #13](https://github.com/sishoui/light-matt/issues/13)）：自检是渲染层的临时覆盖（`selftest.c` 纯状态机 + `lumen_selftest_compose()`），不写共享状态也不写 NVS，红→绿→蓝→白各 500ms 后自动回到存储状态；取消规则放在命令层的统一收尾，五类改状态命令（含 SetLedCount）都取消、非法命令与 QueryState 不取消。小程序 200 帧环形缓冲 + 隐藏面板（连点版本号 5 次），暂停=冻结视图但继续记录，面板、console、复制共用同一个 formatter，每行 seq 同时给十进制与 hex 便于与串口对齐。
 - **Event 0x81 跨票缺口**（[GitHub #1](https://github.com/sishoui/light-matt/issues/1) 范围内的补丁）：协议 §10.3 要求的 NVS 写失败上报，从 #6 到 #10 都没有调用点（每张票都假设别人接）。补通 `state_store → led_engine → ble_link` 整条链，并加逐字节断言。
 - **端到端真机验收**（[GitHub #14](https://github.com/sishoui/light-matt/issues/14)，记录见 [end-to-end-acceptance.md](../end-to-end-acceptance.md)）：**七条全部通过**（固件/代码侧 + 人眼/手机侧）。七条的固件侧用 `scripts/acceptance-probe.py`（PC 当 central）实测；人眼侧逐条追问具体现象后确认。验收中暴露一个真 bug：**断电重启后灯带是灭的**，根因是首帧 `render` 在 325ms 就发出去，灯带独立 5V 电源可能尚未建立、整帧被 WS2812B 丢弃，而 `s_rendered_valid` 已置位导致不再重发。已修（上电后头 4 次渲染跳过去重、200ms 间隔强制重推）并复核通过。两条已知限制：纯白大功率偏色（回写「全白电流预算」）、断开后无设备列表入口（回写「多设备管理」）。
+- **RMT × BLE 共存验证被跳过**（[GitHub #7](https://github.com/sishoui/light-matt/issues/7)）：用户于 2026-10-30 决定不跑五组 30 分钟长跑，直接完成 MVP。**这不是「通过」，是「未验证」**——记录保持这个措辞。方案与实验固件留在 [`rmt-ble-stability.md`](../rmt-ble-stability.md)，判定工具 `scripts/analyze-strip-video.py` 已就绪且自检通过，随时可以补跑。风险归属：研究已确认 C3 的 RMT 无 DMA、单核，官方缓解措施不可用，所以偶发错色属默认怀疑项；已知缓解（`mem_block_symbols=48`、单渲染任务独占句柄、20Hz + latest-wins）已在产品里。
+- **亮度上限定为 200**（[GitHub #1](https://github.com/sishoui/light-matt/issues/1) 遗留项的收尾）：#14 实测 64 灯全白约 3.8A、蓝通道最先掉压导致偏黄，压到 200 给蓝通道留余量，代价是亮度上限降约 22%。State 的 `max_brightness` 报给小程序，滑块上限自动跟随。同时修掉 `build-firmware.cmd` 残留 sdkconfig 导致 Kconfig 默认值静默失效的缺陷。
 
 ## Not yet specified
 

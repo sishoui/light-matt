@@ -15,9 +15,13 @@
 |---|---|
 | GitHub #2 / #3 / #5 / #6 / #8–#13 | 已关闭 |
 | GitHub #4 灯带点亮与电气基线 | **已关闭**（真实实测，见下） |
-| GitHub #7 RMT × BLE 共存 | 开着：**实验固件与方案已就绪，五组长跑数据待填** |
+| GitHub #7 RMT × BLE 共存 | **跳过实测（用户决定）——未验证，不是通过** |
 | GitHub #14 端到端真机验收 | **已关闭：七条全部通过** |
 | GitHub #1 spec | 父 issue，可以收尾了 |
+
+> **唯一未验证项**：RMT × BLE 共存（#7）。方案、实验固件、判定工具都在，
+> 只是没跑那 2.5 小时长跑。若真机出现「偶发闪一下 / 单颗灯变色」，
+> 第一嫌疑就是它——回来按 `docs/rmt-ble-stability.md` §3–§5 补跑。
 
 验证基线（改代码后应保持）：
 
@@ -30,13 +34,25 @@ scripts\build-firmware.cmd                  REM 分区余量 62%
 
 ---
 
-## 2. 下一步做什么
+## 2. 现在在哪 / 下一步
 
-**#14 已关闭，七条全部通过。** 记录在
+**MVP 已完成。** #14 七条全部通过，记录在
 [`docs/end-to-end-acceptance.md`](../end-to-end-acceptance.md) 第 1、4 节。
 
-**当前唯一的门禁是 #7**：RMT × BLE 共存稳定性。方案与五组实验在
-[`docs/rmt-ble-stability.md`](../rmt-ble-stability.md)，**全部实测数据待填**。
+**唯一未验证项是 #7（RMT × BLE 共存），用户决定跳过。** 这不是通过，是未验证。
+方案、实验固件、判定工具都留在 [`docs/rmt-ble-stability.md`](../rmt-ble-stability.md)，
+随时可以补跑：
+
+```bat
+scripts\build-rmt-stress.cmd 48 steady sync 30
+scripts\flash-rmt-stress.cmd COM6
+python scripts\analyze-strip-video.py --selftest
+```
+
+补跑完记得用 `scripts\build-firmware.cmd` + `flash-firmware.cmd` 烧回产品固件
+（压力固件是另一套构建，别把它留在板子上）。
+
+**产品固件现状**：`max_brightness = 200`（#14 供电结论，见 §2.2）。
 
 ### 2.1 #14 是怎么验的（复现方式）
 
