@@ -9,7 +9,7 @@
 
 ## 1. 现在在哪
 
-代码侧 13 张实现票全部完成并合入。**只剩真机验收。**
+**MVP 已完成并通过 #14 真机验收。** 剩下的是三个未验证项（见下），不是主要工作量。
 
 | 项 | 状态 |
 |---|---|
@@ -17,11 +17,17 @@
 | GitHub #4 灯带点亮与电气基线 | **已关闭**（真实实测，见下） |
 | GitHub #7 RMT × BLE 共存 | **跳过实测（用户决定）——未验证，不是通过** |
 | GitHub #14 端到端真机验收 | **已关闭：七条全部通过** |
-| GitHub #1 spec | 父 issue，可以收尾了 |
+| GitHub #1 spec | 父 issue，已关闭 |
 
-> **唯一未验证项**：RMT × BLE 共存（#7）。方案、实验固件、判定工具都在，
+> **最大的未验证项**：RMT × BLE 共存（#7）。方案、实验固件、判定工具都在，
 > 只是没跑那 2.5 小时长跑。若真机出现「偶发闪一下 / 单颗灯变色」，
-> 第一嫌疑就是它——回来按 `docs/rmt-ble-stability.md` §3–§5 补跑。
+> 第一嫌疑就是它——补跑清单已写成一份自包含步骤发在
+> [GitHub #7 的最新评论](https://github.com/sishoui/light-matt/issues/7#issuecomment-6524474831)，
+> 照着做即可（含跑完烧回产品固件）。
+>
+> **另外三项也没验**：iOS 全链路（无 iOS 设备，用户现有 iPad，下阶段补测）、
+> 小程序切后台回前台的静默回连、改灯珠数量时的毫秒级黑屏。逐条见
+> [`end-to-end-acceptance.md`](../end-to-end-acceptance.md) §3。不要因为 §4 七条全绿就以为只剩 #7。
 
 验证基线（改代码后应保持）：
 
@@ -39,17 +45,20 @@ scripts\build-firmware.cmd                  REM 分区余量 62%
 **MVP 已完成。** #14 七条全部通过，记录在
 [`docs/end-to-end-acceptance.md`](../end-to-end-acceptance.md) 第 1、4 节。
 
-**唯一未验证项是 #7（RMT × BLE 共存），用户决定跳过。** 这不是通过，是未验证。
+**最大的未验证项是 #7（RMT × BLE 共存），用户决定跳过。** 这不是通过，是未验证。
 方案、实验固件、判定工具都留在 [`docs/rmt-ble-stability.md`](../rmt-ble-stability.md)，
 随时可以补跑：
 
 ```bat
 scripts\build-rmt-stress.cmd 48 steady sync 30
-scripts\flash-rmt-stress.cmd COM6
+scripts\flash-rmt-stress.cmd COMx   REM 板子当前端口，别照抄 COM6
 python scripts\analyze-strip-video.py --selftest
 ```
 
-补跑完记得用 `scripts\build-firmware.cmd` + `flash-firmware.cmd` 烧回产品固件
+完整、自包含的补跑清单（准备 → 五组操作 → 录像数错色 → 判定 → 收尾）已发在
+[GitHub #7 的最新评论](https://github.com/sishoui/light-matt/issues/7#issuecomment-6524474831)。
+
+补跑完记得用 `scripts\build-firmware.cmd` + `scripts\flash-firmware.cmd COMx` 烧回产品固件
 （压力固件是另一套构建，别把它留在板子上）。
 
 **产品固件现状**：`max_brightness = 200`（#14 供电结论，见 §2.2）。
@@ -101,10 +110,15 @@ python scripts/analyze-strip-video.py rmt-g3-1.mp4 --segments 64
 ### 2.4 设备当前状态
 
 已烧 `integration/lumen-mvp` 固件，广播名 `Lumen-5662`，
-灯珠数 **64**（与实物一致），小程序 AppID `wx0a46668333178576`。
+灯珠数 **64**（与实物一致），`max_brightness=200`，小程序 AppID `wx0a46668333178576`。
 
 > 本会话开始时设备实际是 `leds=20`（交接文档写 64，对不上），已通过
 > `SetLedCount(64)` 改回实物数量并确认重启后仍为 64。
+>
+> `max_brightness=200` 来自 `8d8eb26`；该 commit 的 message 记录了当次验证
+> （`state restored ... max=200`、brightness 84 输出 `(84,84,84)`），
+> 但**本会话没有重新上机核对**。下次连上先读一次 State 确认第 7 字节是 200。
+> **不要再用 255 的旧固件跑验收。**
 
 **#7 跑之前注意**：实验固件与产品固件是两套构建，`scripts\build-rmt-stress.cmd`
 只改临时副本，不碰仓库的 `sdkconfig.defaults`。跑完用 `build-firmware.cmd` 烧回产品固件。

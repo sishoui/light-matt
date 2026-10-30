@@ -49,9 +49,13 @@ lumen/
 > 原因——蓝通道 Vf 最高（3.0–3.4V），满亮度时最先被线损压掉。
 > 另：3.3V 直驱 5V 灯带规格不达标（VIH=3.5V），画板时 74AHCT125 必须进 BOM。
 
-**剩余的唯一未验证项是 RMT × BLE 共存（#7），用户决定暂不实测。** 方案、压力固件与
+**最大的未验证项是 RMT × BLE 共存（#7），用户决定暂不实测。** 方案、压力固件与
 判定工具（`scripts/analyze-strip-video.py`，自检通过）都已就绪，随时可补跑，步骤见
 [docs/rmt-ble-stability.md](docs/rmt-ble-stability.md) §1.4 / §3 / §10。
 这不是「通过」，是「未验证」：C3 的 RMT 无 DMA 且单核，官方缓解措施（换核）不可用，
 所以「偶发闪一下 / 单颗灯变色」属于默认应当怀疑的一类。已知缓解已在产品里
 （`mem_block_symbols=48`、单渲染任务独占句柄、20Hz 上限 + latest-wins）。
+
+**其余未验证项**：iOS 全链路（无 iOS 设备，用户现有 iPad，下阶段补测）、小程序切后台
+回前台的静默回连、改灯珠数量时的毫秒级黑屏。逐条见
+[end-to-end-acceptance.md](docs/end-to-end-acceptance.md) §3。
