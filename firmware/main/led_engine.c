@@ -764,6 +764,12 @@ static void render_task(void *arg)
                          script != NULL ? script->stage_count : 0);
             }
         } else {
+            /*
+             * 自检覆盖期间不推进播放头（v2-effects-engine §7.1）：把这段时间
+             * 记为「不算时间」，自检结束后从原阶段原相位继续，而不是一次补进
+             * 整整 2 秒。
+             */
+            lumen_script_playback_hold(&s_playback, frame_now);
             script_time = lumen_script_playback_time(&s_playback, frame_now);
         }
         sync_script_state_locked();

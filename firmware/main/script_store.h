@@ -154,6 +154,15 @@ bool lumen_script_playback_tick(const lumen_script_t *script,
 /* 当前的剧本时间轴（now - pause_offset）。暂停时保持常数。 */
 uint32_t lumen_script_playback_time(const lumen_script_playback_t *playback, uint32_t now_ms);
 
+/*
+ * 外部原因造成的「这一帧不算时间」（自检覆盖期间，v2-effects-engine §7.1）。
+ *
+ * 推进 last_tick_ms 但不累加 elapsed：下一帧的 delta 只覆盖一帧的正常间隔，
+ * 自检的整整 2 秒不会被补进播放头。与 pause 的区别是**不改状态**——
+ * UI 上仍是「播放中」，只是时间轴原地不动。
+ */
+void lumen_script_playback_hold(lumen_script_playback_t *playback, uint32_t now_ms);
+
 /* 是否在播放或暂停（帧循环判据；暂停态也要保持响应）。 */
 bool lumen_script_playback_active(const lumen_script_playback_t *playback);
 
