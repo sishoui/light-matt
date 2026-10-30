@@ -409,8 +409,8 @@
       "frame_hex": "A5021018080000001D000000FF0C",
       "command_name": "SetSegment",
       "frame_valid": true,
-      "result_code": 2,
-      "note": "布局固定；实现票落地后改为 0"
+      "result_code": 0,
+      "note": "已实现（#25）：静态段 8B 载荷，设备回 OK"
     },
     {
       "name": "set_segment_breathing",
@@ -422,7 +422,7 @@
       "command_name": "SetSegment",
       "frame_valid": true,
       "result_code": 2,
-      "note": "布局固定；实现票落地后改为 0"
+      "note": "布局固定；呼吸像素由 #30 实现，当前回 UnknownCommand（不静默变黑）"
     },
     {
       "name": "script_segment_static",
@@ -457,8 +457,8 @@
       "frame_hex": "A502111C02000128",
       "command_name": "ClearSegment",
       "frame_valid": true,
-      "result_code": 2,
-      "note": "布局固定；实现票落地后改为 0"
+      "result_code": 0,
+      "note": "已实现（#25）：清段槽位，设备回 OK（幂等）"
     },
     {
       "name": "query_strip",
@@ -469,8 +469,8 @@
       "frame_hex": "A502121D010028",
       "command_name": "QueryStrip",
       "frame_valid": true,
-      "result_code": 2,
-      "note": "布局固定；实现票落地后改为 0"
+      "result_code": 0,
+      "note": "已实现（#25）：设备回 seg_count 条 SegmentReport + SegmentListEnd"
     },
     {
       "name": "set_playback",
@@ -621,6 +621,55 @@
       "command_name": "StateReport",
       "frame_valid": true,
       "note": "14B：剧本 0 阶段 3 播放中，flags=loop|script_active"
+    },
+    {
+      "name": "set_segment_overlap",
+      "direction": "app_to_device",
+      "command": 16,
+      "seq": 30,
+      "payload_hex": "0001081D000000FF",
+      "frame_hex": "A502101E080001081D000000FFFD",
+      "command_name": "SetSegment",
+      "frame_valid": true,
+      "result_code": 1,
+      "prior_segments": "0:0-15",
+      "note": "与已有段 [0-15] 重叠 → InvalidParam，旧配置不变（prior_segments 是向量前置状态）"
+    },
+    {
+      "name": "set_segment_out_of_range",
+      "direction": "app_to_device",
+      "command": 16,
+      "seq": 31,
+      "payload_hex": "0001001E000000FF",
+      "frame_hex": "A502101F080001001E000000FF03",
+      "command_name": "SetSegment",
+      "frame_valid": true,
+      "result_code": 1,
+      "note": "end 30 >= led_count 30 → InvalidParam"
+    },
+    {
+      "name": "set_segment_bad_length",
+      "direction": "app_to_device",
+      "command": 16,
+      "seq": 32,
+      "payload_hex": "0001001D000000",
+      "frame_hex": "A5021020070001001D00000003",
+      "command_name": "SetSegment",
+      "frame_valid": true,
+      "result_code": 4,
+      "note": "静态段载荷必须 8 字节，7 字节 → BadLength（先读 type 再定长）"
+    },
+    {
+      "name": "set_segment_unknown_type",
+      "direction": "app_to_device",
+      "command": 16,
+      "seq": 33,
+      "payload_hex": "0001001D07000000",
+      "frame_hex": "A5021021080001001D07000000FA",
+      "command_name": "SetSegment",
+      "frame_valid": true,
+      "result_code": 1,
+      "note": "type 0x07 未定义 → InvalidParam（D7：不静默降级）"
     }
   ]
 }

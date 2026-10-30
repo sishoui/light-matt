@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "protocol.h"
+#include "segment_store.h"
 #include "state.h"
 
 /*
@@ -17,10 +18,11 @@
  * #8 实现 SetPower 0x01；#9 实现 SetBrightness 0x02；#12 实现 SetLedCount 0x06
  * 的取值校验与「需要重建句柄」标记（真正的重建在 led_engine 的渲染任务里）；
  * #13 实现 SelfTest 0x07 的命令语义（ACK 0x00 + 启动自检）；QueryState 0x05
- * 置 state_report，由 ble_link 在 ACK 之后补一条 StateReport（§6.1）。
+ * 置 state_report，由 ble_link 在 ACK 之后补一条 StateReport（§6.1）；
+ * #25 实现段配置 0x10 SetSegment / 0x11 ClearSegment / 0x12 QueryStrip。
  *
  * v2（#21）退役了 0x03 SetColor / 0x04 SetAll：命令层不再认识它们，落到
- * UnknownCommand；段配置由 0x10 SetSegment 承担（#25）。
+ * UnknownCommand。颜色只通过 0x10 SetSegment 下发。
  */
 
 typedef struct {
@@ -44,6 +46,23 @@ typedef struct {
      * led_strip 句柄成功后才写入共享状态，ACK 也必须等重建结果。 */
     bool led_count_rebuild;
     uint16_t led_count;    /* 目标灯珠数量；仅在 led_count_rebuild 为 true 时有效 */
+
+    /*
+     * 段配置（#25）。0x10 / 0x11 置 segment_op：命令层已完成 §11.3 第 4-9 步
+     * 的全部校验（区间与重叠用的是传入的段配置快照），调用方据此写/清槽位。
+     * 段配置不在 lumen_state_t 里，所以 state_changed 保持 false——摘要字段
+     * （seg_count 与 State 字节 2-4 的基准色）由 led_engine 在写入后重算。
+     */
+    bool segment_op;
+    bool segment_clear;    /* true = ClearSegment 0x11，false = SetSegment 0x10 */
+    uint8_t segment_strip; /* strip_id */
+    uint8_t segment_id;    /* seg_id */
+    lumen_segment_t segment; /* SetSegment 的目标段（t0_ms 由引擎填） */
+
+    /* QueryStrip 0x12：ACK 之后要回 seg_count 条 SegmentReport + SegmentListEnd。 */
+    bool strip_query;
+    uint8_t query_strip_id;
+
     lumen_state_t next;    /* 命令生效后的完整状态（未生效时等于 current） */
 } lumen_command_outcome_t;
 
@@ -52,32 +71,41 @@ typedef struct {
  *
  * current / outcome 不能为 NULL；调用方保证 frame 非 NULL。
  * 返回前总是填充 outcome->next（未生效时复制 current）、led_count_rebuild /
- * led_count，以及 start_selftest / cancels_selftest，因此调用方可以无条件读取。
- * 只有 state_changed 为 true 时才应写入共享状态，只有 led_count_rebuild 为
- * true 时才应请求重建句柄，而 cancels_selftest 为 true 时必须在写入共享状态
- * **之前**结束自检（SetLedCount 的 state_changed 恒为 false，但仍要取消自检）。
+ * led_count、段配置操作字段，以及 start_selftest / cancels_selftest，因此
+ * 调用方可以无条件读取。
  *
- * max_brightness 是构建期亮度上限（协议 §11.4）：SetBrightness 载荷里的
- * brightness 会被钳位到这个值而不是拒绝。调用方传
- * lumen_led_engine_max_brightness()；host 单测直接传测试值。
+ * segments 是当前段配置的**只读**快照，用于 §11.3 第 5-9 步（strip 范围、
+ * 区间、重叠、flags、周期）。传 NULL 表示「没有任何活动段」——host 单测与
+ * 「段配置尚未加载」的场景都走这条路，区间校验仍然按 led_count 生效。
  *
- * 错误路径（0x01 / 0x02 / 0x04）一律不修改状态。
+ * 只有 state_changed 为 true 时才应写入共享状态；led_count_rebuild 为 true 时
+ * 应请求重建句柄；segment_op 为 true 时应在 ACK 之前调用 led_engine 写/清段；
+ * cancels_selftest 为 true 时必须在应用之前结束自检。
  */
 void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *current,
-                            uint8_t max_brightness, lumen_command_outcome_t *outcome);
+                            const lumen_segment_store_t *segments, uint8_t max_brightness,
+                            lumen_command_outcome_t *outcome);
 
 /* 协议 §6 定义的已知（已实现）命令字。保留字、退役字与设备→小程序方向不算。 */
 bool lumen_command_is_known(uint8_t command);
 
 /*
  * 协议 §11.2 第 5 条：该命令是否属于「改变状态」的类别
- * （SetPower / SetBrightness / SetLedCount）。
- * QueryState 与 SelfTest 不算；v2 退役的 0x03 / 0x04 也不算。
+ * （SetPower / SetBrightness / SetLedCount / SetSegment / ClearSegment）。
+ * QueryState、SelfTest、QueryStrip 不算；v2 退役的 0x03 / 0x04 也不算。
  *
  * 取消规则在 dispatch 的统一收尾里执行，因此任何新增的「改变状态」命令只要
  * 加进本函数就会自动取消自检——不需要再去改 ble_link 或 led_engine。
  */
 bool lumen_command_changes_state(uint8_t command);
 
-/* 已知命令的载荷长度（§6 命令表）。未知命令返回 0，调用方先判断 known。 */
+/* 已知命令的固定载荷长度（§6 命令表）。未知命令返回 0。
+ * SetSegment 是变长（8 或 12），这里返回 0，用 lumen_command_payload_len_ok 判断。 */
 uint8_t lumen_command_payload_len(uint8_t command);
+
+/*
+ * 载荷长度是否符合命令要求（§11.3 第 3 步）。
+ * 变长命令按「先读 type 再定长」：SetSegment 的 type 未知时长度无法判定，
+ * 这里放行，交给第 4 步的 type 校验回 InvalidParam（与 21-design §8 的顺序一致）。
+ */
+bool lumen_command_payload_len_ok(const lumen_frame_t *frame);

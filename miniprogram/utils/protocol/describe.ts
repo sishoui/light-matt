@@ -10,7 +10,7 @@
 
 import { CMD, DEVICE_CMD, commandName } from "./constants";
 import { bytesToHex } from "./hex";
-import type { AckResult, DeviceState } from "./types";
+import type { AckResult, DeviceState, SegmentListEnd, SegmentReport } from "./types";
 
 function hex2(value: number): string {
   return `0x${(value & 0xff).toString(16).padStart(2, "0").toUpperCase()}`;
@@ -33,6 +33,22 @@ export function describeCommand(command: number, payload: Uint8Array): string {
       return payload.length === 3
         ? `${name} strip=${payload[0]} count=${payload[1] | (payload[2] << 8)}`
         : `${name} ${bytesToHex(payload)}`;
+    case CMD.SET_SEGMENT:
+      /* 载荷 strip, seg, start, end, type, params；长度不符时只给 hex，不猜。 */
+      if (payload.length === 0) {
+        return name;
+      }
+      return payload.length >= 5
+        ? `${name} strip=${payload[0]} seg=${payload[1]} range=${payload[2]}-${payload[3]} ` +
+            `type=${hex2(payload[4])} hue=${payload[5] | ((payload[6] ?? 0) << 8)} ` +
+            `sat=${payload[7] ?? 0}${payload.length > 5 + 3 ? ` period=${payload[8] | ((payload[9] ?? 0) << 8)} p5=${payload[10] ?? 0} flags=${hex2(payload[11] ?? 0)}` : ""}`
+        : `${name} ${bytesToHex(payload)}`;
+    case CMD.CLEAR_SEGMENT:
+      return payload.length === 2
+        ? `${name} strip=${payload[0]} seg=${payload[1]}`
+        : `${name} ${bytesToHex(payload)}`;
+    case CMD.QUERY_STRIP:
+      return payload.length === 1 ? `${name} strip=${payload[0]}` : `${name} ${bytesToHex(payload)}`;
     default:
       return payload.length === 0 ? name : `${name} ${bytesToHex(payload)}`;
   }
@@ -92,4 +108,33 @@ export function deviceCommandName(command: number): string {
     default:
       return commandName(command);
   }
+}
+
+/**
+ * SegmentReport 0x83：日志用描述。
+ *
+ * 与 SET_SEGMENT 的字段顺序一致（同构载荷），但**不**复用 describeCommand 的
+ * 名字——日志里必须能一眼区分「下发的段」与「设备回报的段」。
+ */
+export function describeSegmentReport(report: SegmentReport): string {
+  return (
+    `SegmentReport strip=${report.stripId} seg=${report.segId} ` +
+    `range=${report.start}-${report.end} type=${hex2(report.type)} ` +
+    `hue=${report.hue} sat=${report.sat}` +
+    (report.type === 0x00 ? "" : ` period=${report.periodMs} p5=${report.p5} flags=${hex2(report.flags)}`)
+  );
+}
+
+/** SegmentListEnd 0x84：某灯带的活动段位图（bit i = 槽位 i）。 */
+export function describeSegmentListEnd(end: SegmentListEnd): string {
+  const slots: number[] = [];
+  for (let i = 0; i < 8; i += 1) {
+    if ((end.segMask & (1 << i)) !== 0) {
+      slots.push(i);
+    }
+  }
+  return (
+    `SegmentListEnd strip=${end.stripId} mask=${hex2(end.segMask)} ` +
+    `slots=[${slots.join(",")}]`
+  );
 }

@@ -21,10 +21,12 @@
 #include <string.h>
 
 #include "command.h"
+#include "effects.h"
 #include "gamma.h"
 #include "led_count_job.h"
 #include "protocol.h"
 #include "save_scheduler.h"
+#include "segment_store.h"
 #include "selftest.h"
 #include "state.h"
 #include "state_blob.h"
@@ -93,6 +95,48 @@ static lumen_decode_status_t decode_hex(const char *hex, lumen_frame_t *frame,
         return LUMEN_DECODE_SILENT;
     }
     return lumen_protocol_decode(buf, len, frame, result_code);
+}
+
+/*
+ * 由向量里的 prior_segments 构造前置段表。
+ *
+ * 语法：`seg_id:start-end`，多条用 `;` 分隔（只用于 host 测试的前置状态，
+ * 向量文件本身仍是两端的字节契约）。空串 = 空段表。
+ * 段类型固定为静态、hue=0、sat=255——这些前置段只用于触发重叠判定。
+ */
+static void apply_prior_segments(lumen_segment_store_t *store, const char *spec)
+{
+    lumen_segment_store_init(store);
+    if (spec == NULL || spec[0] == '\0') {
+        return;
+    }
+    char copy[64];
+    snprintf(copy, sizeof(copy), "%s", spec);
+    for (char *token = strtok(copy, ";"); token != NULL; token = strtok(NULL, ";")) {
+        unsigned seg_id = 0, start = 0, end = 0;
+        if (sscanf(token, "%u:%u-%u", &seg_id, &start, &end) != 3) {
+            fprintf(stderr, "[FAIL] bad prior_segments token: %s\n", token);
+            ++g_failures;
+            continue;
+        }
+        lumen_segment_t seg = {
+            .active = true,
+            .start = (uint8_t)start,
+            .end = (uint8_t)end,
+            .type = LUMEN_EFFECT_STATIC,
+            .hue = 0,
+            .sat = 255,
+            .period_ms = 0,
+            .p5 = 0,
+            .flags = 0,
+            .t0_ms = 0,
+        };
+        if (lumen_segment_store_set(store, 0, 1, (uint8_t)seg_id, 64, &seg) !=
+            LUMEN_RESULT_OK) {
+            fprintf(stderr, "[FAIL] prior_segments could not be applied: %s\n", token);
+            ++g_failures;
+        }
+    }
 }
 
 /* ---------------- 极简 JSON 字段读取 ----------------
@@ -199,6 +243,7 @@ typedef struct {
     char direction[24];
     char frame_hex[128];
     char payload_hex[64];
+    char prior_segments[64]; /* 可选：段命令的前置段表，如 "0:0-15"（仅 host 测试用） */
     int command;
     int seq;
     int result_code; /* -1 = 缺失或 null（静默丢弃） */
@@ -280,6 +325,7 @@ static int for_each_case(const char *path, void (*fn)(const vector_case_t *))
             return -1;
         }
         json_get_string(object, "payload_hex", c.payload_hex, sizeof(c.payload_hex));
+        json_get_string(object, "prior_segments", c.prior_segments, sizeof(c.prior_segments));
         json_get_int(object, "command", &c.command);
         json_get_int(object, "seq", &c.seq);
         json_get_int(object, "result_code", &c.result_code);
@@ -320,8 +366,17 @@ static void run_app_case(const vector_case_t *c)
         lumen_state_t before;
         lumen_state_defaults(&before, 30);
         lumen_command_outcome_t outcome;
+
+        /*
+         * 段命令用向量里的 prior_segments 构造前置段表（形如 "0:0-15"，
+         * 分号分隔多条）。没有该字段就是空段表。这让「重叠 → InvalidParam」
+         * 可以被向量驱动，而不是只在下面的独立断言里覆盖。
+         */
+        lumen_segment_store_t segments;
+        apply_prior_segments(&segments, c->prior_segments);
+
         /* 向量不涉及构建期上限，按 255 跑 reducer。 */
-        lumen_command_dispatch(&frame, &before, 255, &outcome);
+        lumen_command_dispatch(&frame, &before, &segments, 255, &outcome);
 
         if (frame.command == LUMEN_CMD_SET_POWER) {
             /* SetPower 结果码必须与向量一致。 */
@@ -401,6 +456,51 @@ static void run_app_case(const vector_case_t *c)
             CHECK(outcome.next.g == before.g);
             CHECK(outcome.next.b == before.b);
             CHECK(outcome.next.led_count == before.led_count);
+        } else if (frame.command == LUMEN_CMD_SET_SEGMENT ||
+                   frame.command == LUMEN_CMD_CLEAR_SEGMENT ||
+                   frame.command == LUMEN_CMD_QUERY_STRIP) {
+            /*
+             * #25：段命令的结果码完全由向量断言（正常 / 重叠 / 越界 / 长度不符 /
+             * 未知 type / 尚未实现的动画类型）。共享状态一律不变——段配置不在
+             * lumen_state_t 里，摘要字段由 led_engine 写入后重算。
+             */
+            CHECK(c->result_code >= 0);
+            CHECK(outcome.result_code == (uint8_t)c->result_code);
+            CHECK(!outcome.state_changed);
+            CHECK(!outcome.led_count_rebuild);
+            CHECK(outcome.next.power == before.power);
+            CHECK(outcome.next.brightness == before.brightness);
+            CHECK(outcome.next.r == before.r);
+            CHECK(outcome.next.g == before.g);
+            CHECK(outcome.next.b == before.b);
+            CHECK(outcome.next.led_count == before.led_count);
+
+            if (frame.command == LUMEN_CMD_SET_SEGMENT &&
+                outcome.result_code == LUMEN_RESULT_OK) {
+                CHECK(outcome.segment_op);
+                CHECK(!outcome.segment_clear);
+                CHECK(outcome.segment.active);
+                CHECK(outcome.segment.type == frame.payload[4]);
+                CHECK(outcome.segment.start == frame.payload[2]);
+                CHECK(outcome.segment.end == frame.payload[3]);
+                CHECK(outcome.cancels_selftest);
+            } else if (frame.command == LUMEN_CMD_CLEAR_SEGMENT &&
+                       outcome.result_code == LUMEN_RESULT_OK) {
+                CHECK(outcome.segment_op);
+                CHECK(outcome.segment_clear);
+                CHECK(outcome.cancels_selftest);
+            } else if (frame.command == LUMEN_CMD_QUERY_STRIP &&
+                       outcome.result_code == LUMEN_RESULT_OK) {
+                CHECK(outcome.strip_query);
+                CHECK(outcome.query_strip_id == frame.payload[0]);
+                /* 查询不取消自检（与 QueryState 同一条规则）。 */
+                CHECK(!outcome.cancels_selftest);
+            } else {
+                /* 失败路径：不得产生任何写入意图，也不取消自检。 */
+                CHECK(!outcome.segment_op);
+                CHECK(!outcome.strip_query);
+                CHECK(!outcome.cancels_selftest);
+            }
         } else {
             /* 已知命令的兜底：结果码必须与向量一致，状态一律不变。
              * 保留命令 / 未知命令同理。 */
@@ -515,13 +615,13 @@ static void test_set_power_reducer(void)
     frame.seq = 1;
     frame.payload_len = 1;
     frame.payload[0] = 1;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.state_changed);
     CHECK(outcome.next.power == 1);
 
     /* 已是开灯：ACK 0x00 但不重复 commit */
-    lumen_command_dispatch(&frame, &outcome.next, 255, &outcome);
+    lumen_command_dispatch(&frame, &outcome.next, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(!outcome.state_changed);
     CHECK(outcome.next.power == 1);
@@ -531,7 +631,7 @@ static void test_set_power_reducer(void)
     bad.command = LUMEN_CMD_SET_POWER;
     bad.payload_len = 1;
     bad.payload[0] = 2;
-    lumen_command_dispatch(&bad, &state, 255, &outcome);
+    lumen_command_dispatch(&bad, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
     CHECK(!outcome.state_changed);
     CHECK(outcome.next.power == state.power);
@@ -540,7 +640,7 @@ static void test_set_power_reducer(void)
     bad.payload_len = 2;
     bad.payload[0] = 1;
     bad.payload[1] = 0;
-    lumen_command_dispatch(&bad, &state, 255, &outcome);
+    lumen_command_dispatch(&bad, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
     CHECK(!outcome.state_changed);
 
@@ -551,7 +651,7 @@ static void test_set_power_reducer(void)
         lumen_frame_t known = {0};
         known.command = LUMEN_CMD_QUERY_STATE;
         known.payload_len = lumen_command_payload_len(LUMEN_CMD_QUERY_STATE);
-        lumen_command_dispatch(&known, &state, 255, &outcome);
+        lumen_command_dispatch(&known, &state, NULL, 255, &outcome);
         CHECK(outcome.result_code == LUMEN_RESULT_OK);
         CHECK(outcome.state_report);
         CHECK(!outcome.state_changed);
@@ -565,7 +665,7 @@ static void test_set_power_reducer(void)
     lumen_frame_t selftest = {0};
     selftest.command = LUMEN_CMD_SELF_TEST;
     selftest.payload_len = 0;
-    lumen_command_dispatch(&selftest, &state, 255, &outcome);
+    lumen_command_dispatch(&selftest, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(!outcome.state_changed);
     CHECK(outcome.start_selftest);
@@ -573,13 +673,14 @@ static void test_set_power_reducer(void)
     CHECK(memcmp(&outcome.next, &state, sizeof(state)) == 0);
 
     /* 保留 / 未知 / 退役 / 设备→小程序命令字：0x02。
-     * v2 退役的 0x03 SetColor / 0x04 SetAll 与尚未实现的 0x10 SetSegment 都走这里。 */
-    const uint8_t unknown[] = {0x00, 0x03, 0x04, 0x08, 0x10, 0x7F,
+     * v2 退役的 0x03 SetColor / 0x04 SetAll 与尚未实现的剧本命令都走这里。
+     * #25 起 0x10 / 0x11 / 0x12 已实现，不再属于未知命令。 */
+    const uint8_t unknown[] = {0x00, 0x03, 0x04, 0x08, 0x13, 0x1A, 0x7F,
                                0x80, 0x81, 0x82, 0xFF};
     for (size_t i = 0; i < sizeof(unknown); ++i) {
         lumen_frame_t f = {0};
         f.command = unknown[i];
-        lumen_command_dispatch(&f, &state, 255, &outcome);
+        lumen_command_dispatch(&f, &state, NULL, 255, &outcome);
         CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
         CHECK(!outcome.state_changed);
     }
@@ -605,7 +706,7 @@ static void test_set_brightness_reducer(void)
     lumen_state_t before = state;
     for (size_t i = 0; i < sizeof(boundaries); ++i) {
         frame.payload[0] = boundaries[i];
-        lumen_command_dispatch(&frame, &before, 255, &outcome);
+        lumen_command_dispatch(&frame, &before, NULL, 255, &outcome);
         CHECK(outcome.result_code == LUMEN_RESULT_OK);
         CHECK(outcome.state_changed == (before.brightness != boundaries[i]));
         CHECK(outcome.next.brightness == boundaries[i]);
@@ -622,7 +723,7 @@ static void test_set_brightness_reducer(void)
     lumen_state_t zero = state;
     zero.brightness = 0;
     frame.payload[0] = 0;
-    lumen_command_dispatch(&frame, &zero, 255, &outcome);
+    lumen_command_dispatch(&frame, &zero, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(!outcome.state_changed);
     CHECK(outcome.next.power == 1);
@@ -632,21 +733,21 @@ static void test_set_brightness_reducer(void)
     lumen_state_t same = state;
     same.brightness = 128;
     frame.payload[0] = 128;
-    lumen_command_dispatch(&frame, &same, 255, &outcome);
+    lumen_command_dispatch(&frame, &same, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(!outcome.state_changed);
     CHECK(outcome.next.brightness == 128);
 
     /* 钳位而不是拒绝：max_brightness=180 时，200 / 255 都落到 180。 */
     frame.payload[0] = 200;
-    lumen_command_dispatch(&frame, &state, 180, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 180, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.state_changed);
     CHECK(outcome.next.brightness == 180);
     CHECK(outcome.next.power == 1);
 
     frame.payload[0] = 255;
-    lumen_command_dispatch(&frame, &state, 180, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 180, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.next.brightness == 180);
 
@@ -654,18 +755,18 @@ static void test_set_brightness_reducer(void)
     lumen_state_t at_cap = state;
     at_cap.brightness = 180;
     frame.payload[0] = 255;
-    lumen_command_dispatch(&frame, &at_cap, 180, &outcome);
+    lumen_command_dispatch(&frame, &at_cap, NULL, 180, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(!outcome.state_changed);
 
     /* 上限之内的值不受影响。 */
     frame.payload[0] = 100;
-    lumen_command_dispatch(&frame, &state, 180, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 180, &outcome);
     CHECK(outcome.next.brightness == 100);
 
     /* max_brightness = 0：任何值都被钳到 0，仍然回 0x00。 */
     frame.payload[0] = 255;
-    lumen_command_dispatch(&frame, &state, 0, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 0, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.next.brightness == 0);
     CHECK(outcome.next.power == 1);
@@ -674,7 +775,7 @@ static void test_set_brightness_reducer(void)
     frame.payload_len = 2;
     frame.payload[0] = 100;
     frame.payload[1] = 0;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
     CHECK(!outcome.state_changed);
     CHECK(outcome.next.brightness == state.brightness);
@@ -687,14 +788,14 @@ static void test_set_brightness_reducer(void)
     power.command = LUMEN_CMD_SET_POWER;
     power.payload_len = 1;
     power.payload[0] = 0;
-    lumen_command_dispatch(&power, &lit, 255, &outcome);
+    lumen_command_dispatch(&power, &lit, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.state_changed);
     CHECK(outcome.next.power == 0);
     CHECK(outcome.next.brightness == 77);
 
     power.payload[0] = 1;
-    lumen_command_dispatch(&power, &outcome.next, 255, &outcome);
+    lumen_command_dispatch(&power, &outcome.next, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.state_changed);
     CHECK(outcome.next.power == 1);
@@ -735,7 +836,7 @@ static void test_retired_commands(void)
     frame.payload[0] = 255;
     frame.payload[1] = 0;
     frame.payload[2] = 0;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
     CHECK(!outcome.state_changed);
     CHECK(!outcome.cancels_selftest);
@@ -750,7 +851,7 @@ static void test_retired_commands(void)
     frame.payload[2] = 0;
     frame.payload[3] = 128;
     frame.payload[4] = 255;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
     CHECK(!outcome.state_changed);
     CHECK(!outcome.cancels_selftest);
@@ -759,23 +860,22 @@ static void test_retired_commands(void)
     /* 长度不符也不会有 BadLength：未知命令的判定优先于长度（§8 顺序）。 */
     frame.command = LUMEN_CMD_SET_ALL;
     frame.payload_len = 1;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
     CHECK(!outcome.state_changed);
 
-    /* 未实现的 v2 命令（#25 / #32 落地前）：0x10 SetSegment 回 0x02。 */
-    const uint8_t future[] = {LUMEN_CMD_SET_SEGMENT, LUMEN_CMD_CLEAR_SEGMENT,
-                              LUMEN_CMD_QUERY_STRIP, LUMEN_CMD_SET_PLAYBACK,
-                              LUMEN_CMD_SCRIPT_BEGIN, LUMEN_CMD_SCRIPT_STAGE,
-                              LUMEN_CMD_SCRIPT_SEGMENT, LUMEN_CMD_SCRIPT_COMMIT,
-                              LUMEN_CMD_SCRIPT_ABORT, LUMEN_CMD_ACTIVATE_SCRIPT,
-                              LUMEN_CMD_QUERY_SCRIPT};
+    /* 未实现的 v2 命令（#32 剧本）：回 0x02 UnknownCommand。
+     * #25 已实现 0x10 / 0x11 / 0x12，所以它们不在这个列表里。 */
+    const uint8_t future[] = {LUMEN_CMD_SET_PLAYBACK, LUMEN_CMD_SCRIPT_BEGIN,
+                              LUMEN_CMD_SCRIPT_STAGE, LUMEN_CMD_SCRIPT_SEGMENT,
+                              LUMEN_CMD_SCRIPT_COMMIT, LUMEN_CMD_SCRIPT_ABORT,
+                              LUMEN_CMD_ACTIVATE_SCRIPT, LUMEN_CMD_QUERY_SCRIPT};
     for (size_t i = 0; i < sizeof(future); ++i) {
         CHECK(!lumen_command_is_known(future[i]));
         lumen_frame_t f = {0};
         f.command = future[i];
         f.payload_len = 0;
-        lumen_command_dispatch(&f, &state, 255, &outcome);
+        lumen_command_dispatch(&f, &state, NULL, 255, &outcome);
         CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
         CHECK(!outcome.state_changed);
     }
@@ -1122,7 +1222,7 @@ static void test_selftest_cancel_rules(void)
     frame.command = LUMEN_CMD_SET_POWER;
     frame.payload_len = 1;
     frame.payload[0] = 1;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(!outcome.state_changed);
     CHECK(outcome.cancels_selftest);
@@ -1132,7 +1232,7 @@ static void test_selftest_cancel_rules(void)
     frame.command = LUMEN_CMD_SET_BRIGHTNESS;
     frame.payload_len = 1;
     frame.payload[0] = state.brightness;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(!outcome.state_changed);
     CHECK(outcome.cancels_selftest);
@@ -1146,7 +1246,7 @@ static void test_selftest_cancel_rules(void)
     frame.payload[0] = state.r;
     frame.payload[1] = state.g;
     frame.payload[2] = state.b;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
     CHECK(!outcome.state_changed);
     CHECK(!outcome.cancels_selftest);
@@ -1158,7 +1258,7 @@ static void test_selftest_cancel_rules(void)
     frame.payload[2] = state.r;
     frame.payload[3] = state.g;
     frame.payload[4] = state.b;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
     CHECK(!outcome.state_changed);
     CHECK(!outcome.cancels_selftest);
@@ -1168,39 +1268,39 @@ static void test_selftest_cancel_rules(void)
     frame.payload_len = 2;
     frame.payload[0] = 30;
     frame.payload[1] = 0;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(lumen_command_changes_state(frame.command));
 
     /* QueryState：明确不取消自检（§11.2 第 6 条）。 */
     frame.command = LUMEN_CMD_QUERY_STATE;
     frame.payload_len = 0;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(!outcome.cancels_selftest);
 
     /* 非法取值 / 长度错误 / 未知命令：命令未生效，不取消自检。 */
     frame.command = LUMEN_CMD_SET_POWER;
     frame.payload_len = 1;
     frame.payload[0] = 2;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
     CHECK(!outcome.cancels_selftest);
 
     frame.command = LUMEN_CMD_SET_BRIGHTNESS;
     frame.payload_len = 2;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
     CHECK(!outcome.cancels_selftest);
 
     frame.command = 0x08;
     frame.payload_len = 0;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
     CHECK(!outcome.cancels_selftest);
 
     /* 自检命令本身不取消、只启动。 */
     frame.command = LUMEN_CMD_SELF_TEST;
     frame.payload_len = 0;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(outcome.start_selftest);
     CHECK(!outcome.cancels_selftest);
     CHECK(!outcome.state_changed);
@@ -1228,7 +1328,7 @@ static void test_selftest_leaves_state_untouched(void)
     frame.command = LUMEN_CMD_SELF_TEST;
     frame.payload_len = 0;
     lumen_command_outcome_t outcome;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(!outcome.state_changed);
     CHECK(memcmp(&outcome.next, &state, sizeof(state)) == 0);
@@ -1371,7 +1471,7 @@ static void test_set_led_count_reducer(void)
         frame.payload[0] = 0;
         frame.payload[1] = (uint8_t)(accepted[i] & 0xFF);
         frame.payload[2] = (uint8_t)(accepted[i] >> 8);
-        lumen_command_dispatch(&frame, &state, 255, &outcome);
+        lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
         CHECK(outcome.result_code == LUMEN_RESULT_OK);
         CHECK(outcome.led_count_rebuild);
         CHECK(outcome.led_count == accepted[i]);
@@ -1391,7 +1491,7 @@ static void test_set_led_count_reducer(void)
         frame.payload[0] = 0;
         frame.payload[1] = (uint8_t)(rejected[i] & 0xFF);
         frame.payload[2] = (uint8_t)(rejected[i] >> 8);
-        lumen_command_dispatch(&frame, &state, 255, &outcome);
+        lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
         CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
         CHECK(!outcome.led_count_rebuild);
         CHECK(outcome.led_count == state.led_count);
@@ -1402,7 +1502,7 @@ static void test_set_led_count_reducer(void)
     frame.payload[0] = 0x00;
     frame.payload[1] = 0x00;
     frame.payload[2] = 0x01;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
     CHECK(!outcome.led_count_rebuild);
 
@@ -1410,11 +1510,11 @@ static void test_set_led_count_reducer(void)
     frame.payload[0] = 1;
     frame.payload[1] = 0x1E;
     frame.payload[2] = 0x00;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
     CHECK(!outcome.led_count_rebuild);
     frame.payload[0] = 0xFF;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
     CHECK(!outcome.led_count_rebuild);
 
@@ -1422,7 +1522,7 @@ static void test_set_led_count_reducer(void)
     frame.payload[0] = 0;
     frame.payload[1] = 0x40;
     frame.payload[2] = 0x00;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.led_count_rebuild);
     CHECK(outcome.led_count == 64);
@@ -1431,23 +1531,23 @@ static void test_set_led_count_reducer(void)
     frame.payload_len = 2;
     frame.payload[0] = 0x1E;
     frame.payload[1] = 0x00;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
     CHECK(!outcome.led_count_rebuild);
 
     frame.payload_len = 1;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
     CHECK(!outcome.led_count_rebuild);
 
     frame.payload_len = 4;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
     CHECK(!outcome.led_count_rebuild);
 
     /* payload_len 正确的 0 长度帧同样 0x04。 */
     frame.payload_len = 0;
-    lumen_command_dispatch(&frame, &state, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
     CHECK(!outcome.led_count_rebuild);
 
@@ -1551,11 +1651,13 @@ static void test_led_count_job(void)
 
 /* ---------------- #12：save_scheduler 500ms debounce ---------------- */
 
-static lumen_state_t state_with(uint16_t leds, uint8_t brightness)
+static lumen_persist_t persist_with(uint16_t leds, uint8_t brightness)
 {
-    lumen_state_t s;
-    lumen_state_defaults(&s, leds);
-    s.brightness = brightness;
+    lumen_persist_t s;
+    memset(&s, 0, sizeof(s));
+    lumen_state_defaults(&s.state, leds);
+    s.state.brightness = brightness;
+    lumen_segment_store_init(&s.segments);
     return s;
 }
 
@@ -1564,7 +1666,7 @@ static void test_save_scheduler(void)
     lumen_save_scheduler_t sched;
     lumen_save_scheduler_init(&sched);
 
-    lumen_state_t out;
+    lumen_persist_t out;
     uint8_t command = 0;
 
     /* 1. 初始：没有待写，next_delay 为 UINT32_MAX，take_due 失败。 */
@@ -1573,7 +1675,7 @@ static void test_save_scheduler(void)
     CHECK(!lumen_save_scheduler_take_due(&sched, 0, &out, &command));
 
     /* 2. 一次请求 → 500ms 后到期；499ms 时还差 1ms。 */
-    lumen_state_t a = state_with(30, 10);
+    lumen_persist_t a = persist_with(30, 10);
     CHECK(lumen_save_scheduler_request(&sched, &a, LUMEN_CMD_SET_BRIGHTNESS, 1000));
     CHECK(lumen_save_scheduler_pending(&sched));
     CHECK(lumen_save_scheduler_next_delay_ms(&sched, 1000) == LUMEN_SAVE_DEBOUNCE_MS);
@@ -1581,8 +1683,8 @@ static void test_save_scheduler(void)
     CHECK(lumen_save_scheduler_next_delay_ms(&sched, 1500) == 0);
     CHECK(!lumen_save_scheduler_take_due(&sched, 1499, &out, &command));
     CHECK(lumen_save_scheduler_take_due(&sched, 1500, &out, &command));
-    CHECK(out.brightness == 10);
-    CHECK(out.led_count == 30);
+    CHECK(out.state.brightness == 10);
+    CHECK(out.state.led_count == 30);
     CHECK(command == LUMEN_CMD_SET_BRIGHTNESS);
     /* 取走之后 pending 清空，再来一次 take 失败。 */
     CHECK(!lumen_save_scheduler_pending(&sched));
@@ -1590,27 +1692,27 @@ static void test_save_scheduler(void)
 
     /* 3. 连续请求不断推迟，只写最后一次快照。 */
     CHECK(lumen_save_scheduler_request(&sched, &a, LUMEN_CMD_SET_BRIGHTNESS, 0));
-    lumen_state_t b = state_with(30, 20);
+    lumen_persist_t b = persist_with(30, 20);
     CHECK(lumen_save_scheduler_request(&sched, &b, LUMEN_CMD_SET_BRIGHTNESS, 100));
-    lumen_state_t c = state_with(30, 30);
+    lumen_persist_t c = persist_with(30, 30);
     CHECK(lumen_save_scheduler_request(&sched, &c, LUMEN_CMD_SET_POWER, 200));
     /* 600ms 时：第一次的 deadline(500) 已过，但最后请求的 deadline 是 700。 */
     CHECK(lumen_save_scheduler_next_delay_ms(&sched, 600) == 100);
     CHECK(!lumen_save_scheduler_take_due(&sched, 699, &out, &command));
     CHECK(lumen_save_scheduler_take_due(&sched, 700, &out, &command));
-    CHECK(out.brightness == 30); /* 只有最后一份 */
+    CHECK(out.state.brightness == 30); /* 只有最后一份 */
     CHECK(command == LUMEN_CMD_SET_POWER);
 
     /* 4. 时钟回绕：deadline 越过 0xFFFFFFFF，仍按差值判定，不卡死。 */
     uint32_t near_wrap = 0xFFFFFF00u; /* deadline = 0x000000F4（回绕后） */
-    lumen_state_t d = state_with(64, 40);
+    lumen_persist_t d = persist_with(64, 40);
     CHECK(lumen_save_scheduler_request(&sched, &d, LUMEN_CMD_SET_LED_COUNT, near_wrap));
     CHECK(lumen_save_scheduler_next_delay_ms(&sched, near_wrap) == LUMEN_SAVE_DEBOUNCE_MS);
     /* 回绕之后：now = 0x0000000A，差值 = 0xF4 - 0x0A = 234。 */
     CHECK(lumen_save_scheduler_next_delay_ms(&sched, 0x0000000Au) == 234);
     CHECK(!lumen_save_scheduler_take_due(&sched, 0x0000000Au, &out, &command));
     CHECK(lumen_save_scheduler_take_due(&sched, 0x000000F4u, &out, &command));
-    CHECK(out.led_count == 64);
+    CHECK(out.state.led_count == 64);
     CHECK(command == LUMEN_CMD_SET_LED_COUNT);
 
     /* 5. 回绕后立刻请求也正常（deadline 未越过零点的情况）。 */
@@ -1633,50 +1735,72 @@ static void test_save_scheduler(void)
     CHECK(!lumen_save_scheduler_pending(&sched));
 }
 
-/* ---------------- #12：state_blob 编解码 ---------------- */
+/* ---------------- #12 / #25：state_blob 编解码（v2 带段表） ---------------- */
 
 static void test_state_blob(void)
 {
-    /* 1. 往返一致：所有字段原样回来。 */
-    lumen_state_t in;
-    in.power = 1;
-    in.brightness = 200;
-    in.r = 1;
-    in.g = 2;
-    in.b = 3;
-    in.led_count = 64;
+    /* 1. 往返一致：状态 + 段表原样回来。 */
+    lumen_persist_t in;
+    memset(&in, 0, sizeof(in));
+    in.state.power = 1;
+    in.state.brightness = 200;
+    in.state.r = 1;
+    in.state.g = 2;
+    in.state.b = 3;
+    in.state.led_count = 64;
+    in.state.strip_count = 1;
+    in.state.seg_count = 2;
+
+    lumen_segment_t seg0 = {
+        .active = true, .start = 0, .end = 15, .type = LUMEN_EFFECT_STATIC,
+        .hue = 0x1234, .sat = 200, .period_ms = 0, .p5 = 0, .flags = 0, .t0_ms = 999,
+    };
+    lumen_segment_t seg1 = {
+        .active = true, .start = 40, .end = 63, .type = LUMEN_EFFECT_STATIC,
+        .hue = 0xABCD, .sat = 255, .period_ms = 0, .p5 = 0, .flags = 0, .t0_ms = 12345,
+    };
+    in.segments.slot[0][0] = seg0;
+    in.segments.slot[0][1] = seg1;
 
     uint8_t blob[LUMEN_STATE_BLOB_SIZE];
     CHECK(lumen_state_blob_encode(&in, blob) == LUMEN_STATE_BLOB_SIZE);
     /* 显式布局：magic 0..3、version 4..5、power 6、brightness 7、rgb 8..10、
-     * led_count 11..12（小端）。 */
+     * led_count 11..12（小端）、strip_count 13、seg_count 14。 */
     CHECK(blob[0] == 'L' && blob[1] == 'M' && blob[2] == 'E' && blob[3] == 'N');
     CHECK(blob[4] == (LUMEN_STATE_BLOB_VERSION & 0xFF));
     CHECK(blob[5] == (LUMEN_STATE_BLOB_VERSION >> 8));
+    CHECK(LUMEN_STATE_BLOB_VERSION == 2); /* v1 → v2：加了段表 */
     CHECK(blob[6] == 1);
     CHECK(blob[7] == 200);
     CHECK(blob[8] == 1 && blob[9] == 2 && blob[10] == 3);
     CHECK(blob[11] == 64 && blob[12] == 0);
+    CHECK(blob[13] == 1 && blob[14] == 2);
 
-    lumen_state_t out;
+    lumen_persist_t out;
     memset(&out, 0xAA, sizeof(out));
     CHECK(lumen_state_blob_decode(blob, sizeof(blob), &out));
-    CHECK(out.power == 1);
-    CHECK(out.brightness == 200);
-    CHECK(out.r == 1 && out.g == 2 && out.b == 3);
-    CHECK(out.led_count == 64);
+    CHECK(out.state.power == 1);
+    CHECK(out.state.brightness == 200);
+    CHECK(out.state.r == 1 && out.state.g == 2 && out.state.b == 3);
+    CHECK(out.state.led_count == 64);
+    CHECK(out.state.strip_count == 1);
+    CHECK(out.state.seg_count == 2);
+    CHECK(out.segments.slot[0][0].active);
+    CHECK(out.segments.slot[0][0].start == 0 && out.segments.slot[0][0].end == 15);
+    CHECK(out.segments.slot[0][0].hue == 0x1234);
+    CHECK(out.segments.slot[0][0].sat == 200);
+    CHECK(out.segments.slot[0][1].active);
+    CHECK(out.segments.slot[0][1].start == 40 && out.segments.slot[0][1].end == 63);
+    CHECK(out.segments.slot[0][1].hue == 0xABCD);
+    /* t0_ms 不持久化：解码后为 0，由引擎加载时统一设为当前时刻。 */
+    CHECK(out.segments.slot[0][0].t0_ms == 0);
+    CHECK(out.segments.slot[0][1].t0_ms == 0);
+    /* 剧本 / 播放位置不持久化（protocol §12）。 */
+    CHECK(out.state.script_id == LUMEN_NO_SCRIPT);
+    CHECK(out.state.stage_index == 0);
+    CHECK(out.state.playback_state == 0);
 
-    /* 小端数量：300 → 2C 01（虽然 300 超出协议上限，编码器不在业务层校验；
-     * 解码器会拒绝，见下）。 */
-    lumen_state_t wide;
-    lumen_state_defaults(&wide, 30);
-    wide.led_count = 0x0123;
-    CHECK(lumen_state_blob_encode(&wide, blob) == LUMEN_STATE_BLOB_SIZE);
-    CHECK(blob[11] == 0x23 && blob[12] == 0x01);
-
-    /* 2. 长度错误：12 / 14 字节都拒绝（版本演进必须提升 version，不猜）。 */
-    lumen_state_defaults(&in, 30);
-    CHECK(lumen_state_blob_encode(&in, blob) == LUMEN_STATE_BLOB_SIZE);
+    /* 2. 长度错误：短一字节 / 长一字节 / 0 都拒绝（版本演进必须提升 version，不猜）。 */
     CHECK(!lumen_state_blob_decode(blob, LUMEN_STATE_BLOB_SIZE - 1, &out));
     CHECK(!lumen_state_blob_decode(blob, LUMEN_STATE_BLOB_SIZE + 1, &out));
     CHECK(!lumen_state_blob_decode(blob, 0, &out));
@@ -1690,13 +1814,13 @@ static void test_state_blob(void)
     bad[3] = 0x00;
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
 
-    /* 4. 坏 version（0 与 2）。 */
+    /* 4. 坏 version（v1 现在必须拒绝：布局不兼容）。 */
     memcpy(bad, blob, sizeof(bad));
-    bad[4] = 0x00;
+    bad[4] = 0x01;
     bad[5] = 0x00;
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
     memcpy(bad, blob, sizeof(bad));
-    bad[4] = 0x02;
+    bad[4] = 0x03;
     bad[5] = 0x00;
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
     /* 只有高字节错位的伪版本也拒绝。 */
@@ -1712,7 +1836,7 @@ static void test_state_blob(void)
     bad[6] = 0xFF;
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
 
-    /* 6. led_count 越界：0 与 65。 */
+    /* 6. led_count 越界：0 与 65；strip_count 越界：0 与 9。 */
     memcpy(bad, blob, sizeof(bad));
     bad[11] = 0x00;
     bad[12] = 0x00;
@@ -1721,39 +1845,671 @@ static void test_state_blob(void)
     bad[11] = 0x41;
     bad[12] = 0x00;
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
-    /* 0xFFFF（小端 FF FF）同样越界。 */
     memcpy(bad, blob, sizeof(bad));
     bad[11] = 0xFF;
     bad[12] = 0xFF;
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+    memcpy(bad, blob, sizeof(bad));
+    bad[13] = 0;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+    memcpy(bad, blob, sizeof(bad));
+    bad[13] = 9;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
 
-    /* 7. 失败时不写 out（调用方保留默认值）。 */
+    /* 7. 段表自相矛盾 → 损坏，拒绝：
+     *    a) 段区间 end >= led_count；
+     *    b) seg_count 与段表不一致；
+     *    c) 未知 type；
+     *    d) 同灯带内重叠。 */
+    const uint8_t seg_off = 15; /* BLOB_OFF_SEGMENTS */
+    /* a) 把 seg 0 的 end 改成 64（led_count=64 → 越界）。 */
+    memcpy(bad, blob, sizeof(bad));
+    bad[seg_off + 2] = 64;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+    /* b) seg_count 说 3 但段表只有 2 个活动段。 */
+    memcpy(bad, blob, sizeof(bad));
+    bad[14] = 3;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+    /* c) 未知 type 0x07。 */
+    memcpy(bad, blob, sizeof(bad));
+    bad[seg_off + 3] = 0x07;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+    /* d) 把 seg 1 挪到 [10-20]，与 seg 0 的 [0-15] 重叠。 */
+    memcpy(bad, blob, sizeof(bad));
+    bad[seg_off + LUMEN_SEGMENT_RECORD_SIZE + 1] = 10;
+    bad[seg_off + LUMEN_SEGMENT_RECORD_SIZE + 2] = 20;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+
+    /* 8. 失败时不写 out（调用方保留默认值）。 */
     memcpy(bad, blob, sizeof(bad));
     bad[6] = 9;
-    lumen_state_t untouched;
-    lumen_state_defaults(&untouched, 30);
-    lumen_state_t copy = untouched;
+    lumen_persist_t untouched;
+    memset(&untouched, 0, sizeof(untouched));
+    lumen_state_defaults(&untouched.state, 30);
+    lumen_segment_store_init(&untouched.segments);
+    lumen_persist_t copy = untouched;
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &untouched));
-    CHECK(untouched.power == copy.power);
-    CHECK(untouched.brightness == copy.brightness);
-    CHECK(untouched.led_count == copy.led_count);
+    CHECK(untouched.state.power == copy.state.power);
+    CHECK(untouched.state.brightness == copy.state.brightness);
+    CHECK(untouched.state.led_count == copy.state.led_count);
+    CHECK(untouched.state.seg_count == copy.state.seg_count);
+    CHECK(!untouched.segments.slot[0][0].active);
 
-    /* 8. 边界合法值：power = 0、led_count = 1 都能解出来。 */
-    lumen_state_t edge;
-    lumen_state_defaults(&edge, 1);
-    edge.power = 0;
-    edge.brightness = 0;
+    /* 9. 边界合法值：power = 0、led_count = 1、0 段都能解出来。 */
+    lumen_persist_t edge = persist_with(1, 0);
+    edge.state.power = 0;
+    edge.state.seg_count = 0;
     CHECK(lumen_state_blob_encode(&edge, blob) == LUMEN_STATE_BLOB_SIZE);
     CHECK(lumen_state_blob_decode(blob, sizeof(blob), &out));
-    CHECK(out.power == 0);
-    CHECK(out.brightness == 0);
-    CHECK(out.led_count == 1);
+    CHECK(out.state.power == 0);
+    CHECK(out.state.brightness == 0);
+    CHECK(out.state.led_count == 1);
+    CHECK(out.state.seg_count == 0);
 
-    /* 9. NULL 防御。 */
+    /* 10. NULL 防御。 */
     CHECK(lumen_state_blob_encode(NULL, blob) == 0);
     CHECK(lumen_state_blob_encode(&in, NULL) == 0);
     CHECK(!lumen_state_blob_decode(NULL, LUMEN_STATE_BLOB_SIZE, &out));
     CHECK(!lumen_state_blob_decode(blob, LUMEN_STATE_BLOB_SIZE, NULL));
+}
+
+/* ---------------- #25：effects（静态纯函数） ---------------- */
+
+static void test_effects_static_rgb(void)
+{
+    uint8_t rgb[3];
+
+    /* 色相扇区映射：0=红、1/3 圈=绿、2/3 圈=蓝；sat=255 时第 3 通道为 255。 */
+    lumen_effect_static_rgb(0, 255, rgb);
+    CHECK(rgb[0] == 255 && rgb[1] == 0 && rgb[2] == 0);
+    lumen_effect_static_rgb(21845, 255, rgb); /* 120° */
+    CHECK(rgb[0] == 0 && rgb[1] == 255 && rgb[2] == 0);
+    lumen_effect_static_rgb(43690, 255, rgb); /* 240° */
+    CHECK(rgb[0] == 0 && rgb[1] == 0 && rgb[2] == 255);
+
+    /* sat=0 是纯白，与色相无关。 */
+    for (uint32_t hue = 0; hue <= 0xFFFF; hue += 0x1111) {
+        lumen_effect_static_rgb((uint16_t)hue, 0, rgb);
+        CHECK(rgb[0] == 255 && rgb[1] == 255 && rgb[2] == 255);
+    }
+
+    /* 协议默认暖白 255/180/120：用 sat=180、hue 落红色扇区端点近似验证。
+     * 这里只断言「各通道单调且不越界」，具体 hue 反解与小程序端一致性由
+     * 真机颜色核对（hue 与 RGB 的映射不是协议字节契约）。 */
+    for (uint32_t hue = 0; hue < 0x10000; hue += 257) {
+        lumen_effect_static_rgb((uint16_t)hue, 200, rgb);
+        for (int i = 0; i < 3; ++i) {
+            CHECK(rgb[i] <= 255);
+        }
+        /* 最大通道 = sat + (255 - sat) = 255（V=1）。 */
+        CHECK(rgb[0] == 255 || rgb[1] == 255 || rgb[2] == 255);
+    }
+
+    /* hue 回绕：0xFFFF 与 0 同一个扇区端点，差不超过一步。 */
+    uint8_t last[3];
+    lumen_effect_static_rgb(0xFFFF, 255, last);
+    CHECK(last[0] == 255 && last[1] == 0 && last[2] == 0); /* 359.99° 仍是纯红 */
+
+    /* NULL 防御。 */
+    lumen_effect_static_rgb(0, 255, NULL);
+}
+
+static void test_effects_dispatch(void)
+{
+    /* 类型分类：四种已知，其余未知。 */
+    CHECK(lumen_effect_type_known(LUMEN_EFFECT_STATIC));
+    CHECK(lumen_effect_type_known(LUMEN_EFFECT_BREATHING));
+    CHECK(lumen_effect_type_known(LUMEN_EFFECT_RAINBOW));
+    CHECK(lumen_effect_type_known(LUMEN_EFFECT_COMET));
+    CHECK(!lumen_effect_type_known(0x04));
+    CHECK(!lumen_effect_type_known(0xFF));
+
+    /* #25 只实现静态；动画类型明确「已知但未实现」。 */
+    CHECK(lumen_effect_type_implemented(LUMEN_EFFECT_STATIC));
+    CHECK(!lumen_effect_type_implemented(LUMEN_EFFECT_BREATHING));
+    CHECK(!lumen_effect_type_implemented(LUMEN_EFFECT_RAINBOW));
+    CHECK(!lumen_effect_type_implemented(LUMEN_EFFECT_COMET));
+
+    /* 参数块长度（effects-spec §2.5）。 */
+    CHECK(lumen_effect_param_len(LUMEN_EFFECT_STATIC) == 3);
+    CHECK(lumen_effect_param_len(LUMEN_EFFECT_BREATHING) == 7);
+    CHECK(lumen_effect_param_len(LUMEN_EFFECT_RAINBOW) == 7);
+    CHECK(lumen_effect_param_len(LUMEN_EFFECT_COMET) == 7);
+    CHECK(lumen_effect_param_len(0x07) == 0);
+
+    /* 静态不是动画；其余是。 */
+    CHECK(!lumen_effect_is_animated(LUMEN_EFFECT_STATIC));
+    CHECK(lumen_effect_is_animated(LUMEN_EFFECT_BREATHING));
+
+    lumen_segment_t seg = {
+        .active = true, .start = 10, .end = 19, .type = LUMEN_EFFECT_STATIC,
+        .hue = 0, .sat = 255,
+    };
+    CHECK(lumen_effect_segment_length(&seg) == 10);
+    CHECK(lumen_effect_index_in_segment(&seg, 10) == 0);
+    CHECK(lumen_effect_index_in_segment(&seg, 19) == 9);
+
+    lumen_segment_t inactive = seg;
+    inactive.active = false;
+    CHECK(lumen_effect_segment_length(&inactive) == 0);
+    CHECK(lumen_effect_segment_length(NULL) == 0);
+
+    /* 静态像素：段内每颗灯同一颜色，与位置和时刻无关。 */
+    uint8_t a[3];
+    uint8_t b[3];
+    lumen_effect_pixel(&seg, 10, 0, a);
+    lumen_effect_pixel(&seg, 19, 999999, b);
+    CHECK(a[0] == 255 && a[1] == 0 && a[2] == 0);
+    CHECK(memcmp(a, b, 3) == 0);
+
+    /* 越界下标不写像素（合成层不会这样调用，这是防御）。 */
+    uint8_t zero[3] = {1, 2, 3};
+    lumen_effect_pixel(&seg, 9, 0, zero);
+    CHECK(zero[0] == 0 && zero[1] == 0 && zero[2] == 0);
+
+    /* 动画类型与未知类型在 #25 都返回黑色（防御，不是降级路径）。 */
+    lumen_segment_t breathing = seg;
+    breathing.type = LUMEN_EFFECT_BREATHING;
+    memset(a, 0xEE, sizeof(a));
+    lumen_effect_pixel(&breathing, 10, 0, a);
+    CHECK(a[0] == 0 && a[1] == 0 && a[2] == 0);
+
+    lumen_segment_t unknown = seg;
+    unknown.type = 0x7F;
+    memset(a, 0xEE, sizeof(a));
+    lumen_effect_pixel(&unknown, 10, 0, a);
+    CHECK(a[0] == 0 && a[1] == 0 && a[2] == 0);
+
+    /* 非活动段 / NULL 段。 */
+    memset(a, 0xEE, sizeof(a));
+    lumen_effect_pixel(&inactive, 10, 0, a);
+    CHECK(a[0] == 0 && a[1] == 0 && a[2] == 0);
+    lumen_effect_pixel(NULL, 10, 0, a);
+    CHECK(a[0] == 0 && a[1] == 0 && a[2] == 0);
+    lumen_effect_pixel(&seg, 10, 0, NULL); /* 不崩即通过 */
+}
+
+/* ---------------- #25：segment_store 校验 / 合成 ---------------- */
+
+static lumen_segment_t make_static(uint8_t start, uint8_t end, uint16_t hue, uint8_t sat)
+{
+    lumen_segment_t seg;
+    memset(&seg, 0, sizeof(seg));
+    seg.active = true;
+    seg.start = start;
+    seg.end = end;
+    seg.type = LUMEN_EFFECT_STATIC;
+    seg.hue = hue;
+    seg.sat = sat;
+    return seg;
+}
+
+/*
+ * 合成是 #25 的核心验收点：三段不同颜色，段内均匀，**未覆盖区必须为 0**。
+ * 用 [0-15] + [40-63]、中间 16-39 空着，正是 ticket 里的真机场景。
+ */
+static void test_segment_store_compose(void)
+{
+    lumen_segment_store_t store;
+    lumen_segment_store_init(&store);
+
+    const uint8_t led_count = 64;
+
+    /* 红 [0-15]、绿 [40-63]、蓝 [20-29]（故意乱序插入，验证按区间而不是按槽位）。 */
+    lumen_segment_t red = make_static(0, 15, 0, 255);
+    lumen_segment_t green = make_static(40, 63, 21845, 255);
+    lumen_segment_t blue = make_static(20, 29, 43690, 255);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 2, led_count, &green) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, led_count, &red) == LUMEN_RESULT_OK);
+    /* 蓝段再插一次：与已存在的段不重叠，允许。 */
+    CHECK(lumen_segment_store_set(&store, 0, 1, 1, led_count, &blue) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_count(&store, 0) == 3);
+    CHECK(lumen_segment_store_mask(&store, 0) == 0x07);
+
+    uint8_t buf[64 * 3];
+    memset(buf, 0x5A, sizeof(buf)); /* 先用脏数据填满，证明 compose 自己会清零 */
+    CHECK(lumen_segment_store_compose(&store, 0, buf, led_count, 0) == led_count);
+
+    /* 段内均匀：段 0 的每一颗都是纯红。 */
+    for (uint8_t i = 0; i <= 15; ++i) {
+        CHECK(buf[i * 3 + 0] == 255);
+        CHECK(buf[i * 3 + 1] == 0);
+        CHECK(buf[i * 3 + 2] == 0);
+    }
+    /* 段 1（蓝）：20-29。 */
+    for (uint8_t i = 20; i <= 29; ++i) {
+        CHECK(buf[i * 3 + 0] == 0);
+        CHECK(buf[i * 3 + 1] == 0);
+        CHECK(buf[i * 3 + 2] == 255);
+    }
+    /* 段 2（绿）：40-63。 */
+    for (uint8_t i = 40; i <= 63; ++i) {
+        CHECK(buf[i * 3 + 0] == 0);
+        CHECK(buf[i * 3 + 1] == 255);
+        CHECK(buf[i * 3 + 2] == 0);
+    }
+
+    /*
+     * 未覆盖区必须是 0：16-19、30-39。这是「gap 必须真暗」的 host 证据
+     * （对应 ticket 里 [0-15] / [40-63] 中间 16-39 熄灭）。真机仍要肉眼确认。
+     */
+    for (uint8_t i = 16; i <= 19; ++i) {
+        CHECK(buf[i * 3 + 0] == 0 && buf[i * 3 + 1] == 0 && buf[i * 3 + 2] == 0);
+    }
+    for (uint8_t i = 30; i <= 39; ++i) {
+        CHECK(buf[i * 3 + 0] == 0 && buf[i * 3 + 1] == 0 && buf[i * 3 + 2] == 0);
+    }
+
+    /* 一个段都没有：整条全 0（不是保留上一帧）。 */
+    lumen_segment_store_init(&store);
+    memset(buf, 0x5A, sizeof(buf));
+    CHECK(lumen_segment_store_compose(&store, 0, buf, led_count, 0) == led_count);
+    for (uint16_t i = 0; i < (uint16_t)led_count * 3u; ++i) {
+        CHECK(buf[i] == 0);
+    }
+
+    /* 改一段颜色不影响其他段：把段 0 改成蓝，只有 0-15 变化。 */
+    lumen_segment_store_init(&store);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, led_count, &red) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 1, led_count, &green) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_compose(&store, 0, buf, led_count, 0) == led_count);
+    uint8_t before_40[3] = {buf[40 * 3], buf[40 * 3 + 1], buf[40 * 3 + 2]};
+    lumen_segment_t red_to_blue = make_static(0, 15, 43690, 255);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, led_count, &red_to_blue) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_compose(&store, 0, buf, led_count, 0) == led_count);
+    CHECK(buf[0] == 0 && buf[1] == 0 && buf[2] == 255);   /* 段 0 已是蓝 */
+    CHECK(buf[40 * 3] == before_40[0]);
+    CHECK(buf[40 * 3 + 1] == before_40[1]);
+    CHECK(buf[40 * 3 + 2] == before_40[2]);              /* 段 1 未受影响 */
+
+    /* 参数防御。 */
+    CHECK(lumen_segment_store_compose(&store, 0, NULL, led_count, 0) == 0);
+    CHECK(lumen_segment_store_compose(&store, 0, buf, 0, 0) == 0);
+    CHECK(lumen_segment_store_compose(&store, 0, buf, LUMEN_MAX_LEDS + 1, 0) == 0);
+    CHECK(lumen_segment_store_compose(NULL, 0, buf, led_count, 0) == 0);
+}
+
+static void test_segment_store_validate(void)
+{
+    lumen_segment_store_t store;
+    lumen_segment_store_init(&store);
+
+    const uint8_t led_count = 30;
+
+    /* 正常段。 */
+    lumen_segment_t seg = make_static(0, 9, 0, 255);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, led_count, &seg) == LUMEN_RESULT_OK);
+
+    /* 不重叠的另一个段（含紧邻边界 10-19，闭区间相邻不算重叠）。 */
+    lumen_segment_t adjacent = make_static(10, 19, 0, 255);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 1, led_count, &adjacent) == LUMEN_RESULT_OK);
+
+    /* 重叠：与 [0-9] 有交集 → InvalidParam，旧配置不变。 */
+    lumen_segment_t overlap = make_static(5, 12, 0, 255);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 2, led_count, &overlap) ==
+          LUMEN_RESULT_INVALID_PARAM);
+    CHECK(lumen_segment_store_count(&store, 0) == 2);
+    CHECK(!lumen_segment_store_get(&store, 0, 2)->active);
+    /* 原有两段一个字节都没变。 */
+    CHECK(lumen_segment_store_get(&store, 0, 0)->start == 0);
+    CHECK(lumen_segment_store_get(&store, 0, 0)->end == 9);
+    CHECK(lumen_segment_store_get(&store, 0, 1)->start == 10);
+    CHECK(lumen_segment_store_get(&store, 0, 1)->end == 19);
+
+    /* 自替换（同 seg_id）不算重叠：改颜色必须能通过。 */
+    lumen_segment_t recolored = make_static(0, 9, 43690, 255);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, led_count, &recolored) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_get(&store, 0, 0)->hue == 43690);
+
+    /* 越界：end >= led_count、start > end。 */
+    lumen_segment_t out_of_range = make_static(20, 30, 0, 255);
+    CHECK(lumen_segment_store_validate(&store, 0, 1, 2, led_count, &out_of_range) ==
+          LUMEN_RESULT_INVALID_PARAM);
+    lumen_segment_t inverted = make_static(12, 5, 0, 255);
+    CHECK(lumen_segment_store_validate(&store, 0, 1, 2, led_count, &inverted) ==
+          LUMEN_RESULT_INVALID_PARAM);
+    /* 最后一个灯珠合法：end == led_count - 1。 */
+    lumen_segment_t last = make_static(20, 29, 0, 255);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 2, led_count, &last) == LUMEN_RESULT_OK);
+
+    /* strip 范围：多灯带（#29）之前只有 strip 0。 */
+    lumen_segment_t ok = make_static(0, 4, 0, 255);
+    CHECK(lumen_segment_store_validate(&store, 1, 1, 5, led_count, &ok) ==
+          LUMEN_RESULT_INVALID_PARAM);
+    CHECK(lumen_segment_store_validate(&store, 0, 0, 0, led_count, &ok) ==
+          LUMEN_RESULT_INVALID_PARAM); /* strip_count 0 非法 */
+    CHECK(lumen_segment_store_validate(&store, 0, 9, 0, led_count, &ok) ==
+          LUMEN_RESULT_INVALID_PARAM); /* strip_count 9 超过 MAX_STRIPS */
+
+    /* flags 保留位：静态段必须为 0。 */
+    lumen_segment_t flagged = make_static(0, 4, 0, 255);
+    flagged.flags = 0x01;
+    CHECK(lumen_segment_store_validate(&store, 0, 1, 5, led_count, &flagged) ==
+          LUMEN_RESULT_INVALID_PARAM);
+
+    /* 尚未实现的动画类型：拒绝（命令层本来就会回 UnknownCommand）。 */
+    lumen_segment_t breathing = make_static(0, 4, 0, 255);
+    breathing.type = LUMEN_EFFECT_BREATHING;
+    CHECK(lumen_segment_store_validate(&store, 0, 1, 5, led_count, &breathing) ==
+          LUMEN_RESULT_INVALID_PARAM);
+
+    /* seg_id 越界。 */
+    CHECK(lumen_segment_store_set(&store, 0, 1, 8, led_count, &ok) ==
+          LUMEN_RESULT_INVALID_PARAM);
+    CHECK(lumen_segment_store_get(&store, 0, 0) != NULL);
+    CHECK(lumen_segment_store_get(&store, 0, 8) == NULL);
+    CHECK(lumen_segment_store_get(&store, 8, 0) == NULL);
+
+    /* ClearSegment 释放槽位；清一个不活动的槽位也返回 false 但不崩。 */
+    CHECK(!lumen_segment_store_clear(&store, 0, 7));
+    CHECK(lumen_segment_store_clear(&store, 0, 2));
+    CHECK(!lumen_segment_store_get(&store, 0, 2)->active);
+    CHECK(lumen_segment_store_count(&store, 0) == 2);
+
+    /* 清掉后腾出的区间可以被新段占用。 */
+    CHECK(lumen_segment_store_set(&store, 0, 1, 2, led_count, &out_of_range) ==
+          LUMEN_RESULT_INVALID_PARAM); /* 还是越界 */
+    CHECK(lumen_segment_store_set(&store, 0, 1, 2, led_count, &last) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_count(&store, 0) == 3);
+
+    /* 容量：8 个段刚好占满，第 9 个没有槽位（seg_id 7 是最后一个）。 */
+    lumen_segment_store_init(&store);
+    for (uint8_t i = 0; i < LUMEN_MAX_SEGMENTS; ++i) {
+        lumen_segment_t s = make_static((uint8_t)(i * 4), (uint8_t)(i * 4 + 3), 0, 255);
+        CHECK(lumen_segment_store_set(&store, 0, 1, i, 64, &s) == LUMEN_RESULT_OK);
+    }
+    CHECK(lumen_segment_store_count(&store, 0) == LUMEN_MAX_SEGMENTS);
+    CHECK(lumen_segment_store_mask(&store, 0) == 0xFF);
+}
+
+/*
+ * State 摘要：docs/protocol.md §7 的字节 2-4（seg 0 基准色）与字节 9（seg_count）。
+ * 引擎的 refresh_state_summary_locked 用的是同一组纯函数，这里直接测它们。
+ */
+static void test_segment_store_state_summary(void)
+{
+    lumen_segment_store_t store;
+    lumen_segment_store_init(&store);
+
+    uint8_t rgb[3] = {9, 9, 9};
+    /* 没有段：基准色为 0（协议 §7「无 seg 0 时 0」）。 */
+    lumen_segment_store_state_rgb(&store, 0, rgb);
+    CHECK(rgb[0] == 0 && rgb[1] == 0 && rgb[2] == 0);
+    CHECK(lumen_segment_store_count(&store, 0) == 0);
+
+    /* 只有 seg 1（不是 seg 0）：基准色仍是 0——State 只报 seg 0。 */
+    lumen_segment_t green = make_static(10, 19, 21845, 255);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 1, 30, &green) == LUMEN_RESULT_OK);
+    lumen_segment_store_state_rgb(&store, 0, rgb);
+    CHECK(rgb[0] == 0 && rgb[1] == 0 && rgb[2] == 0);
+    CHECK(lumen_segment_store_count(&store, 0) == 1);
+
+    /* 写入 seg 0 后，基准色 = 该段的 hue+sat（纯红）。 */
+    lumen_segment_t red = make_static(0, 9, 0, 255);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, 30, &red) == LUMEN_RESULT_OK);
+    lumen_segment_store_state_rgb(&store, 0, rgb);
+    CHECK(rgb[0] == 255 && rgb[1] == 0 && rgb[2] == 0);
+    CHECK(lumen_segment_store_count(&store, 0) == 2);
+
+    /* 改 seg 0 的颜色：基准色跟着变，seg_count 不变。 */
+    lumen_segment_t blue = make_static(0, 9, 43690, 255);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, 30, &blue) == LUMEN_RESULT_OK);
+    lumen_segment_store_state_rgb(&store, 0, rgb);
+    CHECK(rgb[0] == 0 && rgb[1] == 0 && rgb[2] == 255);
+    CHECK(lumen_segment_store_count(&store, 0) == 2);
+
+    /* 清掉 seg 0：基准色回 0，seg_count 减 1。 */
+    CHECK(lumen_segment_store_clear(&store, 0, 0));
+    lumen_segment_store_state_rgb(&store, 0, rgb);
+    CHECK(rgb[0] == 0 && rgb[1] == 0 && rgb[2] == 0);
+    CHECK(lumen_segment_store_count(&store, 0) == 1);
+
+    /* 参数防御。 */
+    lumen_segment_store_state_rgb(&store, 0, NULL); /* 不崩 */
+    lumen_segment_store_state_rgb(NULL, 0, rgb);
+    CHECK(rgb[0] == 0 && rgb[1] == 0 && rgb[2] == 0);
+    CHECK(lumen_segment_store_count(NULL, 0) == 0);
+    CHECK(lumen_segment_store_mask(NULL, 0) == 0);
+    CHECK(lumen_segment_store_get(NULL, 0, 0) == NULL);
+}
+
+/* 灯珠数量减少时裁剪越界段（不自动缩短区间）。 */
+static void test_segment_store_prune(void)
+{
+    lumen_segment_store_t store;
+    lumen_segment_store_init(&store);
+
+    lumen_segment_t a = make_static(0, 15, 0, 255);
+    lumen_segment_t b = make_static(40, 63, 0, 255);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, 64, &a) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 1, 64, &b) == LUMEN_RESULT_OK);
+
+    /* 30 灯：段 0 [0-15] 保留，段 1 [40-63] 越界失效。 */
+    CHECK(lumen_segment_store_prune(&store, 0, 30) == 1);
+    CHECK(lumen_segment_store_count(&store, 0) == 1);
+    CHECK(lumen_segment_store_get(&store, 0, 0)->active);
+    CHECK(lumen_segment_store_get(&store, 0, 0)->end == 15); /* 不自动缩短 */
+    CHECK(!lumen_segment_store_get(&store, 0, 1)->active);
+
+    /* 已经都不越界：再裁一次无事发生。 */
+    CHECK(lumen_segment_store_prune(&store, 0, 30) == 0);
+
+    /* 参数防御。 */
+    CHECK(lumen_segment_store_prune(NULL, 0, 30) == 0);
+    CHECK(lumen_segment_store_prune(&store, 8, 30) == 0);
+}
+
+/* ---------------- #25：SetSegment / ClearSegment / QueryStrip reducer ---------------- */
+
+static void test_segment_commands(void)
+{
+    lumen_state_t state;
+    lumen_state_defaults(&state, 30);
+
+    lumen_segment_store_t segments;
+    lumen_segment_store_init(&segments);
+
+    lumen_command_outcome_t outcome;
+    lumen_frame_t frame = {0};
+
+    /* 命令表：三条都已实现，载荷长度固定/变长分别正确。 */
+    CHECK(lumen_command_is_known(LUMEN_CMD_SET_SEGMENT));
+    CHECK(lumen_command_is_known(LUMEN_CMD_CLEAR_SEGMENT));
+    CHECK(lumen_command_is_known(LUMEN_CMD_QUERY_STRIP));
+    CHECK(lumen_command_changes_state(LUMEN_CMD_SET_SEGMENT));
+    CHECK(lumen_command_changes_state(LUMEN_CMD_CLEAR_SEGMENT));
+    CHECK(!lumen_command_changes_state(LUMEN_CMD_QUERY_STRIP));
+    CHECK(lumen_command_payload_len(LUMEN_CMD_CLEAR_SEGMENT) == 2);
+    CHECK(lumen_command_payload_len(LUMEN_CMD_QUERY_STRIP) == 1);
+
+    /* 静态段：strip 0 seg 0 [0-9] hue=0 sat=255 → OK。 */
+    frame.command = LUMEN_CMD_SET_SEGMENT;
+    frame.seq = 41;
+    frame.payload_len = 8;
+    frame.payload[0] = 0;    /* strip */
+    frame.payload[1] = 0;    /* seg */
+    frame.payload[2] = 0;    /* start */
+    frame.payload[3] = 9;    /* end */
+    frame.payload[4] = 0x00; /* type static */
+    frame.payload[5] = 0x00; /* hue lo */
+    frame.payload[6] = 0x00; /* hue hi */
+    frame.payload[7] = 0xFF; /* sat */
+    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(outcome.segment_op);
+    CHECK(!outcome.segment_clear);
+    CHECK(outcome.cancels_selftest);
+    CHECK(!outcome.state_changed); /* 段配置不在 State 里 */
+    CHECK(outcome.segment.start == 0 && outcome.segment.end == 9);
+    CHECK(outcome.segment.hue == 0 && outcome.segment.sat == 255);
+
+    /* 把它真正写进段表（模拟引擎），后续重叠校验才有前置状态。 */
+    CHECK(lumen_segment_store_set(&segments, 0, 1, 0, 30, &outcome.segment) == LUMEN_RESULT_OK);
+
+    /* 重叠段 [5-12] → InvalidParam，旧配置不变。 */
+    frame.seq = 42;
+    frame.payload[1] = 1;
+    frame.payload[2] = 5;
+    frame.payload[3] = 12;
+    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(!outcome.segment_op);
+    CHECK(!outcome.cancels_selftest);
+    CHECK(lumen_segment_store_count(&segments, 0) == 1);
+    CHECK(lumen_segment_store_get(&segments, 0, 1)->start == 0);
+
+    /* 越界 end >= led_count（30）→ InvalidParam。 */
+    frame.seq = 43;
+    frame.payload[1] = 1;
+    frame.payload[2] = 10;
+    frame.payload[3] = 30;
+    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(!outcome.segment_op);
+
+    /* 正常第二段 [10-19]。 */
+    frame.seq = 44;
+    frame.payload[2] = 10;
+    frame.payload[3] = 19;
+    frame.payload[5] = 0x55;
+    frame.payload[6] = 0x55; /* hue = 0x5555 */
+    frame.payload[7] = 128;
+    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(outcome.segment.hue == 0x5555);
+    CHECK(outcome.segment.sat == 128);
+
+    /* 类型校验顺序（§11.3 第 4 步先于长度）：
+     * type=0x07（未知）+ 8 字节 → InvalidParam，不是 BadLength。 */
+    frame.command = LUMEN_CMD_SET_SEGMENT;
+    frame.payload_len = 8;
+    frame.payload[4] = 0x07;
+    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+
+    /* type 已知但长度不符 → BadLength。 */
+    frame.payload[4] = 0x00;
+    frame.payload_len = 7;
+    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
+
+    /* 动画类型（已知但未实现）：UnknownCommand，不是静默变黑。 */
+    frame.payload_len = 12;
+    frame.payload[4] = 0x01; /* breathing */
+    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
+    CHECK(!outcome.segment_op);
+
+    /* 静态段却给了 12 字节载荷：先读 type 再定长 → BadLength。 */
+    frame.payload[4] = 0x00;
+    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
+
+    /* strip_id != 0 → InvalidParam（多灯带 #29）。 */
+    frame.payload_len = 8;
+    frame.payload[0] = 1;
+    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+
+    /* seg_id 越界（8）→ InvalidParam。 */
+    frame.payload[0] = 0;
+    frame.payload[1] = 8;
+    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+
+    /* ClearSegment：合法 → OK + segment_clear，并取消自检。 */
+    frame.command = LUMEN_CMD_CLEAR_SEGMENT;
+    frame.seq = 45;
+    frame.payload_len = 2;
+    frame.payload[0] = 0;
+    frame.payload[1] = 1;
+    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(outcome.segment_op);
+    CHECK(outcome.segment_clear);
+    CHECK(outcome.cancels_selftest);
+
+    /* 清一个不存在的槽位也回 OK（幂等，绝对值语义）。 */
+    frame.payload[1] = 7;
+    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+
+    /* strip / seg 越界 → InvalidParam。 */
+    frame.payload[0] = 1;
+    frame.payload[1] = 0;
+    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+    frame.payload[0] = 0;
+    frame.payload[1] = 8;
+    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+
+    /* QueryStrip：合法 → OK + strip_query + 不取消自检。 */
+    frame.command = LUMEN_CMD_QUERY_STRIP;
+    frame.seq = 46;
+    frame.payload_len = 1;
+    frame.payload[0] = 0;
+    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(outcome.strip_query);
+    CHECK(outcome.query_strip_id == 0);
+    CHECK(!outcome.cancels_selftest);
+    CHECK(!outcome.state_changed);
+
+    /* strip 越界 → InvalidParam，不产生回包意图。 */
+    frame.payload[0] = 1;
+    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(!outcome.strip_query);
+
+    /* 段配置快照为 NULL 时按「没有活动段」处理：区间校验仍生效。 */
+    frame.command = LUMEN_CMD_SET_SEGMENT;
+    frame.payload_len = 8;
+    frame.payload[0] = 0;
+    frame.payload[1] = 0;
+    frame.payload[2] = 0;
+    frame.payload[3] = 29;
+    frame.payload[4] = 0x00;
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    frame.payload[3] = 30;
+    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+}
+
+/* ---------------- #25：SegmentReport / SegmentListEnd 编码 ---------------- */
+
+static void test_encode_segment_reports(void)
+{
+    /* 与 docs/protocol-testvectors.json 的 segment_report_static 逐字节一致。 */
+    uint8_t params[3] = {0x00, 0x00, 0xFF};
+    uint8_t out[LUMEN_MAX_FRAME];
+    size_t len = lumen_protocol_encode_segment_report(0x1D, 0x00, 0x00, 0x00, 0x1D, 0x00,
+                                                      params, 3, out, sizeof(out));
+    CHECK(len == 8 + LUMEN_FRAME_OVERHEAD);
+    CHECK_BYTES(out, "A502831D080000001D000000FF94", len);
+
+    /* 呼吸用例 12B 载荷：params 7 字节。 */
+    uint8_t anim[7] = {0x10, 0x0E, 0xFF, 0xF4, 0x01, 0x60, 0x00};
+    len = lumen_protocol_encode_segment_report(0x1D, 0x00, 0x01, 0x00, 0x09, 0x01, anim, 7, out,
+                                               sizeof(out));
+    CHECK(len == 12 + LUMEN_FRAME_OVERHEAD);
+    CHECK_BYTES(out, "A502831D0C0001000901100EFFF40160002F", len);
+
+    /* SegmentListEnd：载荷 [strip_id, seg_mask]。 */
+    len = lumen_protocol_encode_segment_list_end(0x1D, 0x00, 0x07, out, sizeof(out));
+    CHECK(len == 2 + LUMEN_FRAME_OVERHEAD);
+    CHECK_BYTES(out, "A502841D020007AE", len);
+
+    /* 参数防御：0 长度 / 超过 7 / NULL params / 缓冲不足。 */
+    CHECK(lumen_protocol_encode_segment_report(1, 0, 0, 0, 1, 0, params, 0, out, sizeof(out)) ==
+          0);
+    CHECK(lumen_protocol_encode_segment_report(1, 0, 0, 0, 1, 0, params, 8, out, sizeof(out)) ==
+          0);
+    CHECK(lumen_protocol_encode_segment_report(1, 0, 0, 0, 1, 0, NULL, 3, out, sizeof(out)) ==
+          0);
+    CHECK(lumen_protocol_encode_segment_report(1, 0, 0, 0, 1, 0, anim, 7, out, 17) == 0);
+    CHECK(lumen_protocol_encode_segment_list_end(1, 0, 0x07, out, 7) == 0);
 }
 
 int main(int argc, char **argv)
@@ -1789,6 +2545,14 @@ int main(int argc, char **argv)
     test_led_count_job();
     test_save_scheduler();
     test_state_blob();
+    test_effects_static_rgb();
+    test_effects_dispatch();
+    test_segment_store_compose();
+    test_segment_store_validate();
+    test_segment_store_state_summary();
+    test_segment_store_prune();
+    test_segment_commands();
+    test_encode_segment_reports();
 
     if (g_failures != 0) {
         fprintf(stderr, "\n%d/%d checks failed\n", g_failures, g_checks);

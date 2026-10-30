@@ -41,6 +41,57 @@ export interface CommandRequest {
   payload: Uint8Array;
 }
 
+/**
+ * 一个段配置（docs/protocol.md §6 / effects-spec §2）。
+ *
+ * `params` 只保存该类型对应的参数块（静态 3 字节，动画 7 字节），
+ * 语义字段在下面单独给出——两者由 commands.ts 保持同步。
+ */
+export interface SegmentConfig {
+  /** 灯带号；多灯带（#29）之前恒为 0。 */
+  stripId: number;
+  /** 槽位号 0-7。 */
+  segId: number;
+  /** 闭区间起点。 */
+  start: number;
+  /** 闭区间终点，必须 < ledCount。 */
+  end: number;
+  /** 灯效类型（SEGMENT_TYPE）。 */
+  type: number;
+  /** 色相 0-65535。 */
+  hue: number;
+  /** 饱和度 0-255。 */
+  sat: number;
+  /** 周期毫秒；静态段恒 0。 */
+  periodMs: number;
+  /** min_level / span / tail，按 type 解释；静态段恒 0。 */
+  p5: number;
+  /** 动画类 flags；静态段恒 0。 */
+  flags: number;
+}
+
+/** 一条 SegmentReport 0x83（与 SetSegment 载荷同构）。 */
+export interface SegmentReport extends SegmentConfig {}
+
+/** 一条 SegmentListEnd 0x84：某灯带的段位图。 */
+export interface SegmentListEnd {
+  stripId: number;
+  /** bit i = 槽位 i 有活动段。 */
+  segMask: number;
+}
+
+/**
+ * 「当前选中的段」：颜色控件要写到哪个槽位、以及它的区间。
+ *
+ * 区间是用户刚划定的目标区间；设备侧仍会做权威校验（越界 / 重叠 → InvalidParam）。
+ */
+export interface SegmentTarget {
+  stripId: number;
+  segId: number;
+  start: number;
+  end: number;
+}
+
 export interface AckResult {
   seq: number;
   /** ACK 载荷第 1 字节：被回执的原命令字。 */

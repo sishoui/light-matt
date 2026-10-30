@@ -294,6 +294,116 @@
   color: #f5f5f5;
 }
 
+/* ---------------- 分段编辑器（#25） ---------------- */
+
+.seg-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+}
+
+.seg-row {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  padding: 16rpx 20rpx;
+  border-radius: 14rpx;
+  background: #101014;
+  border: 1rpx solid #2a2a32;
+}
+
+/* 选中态：只改边框，不动色块本身 */
+.seg-row.selected {
+  border-color: #ffb478;
+  background: #1c1a17;
+}
+
+.seg-swatch {
+  width: 40rpx;
+  height: 40rpx;
+  border-radius: 10rpx;
+  border: 1rpx solid #3a3a44;
+  flex-shrink: 0;
+}
+
+.seg-index {
+  font-size: 24rpx;
+  color: #f5f5f5;
+  flex-shrink: 0;
+}
+
+.seg-range {
+  font-size: 24rpx;
+  color: #9a9aa5;
+  font-family: Menlo, Consolas, monospace;
+  flex: 1;
+}
+
+.seg-tag {
+  font-size: 20rpx;
+  color: #9a9aa5;
+  padding: 2rpx 10rpx;
+  border-radius: 8rpx;
+  background: #23232b;
+}
+
+.seg-delete {
+  font-size: 22rpx;
+  color: #ff8a8a;
+  padding: 4rpx 8rpx;
+  flex-shrink: 0;
+}
+
+.seg-empty {
+  padding: 24rpx 8rpx;
+  font-size: 22rpx;
+  line-height: 1.6;
+  color: #6f6f7a;
+}
+
+.range-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+.range-input {
+  flex: 1;
+  min-width: 0;
+  height: 72rpx;
+  padding: 0 16rpx;
+  box-sizing: border-box;
+  border-radius: 12rpx;
+  background: #101014;
+  border: 1rpx solid #2a2a32;
+  color: #f5f5f5;
+  font-size: 26rpx;
+  text-align: center;
+}
+
+.range-dash {
+  color: #6f6f7a;
+  flex-shrink: 0;
+}
+
+.range-apply {
+  flex-shrink: 0;
+  width: 200rpx;
+  height: 72rpx;
+  line-height: 72rpx;
+  padding: 0;
+  border-radius: 12rpx;
+  background: #ffb478;
+  color: #1a1208;
+  font-size: 26rpx;
+  font-weight: 600;
+  text-align: center;
+}
+
+.range-apply.busy {
+  opacity: 0.6;
+}
+
 /* ---------------- 页脚 ---------------- */
 
 .footer {

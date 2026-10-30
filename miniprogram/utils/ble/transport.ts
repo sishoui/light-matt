@@ -28,6 +28,8 @@ import type {
   DeviceState,
   DiscoveredDevice,
   LinkState,
+  SegmentListEnd,
+  SegmentReport,
 } from "../protocol/types";
 import { AckWaiters } from "./ack-waiters";
 import { errorText, iosStateText, resultText, triage } from "./errors";
@@ -41,6 +43,7 @@ import { TransportListeners, type LinkDetail } from "./link-listeners";
 import { FrameLog } from "./log";
 import { DeviceScanner } from "./scan-controller";
 import { StateReadSlot } from "./state-read";
+import { StripQueryCollector } from "./strip-collector";
 import { WxCallError, WxCallTimeoutError, wxCall } from "./wx-promise";
 import { SerialWriter } from "./writer";
 
@@ -111,6 +114,8 @@ export class BleTransport {
   private readonly writer: SerialWriter;
   private readonly ackWaiters = new AckWaiters();
   private readonly stateRead = new StateReadSlot();
+  /** #25：QueryStrip 的多帧收集（seg_count 条 SegmentReport + 1 条 ListEnd）。 */
+  private readonly stripQueries = new StripQueryCollector();
 
   private destroyed = false;
 
@@ -525,6 +530,51 @@ export class BleTransport {
     return ack;
   }
 
+  /**
+   * #25：QueryStrip 0x12 + 多条 SegmentReport + SegmentListEnd。
+   *
+   * 与 sendAndWaitAck 的区别：响应不是单帧 ACK，而是同 seq 的多帧。
+   * 这里同一 seq 既登记 ACK 等待者（拿到拒绝时的结果码），又登记段收集器
+   * （拿到 SegmentReport 列表与 ListEnd）。ACK 与收尾两者都成功才返回。
+   *
+   * ACK 可能是非零（InvalidParam）：那时设备不会再发 SegmentReport，
+   * 所以先 await ACK；ok 才等收尾。超时按链路异常抛出。
+   */
+  async queryStrip(
+    stripId: number,
+    opts: { timeoutMs?: number } = {},
+  ): Promise<{ reports: SegmentReport[]; end: SegmentListEnd }> {
+    this.ensureWritable();
+    const seq = this.allocateSeq();
+    const req: CommandRequest = { command: 0x12, payload: new Uint8Array([stripId & 0xff]) };
+    const frame = encodeTxFrame(req.command, seq, req.payload);
+    const timeoutMs = opts.timeoutMs ?? this.ackTimeoutMs;
+
+    const ackPromise = this.ackWaiters.register(seq, req.command, timeoutMs);
+    const collectPromise = this.stripQueries.open(seq, stripId, timeoutMs);
+
+    this.logFrame("tx", frame, req.command, seq, describeTx(req));
+    try {
+      await this.writer.enqueue(frame);
+    } catch (err) {
+      this.logFailure(frame, req.command, seq, errorText(err));
+      this.ackWaiters.fail(seq, err);
+      this.stripQueries.reset(err instanceof Error ? err : new Error(String(err)));
+      this.noteWriteFailure(err);
+      throw err;
+    }
+
+    const ack = await ackPromise;
+    if (!ack.ok) {
+      /* 非零 ACK：设备不会发段回包。收尾 Promise 必须显式丢弃，避免悬挂。 */
+      this.stripQueries.reset(new Error(`QueryStrip 被拒（${resultText(ack.resultCode)}）`));
+      throw new Error(`QueryStrip 失败：${resultText(ack.resultCode)}`);
+    }
+
+    const result = await collectPromise;
+    return { reports: result.reports, end: result.end };
+  }
+
   // ------------------------------------------------------------------
   // 读 State
   // ------------------------------------------------------------------
@@ -710,6 +760,13 @@ export class BleTransport {
       case "event":
         this.listeners.emitEvent(frame.action.code, frame.action.detail);
         return;
+      case "segment-report":
+        /* #25：同 seq 多帧，交给 QueryStrip 的收集器。 */
+        this.stripQueries.report(frame.seq as number, frame.action.report);
+        return;
+      case "segment-list-end":
+        this.stripQueries.listEnd(frame.seq as number, frame.action.end);
+        return;
       default:
         return;
     }
@@ -795,6 +852,7 @@ export class BleTransport {
     this.writer.reset(reason);
     this.ackWaiters.reset(reason);
     this.stateRead.reset(reason);
+    this.stripQueries.reset(reason);
   }
 
   private setLink(state: LinkState, detail?: LinkDetail): void {

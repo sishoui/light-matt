@@ -13,13 +13,13 @@ void lumen_save_scheduler_init(lumen_save_scheduler_t *sched)
     memset(sched, 0, sizeof(*sched));
 }
 
-bool lumen_save_scheduler_request(lumen_save_scheduler_t *sched, const lumen_state_t *state,
+bool lumen_save_scheduler_request(lumen_save_scheduler_t *sched, const lumen_persist_t *snapshot,
                                   uint8_t command, uint32_t now_ms)
 {
-    if (sched == NULL || state == NULL) {
+    if (sched == NULL || snapshot == NULL) {
         return false;
     }
-    sched->snapshot = *state;
+    sched->snapshot = *snapshot;
     sched->command = command;
     sched->pending = true;
     sched->deadline_ms = now_ms + LUMEN_SAVE_DEBOUNCE_MS;
@@ -37,7 +37,7 @@ uint32_t lumen_save_scheduler_next_delay_ms(const lumen_save_scheduler_t *sched,
 }
 
 bool lumen_save_scheduler_take_due(lumen_save_scheduler_t *sched, uint32_t now_ms,
-                                   lumen_state_t *out, uint8_t *command)
+                                   lumen_persist_t *out, uint8_t *command)
 {
     if (sched == NULL || !sched->pending) {
         return false;

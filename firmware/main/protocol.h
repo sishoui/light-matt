@@ -132,3 +132,18 @@ size_t lumen_protocol_encode_event(uint8_t event, uint8_t detail, uint8_t *out,
 size_t lumen_protocol_encode_state_report(uint8_t seq,
                                           const uint8_t state[LUMEN_STATE_BYTES],
                                           uint8_t *out, size_t out_cap);
+
+/*
+ * SegmentReport 0x83：载荷与 SetSegment 同构（8 或 12 字节），seq 回显 QueryStrip。
+ *
+ * params 是类型对应的参数块（静态 3 字节 / 动画 7 字节），由调用方按
+ * lumen_effect_param_len(type) 提供；长度不符时返回 0。
+ */
+size_t lumen_protocol_encode_segment_report(uint8_t seq, uint8_t strip_id, uint8_t seg_id,
+                                            uint8_t start, uint8_t end, uint8_t type,
+                                            const uint8_t *params, uint8_t param_len,
+                                            uint8_t *out, size_t out_cap);
+
+/* SegmentListEnd 0x84：载荷 [strip_id, seg_mask]，seq 回显 QueryStrip。 */
+size_t lumen_protocol_encode_segment_list_end(uint8_t seq, uint8_t strip_id, uint8_t seg_mask,
+                                              uint8_t *out, size_t out_cap);

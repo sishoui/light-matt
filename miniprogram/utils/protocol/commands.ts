@@ -7,11 +7,27 @@
  *  - v1 的 SetColor 0x03 / SetAll 0x04 退役，构造器一并删除；
  *  - State 从 8 字节扩到 14 字节。
  *
- * 段配置 / 剧本的下发构造器由 #25 / #32 按同一份向量补齐。
+ * #25 补上段配置：SetSegment 0x10 / ClearSegment 0x11 / QueryStrip 0x12，
+ * 以及设备回报 SegmentReport 0x83 / SegmentListEnd 0x84 的解析。
  */
 
-import { MAX_LEDS, MAX_STRIPS, MIN_LEDS, NO_SCRIPT, STATE_BYTES } from "./constants";
-import type { AckResult, CommandRequest, DeviceState } from "./types";
+import {
+  MAX_LEDS,
+  MAX_SEGMENTS,
+  MAX_STRIPS,
+  MIN_LEDS,
+  NO_SCRIPT,
+  SEGMENT_TYPE,
+  STATE_BYTES,
+} from "./constants";
+import type {
+  AckResult,
+  CommandRequest,
+  DeviceState,
+  SegmentConfig,
+  SegmentListEnd,
+  SegmentReport,
+} from "./types";
 
 function assertByte(value: number, field: string): number {
   if (!Number.isInteger(value) || value < 0 || value > 255) {
@@ -53,6 +69,173 @@ export function cmdSetLedCount(stripId: number, count: number): CommandRequest {
 
 export function cmdSelfTest(): CommandRequest {
   return { command: 0x07, payload: new Uint8Array(0) };
+}
+
+/** 色相 0-65535 的整数校验（协议 D2：2 字节，一整圈 65536 级）。 */
+function assertHue(value: number): number {
+  if (!Number.isInteger(value) || value < 0 || value > 0xffff) {
+    throw new RangeError(`hue 必须是 0-65535 的整数，收到 ${value}`);
+  }
+  return value;
+}
+
+/** 灯珠下标（0-63 协议上限内，且必须 ≤ 255 才能进 1 字节字段）。 */
+function assertLedIndex(value: number, field: string): number {
+  if (!Number.isInteger(value) || value < 0 || value > MAX_LEDS - 1) {
+    throw new RangeError(`${field} 必须是 0-${MAX_LEDS - 1} 的整数，收到 ${value}`);
+  }
+  return value;
+}
+
+function assertStripId(stripId: number): number {
+  if (!Number.isInteger(stripId) || stripId < 0 || stripId >= MAX_STRIPS) {
+    throw new RangeError(`strip_id 必须是 0-${MAX_STRIPS - 1} 的整数，收到 ${stripId}`);
+  }
+  return stripId;
+}
+
+/**
+ * 段类型的参数块长度（effects-spec §2.5）：静态 3，动画 7。
+ * 未知类型返回 0（构造器据此拒绝，不猜布局）。
+ */
+export function segmentParamLength(type: number): number {
+  if (type === SEGMENT_TYPE.STATIC) {
+    return 3;
+  }
+  if (
+    type === SEGMENT_TYPE.BREATHING ||
+    type === SEGMENT_TYPE.RAINBOW ||
+    type === SEGMENT_TYPE.COMET
+  ) {
+    return 7;
+  }
+  return 0;
+}
+
+/**
+ * SetSegment 0x10：载荷 `strip_id, seg_id, start, end, type, params(3|7)`。
+ *
+ * #25 只支持静态单色：动画类型虽然布局已定（7 字节参数块），但固件当前回
+ * UnknownCommand（像素实现由 #30/#31 交付）。构造器**仍然允许**构造动画帧
+ * ——协议布局是权威，UI 需要能发出这些帧并用 ACK 明确告诉用户「要升级固件」。
+ *
+ * 校验只做构造层能判定的部分（字节范围、start ≤ end、段类型已知）；
+ * 「end < led_count」与「不重叠」是设备侧权威校验（§11.3 第 6/7 步），
+ * 这里不做，以免 App 与设备的 led_count 快照不一致时误拒。
+ */
+export function cmdSetSegment(segment: SegmentConfig): CommandRequest {
+  const stripId = assertStripId(segment.stripId);
+  if (!Number.isInteger(segment.segId) || segment.segId < 0 || segment.segId >= MAX_SEGMENTS) {
+    throw new RangeError(`seg_id 必须是 0-${MAX_SEGMENTS - 1} 的整数，收到 ${segment.segId}`);
+  }
+  const start = assertLedIndex(segment.start, "start");
+  const end = assertLedIndex(segment.end, "end");
+  if (start > end) {
+    throw new RangeError(`start 不能大于 end，收到 ${start} > ${end}`);
+  }
+  const paramLen = segmentParamLength(segment.type);
+  if (paramLen === 0) {
+    throw new RangeError(`未知的段类型 0x${segment.type.toString(16)}`);
+  }
+  const hue = assertHue(segment.hue);
+  const sat = assertByte(segment.sat, "sat");
+
+  const payload = new Uint8Array(5 + paramLen);
+  payload[0] = stripId;
+  payload[1] = segment.segId;
+  payload[2] = start;
+  payload[3] = end;
+  payload[4] = segment.type;
+  payload[5] = hue & 0xff;
+  payload[6] = (hue >> 8) & 0xff;
+  payload[7] = sat;
+  if (paramLen > 3) {
+    const period = segment.periodMs;
+    if (!Number.isInteger(period) || period < 0 || period > 0xffff) {
+      throw new RangeError(`period_ms 必须是 0-65535 的整数，收到 ${period}`);
+    }
+    payload[8] = period & 0xff;
+    payload[9] = (period >> 8) & 0xff;
+    payload[10] = assertByte(segment.p5, "p5");
+    payload[11] = assertByte(segment.flags, "flags");
+  }
+  return { command: 0x10, payload };
+}
+
+/** 构造一个静态段（#25 的唯一可下发类型）。 */
+export function staticSegment(
+  stripId: number,
+  segId: number,
+  start: number,
+  end: number,
+  hue: number,
+  sat: number,
+): SegmentConfig {
+  return { stripId, segId, start, end, type: SEGMENT_TYPE.STATIC, hue, sat, periodMs: 0, p5: 0, flags: 0 };
+}
+
+/** ClearSegment 0x11：载荷 `strip_id, seg_id`。 */
+export function cmdClearSegment(stripId: number, segId: number): CommandRequest {
+  const strip = assertStripId(stripId);
+  if (!Number.isInteger(segId) || segId < 0 || segId >= MAX_SEGMENTS) {
+    throw new RangeError(`seg_id 必须是 0-${MAX_SEGMENTS - 1} 的整数，收到 ${segId}`);
+  }
+  return { command: 0x11, payload: new Uint8Array([strip, segId]) };
+}
+
+/** QueryStrip 0x12：载荷 `strip_id`。 */
+export function cmdQueryStrip(stripId: number): CommandRequest {
+  return { command: 0x12, payload: new Uint8Array([assertStripId(stripId)]) };
+}
+
+/**
+ * 解析 SegmentReport 0x83（与 SetSegment 载荷同构）。
+ *
+ * 长度必须与 type 对应的参数块一致，否则视为协议不匹配（不「尽量解析」）。
+ */
+export function parseSegmentReport(payload: Uint8Array): SegmentReport {
+  if (payload.length < 5) {
+    throw new RangeError(`SegmentReport 至少 5 字节，收到 ${payload.length}`);
+  }
+  const type = payload[4];
+  const paramLen = segmentParamLength(type);
+  if (paramLen === 0) {
+    throw new RangeError(`SegmentReport 的段类型未知：0x${type.toString(16)}`);
+  }
+  if (payload.length !== 5 + paramLen) {
+    throw new RangeError(
+      `SegmentReport 长度必须是 ${5 + paramLen} 字节（type=0x${type.toString(16).padStart(2, "0")}），收到 ${payload.length}`,
+    );
+  }
+  const report: SegmentReport = {
+    stripId: payload[0],
+    segId: payload[1],
+    start: payload[2],
+    end: payload[3],
+    type,
+    hue: payload[5] | (payload[6] << 8),
+    sat: payload[7],
+    periodMs: 0,
+    p5: 0,
+    flags: 0,
+  };
+  if (paramLen > 3) {
+    report.periodMs = payload[8] | (payload[9] << 8);
+    report.p5 = payload[10];
+    report.flags = payload[11];
+  }
+  if (report.start > report.end) {
+    throw new RangeError(`SegmentReport 的 start > end：${report.start} > ${report.end}`);
+  }
+  return report;
+}
+
+/** 解析 SegmentListEnd 0x84：载荷 `strip_id, seg_mask`。 */
+export function parseSegmentListEnd(payload: Uint8Array): SegmentListEnd {
+  if (payload.length !== 2) {
+    throw new RangeError(`SegmentListEnd 载荷必须是 2 字节，收到 ${payload.length}`);
+  }
+  return { stripId: payload[0], segMask: payload[1] };
 }
 
 /**

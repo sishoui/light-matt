@@ -1,12 +1,12 @@
 /**
- * 颜色语义与 v2 占位路径的小程序侧测试。
+ * 颜色语义与「写进选中段」的小程序侧测试（#10 / #25）。
  *
  * 覆盖：
  *  1. HSV→RGB 纯函数：0°/120°/240°、饱和度与明度边界、**不做 gamma**；
  *  2. RGB→HSV 反推（设备状态回填色环）、十六进制互转、预设表；
  *  3. 色环几何：圆环命中判定（中心/环外/边缘容差）、角度与坐标互转；
- *  4. **v2（#21）**：SetColor / SetAll 已退役，session 的颜色入口是禁用占位——
- *     不发帧、不改本地状态、applyPreset 明确返回错误而不是假装成功；
+ *  4. **#25**：SetColor / SetAll 已退役，颜色写进**选中段**（SetSegment 0x10）——
+ *     没有选中段时不发帧、applyPreset 明确返回错误而不是假装成功；
  *  5. 亮度仍走 20Hz latest-wins 闸门（颜色不再占用这条通道）。
  *
  * 只替换计时器与传输通道（spec 允许的两个假件），不 mock 协议字节。
@@ -34,7 +34,7 @@ import {
   WHEEL_HIT_SLOP,
 } from "../utils/color/wheel";
 import { applyLocalColor, clampChannel, clampRgb, presetBrightness, sameRgb } from "../utils/control/color";
-import { ControlSession, SEGMENTS_UI_NOTICE } from "../utils/control/session";
+import { ControlSession } from "../utils/control/session";
 import { bytesToCompactHex } from "../utils/protocol/hex";
 import { encodeFrame } from "../utils/protocol/frame";
 import type { BleTransport } from "../utils/ble/transport";
@@ -437,8 +437,8 @@ describe("色环几何（触控精度只到这里，其余待真机）", () => {
   });
 });
 
-describe("v2：颜色 / 预设入口是禁用占位（#25）", () => {
-  it("queueColor / commitColor 不发帧，也不改本地状态", async () => {
+describe("#25：颜色写进选中段（不再是占位）", () => {
+  it("没有选中段时 queueColor / commitColor 不发帧（不能假装成功）", async () => {
     const { session, transport, clock } = makeSession();
     transport.emitState(baseState({ power: 1, brightness: 77 }));
 
@@ -452,35 +452,68 @@ describe("v2：颜色 / 预设入口是禁用占位（#25）", () => {
 
     expect(transport.attempts).toHaveLength(0);
     expect(transport.writes).toHaveLength(0);
-    /* 本地状态仍是设备上报的颜色，不做乐观更新。 */
-    expect(session.deviceState?.r).toBe(255);
-    expect(session.deviceState?.g).toBe(180);
-    expect(session.deviceState?.b).toBe(120);
+    vi.restoreAllMocks();
+  });
+
+  it("有选中段时颜色变成 SetSegment 0x10，区间与 hue/sat 正确，并走 20Hz 闸门", async () => {
+    const { session, transport, clock } = makeSession();
+    transport.emitState(baseState({ power: 1, brightness: 77 }));
+    session.setActiveSegment({ stripId: 0, segId: 2, start: 40, end: 63 });
+
+    /* 纯红：hue 0、sat 255。 */
+    session.commitColor({ r: 255, g: 0, b: 0 });
+    clock.advance(200);
+    await settle();
+
+    expect(transport.writes).toHaveLength(1);
+    const req = transport.writes[0];
+    expect(req.command).toBe(0x10);
+    /* strip, seg, start, end, type, hue_lo, hue_hi, sat */
+    expect(bytesToCompactHex(req.payload)).toBe("0002283F000000FF");
+
+    /* 连续拖动：50ms 闸门，只保留最新值。 */
+    transport.writes.length = 0;
+    transport.writeTimes.length = 0;
+    for (let i = 0; i < 20; i += 1) {
+      session.queueColor({ r: 0, g: 255, b: 0 });
+      clock.advance(10);
+      await settle();
+    }
+    clock.advance(200);
+    await settle();
+    expect(transport.writes.length).toBeLessThanOrEqual(5);
+    for (let i = 1; i < transport.writeTimes.length; i += 1) {
+      expect(transport.writeTimes[i] - transport.writeTimes[i - 1]).toBeGreaterThanOrEqual(50);
+    }
+    /* 绿色 hue=120° → 0x5555（21845），sat=255。 */
+    const last = transport.writes[transport.writes.length - 1];
+    expect(bytesToCompactHex(last.payload)).toBe("0002283F005555FF");
 
     vi.restoreAllMocks();
   });
 
-  it("applyPreset 明确返回错误并带可见提示，不假装成功", async () => {
+  it("applyPreset 没有目标段时明确报错；有目标段时发 SetSegment", async () => {
     const { session, transport } = makeSession();
     transport.emitState(baseState());
 
-    const result = await session.applyPreset({ r: 255, g: 0, b: 0 });
-    expect(result.kind).toBe("error");
-    if (result.kind === "error") {
-      expect(result.message).toBe(SEGMENTS_UI_NOTICE);
-    }
+    const noTarget = await session.applyPreset({ r: 255, g: 0, b: 0 });
+    expect(noTarget.kind).toBe("error");
     expect(transport.attempts).toHaveLength(0);
-    /* 设备颜色、开关、亮度都不变。 */
-    expect(session.deviceState?.r).toBe(255);
-    expect(session.deviceState?.g).toBe(180);
-    expect(session.deviceState?.power).toBe(1);
+
+    session.setActiveSegment({ stripId: 0, segId: 0, start: 0, end: 15 });
+    const withTarget = await session.applyPreset({ r: 255, g: 0, b: 0 });
+    expect(withTarget.kind).toBe("ok");
+    expect(transport.writes).toHaveLength(1);
+    expect(transport.writes[0].command).toBe(0x10);
+    expect(bytesToCompactHex(transport.writes[0].payload)).toBe("0000000F000000FF");
 
     vi.restoreAllMocks();
   });
 
-  it("亮度仍走 20Hz 闸门；颜色不再占用这条通道", async () => {
+  it("亮度仍走 20Hz 闸门；颜色走另一条同节奏的段闸门", async () => {
     const { session, transport, clock } = makeSession();
     transport.emitState(baseState());
+    session.setActiveSegment({ stripId: 0, segId: 0, start: 0, end: 15 });
 
     /* 模拟 100Hz：每 10ms 交替推亮度与颜色。 */
     for (let i = 0; i < 100; i += 1) {
@@ -495,39 +528,25 @@ describe("v2：颜色 / 预设入口是禁用占位（#25）", () => {
     clock.advance(200);
     await settle();
 
-    expect(transport.writes.length).toBeLessThanOrEqual(20);
+    /* 两条通道各自 20Hz，合起来不超过 20 帧/秒（不是叠成 40Hz）。 */
     expect(transport.writes.length).toBeGreaterThan(0);
-    for (let i = 1; i < transport.writeTimes.length; i += 1) {
-      expect(transport.writeTimes[i] - transport.writeTimes[i - 1]).toBeGreaterThanOrEqual(50);
-    }
-    /* 只有亮度帧；没有任何颜色命令。 */
+    expect(transport.writes.length).toBeLessThanOrEqual(20);
     const commands = new Set(transport.writes.map((w) => w.command));
     expect(commands.has(CMD_SET_BRIGHTNESS)).toBe(true);
-    expect(commands.size).toBe(1);
+    expect(commands.has(0x10)).toBe(true);
+    expect(commands.size).toBe(2);
 
     vi.restoreAllMocks();
   });
 
-  it("退役命令的载荷字节仍与向量一致（向量保留为历史证据）", () => {
-    /* set_all_on / set_color_red 在 v2 是「退役命令」用例：
-     * 字节布局仍然固定，但设备回 0x02。这里只验证编码可复现。 */
-    const onCase = vector("set_all_on");
-    const payload = new Uint8Array([0x01, 0x80, 0xff, 0xb4, 0x78]);
-    expect(
-      bytesToCompactHex(encodeFrame(onCase.command as number, onCase.seq as number, payload)),
-    ).toBe(onCase.frame_hex);
+  it("断开连接会清掉选中段（颜色控件回到禁用态）", async () => {
+    const { session, transport } = makeSession();
+    transport.emitState(baseState());
+    session.setActiveSegment({ stripId: 0, segId: 0, start: 0, end: 15 });
+    expect(session.activeSegment).not.toBeNull();
 
-    const colorCase = vector("set_color_red");
-    const colorPayload = new Uint8Array([0xff, 0x00, 0x00]);
-    expect(
-      bytesToCompactHex(
-        encodeFrame(colorCase.command as number, colorCase.seq as number, colorPayload),
-      ),
-    ).toBe(colorCase.frame_hex);
-
-    /* 退役命令的期望结果码固定为 2（UnknownCommand）。 */
-    for (const name of ["set_color_red", "set_all_on", "set_all_off"]) {
-      expect(vector(name).result_code, name).toBe(2);
-    }
+    await session.disconnect();
+    expect(session.activeSegment).toBeNull();
+    vi.restoreAllMocks();
   });
 });

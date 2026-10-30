@@ -1,29 +1,25 @@
 /**
- * 单页控制界面（#8 开关 + #9 亮度 + #10 颜色与预设 + #11 状态同步与回连
- * + #12 灯珠数量 + #13 隐藏日志面板与自检）。
+ * 单页控制界面（#8 开关 + #9 亮度 + #10 颜色 + #11 状态同步与回连
+ * + #12 灯珠数量 + #13 隐藏日志面板与自检 + #25 分段静态灯效）。
  *
  * 页面只做 view model 与事件转发，所有 BLE 细节经 ControlSession。
- * 亮度滑块进 session 的 20Hz latest-wins 节流实例。
+ * 亮度滑块进 session 的 20Hz latest-wins 节流实例；色环拖动进另一条同节奏的
+ * 段颜色闸门（写选中段的静态颜色）。
  *
- * v2（#21）退役了 SetColor / SetAll：颜色与预设的下发路径暂时禁用，
- * 手势只弹「该功能在 v2 分段界面中提供（#25）」。控件保留、页面照常
- * 编译渲染——**不静默删掉用户可见的功能**，只是明确说明还没接上。
+ * #25：颜色不再有「整条单色」的概念，而是**每个灯珠区间一个静态颜色**。
+ *  - 设备是权威：段列表由 QueryStrip(0x12) 读回（SegmentReport × N + ListEnd），
+ *    连接建立后立即拉一次，不只依赖本地状态；
+ *  - 新建区间走本地预检（整数、越界、重叠）+ 设备权威校验（InvalidParam）；
+ *  - 重叠被设备拒绝时**不改本地列表**，只提示具体原因。
  *
  * #11：连接状态以设备为准。断线立即清空控件（不显示过期状态）；自动回连由
  * session 的 1s/2s/4s 退避负责；onShow 时静默回连（不打断扫描/手动连接）；
  * 回连成功后 transport 重新订阅 notify 并读 State，页面用新 State 全量刷新。
  *
- * 色环用单块 2D canvas：色相环画一次，拖动时只擦/画选中点所在的小块并补回
- * 该角区间的环弧（见 utils/color/wheel.ts）。setData 的取色读数按 20Hz 更新，
- * 与 BLE 节流同一个节奏。
- *
- * 隐藏协议日志面板：连点版本号 5 次开启（spec §10）。面板只消费 FrameLog
- * 这一份数据（console 镜像也在 FrameLog.push 里），暂停 = 冻结视图但继续
- * 记录（理由见 utils/ble/log-panel.ts 顶部注释）。
- *
- * 拆分后的协作模块（本目录）：
+ * 拆分的协作模块（本目录）：
  *  - view-model.ts：文案与滑块视图补丁（纯函数）；
  *  - wheel-view.ts：色环 canvas、几何与触摸换算；
+ *  - segment-view.ts：分段编辑器的区间校验、槽位分配与行视图（纯函数）；
  *  - log-panel-view.ts：日志面板模型 + setData 合并计时器。
  * 本文件只保留状态持有与事件处理。
  */
@@ -46,7 +42,6 @@ import {
   ControlSession,
   detectDevMode,
   detectPlatform,
-  SEGMENTS_UI_NOTICE,
   type CommandResult,
 } from "../../utils/control/session";
 import { statusView } from "../../utils/control/status-view";
@@ -54,9 +49,31 @@ import {
   ledCountResultHint,
   parseLedCountInput,
 } from "../../utils/control/ledCount";
-import { hsvForWheel, PRESETS, rgbToHex, rgbToHsv } from "../../utils/color/hsv";
-import type { DeviceState, DiscoveredDevice, LinkState, RGB } from "../../utils/protocol/types";
+import {
+  hsvForWheel,
+  PRESETS,
+  rgbToHex,
+  rgbToHsv,
+  segmentHueSatToRgb,
+} from "../../utils/color/hsv";
+import type {
+  DeviceState,
+  DiscoveredDevice,
+  LinkState,
+  RGB,
+  SegmentReport,
+  SegmentTarget,
+} from "../../utils/protocol/types";
+import { MAX_SEGMENTS } from "../../utils/protocol/constants";
 import { LogPanelView } from "./log-panel-view";
+import {
+  activeCount,
+  buildSegmentRows,
+  firstFreeSegId,
+  overlapError,
+  parseRangeInput,
+  type SegmentRow,
+} from "./segment-view";
 import { COLOR_UI_INTERVAL_MS, WheelView } from "./wheel-view";
 
 /** 模块级单例：页面重入时复用同一条 BLE 会话。 */
@@ -65,6 +82,9 @@ let unsubscribers: Array<() => void> = [];
 
 /** 首屏色环位置与暖白预设对齐（真值来自预设表，不另写一份）。 */
 const INITIAL_HSV = rgbToHsv(PRESETS[0].rgb);
+
+/** 新建区间时默认给一个递增的槽位（设备权威的 mask 会覆盖这个猜测）。 */
+const PRIMARY_STRIP_ID = 0;
 
 Page({
   data: {
@@ -87,13 +107,22 @@ Page({
     maxBrightness: 255,
     brightnessHintText: "连接后可调节",
 
-    // 颜色（#10）：色相环 + 饱和度滑块；RGB 始终是用户空间值（不做 gamma）
+    // 颜色（#10 / #25）：色相环 + 饱和度，写入**选中段**
     presetList: PRESETS,
     colorHex: PRESETS[0].hex,
     colorHue: INITIAL_HSV.h,
     colorSaturation: Math.round(INITIAL_HSV.s * 100), // 0-100，映射到 S = 0..1
     selectedPreset: PRESETS[0].name,
-    colorHintText: "连接后可选色",
+    colorHintText: "连接后可调节；颜色按灯珠区间下发",
+
+    // 分段（#25）
+    segmentRows: [] as SegmentRow[],
+    selectedSegId: -1,
+    segmentMaxCount: MAX_SEGMENTS,
+    rangeStartInput: "",
+    rangeEndInput: "",
+    segmentHintText: "",
+    segmentBusy: false,
 
     // 扫描 / 设备弹层
     sheetVisible: false,
@@ -129,6 +158,8 @@ Page({
   lastBrightnessUiAt: 0,
   /** 隐藏日志面板控制器（页面实例持有；数据源是 session 的 FrameLog）。 */
   logView: null as LogPanelView | null,
+  /** 设备权威的段列表原始数据（渲染用 data.segmentRows，这里是真值）。 */
+  segmentReports: [] as SegmentReport[],
 
   onLoad() {
     const platform = detectPlatform();
@@ -145,9 +176,11 @@ Page({
       {
         setData: (patch) => this.setData(patch),
         isReady: () => this.data.ready,
-        queueColor: (rgb) => session?.queueColor(rgb),
-        commitColor: (rgb) => session?.commitColor(rgb),
-        notifySegmentsNotice: () => this.showSegmentsNotice(),
+        hasActiveSegment: () => this.activeTarget() !== null,
+        activeSegmentRange: () => this.activeTarget(),
+        queueColor: (rgb) => session?.queueColor(rgb, this.activeTarget() ?? undefined),
+        commitColor: (rgb) => session?.commitColor(rgb, this.activeTarget() ?? undefined),
+        notifySelectSegment: () => this.showSelectSegmentNotice(),
       },
       { hue: INITIAL_HSV.h, saturation: INITIAL_HSV.s },
     );
@@ -160,6 +193,13 @@ Page({
           this.setData({ deviceName: detail.deviceName });
         }
         this.applyLink(state, detail?.message);
+        if (state === "ready") {
+          // 设备是权威：连上后立刻拉一次段列表（protocol §10.1 第 2 步）。
+          void this.refreshSegments();
+        } else if (state === "idle" || state === "failed" || state === "adapter-off") {
+          this.segmentReports = [];
+          this.applySegmentRows(-1);
+        }
       }),
       session.onDevices((devices) => {
         this.setData({ devices });
@@ -272,6 +312,7 @@ Page({
       const state = await session.connect(cached.deviceId, cached.name);
       this.applyDeviceState(state);
       this.setData({ deviceName: cached.name ?? "", deviceId: cached.deviceId });
+      void this.refreshSegments();
     } catch (err) {
       wx.showToast({ title: errorText(err), icon: "none" });
     }
@@ -350,6 +391,8 @@ Page({
           ledCountInput: String(result.state.ledCount),
           ledCountHintText: `已设为 ${result.state.ledCount} 颗（已保存到设备）`,
         });
+        // 数量变化可能让设备裁剪越界的段（§7.2）：以设备回报为准。
+        void this.refreshSegments();
         return;
       }
       if (result.kind === "ack-error") {
@@ -409,6 +452,7 @@ Page({
       this.setData({ sheetVisible: false, deviceName: name, deviceId });
       // connect() 内发出 ready 时页面还没拿到设备名，这里补一次状态条。
       this.applyLink("ready");
+      void this.refreshSegments();
     } catch (err) {
       this.setData({ scanHint: errorText(err) });
     }
@@ -419,6 +463,7 @@ Page({
       return;
     }
     await session.disconnect();
+    this.segmentReports = [];
     this.setData({
       sheetVisible: false,
       deviceName: "",
@@ -429,11 +474,16 @@ Page({
       brightnessDisplay: 0,
       brightnessPercent: 0,
       brightnessHintText: "连接后可调节",
-      colorHintText: "连接后可选色",
+      colorHintText: "连接后可调节；颜色按灯珠区间下发",
       selectedPreset: "",
       ledCount: 0,
       ledCountInput: "",
       ledCountHintText: "",
+      segmentRows: [],
+      selectedSegId: -1,
+      rangeStartInput: "",
+      rangeEndInput: "",
+      segmentHintText: "",
     });
   },
 
@@ -546,7 +596,7 @@ Page({
     session?.commitBrightness(value);
   },
 
-  // ---------------- 颜色（#10） ----------------
+  // ---------------- 颜色（#10 / #25，写入选中段） ----------------
 
   /** 取画布节点与尺寸，按 dpr 建上下文并画一次色相环。 */
   initWheel() {
@@ -608,29 +658,299 @@ Page({
   },
 
   /**
-   * 预设点击——v2 占位：不再下发 SetAll（0x04 已退役）。
+   * 预设点击（#25）：把选中段改成该预设色并等 ACK。
    *
-   * **不改任何本地状态**：设备没有收到命令，界面就不能显示「已切换」。
-   * 只弹「该功能在 v2 分段界面中提供（#25）」的提示——宁可明确说没接上，
-   * 也不能假装成功。
-   *
-   * TODO(#25)：预设改为「写入 strip 0 / seg 0 的静态段」。
+   * 与色环拖动不同，这是**离散**操作：有明确的成功/失败反馈。
+   * 没有选中段时提示先划区间，不发帧（不能让用户以为改成功了）。
    */
-  onPresetTap(e: WechatMiniprogram.TouchEvent) {
+  async onPresetTap(e: WechatMiniprogram.TouchEvent) {
     if (session === null || !this.data.ready) {
       return;
     }
     const index = Number(e.currentTarget.dataset.index ?? -1);
-    if (PRESETS[index] === undefined) {
+    const preset = PRESETS[index];
+    if (preset === undefined) {
       return;
     }
-    // 只提示，不动 UI 的颜色/开关：设备状态没变，界面也不能变。
-    this.showSegmentsNotice();
+    const target = this.activeTarget();
+    if (target === null) {
+      this.showSelectSegmentNotice();
+      return;
+    }
+    const result = await session.applyPreset(preset.rgb, target);
+    if (result.kind === "ok") {
+      /* 设备已接受：本地只更新色环与展示，段列表以刷新后的设备回报为准。 */
+      const hsv = this.wheelView?.assign(preset.rgb) ?? hsvForWheel(preset.rgb, INITIAL_HSV.h);
+      this.setData({
+        colorHex: preset.hex,
+        colorHue: hsv.h,
+        colorSaturation: Math.round(hsv.s * 100),
+        selectedPreset: preset.name,
+        colorHintText: colorHintText(true, target),
+      });
+      this.redrawWheel();
+      void this.refreshSegments();
+      return;
+    }
+    if (result.kind === "ack-error") {
+      wx.showToast({
+        title: `预设被拒：${resultText(result.ack.resultCode)}`,
+        icon: "none",
+      });
+      return;
+    }
+    if (result.kind === "stale") {
+      return;
+    }
+    wx.showToast({ title: result.message, icon: "none" });
   },
 
-  /** 统一的 v2 占位提示（颜色 / 预设区域）。TODO(#25) */
-  showSegmentsNotice() {
-    wx.showToast({ title: SEGMENTS_UI_NOTICE, icon: "none" });
+  // ---------------- 分段编辑器（#25） ----------------
+
+  onRangeStartInput(e: WechatMiniprogram.Input) {
+    this.setData({ rangeStartInput: String(e.detail.value ?? ""), segmentHintText: "" });
+  },
+
+  onRangeEndInput(e: WechatMiniprogram.Input) {
+    this.setData({ rangeEndInput: String(e.detail.value ?? ""), segmentHintText: "" });
+  },
+
+  /** 点选某一行：把颜色控件切到该段。 */
+  onSegmentTap(e: WechatMiniprogram.TouchEvent) {
+    const segId = Number(e.currentTarget.dataset.segId ?? -1);
+    const report = this.segmentReports.find((item) => item.segId === segId);
+    if (report === undefined) {
+      return;
+    }
+    if (report.type !== 0x00) {
+      wx.showToast({ title: "该段是动画灯效，颜色由灯效参数决定", icon: "none" });
+      return;
+    }
+    this.applySegmentRows(segId);
+    const rgb = segmentHueSatToRgb(report.hue, report.sat);
+    const hsv = this.wheelView?.assign(rgb) ?? hsvForWheel(rgb, INITIAL_HSV.h);
+    const target: SegmentTarget = {
+      stripId: PRIMARY_STRIP_ID,
+      segId: report.segId,
+      start: report.start,
+      end: report.end,
+    };
+    this.setData({
+      colorHex: rgbToHex(rgb),
+      colorHue: hsv.h,
+      colorSaturation: Math.round(hsv.s * 100),
+      selectedPreset: matchingPreset(rgb),
+      colorHintText: colorHintText(true, target),
+    });
+    this.redrawWheel();
+  },
+
+  /**
+   * 新建 / 更新一个区间（#25 的核心操作）。
+   *
+   * 校验顺序（本地预检 → 设备权威）：
+   *   1. 区间输入（整数、start ≤ end、end < ledCount）；
+   *   2. 与已有段不重叠（本地即时反馈，给具体冲突段）；
+   *   3. 分配槽位（有空闲用空闲，否则替换当前选中段——不静默覆盖别的段）；
+   *   4. 下发 SetSegment，等 ACK；InvalidParam 时**不改本地列表**并提示原因。
+   */
+  async onApplyRange() {
+    if (session === null || this.data.segmentBusy || !this.data.ready) {
+      return;
+    }
+    const ledCount = this.data.ledCount;
+    const parsed = parseRangeInput(this.data.rangeStartInput, this.data.rangeEndInput, ledCount);
+    if (!parsed.ok) {
+      this.setData({ segmentHintText: parsed.message });
+      wx.showToast({ title: parsed.message, icon: "none" });
+      return;
+    }
+
+    /* 改当前选中段时要忽略它自己的旧区间（同 seg_id 视为替换自身）。 */
+    const selected = this.data.selectedSegId;
+    const conflict = overlapError(
+      parsed.start,
+      parsed.end,
+      this.segmentReports.map((r) => ({ segId: r.segId, start: r.start, end: r.end })),
+      selected >= 0 ? selected : -1,
+    );
+    if (conflict !== null) {
+      this.setData({ segmentHintText: `与其它段冲突：${conflict}（区间不能重叠）` });
+      wx.showToast({ title: conflict, icon: "none" });
+      return;
+    }
+
+    /*
+     * 槽位分配：有选中段就用它（改区间 = 替换自身），否则取第一个空闲槽位。
+     * 绝不静默覆盖其它已存在的段。
+     */
+    let segId: number;
+    if (selected >= 0) {
+      segId = selected;
+    } else {
+      const used = this.segmentReports.map((r) => r.segId);
+      const free = firstFreeSegId(used);
+      if (free < 0) {
+        /* 8 段已满：明确拒绝，不静默覆盖别人的段。 */
+        const message = `最多 ${MAX_SEGMENTS} 段，请先删除一段`;
+        this.setData({ segmentHintText: message });
+        wx.showToast({ title: message, icon: "none" });
+        return;
+      }
+      segId = free;
+    }
+
+    /* 新段用当前色环颜色。 */
+    const rgb = this.wheelView?.rgb() ?? PRESETS[0].rgb;
+    const target: SegmentTarget = {
+      stripId: PRIMARY_STRIP_ID,
+      segId,
+      start: parsed.start,
+      end: parsed.end,
+    };
+
+    this.setData({ segmentBusy: true, segmentHintText: "正在下发…" });
+    try {
+      if (session === null) {
+        return;
+      }
+      const result = await session.setSegmentColor(target, rgb);
+      if (result.kind === "ok") {
+        this.setData({
+          segmentHintText: `段 ${segId} 已生效：灯珠 ${parsed.start}-${parsed.end}`,
+          rangeStartInput: "",
+          rangeEndInput: "",
+        });
+        session.setActiveSegment(target);
+        await this.refreshSegments(segId);
+        return;
+      }
+      if (result.kind === "ack-error") {
+        /* 设备拒绝（重叠 / 越界 / 类型不支持）：不改本地列表，说清原因。 */
+        const message = segmentRejectHint(result.ack.resultCode);
+        this.setData({ segmentHintText: message });
+        wx.showToast({ title: message, icon: "none" });
+        return;
+      }
+      if (result.kind === "stale") {
+        this.setData({ segmentHintText: "" });
+        return;
+      }
+      this.setData({ segmentHintText: result.message });
+      wx.showToast({ title: result.message, icon: "none" });
+    } finally {
+      this.setData({ segmentBusy: false });
+    }
+  },
+
+  /** 删除某段（ClearSegment 0x11）：该段的灯珠归入未覆盖区（熄灭）。 */
+  async onSegmentDelete(e: WechatMiniprogram.TouchEvent) {
+    if (session === null || this.data.segmentBusy || !this.data.ready) {
+      return;
+    }
+    const segId = Number(e.currentTarget.dataset.segId ?? -1);
+    if (segId < 0) {
+      return;
+    }
+    this.setData({ segmentBusy: true, segmentHintText: "正在删除…" });
+    try {
+      const ack = await session.clearSegment(segId);
+      if (!ack.ok) {
+        const message = `删除失败：${resultText(ack.resultCode)}`;
+        this.setData({ segmentHintText: message });
+        wx.showToast({ title: message, icon: "none" });
+        return;
+      }
+      this.setData({ segmentHintText: `段 ${segId} 已删除（其灯珠熄灭）` });
+      await this.refreshSegments(this.data.selectedSegId === segId ? -1 : this.data.selectedSegId);
+    } catch (err) {
+      const message = errorText(err);
+      this.setData({ segmentHintText: message });
+      wx.showToast({ title: message, icon: "none" });
+    } finally {
+      this.setData({ segmentBusy: false });
+    }
+  },
+
+  /** 手动重新拉取段列表（设备权威）；失败保留现有列表并提示。 */
+  async onRefreshSegments() {
+    await this.refreshSegments(this.data.selectedSegId >= 0 ? this.data.selectedSegId : -1);
+  },
+
+  /**
+   * 从设备拉取段列表（QueryStrip）并重建行视图。
+   *
+   * keepSegId >= 0 时保持该段选中；段已不存在则清空选择。
+   * session 层已经把 stale / 传输异常区分好，这里只负责 UI 回写。
+   */
+  async refreshSegments(keepSegId?: number): Promise<void> {
+    if (session === null || !this.data.ready) {
+      return;
+    }
+    const result = await session.queryStrip(PRIMARY_STRIP_ID);
+    if (result.kind !== "ok") {
+      if (result.kind === "ack-error") {
+        wx.showToast({
+          title: `读取分段失败：${resultText(result.ack.resultCode)}`,
+          icon: "none",
+        });
+      } else if (result.kind === "error") {
+        this.setData({ segmentHintText: result.message });
+      }
+      return;
+    }
+    this.segmentReports = result.reports;
+    const current = keepSegId !== undefined ? keepSegId : this.data.selectedSegId;
+    const stillThere = result.reports.some((r) => r.segId === current);
+    this.applySegmentRows(stillThere ? current : -1);
+  },
+
+  /** 统一写行视图 + 选中态 + 颜色控件目标（设备权威的数据）。 */
+  applySegmentRows(segId: number) {
+    const rows = buildSegmentRows(this.segmentReports, segId >= 0 ? segId : null, segmentHueSatToRgb);
+    const report = this.segmentReports.find((item) => item.segId === segId);
+    let activeTarget: SegmentTarget | null = null;
+    if (report !== undefined && report.type === 0x00) {
+      activeTarget = {
+        stripId: PRIMARY_STRIP_ID,
+        segId: report.segId,
+        start: report.start,
+        end: report.end,
+      };
+    }
+    session?.setActiveSegment(activeTarget);
+    this.setData({
+      segmentRows: rows,
+      selectedSegId: activeTarget === null ? -1 : activeTarget.segId,
+      colorHintText: colorHintText(this.data.ready, activeTarget),
+      segmentHintText:
+        rows.length === 0
+          ? "还没有段。输入起点与终点，再点「新建区间」"
+          : `共 ${activeCount(rows)} / ${MAX_SEGMENTS} 段`,
+    });
+  },
+
+  /** 当前选中段（颜色控件的目标），没有则为 null。 */
+  activeTarget(): SegmentTarget | null {
+    const segId = this.data.selectedSegId;
+    if (segId < 0) {
+      return null;
+    }
+    const report = this.segmentReports.find((item) => item.segId === segId);
+    if (report === undefined) {
+      return null;
+    }
+    return {
+      stripId: PRIMARY_STRIP_ID,
+      segId: report.segId,
+      start: report.start,
+      end: report.end,
+    };
+  },
+
+  /** 颜色手势 / 预设在没有选中段时的统一提示。 */
+  showSelectSegmentNotice() {
+    wx.showToast({ title: "先在上方选择或新建一个灯珠区间", icon: "none" });
   },
 
   // ---------------- 内部 ----------------
@@ -658,7 +978,7 @@ Page({
       brightnessHintText: ready
         ? brightnessHintText(this.data.brightness, true)
         : this.data.brightnessHintText,
-      colorHintText: colorHintText(ready),
+      colorHintText: colorHintText(ready, this.activeTarget()),
     });
     if (state !== "ready" && state !== "initializing") {
       // 断线后不显示过期设备状态（设备是权威）。
@@ -670,13 +990,16 @@ Page({
           brightnessDisplay: 0,
           brightnessPercent: 0,
           brightnessHintText: "连接后可调节",
-          colorHintText: "连接后可选色",
+          colorHintText: "连接后可调节；颜色按灯珠区间下发",
           selectedPreset: "",
           // 设备级值不能跨连接沿用：下一台设备的 max_brightness 可能不同。
           maxBrightness: effectiveMaxBrightness(undefined),
           ledCount: 0,
           ledCountInput: "",
           ledCountHintText: "",
+          segmentRows: [],
+          selectedSegId: -1,
+          segmentHintText: "",
         });
       }
     }
@@ -698,11 +1021,12 @@ Page({
       brightnessPercent: percentOf(brightness, max),
       maxBrightness: max,
       brightnessHintText: brightnessHintText(brightness, this.data.ready),
+      // State 字节 2-4 是 seg 0 的基准色；没有段时界面显示它，有段时以段列表为准。
       colorHex: rgbToHex(rgb),
       colorHue: hsv.h,
       colorSaturation: Math.round(hsv.s * 100),
       selectedPreset: matchingPreset(rgb),
-      colorHintText: colorHintText(this.data.ready),
+      colorHintText: colorHintText(this.data.ready, this.activeTarget()),
       // 设备权威：State read / StateReport 里的数量总是覆盖本地值。
       ledCount: state.ledCount,
     });
@@ -731,3 +1055,17 @@ Page({
     wx.showToast({ title: result.message, icon: "none" });
   },
 });
+
+/** 段命令被拒时的可读原因（设备权威结果码 → 用户能懂的话）。 */
+function segmentRejectHint(resultCode: number): string {
+  switch (resultCode) {
+    case 0x01:
+      return "设备拒绝：区间越界或与其它段重叠";
+    case 0x02:
+      return "该灯效需要升级固件";
+    case 0x04:
+      return "协议长度不符（固件与小程序版本不一致）";
+    default:
+      return `设置失败：${resultText(resultCode)}`;
+  }
+}
