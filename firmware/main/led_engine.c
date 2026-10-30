@@ -563,6 +563,20 @@ static void run_stress_phase(void)
 }
 #endif /* CONFIG_LUMEN_RMT_STRESS_MODE */
 
+/*
+ * 上电后补发帧的次数与间隔。
+ *
+ * 灯带用独立 5V 供电（见 docs/led-bringup.md），它的电源建立可能晚于 MCU
+ * 启动——启动日志里第一次 render 出现在 325ms，此时灯带那路可能还没上电，
+ * 整帧被 WS2812B 丢掉。而 s_rendered_valid 已经置位，只要状态不变就不会
+ * 再发，用户看到的是「断电重启后灯是灭的，开关一次才亮」。
+ *
+ * 所以启动后额外强制重绘几次，把窗口覆盖过去。次数/间隔按「覆盖到 1s 左右」
+ * 取，代价是 4 帧 RMT 传输，可以忽略。
+ */
+#define LUMEN_BOOT_REASSERT_COUNT 4
+#define LUMEN_BOOT_REASSERT_INTERVAL_MS 200
+
 static void render_task(void *arg)
 {
     (void)arg;
@@ -574,13 +588,20 @@ static void render_task(void *arg)
 
     /*
      * 自检开始后渲染任务必须按步醒来，因此等待超时取「距离下一次换色的
-     * tick 数」；没有自检时仍然 portMAX_DELAY 阻塞在信号量上，不轮询。
+     * tick 数」；启动补发窗口内也按固定间隔醒来。两者都不成立时仍然
+     * portMAX_DELAY 阻塞在信号量上，不轮询。
      */
     uint8_t logged_step = 0xFF;
+    /* 启动补发计数：前几次醒来不看去重，强制把像素再推一遍。 */
+    uint8_t boot_reassert_left = LUMEN_BOOT_REASSERT_COUNT;
 
     for (;;) {
         TickType_t wait = portMAX_DELAY;
         xSemaphoreTake(s_state_lock, portMAX_DELAY);
+        if (boot_reassert_left > 0) {
+            /* 补发窗口内按固定间隔醒来，覆盖灯带电源建立的那段时间。 */
+            wait = pdMS_TO_TICKS(LUMEN_BOOT_REASSERT_INTERVAL_MS);
+        }
         if (lumen_selftest_active(&s_selftest)) {
             int64_t remaining_us =
                 lumen_selftest_next_step_in_us(&s_selftest, esp_timer_get_time());
@@ -593,8 +614,17 @@ static void render_task(void *arg)
         }
         xSemaphoreGive(s_state_lock);
 
-        /* 超时（自检换色）与状态信号都会走到这里；不区分来源，统一重渲染。 */
+        /* 超时（自检换色 / 启动补发）与状态信号都会走到这里；统一重渲染。 */
         (void)xSemaphoreTake(s_render_signal, wait);
+
+        /*
+         * 启动补发：上电后头几帧不走去重，确保灯带电源晚于 MCU 建立时
+         * 也能收到像素（否则首帧被丢后要等用户碰一次开关才亮）。
+         */
+        if (boot_reassert_left > 0) {
+            s_rendered_valid = false;
+            --boot_reassert_left;
+        }
 
         /* 先处理 SetLedCount 的重建：它会重建句柄、强制重绘并回延迟 ACK。
          * 重建期间的其它命令已进邮箱，下面的 latest-wins 取最新快照兜底。 */
