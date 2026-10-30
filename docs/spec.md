@@ -1,8 +1,8 @@
 # lumen MVP · 实现规格
 
-**状态**：`ready-for-agent`
+**状态**：`已实现并验收通过`（2026-10-30：#14 七条通过）。仍未验证的两项：#7 RMT × BLE 共存（用户决定跳过）与 iOS 全链路（下阶段用 iPad 补测），见 [handoff.md](./handoff.md) §1 与 [end-to-end-acceptance.md](./end-to-end-acceptance.md) §3。
 
-**GitHub issue**：[#1](https://github.com/sishoui/light-matt/issues/1)（父 issue；13 张实现票是它的 sub-issues）
+**GitHub issue**：[#1](https://github.com/sishoui/light-matt/issues/1)（父 issue，已关闭；13 张实现票是它的 sub-issues）
 
 **来源**：合成自 [架构基线](./wayfinding/architecture-brief.md)、[wayfinder 地图](./wayfinding/map.md) 与 [BLE/固件事实研究](./wayfinding/research/ble-and-firmware-facts.md)。本规格不取代基线与地图；字节级细节的唯一真相是 [protocol.md](./protocol.md)（已定稿）。
 

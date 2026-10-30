@@ -1,46 +1,245 @@
 <view class="page">
-  <view class="header">
-    <text class="title">BLE 探针</text>
-    <text class="status">{{status}}</text>
-    <text class="meta">{{platform}} · {{connected ? "已连接" : "未连接"}}</text>
-  </view>
-
-  <view class="row">
-    <button size="mini" bindtap="openAdapter">打开适配器</button>
-    <button size="mini" bindtap="startScan">扫描</button>
-    <button size="mini" bindtap="stopScan">停止扫描</button>
-    <button size="mini" bindtap="disconnect" disabled="{{!connected}}">断开</button>
-    <button size="mini" bindtap="reconnect" disabled="{{!cached}}">重连</button>
-  </view>
-
-  <view class="row">
-    <button size="mini" bindtap="send" disabled="{{!connected}}">发 20 字节</button>
-    <button size="mini" bindtap="burst20" disabled="{{!connected}}">连发 @20ms</button>
-    <button size="mini" bindtap="burst50" disabled="{{!connected}}">@50ms</button>
-    <button size="mini" bindtap="burst100" disabled="{{!connected}}">@100ms</button>
-    <button size="mini" bindtap="readState" disabled="{{!connected}}">读 State</button>
-  </view>
-
-  <view class="row">
-    <button size="mini" bindtap="clearLogs">清空日志</button>
-    <button size="mini" bindtap="copyLogs">复制日志</button>
-  </view>
-
-  <scroll-view scroll-y class="devices">
-    <view
-      wx:for="{{devices}}"
-      wx:key="deviceId"
-      class="device"
-      data-device-id="{{item.deviceId}}"
-      bindtap="connect"
-    >
-      <text class="device-name">{{item.name}}</text>
-      <text class="device-meta">{{item.deviceId}} · RSSI {{item.RSSI}}</text>
+  <!-- 1. 顶部连接状态条：始终可见，整条可点 -->
+  <view class="statusbar {{linkClass}}" bindtap="onStatusTap">
+    <view class="status-dot"></view>
+    <view class="status-main">
+      <text class="status-text">{{statusText}}</text>
+      <text class="status-sub" wx:if="{{statusSub}}">{{statusSub}}</text>
     </view>
-    <view wx:if="{{devices.length === 0}}" class="empty">点击「扫描」查找 Lumen-ECHO</view>
-  </scroll-view>
+    <text class="status-action">{{statusAction}}</text>
+  </view>
 
-  <scroll-view scroll-y class="logs">
-    <text wx:for="{{logs}}" wx:key="index" class="log">{{item}}</text>
-  </scroll-view>
+  <!-- 2. 大开关 -->
+  <view class="power-card">
+    <view
+      class="power-btn {{power ? 'on' : ''}} {{!ready ? 'disabled' : ''}} {{powerBusy ? 'busy' : ''}}"
+      bindtap="onTogglePower"
+    >
+      <view class="power-glyph"></view>
+    </view>
+    <text class="power-label">{{powerLabel}}</text>
+  </view>
+
+  <!-- 3. 亮度：真实滑块（#9）。min/max 来自设备 State，不硬编码 255 -->
+  <view class="section {{ready ? '' : 'disabled'}}">
+    <view class="section-head">
+      <text class="section-title">亮度</text>
+      <text class="section-value">{{brightnessDisplay}} / {{maxBrightness}} · {{brightnessPercent}}%</text>
+    </view>
+    <slider
+      class="brightness-slider"
+      min="0"
+      max="{{maxBrightness}}"
+      step="1"
+      value="{{brightness}}"
+      disabled="{{!ready}}"
+      activeColor="#ffb478"
+      backgroundColor="#2a2a32"
+      block-size="24"
+      bindchanging="onBrightnessChanging"
+      bindchange="onBrightnessChange"
+    />
+    <text class="section-hint">{{brightnessHintText}}</text>
+  </view>
+
+  <!-- 4. 颜色：色相环（单块 canvas）+ 饱和度。V 恒为 1，亮度由上面的滑块负责 -->
+  <view class="section {{ready ? '' : 'disabled'}}">
+    <view class="section-head">
+      <text class="section-title">颜色</text>
+      <view class="color-readout">
+        <view class="swatch" style="background: {{colorHex}}"></view>
+        <text class="section-value mono">{{colorHex}}</text>
+      </view>
+    </view>
+
+    <view class="wheel-wrap">
+      <canvas
+        type="2d"
+        id="color-wheel"
+        class="wheel-canvas"
+        bindtouchstart="onWheelTouchStart"
+        bindtouchmove="onWheelTouchMove"
+        bindtouchend="onWheelTouchEnd"
+        bindtouchcancel="onWheelTouchEnd"
+      ></canvas>
+    </view>
+
+    <view class="sat-row">
+      <text class="sat-label">饱和度</text>
+      <slider
+        class="sat-slider"
+        min="0"
+        max="100"
+        step="1"
+        value="{{colorSaturation}}"
+        disabled="{{!ready}}"
+        activeColor="{{colorHex}}"
+        backgroundColor="#2a2a32"
+        block-size="20"
+        bindchanging="onSaturationChanging"
+        bindchange="onSaturationChange"
+      />
+      <text class="sat-value">{{colorSaturation}}%</text>
+    </view>
+
+    <text class="section-hint">{{colorHintText}}</text>
+  </view>
+
+  <!-- 5. 预设：一次 SetAll（开关 + 亮度 + RGB）原子下发 -->
+  <view class="presets {{ready ? '' : 'disabled'}}">
+    <view
+      wx:for="{{presetList}}"
+      wx:key="name"
+      class="preset {{selectedPreset === item.name ? 'selected' : ''}}"
+      data-index="{{index}}"
+      bindtap="onPresetTap"
+    >
+      <view class="preset-dot" style="background: {{item.hex}}"></view>
+      <text class="preset-name">{{item.name}}</text>
+    </view>
+  </view>
+
+  <!-- 6. 页脚：版本 + 提示；版本号连点 5 次开启隐藏日志面板 -->
+  <view class="footer">
+    <text class="version" bindtap="onVersionTap">v{{version}}</text>
+    <text class="footer-hint">开关与设备状态以设备为准</text>
+  </view>
+
+  <!-- 7. 扫描 / 设备弹层 -->
+  <view wx:if="{{sheetVisible}}" class="sheet-mask" bindtap="onSheetMaskTap">
+    <view class="sheet" catchtap="noop">
+      <view class="sheet-head">
+        <text class="sheet-title">{{sheetMode === 'scan' ? '选择设备' : '设备'}}</text>
+        <text class="sheet-close" bindtap="closeSheet">关闭</text>
+      </view>
+
+      <block wx:if="{{sheetMode === 'scan'}}">
+        <scroll-view scroll-y class="device-list">
+          <view
+            wx:for="{{devices}}"
+            wx:key="deviceId"
+            class="device-row"
+            data-device-id="{{item.deviceId}}"
+            data-name="{{item.name}}"
+            bindtap="onDeviceTap"
+          >
+            <text class="device-name">{{item.name}}</text>
+            <text class="device-meta">{{item.deviceId}} · {{item.rssi}} dBm</text>
+          </view>
+          <view wx:if="{{devices.length === 0}}" class="device-empty">
+            {{scanHint || '扫描中…'}}
+          </view>
+        </scroll-view>
+        <view wx:if="{{scanHint && devices.length > 0}}" class="scan-hint">{{scanHint}}</view>
+        <button class="sheet-btn" bindtap="onRescan">重新扫描</button>
+      </block>
+
+      <block wx:else>
+        <view class="device-info">
+          <view class="info-row">
+            <text class="info-label">设备</text>
+            <text class="info-value">{{deviceName || '未知'}}</text>
+          </view>
+          <view class="info-row">
+            <text class="info-label">deviceId</text>
+            <text class="info-value mono">{{deviceId}}</text>
+          </view>
+          <view class="info-row">
+            <text class="info-label">开关</text>
+            <text class="info-value">{{power ? '开' : '关'}}</text>
+          </view>
+          <view class="info-row">
+            <text class="info-label">亮度</text>
+            <text class="info-value">{{brightness}}</text>
+          </view>
+          <view class="info-row">
+            <text class="info-label">协议版本</text>
+            <text class="info-value">v1</text>
+          </view>
+        </view>
+        <!-- 自检放在设备弹层里，不占主控制流（#13） -->
+        <button
+          class="sheet-btn ghost"
+          bindtap="onSelfTest"
+          disabled="{{!ready || selfTestBusy}}"
+        >
+          {{selfTestBusy ? '自检中…' : '自检（红→绿→蓝→白）'}}
+        </button>
+
+        <!-- 灯珠数量（#12）：设备级低频设置，只在设备弹层里改 -->
+        <view class="led-count-block">
+          <view class="led-count-head">
+            <text class="info-label">灯珠数量</text>
+            <text class="led-count-current">当前 {{ledCount > 0 ? ledCount : '—'}} 颗</text>
+          </view>
+          <view class="led-count-row">
+            <input
+              class="led-count-input"
+              type="number"
+              value="{{ledCountInput}}"
+              maxlength="2"
+              placeholder="1-64"
+              disabled="{{!ready || ledCountBusy}}"
+              bindinput="onLedCountInput"
+            />
+            <button
+              class="led-count-apply {{ledCountBusy ? 'busy' : ''}}"
+              disabled="{{!ready || ledCountBusy}}"
+              bindtap="onApplyLedCount"
+            >
+              {{ledCountBusy ? '应用中…' : '应用'}}
+            </button>
+          </view>
+          <text class="led-count-hint {{ledCountHintText ? 'visible' : ''}}">
+            {{ledCountHintText || '改完立即生效并写入设备，重启后保持；非法值会被拒绝'}}
+          </text>
+        </view>
+
+        <button class="sheet-btn ghost danger" bindtap="onDisconnect">断开连接</button>
+      </block>
+    </view>
+  </view>
+
+  <!-- 8. 隐藏协议日志面板（#13）：连点版本号 5 次开启；数据源是 FrameLog（200 帧） -->
+  <view wx:if="{{logVisible}}" class="log-mask" bindtap="onLogCloseTap">
+    <view class="log-panel" catchtap="noop">
+      <view class="log-head">
+        <text class="log-title">
+          协议日志 · {{logCount}} 帧{{logPaused ? ' · 视图已暂停' : ''}}
+        </text>
+        <text class="log-close" bindtap="onLogCloseTap">关闭</text>
+      </view>
+      <view class="log-toolbar">
+        <view class="log-btn" bindtap="onLogPauseTap">{{logPaused ? '继续' : '暂停'}}</view>
+        <view class="log-btn" bindtap="onLogClearTap">清空</view>
+        <view class="log-btn" bindtap="onLogCopyTap">复制</view>
+      </view>
+      <text wx:if="{{logHint}}" class="log-hint">{{logHint}}</text>
+      <scroll-view
+        scroll-y
+        class="log-list"
+        scroll-into-view="{{logScrollTarget}}"
+        scroll-with-animation="{{false}}"
+      >
+        <view
+          wx:for="{{logRows}}"
+          wx:key="id"
+          id="log-row-{{item.id}}"
+          class="log-row {{item.dir}} {{item.ok ? '' : 'bad'}}"
+        >
+          <text class="log-time">{{item.time}}</text>
+          <text class="log-arrow">{{item.arrow}}</text>
+          <text class="log-hex">{{item.hex}}</text>
+          <text class="log-name">{{item.name}}{{item.seq === '-' ? '' : ' seq=' + item.seq}}</text>
+          <text class="log-parsed">{{item.parsed}}</text>
+        </view>
+        <view wx:if="{{logRows.length === 0}}" class="log-empty">
+          还没有帧。连接设备并操作后，这里会显示收发记录。
+        </view>
+      </scroll-view>
+      <text class="log-foot">
+        与固件串口按 seq 对齐；开发版 console 打印的是同一份数据
+      </text>
+    </view>
+  </view>
 </view>

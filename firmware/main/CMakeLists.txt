@@ -1,1 +1,27 @@
-idf_component_register(SRCS "main.c" INCLUDE_DIRS ".")
+idf_component_register(
+    SRCS
+        "app_main.c"
+        "ble_link.c"
+        "command.c"
+        "led_engine.c"
+        "led_count_job.c"
+        "save_scheduler.c"
+        "state_blob.c"
+        "state_store.c"
+        "state.c"
+        "gamma.c"
+        "protocol.c"
+        "selftest.c"
+        "stress_metrics.c"
+    INCLUDE_DIRS "."
+    REQUIRES
+        bt
+        nvs_flash
+        esp_driver_rmt
+        esp_hw_support
+        esp_system
+        esp_timer
+        heap
+        freertos
+        log
+)

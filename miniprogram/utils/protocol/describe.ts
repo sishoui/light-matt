@@ -1,0 +1,97 @@
+/**
+ * 日志用的帧描述（纯函数，不依赖 wx.*）。
+ *
+ * 固件串口每帧打印 `cmd=0x.. seq=0x.. result=0x..`；小程序面板与 console
+ * 用本模块生成同构的解析文本，两边靠 seq 对齐（spec §11）。
+ *
+ * 原则：命令名 + 参数都从字节里解析，不猜、不省略；解析不了时退回 hex，
+ * 保证日志永远有可对照的原始数据。
+ */
+
+import { CMD, DEVICE_CMD, commandName } from "./constants";
+import { bytesToHex } from "./hex";
+import type { AckResult, DeviceState } from "./types";
+
+function hex2(value: number): string {
+  return `0x${(value & 0xff).toString(16).padStart(2, "0").toUpperCase()}`;
+}
+
+/** 小程序 → 设备命令：命令名 + 从载荷解析出的参数。 */
+export function describeCommand(command: number, payload: Uint8Array): string {
+  const name = commandName(command);
+  switch (command) {
+    case CMD.SET_POWER:
+      return payload.length === 1 ? `${name} power=${payload[0]}` : `${name} ${bytesToHex(payload)}`;
+    case CMD.SET_BRIGHTNESS:
+      return payload.length === 1
+        ? `${name} brightness=${payload[0]}`
+        : `${name} ${bytesToHex(payload)}`;
+    case CMD.SET_COLOR:
+      return payload.length === 3
+        ? `${name} rgb=${payload[0]},${payload[1]},${payload[2]}`
+        : `${name} ${bytesToHex(payload)}`;
+    case CMD.SET_ALL:
+      return payload.length === 5
+        ? `${name} power=${payload[0]} brightness=${payload[1]} ` +
+            `rgb=${payload[2]},${payload[3]},${payload[4]}`
+        : `${name} ${bytesToHex(payload)}`;
+    case CMD.QUERY_STATE:
+    case CMD.SELF_TEST:
+      return name;
+    case CMD.SET_LED_COUNT:
+      return payload.length === 2
+        ? `${name} count=${payload[0] | (payload[1] << 8)}`
+        : `${name} ${bytesToHex(payload)}`;
+    default:
+      return payload.length === 0 ? name : `${name} ${bytesToHex(payload)}`;
+  }
+}
+
+/** ACK：回执的命令字 + 结果码，字段顺序与固件串口一致。 */
+export function describeAck(ack: AckResult): string {
+  return (
+    `ACK ${commandName(ack.command)} cmd=${hex2(ack.command)} ` +
+    `result=${hex2(ack.resultCode)} ${ack.ok ? "OK" : "FAIL"}`
+  );
+}
+
+/** State（State read 与 StateReport 共用），字段顺序见 protocol §7。 */
+export function describeState(state: DeviceState): string {
+  return (
+    `State power=${state.power} brightness=${state.brightness} ` +
+    `rgb=${state.r},${state.g},${state.b} leds=${state.ledCount} max=${state.maxBrightness}`
+  );
+}
+
+/**
+ * State read 是裸 8 字节、没有命令信封：日志里要能和 StateReport 区分开。
+ * 其余字段与 describeState 完全一致（同一份 8 字节布局）。
+ */
+export function describeStateRead(state: DeviceState): string {
+  return describeState(state).replace(/^State /, "State read ");
+}
+
+/** Event 0x81。code 0x01 = 存储失败，detail 是失败的原命令字。 */
+export function describeEvent(code: number, detail: number): string {
+  if (code === 0x01) {
+    return (
+      `Event storage_failed(0x01) cmd=${commandName(detail)}(${hex2(detail)}) ` +
+      `detail=${hex2(detail)}`
+    );
+  }
+  return `Event 0x${code.toString(16).padStart(2, "0").toUpperCase()} detail=${hex2(detail)}`;
+}
+
+/** 设备→小程序命令名，只用于日志标题。 */
+export function deviceCommandName(command: number): string {
+  switch (command) {
+    case DEVICE_CMD.ACK:
+      return commandName(DEVICE_CMD.ACK);
+    case DEVICE_CMD.EVENT:
+      return commandName(DEVICE_CMD.EVENT);
+    case DEVICE_CMD.STATE_REPORT:
+      return commandName(DEVICE_CMD.STATE_REPORT);
+    default:
+      return commandName(command);
+  }
+}

@@ -1,5 +1,5 @@
 {
-  "description": "lumen 环境验证用最小工程",
+  "description": "lumen 灯带控制页",
   "setting": {
     "urlCheck": false,
     "es6": true,
@@ -36,6 +36,14 @@
       {
         "type": "folder",
         "value": "node_modules"
+      },
+      {
+        "type": "folder",
+        "value": "tests"
+      },
+      {
+        "type": "file",
+        "value": "vitest.config.ts"
       }
     ],
     "include": []
