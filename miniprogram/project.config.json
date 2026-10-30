@@ -26,7 +26,7 @@
     }
   },
   "compileType": "miniprogram",
-  "libVersion": "3.0.0",
+  "libVersion": "3.17.6",
   "appid": "wx0a46668333178576",
   "projectname": "lumen",
   "condition": {},
