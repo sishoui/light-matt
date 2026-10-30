@@ -994,6 +994,25 @@ uint8_t lumen_led_engine_set_led_count_for_strip(uint8_t strip_id, uint16_t coun
     }
 }
 
+void lumen_led_engine_strip_counts(uint16_t out[LUMEN_MAX_STRIPS])
+{
+    if (out == NULL) {
+        return;
+    }
+    for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
+        out[i] = 0;
+    }
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    if (s_planar.strip_count > 1) {
+        for (uint8_t i = 0; i < s_planar.strip_count; ++i) {
+            out[i] = s_planar.strips[i].count;
+        }
+    } else {
+        out[0] = s_state.led_count;
+    }
+    xSemaphoreGive(s_state_lock);
+}
+
 uint8_t lumen_led_engine_max_brightness(void)
 {
     return max_brightness();

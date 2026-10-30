@@ -105,6 +105,13 @@ uint8_t lumen_led_engine_set_led_count(uint16_t count, uint8_t seq);
  */
 uint8_t lumen_led_engine_set_led_count_for_strip(uint8_t strip_id, uint16_t count, uint8_t seq);
 
+/*
+ * #29：把每条灯带当前的灯珠数填进 out（长度须为 LUMEN_MAX_STRIPS）。
+ * 单灯带时 out[0] = State 的 led_count，其余项为 0。
+ * 命令层用它校验 SetSegment 的段区间——不能一律用 strip 0 的数字。
+ */
+void lumen_led_engine_strip_counts(uint16_t out[LUMEN_MAX_STRIPS]);
+
 /* 当前生效的亮度上限（构建期常量）。 */
 uint8_t lumen_led_engine_max_brightness(void);
 

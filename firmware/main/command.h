@@ -77,15 +77,29 @@ typedef struct {
  *
  * segments 是当前段配置的**只读**快照，用于 §11.3 第 5-9 步（strip 范围、
  * 区间、重叠、flags、周期）。传 NULL 表示「没有任何活动段」——host 单测与
- * 「段配置尚未加载」的场景都走这条路，区间校验仍然按 led_count 生效。
+ * 「段配置尚未加载」的场景都走这条路，区间校验仍然按灯珠数生效。
+ *
+ * strip_counts 是「每条灯带的灯珠数」只读数组（#29 多条独立，长度须为
+ * LUMEN_MAX_STRIPS）。传 NULL 时退回 current->led_count（单灯带场景，
+ * 也就是 #29 之前的全部行为）。**不要**用 current->led_count 校验
+ * strip_id != 0 的段：那是 strip 0 的数字，会让真实越界被放行，
+ * 或让合法段被误拒。
  *
  * 只有 state_changed 为 true 时才应写入共享状态；led_count_rebuild 为 true 时
  * 应请求重建句柄；segment_op 为 true 时应在 ACK 之前调用 led_engine 写/清段；
  * cancels_selftest 为 true 时必须在应用之前结束自检。
  */
 void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *current,
-                            const lumen_segment_store_t *segments, uint8_t max_brightness,
+                            const lumen_segment_store_t *segments,
+                            const uint16_t *strip_counts, uint8_t max_brightness,
                             lumen_command_outcome_t *outcome);
+
+/*
+ * 取某条灯带的灯珠数（#29）。strip_counts 为 NULL 时退回 current->led_count；
+ * 结果钳到 1..LUMEN_MAX_LEDS。纯函数，host 可直接测。
+ */
+uint16_t lumen_command_strip_count(const lumen_state_t *current, const uint16_t *strip_counts,
+                                   uint8_t strip_id);
 
 /* 协议 §6 定义的已知（已实现）命令字。保留字、退役字与设备→小程序方向不算。 */
 bool lumen_command_is_known(uint8_t command);

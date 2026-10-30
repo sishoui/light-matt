@@ -247,8 +247,11 @@ static void handle_frame(const uint8_t *data, size_t len)
 
     lumen_command_outcome_t outcome;
     /* max_brightness 取构建期常量：SetBrightness 在这里被钳位，而不是拒绝。 */
-    lumen_command_dispatch(&frame, &current, segments, lumen_led_engine_max_brightness(),
-                           &outcome);
+    /* #29：段区间必须按「这条灯带自己」的灯珠数校验，不能一律用 strip 0 的。 */
+    uint16_t strip_counts[LUMEN_MAX_STRIPS];
+    lumen_led_engine_strip_counts(strip_counts);
+    lumen_command_dispatch(&frame, &current, segments, strip_counts,
+                           lumen_led_engine_max_brightness(), &outcome);
 
     /*
      * 段配置写入 / 清除（#25）。命令层已完成 §11.3 第 4-9 步校验，

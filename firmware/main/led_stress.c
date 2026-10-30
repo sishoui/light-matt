@@ -90,7 +90,8 @@ static bool stress_dispatch(const lumen_led_stress_engine_t *engine, uint8_t com
 
     lumen_command_outcome_t outcome;
     /* 压力模式只关心单色路径，段配置按「没有任何活动段」处理。 */
-    lumen_command_dispatch(&frame, &current, NULL, engine->max_brightness(), &outcome);
+    lumen_command_dispatch(&frame, &current, NULL, NULL, engine->max_brightness(),
+                               &outcome);
 
     if (!outcome.state_changed) {
         /* 命令未被 reducer 实现（或与当前状态相同）。不 commit，不改灯带状态。 */

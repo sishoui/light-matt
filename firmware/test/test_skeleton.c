@@ -377,7 +377,7 @@ static void run_app_case(const vector_case_t *c)
         apply_prior_segments(&segments, c->prior_segments);
 
         /* 向量不涉及构建期上限，按 255 跑 reducer。 */
-        lumen_command_dispatch(&frame, &before, &segments, 255, &outcome);
+        lumen_command_dispatch(&frame, &before, &segments, NULL, 255, &outcome);
 
         if (frame.command == LUMEN_CMD_SET_POWER) {
             /* SetPower 结果码必须与向量一致。 */
@@ -616,13 +616,13 @@ static void test_set_power_reducer(void)
     frame.seq = 1;
     frame.payload_len = 1;
     frame.payload[0] = 1;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.state_changed);
     CHECK(outcome.next.power == 1);
 
     /* 已是开灯：ACK 0x00 但不重复 commit */
-    lumen_command_dispatch(&frame, &outcome.next, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &outcome.next, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(!outcome.state_changed);
     CHECK(outcome.next.power == 1);
@@ -632,7 +632,7 @@ static void test_set_power_reducer(void)
     bad.command = LUMEN_CMD_SET_POWER;
     bad.payload_len = 1;
     bad.payload[0] = 2;
-    lumen_command_dispatch(&bad, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&bad, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
     CHECK(!outcome.state_changed);
     CHECK(outcome.next.power == state.power);
@@ -641,7 +641,7 @@ static void test_set_power_reducer(void)
     bad.payload_len = 2;
     bad.payload[0] = 1;
     bad.payload[1] = 0;
-    lumen_command_dispatch(&bad, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&bad, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
     CHECK(!outcome.state_changed);
 
@@ -652,7 +652,7 @@ static void test_set_power_reducer(void)
         lumen_frame_t known = {0};
         known.command = LUMEN_CMD_QUERY_STATE;
         known.payload_len = lumen_command_payload_len(LUMEN_CMD_QUERY_STATE);
-        lumen_command_dispatch(&known, &state, NULL, 255, &outcome);
+        lumen_command_dispatch(&known, &state, NULL, NULL, 255, &outcome);
         CHECK(outcome.result_code == LUMEN_RESULT_OK);
         CHECK(outcome.state_report);
         CHECK(!outcome.state_changed);
@@ -666,7 +666,7 @@ static void test_set_power_reducer(void)
     lumen_frame_t selftest = {0};
     selftest.command = LUMEN_CMD_SELF_TEST;
     selftest.payload_len = 0;
-    lumen_command_dispatch(&selftest, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&selftest, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(!outcome.state_changed);
     CHECK(outcome.start_selftest);
@@ -681,7 +681,7 @@ static void test_set_power_reducer(void)
     for (size_t i = 0; i < sizeof(unknown); ++i) {
         lumen_frame_t f = {0};
         f.command = unknown[i];
-        lumen_command_dispatch(&f, &state, NULL, 255, &outcome);
+        lumen_command_dispatch(&f, &state, NULL, NULL, 255, &outcome);
         CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
         CHECK(!outcome.state_changed);
     }
@@ -707,7 +707,7 @@ static void test_set_brightness_reducer(void)
     lumen_state_t before = state;
     for (size_t i = 0; i < sizeof(boundaries); ++i) {
         frame.payload[0] = boundaries[i];
-        lumen_command_dispatch(&frame, &before, NULL, 255, &outcome);
+        lumen_command_dispatch(&frame, &before, NULL, NULL, 255, &outcome);
         CHECK(outcome.result_code == LUMEN_RESULT_OK);
         CHECK(outcome.state_changed == (before.brightness != boundaries[i]));
         CHECK(outcome.next.brightness == boundaries[i]);
@@ -724,7 +724,7 @@ static void test_set_brightness_reducer(void)
     lumen_state_t zero = state;
     zero.brightness = 0;
     frame.payload[0] = 0;
-    lumen_command_dispatch(&frame, &zero, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &zero, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(!outcome.state_changed);
     CHECK(outcome.next.power == 1);
@@ -734,21 +734,21 @@ static void test_set_brightness_reducer(void)
     lumen_state_t same = state;
     same.brightness = 128;
     frame.payload[0] = 128;
-    lumen_command_dispatch(&frame, &same, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &same, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(!outcome.state_changed);
     CHECK(outcome.next.brightness == 128);
 
     /* 钳位而不是拒绝：max_brightness=180 时，200 / 255 都落到 180。 */
     frame.payload[0] = 200;
-    lumen_command_dispatch(&frame, &state, NULL, 180, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 180, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.state_changed);
     CHECK(outcome.next.brightness == 180);
     CHECK(outcome.next.power == 1);
 
     frame.payload[0] = 255;
-    lumen_command_dispatch(&frame, &state, NULL, 180, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 180, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.next.brightness == 180);
 
@@ -756,18 +756,18 @@ static void test_set_brightness_reducer(void)
     lumen_state_t at_cap = state;
     at_cap.brightness = 180;
     frame.payload[0] = 255;
-    lumen_command_dispatch(&frame, &at_cap, NULL, 180, &outcome);
+    lumen_command_dispatch(&frame, &at_cap, NULL, NULL, 180, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(!outcome.state_changed);
 
     /* 上限之内的值不受影响。 */
     frame.payload[0] = 100;
-    lumen_command_dispatch(&frame, &state, NULL, 180, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 180, &outcome);
     CHECK(outcome.next.brightness == 100);
 
     /* max_brightness = 0：任何值都被钳到 0，仍然回 0x00。 */
     frame.payload[0] = 255;
-    lumen_command_dispatch(&frame, &state, NULL, 0, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 0, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.next.brightness == 0);
     CHECK(outcome.next.power == 1);
@@ -776,7 +776,7 @@ static void test_set_brightness_reducer(void)
     frame.payload_len = 2;
     frame.payload[0] = 100;
     frame.payload[1] = 0;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
     CHECK(!outcome.state_changed);
     CHECK(outcome.next.brightness == state.brightness);
@@ -789,14 +789,14 @@ static void test_set_brightness_reducer(void)
     power.command = LUMEN_CMD_SET_POWER;
     power.payload_len = 1;
     power.payload[0] = 0;
-    lumen_command_dispatch(&power, &lit, NULL, 255, &outcome);
+    lumen_command_dispatch(&power, &lit, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.state_changed);
     CHECK(outcome.next.power == 0);
     CHECK(outcome.next.brightness == 77);
 
     power.payload[0] = 1;
-    lumen_command_dispatch(&power, &outcome.next, NULL, 255, &outcome);
+    lumen_command_dispatch(&power, &outcome.next, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.state_changed);
     CHECK(outcome.next.power == 1);
@@ -837,7 +837,7 @@ static void test_retired_commands(void)
     frame.payload[0] = 255;
     frame.payload[1] = 0;
     frame.payload[2] = 0;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
     CHECK(!outcome.state_changed);
     CHECK(!outcome.cancels_selftest);
@@ -852,7 +852,7 @@ static void test_retired_commands(void)
     frame.payload[2] = 0;
     frame.payload[3] = 128;
     frame.payload[4] = 255;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
     CHECK(!outcome.state_changed);
     CHECK(!outcome.cancels_selftest);
@@ -861,7 +861,7 @@ static void test_retired_commands(void)
     /* 长度不符也不会有 BadLength：未知命令的判定优先于长度（§8 顺序）。 */
     frame.command = LUMEN_CMD_SET_ALL;
     frame.payload_len = 1;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
     CHECK(!outcome.state_changed);
 
@@ -876,7 +876,7 @@ static void test_retired_commands(void)
         lumen_frame_t f = {0};
         f.command = future[i];
         f.payload_len = 0;
-        lumen_command_dispatch(&f, &state, NULL, 255, &outcome);
+        lumen_command_dispatch(&f, &state, NULL, NULL, 255, &outcome);
         CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
         CHECK(!outcome.state_changed);
     }
@@ -1223,7 +1223,7 @@ static void test_selftest_cancel_rules(void)
     frame.command = LUMEN_CMD_SET_POWER;
     frame.payload_len = 1;
     frame.payload[0] = 1;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(!outcome.state_changed);
     CHECK(outcome.cancels_selftest);
@@ -1233,7 +1233,7 @@ static void test_selftest_cancel_rules(void)
     frame.command = LUMEN_CMD_SET_BRIGHTNESS;
     frame.payload_len = 1;
     frame.payload[0] = state.brightness;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(!outcome.state_changed);
     CHECK(outcome.cancels_selftest);
@@ -1247,7 +1247,7 @@ static void test_selftest_cancel_rules(void)
     frame.payload[0] = state.r;
     frame.payload[1] = state.g;
     frame.payload[2] = state.b;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
     CHECK(!outcome.state_changed);
     CHECK(!outcome.cancels_selftest);
@@ -1259,7 +1259,7 @@ static void test_selftest_cancel_rules(void)
     frame.payload[2] = state.r;
     frame.payload[3] = state.g;
     frame.payload[4] = state.b;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
     CHECK(!outcome.state_changed);
     CHECK(!outcome.cancels_selftest);
@@ -1269,39 +1269,39 @@ static void test_selftest_cancel_rules(void)
     frame.payload_len = 2;
     frame.payload[0] = 30;
     frame.payload[1] = 0;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(lumen_command_changes_state(frame.command));
 
     /* QueryState：明确不取消自检（§11.2 第 6 条）。 */
     frame.command = LUMEN_CMD_QUERY_STATE;
     frame.payload_len = 0;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(!outcome.cancels_selftest);
 
     /* 非法取值 / 长度错误 / 未知命令：命令未生效，不取消自检。 */
     frame.command = LUMEN_CMD_SET_POWER;
     frame.payload_len = 1;
     frame.payload[0] = 2;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
     CHECK(!outcome.cancels_selftest);
 
     frame.command = LUMEN_CMD_SET_BRIGHTNESS;
     frame.payload_len = 2;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
     CHECK(!outcome.cancels_selftest);
 
     frame.command = 0x08;
     frame.payload_len = 0;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
     CHECK(!outcome.cancels_selftest);
 
     /* 自检命令本身不取消、只启动。 */
     frame.command = LUMEN_CMD_SELF_TEST;
     frame.payload_len = 0;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.start_selftest);
     CHECK(!outcome.cancels_selftest);
     CHECK(!outcome.state_changed);
@@ -1329,7 +1329,7 @@ static void test_selftest_leaves_state_untouched(void)
     frame.command = LUMEN_CMD_SELF_TEST;
     frame.payload_len = 0;
     lumen_command_outcome_t outcome;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(!outcome.state_changed);
     CHECK(memcmp(&outcome.next, &state, sizeof(state)) == 0);
@@ -1472,7 +1472,7 @@ static void test_set_led_count_reducer(void)
         frame.payload[0] = 0;
         frame.payload[1] = (uint8_t)(accepted[i] & 0xFF);
         frame.payload[2] = (uint8_t)(accepted[i] >> 8);
-        lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+        lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
         CHECK(outcome.result_code == LUMEN_RESULT_OK);
         CHECK(outcome.led_count_rebuild);
         CHECK(outcome.led_count == accepted[i]);
@@ -1492,7 +1492,7 @@ static void test_set_led_count_reducer(void)
         frame.payload[0] = 0;
         frame.payload[1] = (uint8_t)(rejected[i] & 0xFF);
         frame.payload[2] = (uint8_t)(rejected[i] >> 8);
-        lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+        lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
         CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
         CHECK(!outcome.led_count_rebuild);
         CHECK(outcome.led_count == state.led_count);
@@ -1503,7 +1503,7 @@ static void test_set_led_count_reducer(void)
     frame.payload[0] = 0x00;
     frame.payload[1] = 0x00;
     frame.payload[2] = 0x01;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
     CHECK(!outcome.led_count_rebuild);
 
@@ -1511,11 +1511,11 @@ static void test_set_led_count_reducer(void)
     frame.payload[0] = 1;
     frame.payload[1] = 0x1E;
     frame.payload[2] = 0x00;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
     CHECK(!outcome.led_count_rebuild);
     frame.payload[0] = 0xFF;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
     CHECK(!outcome.led_count_rebuild);
 
@@ -1523,7 +1523,7 @@ static void test_set_led_count_reducer(void)
     frame.payload[0] = 0;
     frame.payload[1] = 0x40;
     frame.payload[2] = 0x00;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.led_count_rebuild);
     CHECK(outcome.led_count == 64);
@@ -1532,23 +1532,23 @@ static void test_set_led_count_reducer(void)
     frame.payload_len = 2;
     frame.payload[0] = 0x1E;
     frame.payload[1] = 0x00;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
     CHECK(!outcome.led_count_rebuild);
 
     frame.payload_len = 1;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
     CHECK(!outcome.led_count_rebuild);
 
     frame.payload_len = 4;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
     CHECK(!outcome.led_count_rebuild);
 
     /* payload_len 正确的 0 长度帧同样 0x04。 */
     frame.payload_len = 0;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
     CHECK(!outcome.led_count_rebuild);
 
@@ -2656,7 +2656,7 @@ static void test_segment_commands(void)
     frame.payload[5] = 0x00; /* hue lo */
     frame.payload[6] = 0x00; /* hue hi */
     frame.payload[7] = 0xFF; /* sat */
-    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.segment_op);
     CHECK(!outcome.segment_clear);
@@ -2673,7 +2673,7 @@ static void test_segment_commands(void)
     frame.payload[1] = 1;
     frame.payload[2] = 5;
     frame.payload[3] = 12;
-    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
     CHECK(!outcome.segment_op);
     CHECK(!outcome.cancels_selftest);
@@ -2685,7 +2685,7 @@ static void test_segment_commands(void)
     frame.payload[1] = 1;
     frame.payload[2] = 10;
     frame.payload[3] = 30;
-    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
     CHECK(!outcome.segment_op);
 
@@ -2696,7 +2696,7 @@ static void test_segment_commands(void)
     frame.payload[5] = 0x55;
     frame.payload[6] = 0x55; /* hue = 0x5555 */
     frame.payload[7] = 128;
-    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.segment.hue == 0x5555);
     CHECK(outcome.segment.sat == 128);
@@ -2706,13 +2706,13 @@ static void test_segment_commands(void)
     frame.command = LUMEN_CMD_SET_SEGMENT;
     frame.payload_len = 8;
     frame.payload[4] = 0x07;
-    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
 
     /* type 已知但长度不符 → BadLength。 */
     frame.payload[4] = 0x00;
     frame.payload_len = 7;
-    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
 
     /* #30：呼吸（已知且已实现）→ OK，参数被完整解析到 outcome.segment。
@@ -2728,7 +2728,7 @@ static void test_segment_commands(void)
     frame.payload[11] = 0x00; /* flags: waveform 0 (sine) */
     frame.payload[2] = 20;
     frame.payload[3] = 25;
-    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.segment_op);
     CHECK(outcome.segment.type == LUMEN_EFFECT_BREATHING);
@@ -2739,58 +2739,58 @@ static void test_segment_commands(void)
     /* 周期低于 3Hz 下限（334ms）→ InvalidParam，不产生写入意图。 */
     frame.payload[8] = 0x4D; /* 333 */
     frame.payload[9] = 0x01;
-    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
     CHECK(!outcome.segment_op);
     /* 正好 334 是合法下限。 */
     frame.payload[8] = 0x4E; /* 334 */
     frame.payload[9] = 0x01;
-    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     /* period = 0（静止）不受下限约束。 */
     frame.payload[8] = 0x00;
     frame.payload[9] = 0x00;
-    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
 
     /* flags 保留位（bit3-7）必须为 0。 */
     frame.payload[8] = 0xF4;
     frame.payload[9] = 0x01;
     frame.payload[11] = 0x08; /* bit3 置位 */
-    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
     CHECK(!outcome.segment_op);
     /* bit0 reverse 与 bit1-2 waveform 是允许的。 */
     frame.payload[11] = 0x07; /* reverse + waveform 3 */
-    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.segment.flags == 0x07);
 
     /* 彩虹 / 流光（已知但未实现，由 #31 交付）→ UnknownCommand。 */
     frame.payload_len = 12;
     frame.payload[4] = 0x02;
-    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
     CHECK(!outcome.segment_op);
     frame.payload[4] = 0x03;
-    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
 
     /* 静态段却给了 12 字节载荷：先读 type 再定长 → BadLength。 */
     frame.payload[4] = 0x00;
-    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
 
     /* strip_id != 0 → InvalidParam（多灯带 #29）。 */
     frame.payload_len = 8;
     frame.payload[0] = 1;
-    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
 
     /* seg_id 越界（8）→ InvalidParam。 */
     frame.payload[0] = 0;
     frame.payload[1] = 8;
-    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
 
     /* ClearSegment：合法 → OK + segment_clear，并取消自检。 */
@@ -2799,7 +2799,7 @@ static void test_segment_commands(void)
     frame.payload_len = 2;
     frame.payload[0] = 0;
     frame.payload[1] = 1;
-    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.segment_op);
     CHECK(outcome.segment_clear);
@@ -2807,17 +2807,17 @@ static void test_segment_commands(void)
 
     /* 清一个不存在的槽位也回 OK（幂等，绝对值语义）。 */
     frame.payload[1] = 7;
-    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
 
     /* strip / seg 越界 → InvalidParam。 */
     frame.payload[0] = 1;
     frame.payload[1] = 0;
-    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
     frame.payload[0] = 0;
     frame.payload[1] = 8;
-    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
 
     /* QueryStrip：合法 → OK + strip_query + 不取消自检。 */
@@ -2825,7 +2825,7 @@ static void test_segment_commands(void)
     frame.seq = 46;
     frame.payload_len = 1;
     frame.payload[0] = 0;
-    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.strip_query);
     CHECK(outcome.query_strip_id == 0);
@@ -2834,7 +2834,7 @@ static void test_segment_commands(void)
 
     /* strip 越界 → InvalidParam，不产生回包意图。 */
     frame.payload[0] = 1;
-    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
     CHECK(!outcome.strip_query);
 
@@ -2846,10 +2846,10 @@ static void test_segment_commands(void)
     frame.payload[2] = 0;
     frame.payload[3] = 29;
     frame.payload[4] = 0x00;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     frame.payload[3] = 30;
-    lumen_command_dispatch(&frame, &state, NULL, 255, &outcome);
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
 }
 
@@ -3107,6 +3107,110 @@ static void test_blob_strip_counts(void)
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
 }
 
+
+/*
+ * #29 integration bug regression：SetSegment 必须按「这条灯带自己」的灯珠数
+ * 校验区间，而不是一律用 strip 0 的。
+ *
+ * 场景：strip 0 有 64 灯，strip 3 只有 10 灯。
+ *  - 给 strip 3 设 [0-40] 必须被拒（越界）：40 >= 10。
+ *  - 给 strip 3 设 [0-9] 必须被接受。
+ * 若实现错用 strip 0 的 64，第一条会被放行——表现为「设成功但后半段不亮」。
+ */
+static void test_set_segment_uses_own_strip_count(void)
+{
+    lumen_state_t state;
+    lumen_state_defaults(&state, 64);
+    state.strip_count = 8;
+    state.led_count = 64; /* strip 0 */
+
+    uint16_t strip_counts[LUMEN_MAX_STRIPS] = {64, 30, 30, 10, 30, 30, 30, 30};
+    lumen_segment_store_t store;
+    lumen_segment_store_init(&store);
+
+    /* 静态段 [0-40] 打到 strip 3（只有 10 灯）→ 越界，必须拒绝。 */
+    {
+        lumen_frame_t f;
+        f.command = LUMEN_CMD_SET_SEGMENT;
+        f.seq = 1;
+        f.payload_len = 8;
+        f.payload[0] = 3; /* strip_id */
+        f.payload[1] = 0; /* seg_id */
+        f.payload[2] = 0; /* start */
+        f.payload[3] = 40; /* end：>= 10 → 越界 */
+        f.payload[4] = LUMEN_EFFECT_STATIC;
+        f.payload[5] = 0x00;
+        f.payload[6] = 0x00;
+        f.payload[7] = 255;
+        lumen_command_outcome_t out;
+        lumen_command_dispatch(&f, &state, &store, strip_counts, 255, &out);
+        CHECK(out.result_code == LUMEN_RESULT_INVALID_PARAM);
+    }
+
+    /* 同一帧打到 strip 0（64 灯）→ 合法。证明差异确实来自 per-strip 表。 */
+    {
+        lumen_frame_t f;
+        f.command = LUMEN_CMD_SET_SEGMENT;
+        f.seq = 2;
+        f.payload_len = 8;
+        f.payload[0] = 0;
+        f.payload[1] = 0;
+        f.payload[2] = 0;
+        f.payload[3] = 40;
+        f.payload[4] = LUMEN_EFFECT_STATIC;
+        f.payload[5] = 0x00;
+        f.payload[6] = 0x00;
+        f.payload[7] = 255;
+        lumen_command_outcome_t out;
+        lumen_command_dispatch(&f, &state, &store, strip_counts, 255, &out);
+        CHECK(out.result_code == LUMEN_RESULT_OK);
+        CHECK(out.segment_op);
+    }
+
+    /* strip 3 的合法上界 [0-9] 必须被接受。 */
+    {
+        lumen_frame_t f;
+        f.command = LUMEN_CMD_SET_SEGMENT;
+        f.seq = 3;
+        f.payload_len = 8;
+        f.payload[0] = 3;
+        f.payload[1] = 0;
+        f.payload[2] = 0;
+        f.payload[3] = 9;
+        f.payload[4] = LUMEN_EFFECT_STATIC;
+        f.payload[5] = 0x00;
+        f.payload[6] = 0x00;
+        f.payload[7] = 255;
+        lumen_command_outcome_t out;
+        lumen_command_dispatch(&f, &state, &store, strip_counts, 255, &out);
+        CHECK(out.result_code == LUMEN_RESULT_OK);
+    }
+
+    /* strip_counts == NULL 时退回 State 的 led_count（单灯带兼容）。 */
+    {
+        lumen_frame_t f;
+        f.command = LUMEN_CMD_SET_SEGMENT;
+        f.seq = 4;
+        f.payload_len = 8;
+        f.payload[0] = 0;
+        f.payload[1] = 1;
+        f.payload[2] = 0;
+        f.payload[3] = 40;
+        f.payload[4] = LUMEN_EFFECT_STATIC;
+        f.payload[5] = 0x00;
+        f.payload[6] = 0x00;
+        f.payload[7] = 255;
+        lumen_command_outcome_t out;
+        lumen_command_dispatch(&f, &state, &store, NULL, 255, &out);
+        CHECK(out.result_code == LUMEN_RESULT_OK);
+    }
+
+    /* helper 本身的边界。 */
+    CHECK(lumen_command_strip_count(&state, strip_counts, 3) == 10);
+    CHECK(lumen_command_strip_count(&state, NULL, 3) == 64); /* 退回 strip 0 */
+    CHECK(lumen_command_strip_count(&state, strip_counts, 0) == 64);
+}
+
 int main(int argc, char **argv)
 {
     const char *vectors = argc > 1 ? argv[1] : "docs/protocol-testvectors.json";
@@ -3153,6 +3257,7 @@ int main(int argc, char **argv)
     test_effects_breathing_envelope();
     test_effects_breathing_gain_and_pixel();
     test_blob_strip_counts();
+    test_set_segment_uses_own_strip_count();
     test_planar_parse_list();
     test_planar_init_validation();
     test_planar_round_robin();
