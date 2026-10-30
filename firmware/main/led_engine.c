@@ -151,10 +151,18 @@ static void render_snapshot(const lumen_state_t *snapshot, const lumen_selftest_
 
     if (s_rendered_valid && r == s_rendered_r && g == s_rendered_g && b == s_rendered_b &&
         brightness == s_rendered_brightness && count == s_rendered_count) {
+        ESP_LOGD(TAG, "render skip: 像素未变 (%u,%u,%u) b=%u n=%u", r, g, b, brightness, count);
         return; /* 状态没变，不碰灯带 */
     }
 
+    /* 渲染是灯带「有没有反应」唯一可观测的固件侧证据：开 INFO 是为了
+     * 真机排障时能看到每一次真正写进灯带的像素（只在状态变化时触发，
+     * 20Hz 拖动下最多 20 行/秒，且不影响未变化时的静默）。 */
+    ESP_LOGI(TAG, "render: (%u,%u,%u) x %u brightness=%u power=%u", r, g, b, count,
+             brightness, snapshot->power);
+
     if (push_frame(r, g, b, count) != ESP_OK) {
+        ESP_LOGW(TAG, "render: push_frame 失败，灯带未更新");
         return;
     }
 

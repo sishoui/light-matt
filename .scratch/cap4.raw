@@ -1,0 +1,8 @@
+I (12026) lumen_ble: RX cmd=0x01 seq=0x01 len=1 result=0x00 power=0 brightness=128 rgb=255,120,180 changed
+I (12026) NimBLE: GATT procedure initiated: notify; 
+I (12026) NimBLE: att_handle=18
+
+I (12506) lumen_ble: RX cmd=0x01 seq=0x02 len=1 result=0x00 power=1 brightness=128 rgb=255,120,180 changed
+I (12506) NimBLE: GATT procedure initiated: notify; 
+I (12506) NimBLE: att_handle=18
+

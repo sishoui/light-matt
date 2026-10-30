@@ -32,7 +32,7 @@
 |---|---|---|---|---|
 | 01 | [开发环境就绪](./tickets/01-dev-environment.md) | task | — | done |
 | 02 | [协议规格定稿](./tickets/02-protocol-spec.md) | grilling | — | done |
-| 03 | [led_strip 点灯验证](./tickets/03-led-strip-smoke-test.md) | prototype | 01 | done（GRB 确认） |
+| 03 | [led_strip 点灯验证](./tickets/03-led-strip-smoke-test.md) | prototype | 01 | 灯带未点亮，待排查 |
 | 04 | [小程序 BLE 探测](./tickets/04-miniprogram-ble-probe.md) | prototype | 01 | done |
 | 05 | [固件 BLE 服务与分层骨架](./tickets/05-firmware-ble-skeleton.md) | task | 02, 03 | done |
 | 06 | [固件协议实现与状态机](./tickets/06-firmware-protocol-impl.md) | task | 02, 05 | done（合并进 #8/#9/#10） |
@@ -43,7 +43,7 @@
 
 **frontier：10 的五组长跑实测、09 的端到端验收。** 两者都需要真机与人眼；
 代码侧的实现票（05–08 与 GitHub #11–#13）已全部落到 `integration/lumen-mvp`，
-03 的硬件基线也已由人眼确认（GRB、30 灯均匀、5 分钟无闪烁、全白无掉压）。
+03 的硬件基线**仍未确认**：灯带尚未被观察到点亮，先排查接线。
 
 GitHub 实现票（13 张）与本地 wayfinder 票的对应关系：本地 06/07/08 被拆成了更细的 GitHub 票
 （#8 开关、#9 亮度、#10 颜色、#11 状态同步、#12 灯珠数与持久化、#13 日志与自检），按纵向切片
