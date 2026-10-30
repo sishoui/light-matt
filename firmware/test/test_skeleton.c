@@ -26,6 +26,7 @@
 #include "led_count_job.h"
 #include "protocol.h"
 #include "save_scheduler.h"
+#include "script_blob.h"
 #include "script_store.h"
 #include "segment_store.h"
 #include "selftest.h"
@@ -3963,6 +3964,100 @@ static void test_script_playback_pause_resume(void)
     CHECK(lumen_script_playback_time(&pb, 8300) == 8300);
 }
 
+static void test_script_blob_roundtrip(void)
+{
+    uint16_t counts[LUMEN_MAX_STRIPS] = {30, 12, 0, 0, 0, 0, 0, 0};
+
+    lumen_script_store_t store;
+    lumen_script_store_init(&store);
+    CHECK(script_download(&store, 0, 4, 1000));
+    /* 1 号剧本：2 条灯带、每阶段两条灯带各一个段，含动画段。 */
+    CHECK(lumen_script_begin(&store, 1, 2, 2));
+    for (uint8_t st = 0; st < 2; ++st) {
+        CHECK(lumen_script_stage(&store, 1, st, (uint16_t)(700 + st * 100)));
+        lumen_segment_t a = make_static(0, 9, 1234, 200);
+        lumen_segment_t b = make_static(0, 5, 0, 255);
+        b.type = LUMEN_EFFECT_BREATHING;
+        b.period_ms = 1000;
+        b.p5 = 0x40;
+        b.flags = 0x02;
+        CHECK(lumen_script_segment(&store, 1, st, 0, 0, &a, NULL));
+        CHECK(lumen_script_segment(&store, 1, st, 1, 3, &b, NULL));
+    }
+    CHECK(lumen_script_commit(&store, 1, counts));
+
+    uint8_t blob[LUMEN_SCRIPT_BLOB_MAX];
+    size_t len = lumen_script_blob_encode(&store, 1, true, blob, sizeof(blob));
+    CHECK(len > 8);
+    CHECK(len <= sizeof(blob));
+
+    lumen_script_store_t restored;
+    lumen_script_store_init(&restored);
+    uint8_t active = LUMEN_NO_SCRIPT;
+    bool loop = false;
+    CHECK(lumen_script_blob_decode(blob, len, counts, &restored, &active, &loop));
+    CHECK(active == 1);
+    CHECK(loop);
+
+    CHECK(lumen_script_stage_count(&restored, 0) == 4);
+    CHECK(lumen_script_stage_count(&restored, 1) == 2);
+    const lumen_script_t *s1 = lumen_script_get(&restored, 1);
+    CHECK(s1 != NULL);
+    if (s1 != NULL) {
+        CHECK(s1->strip_count == 2);
+        CHECK(s1->stages[1].duration_ms == 800);
+        CHECK(s1->stages[0].segments[0][0].hue == 1234);
+        CHECK(s1->stages[0].segments[0][0].sat == 200);
+        CHECK(s1->stages[0].segments[1][3].active);
+        CHECK(s1->stages[0].segments[1][3].type == LUMEN_EFFECT_BREATHING);
+        CHECK(s1->stages[0].segments[1][3].period_ms == 1000);
+        CHECK(s1->stages[0].segments[1][3].flags == 0x02);
+        CHECK(!s1->stages[0].segments[1][0].active);
+    }
+
+    /* 未提交的槽位编码为 committed=0，解码后仍不存在。 */
+    CHECK(!lumen_script_is_committed(&restored, 2));
+    CHECK(!lumen_script_is_committed(&restored, 3));
+
+    /* 损坏检测：坏 magic / 坏版本 / 截断 / 段越界 / 激活指向未提交剧本。 */
+    uint8_t bad[LUMEN_SCRIPT_BLOB_MAX];
+    memcpy(bad, blob, len);
+    bad[0] = 'X';
+    CHECK(!lumen_script_blob_decode(bad, len, counts, &restored, &active, &loop));
+
+    memcpy(bad, blob, len);
+    bad[4] = 0x09;
+    CHECK(!lumen_script_blob_decode(bad, len, counts, &restored, &active, &loop));
+
+    CHECK(!lumen_script_blob_decode(blob, len - 1, counts, &restored, &active, &loop));
+
+    /*
+     * 用一份「段越界」的编码喂回去：改段记录里的 end 为 200（>30 灯）。
+     * 段记录紧跟 magic(4)+version(2)+active(1)+flags(1)+committed(1)+
+     * stage_count(1)+strip_count(1)+duration(2)+mask(1) = 14 字节处。
+     */
+    memcpy(bad, blob, len);
+    bad[14 + 1] = 200;
+    CHECK(!lumen_script_blob_decode(bad, len, counts, &restored, &active, &loop));
+
+    /* 激活 id 指向未提交剧本 → 拒绝。 */
+    memcpy(bad, blob, len);
+    bad[6] = 3;
+    CHECK(!lumen_script_blob_decode(bad, len, counts, &restored, &active, &loop));
+
+    /* 空 store：只有头，解码成功但没有任何剧本。 */
+    lumen_script_store_t empty;
+    lumen_script_store_init(&empty);
+    size_t empty_len = lumen_script_blob_encode(&empty, LUMEN_NO_SCRIPT, false, blob, sizeof(blob));
+    CHECK(empty_len == 8 + LUMEN_MAX_SCRIPTS);
+    CHECK(lumen_script_blob_decode(blob, empty_len, counts, &restored, &active, &loop));
+    CHECK(active == LUMEN_NO_SCRIPT);
+    CHECK(!loop);
+    for (uint8_t id = 0; id < LUMEN_MAX_SCRIPTS; ++id) {
+        CHECK(!lumen_script_is_committed(&restored, id));
+    }
+}
+
 int main(int argc, char **argv)
 {
     const char *vectors = argc > 1 ? argv[1] : "docs/protocol-testvectors.json";
@@ -4019,6 +4114,7 @@ int main(int argc, char **argv)
     test_script_multiple_scripts();
     test_script_playback_advance();
     test_script_playback_pause_resume();
+    test_script_blob_roundtrip();
     test_planar_parse_list();
     test_planar_init_validation();
     test_planar_round_robin();
