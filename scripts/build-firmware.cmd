@@ -14,9 +14,13 @@ if %errorlevel% GEQ 8 (
   exit /b 1
 )
 
-if not exist "%DST%\sdkconfig" (
-  call "%~dp0idf.cmd" --no-ccache -C "%DST%" set-target esp32c3
-  if errorlevel 1 exit /b 1
-)
+REM Delete the stale generated sdkconfig so Kconfig defaults are re-applied.
+REM sdkconfig is excluded from the robocopy above (it is a build artifact), so
+REM it survives between runs; without this, changing a default in
+REM Kconfig.projbuild would be SILENTLY IGNORED on every later build.
+if exist "%DST%\sdkconfig" del /q "%DST%\sdkconfig"
+
+call "%~dp0idf.cmd" --no-ccache -C "%DST%" set-target esp32c3
+if errorlevel 1 exit /b 1
 
 call "%~dp0idf.cmd" --no-ccache -C "%DST%" build

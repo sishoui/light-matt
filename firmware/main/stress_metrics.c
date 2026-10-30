@@ -152,7 +152,14 @@ void lumen_stress_boot_report(void)
     ESP_LOGI(TAG, "issue #7 RMT x BLE 共存压力模式（实验固件，非产品固件）");
     ESP_LOGI(TAG, "reset_reason=%d (%s) boot_count=%" PRIu32 " (RTC 保留，掉电会清零重计)",
              (int)reason, reset_reason_name(reason), s_boot_count);
-    ESP_LOGI(TAG, "strip: gpio=%d leds=%d mem_block_symbols=%d resolution=10MHz dma=off",
+    /*
+     * 灯珠数必须打「实际生效值」而不是编译常量 CONFIG_LUMEN_LED_COUNT：
+     * 后者只是首次上电的默认值（30），有 NVS 历史时设备用保存的数量（实物 64）。
+     * 打常量会让人误以为压力循环只驱动 30 颗，从而错算 RMT 负载。
+     * 状态在这里可能还没恢复，所以只标出「以上电后 state 行为准」。
+     */
+    ESP_LOGI(TAG, "strip: gpio=%d leds=%d(default; 实际以 state restored 为准) "
+                  "mem_block_symbols=%d resolution=10MHz dma=off",
              CONFIG_LUMEN_LED_GPIO, CONFIG_LUMEN_LED_COUNT,
              CONFIG_LUMEN_RMT_MEM_BLOCK_SYMBOLS);
     ESP_LOGI(TAG, "stress: period=%dms pattern=%s duration=%dmin async=%s brightness=%d "

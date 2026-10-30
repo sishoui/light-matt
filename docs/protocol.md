@@ -129,7 +129,7 @@ State 特征值 read 与 StateReport 载荷都是 8 字节：
 | 4 | B | 1 | 0-255 |
 | 5 | led_count_lo | 1 | 灯珠数量低字节 |
 | 6 | led_count_hi | 1 | 灯珠数量高字节 |
-| 7 | max_brightness | 1 | 固件当前亮度上限，初值 255 |
+| 7 | max_brightness | 1 | 固件当前亮度上限，当前构建值 200 |
 
 - State read 必须正好 8 字节；长度不符视为协议不匹配。
 - `max_leds = 64` 是协议常量，不放进 State；两端硬编码。
@@ -232,7 +232,11 @@ magic (0x08) → version (0x07) → length (0x04) → checksum (0x03)
 
 - 协议亮度范围是 0-255；固件可以按构建期常量 `max_brightness` 钳位。
 - State 的 `max_brightness` 暴露当前上限，小程序滑块最大值直接用它。
-- 初值 255（暂不限制）；#4 点灯验证出供电结论后再改固件常量与协议默认值。小程序不硬编码上限。
+- 当前构建值 **200**。#14 真机验收实测：64 灯全白约 3.8A，蓝光 LED 的 Vf 最高
+  （3.0-3.4V），满亮度时蓝通道最先被线损压掉，纯白偏黄。压到 200 给蓝通道留余量。
+  依据与逐档验证见 [end-to-end-acceptance.md](./end-to-end-acceptance.md) 第 ④ 条。
+- 小程序不硬编码上限，一律读 State 的 `max_brightness`。
+- 改这个常量只影响固件构建；State 会把它报给小程序，滑块上限自动跟随，两端行为一致。
 
 ## 12. 持久化与默认值
 
@@ -248,7 +252,7 @@ magic (0x08) → version (0x07) → length (0x04) → checksum (0x03)
 | brightness | 128 |
 | R, G, B | 255, 180, 120（暖白） |
 | led_count | 30 |
-| max_brightness | 255（构建期常量） |
+| max_brightness | 200（构建期常量，见 §11.4） |
 
 ## 13. 测试向量
 
