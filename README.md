@@ -8,6 +8,7 @@
 lumen/
   firmware/     ESP-IDF v6.1 工程（NimBLE + led_strip）
   miniprogram/  微信小程序（原生 + TypeScript）
+  server/       使用日志后端 + 只读看板（Node + Fastify + SQLite）
   docs/
     wayfinding/ 设计决策地图与决策票
 ```
@@ -20,6 +21,7 @@ lumen/
 - **灯效参数表**：[docs/effects-spec.md](docs/effects-spec.md) —— 四种灯效的字节布局与行为公式（已定稿）
 - **v2 决策地图**：GitHub [#16](https://github.com/sishoui/light-matt/issues/16)
 - **环境**：[docs/dev-environment.md](docs/dev-environment.md) —— **ESP-IDF v6.1**，项目不做旧版本兼容
+- **后端**：[server/README.md](server/README.md) —— 使用日志数据模型、API 清单、设备聚合口径与只读看板（#23）
 
 **v1 / MVP（已完成）**
 
