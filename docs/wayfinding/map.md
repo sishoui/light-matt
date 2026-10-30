@@ -74,7 +74,7 @@ GitHub 实现票（13 张）与本地 wayfinder 票的对应关系：本地 06/0
 - **灯珠数量与断电记忆**（[GitHub #12](https://github.com/sishoui/light-matt/issues/12)）：重建状态机保证 ACK 等句柄重建结果才发，重建中再请求回 Busy；`new`/`del` 句柄只在渲染任务里；500ms debounce 用有符号差值比较时间，32 位回绕不卡死；NVS blob 13 字节显式布局。
 - **协议日志与自检**（[GitHub #13](https://github.com/sishoui/light-matt/issues/13)）：自检是渲染层的临时覆盖（`selftest.c` 纯状态机 + `lumen_selftest_compose()`），不写共享状态也不写 NVS，红→绿→蓝→白各 500ms 后自动回到存储状态；取消规则放在命令层的统一收尾，五类改状态命令（含 SetLedCount）都取消、非法命令与 QueryState 不取消。小程序 200 帧环形缓冲 + 隐藏面板（连点版本号 5 次），暂停=冻结视图但继续记录，面板、console、复制共用同一个 formatter，每行 seq 同时给十进制与 hex 便于与串口对齐。
 - **Event 0x81 跨票缺口**（[GitHub #1](https://github.com/sishoui/light-matt/issues/1) 范围内的补丁）：协议 §10.3 要求的 NVS 写失败上报，从 #6 到 #10 都没有调用点（每张票都假设别人接）。补通 `state_store → led_engine → ble_link` 整条链，并加逐字节断言。
-- **端到端真机验收**（[GitHub #14](https://github.com/sishoui/light-matt/issues/14)，记录见 [end-to-end-acceptance.md](../end-to-end-acceptance.md)）：七条的固件/代码侧用 `scripts/acceptance-probe.py`（PC 当 central）全部实测通过；②③⑤ 的人眼侧经用户确认为通过。验收中暴露一个真 bug：**断电重启后灯带是灭的**，根因是首帧 `render` 在 325ms 就发出去，灯带独立 5V 电源可能尚未建立、整帧被 WS2812B 丢弃，而 `s_rendered_valid` 已置位导致不再重发。已修（上电后头 4 次渲染跳过去重、200ms 间隔强制重推）。第四条的自检第 4 色偏黄归因到供电而非固件，已回写「全白电流预算」。
+- **端到端真机验收**（[GitHub #14](https://github.com/sishoui/light-matt/issues/14)，记录见 [end-to-end-acceptance.md](../end-to-end-acceptance.md)）：**七条全部通过**（固件/代码侧 + 人眼/手机侧）。七条的固件侧用 `scripts/acceptance-probe.py`（PC 当 central）实测；人眼侧逐条追问具体现象后确认。验收中暴露一个真 bug：**断电重启后灯带是灭的**，根因是首帧 `render` 在 325ms 就发出去，灯带独立 5V 电源可能尚未建立、整帧被 WS2812B 丢弃，而 `s_rendered_valid` 已置位导致不再重发。已修（上电后头 4 次渲染跳过去重、200ms 间隔强制重推）并复核通过。两条已知限制：纯白大功率偏色（回写「全白电流预算」）、断开后无设备列表入口（回写「多设备管理」）。
 
 ## Not yet specified
 
@@ -95,6 +95,11 @@ GitHub 实现票（13 张）与本地 wayfinder 票的对应关系：本地 06/0
 - **iOS 与 Android 的 BLE 行为差异**。已知形态：`setBLEMTU` 仅 Android；iOS 超长写静默失败；Android 上 notify 后立即写报 10008；Android 6.0+ 扫描需定位权限。这些已写进基线。但**具体机型**的差异（尤其国产 Android 的权限弹窗与蓝牙开关行为）要等【小程序 BLE 探测】真机摸过才知道要不要再票。
 - **灯效引擎的架构**。呼吸、彩虹、流光这类动画需要帧率驱动，和现在的 latest-wins 单帧模型不是一回事。明确是 MVP 之后的事，但现在放置顶决定（比如状态机字段怎么留）会影响后续成本。注意：固定帧率驱动会加重上面那条 RMT 风险。
 - **多设备管理**。广播名后缀已留好扩展位，但「一台手机管三条灯带」需要设备列表、分组、并发连接策略。微信 BLE 的同时连接上限**官方无数字**，只能实测。等单设备跑通再说。
+
+  **#14 验收暴露了这条的现实版（2026-10-30）**：断开后点状态条会**直接重连缓存设备**，
+  不进设备列表（`index.ts` 的 `onStatusTap` 在 `cachedDevice` 命中时走 `manualReconnect()`）。
+  单设备下这是最快路径，但用户没有「换一台设备」的入口——清缓存或重启小程序才行。
+  已记为 #14 的已知限制。做多设备时这个入口必须一起设计，不能只加设备列表。
 - **ESP32-C3FH4 的物料状态**。研究发现的旁支信息：datasheet 里 `ESP32-C3FH4X` 才是 Recommended，`FH4AZ` 标为 NRND（不推荐新设计），FH4 是 rev v0.4。你要自己画板，这颗料选型值得再确认一次——但它是采购/硬件决策，不是软件决策，暂时留在雾里。
 
 ## Out of scope
