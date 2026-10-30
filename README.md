@@ -14,20 +14,27 @@ lumen/
 
 ## 从这里开始
 
+**v2 扩展（进行中）**
+
+- **v2 规格**：[docs/spec-v2.md](docs/spec-v2.md) —— 多设备 / 多灯效 / 多阶段 / 多分段（GitHub [#27](https://github.com/sishoui/light-matt/issues/27)）
+- **灯效参数表**：[docs/effects-spec.md](docs/effects-spec.md) —— 四种灯效的字节布局与行为公式（已定稿）
+- **v2 决策地图**：GitHub [#16](https://github.com/sishoui/light-matt/issues/16)
+- **环境**：[docs/dev-environment.md](docs/dev-environment.md) —— **ESP-IDF v6.1**，项目不做旧版本兼容
+
+**v1 / MVP（已完成）**
+
 - **接手/继续开发**：[docs/handoff.md](docs/handoff.md) —— 当前状态、下一步、必须知道的坑
-- **想了解架构**：[docs/wayfinding/architecture-brief.md](docs/wayfinding/architecture-brief.md)
-- **想知道还剩什么没定**：[docs/wayfinding/map.md](docs/wayfinding/map.md)
+- **想了解架构**：[docs/wayfinding/architecture-brief.md](docs/wayfinding/architecture-brief.md)（⚠️ v1 历史产物）
 - **想写 codec**：[docs/protocol.md](docs/protocol.md) —— 字节级协议规格与测试向量
-- **想实现**：[docs/spec.md](docs/spec.md) —— MVP 实现规格（用户故事、实现决策、测试接缝）
+- **想实现 MVP**：[docs/spec.md](docs/spec.md) —— MVP 实现规格（用户故事、实现决策、测试接缝）
 - **想跑真机验收**：[docs/end-to-end-acceptance.md](docs/end-to-end-acceptance.md) —— 7 条清单的操作步骤与记录表
 - **想跑 RMT × BLE 共存实验**：[docs/rmt-ble-stability.md](docs/rmt-ble-stability.md) —— 五组实验方案、待填数据表与判定流程
-- **想继续开工**：看 map 的「票（frontier 视图）」表格
 
 ## 现状
 
 **MVP 已完成并通过真机验收。** 13 张实现票（#2–#13）全部落地，端到端验收 #14 七条
 全部通过（固件/代码侧 + 人眼/手机侧）。两端共用 37 条协议测试向量：固件 host 1426 项
-断言、小程序 159 个 vitest 用例、`tsc --noEmit` 干净，固件分区余量 62%。
+断言、小程序 159 个 vitest 用例、`tsc --noEmit` 干净，固件分区余量 67%（IDF v6.1 下实测）。
 
 - **固件**：`ble_link → led_engine → state_store` 三层单向依赖；7 条命令全部实现
   （含 QueryState 的 StateReport、SetLedCount 的句柄重建与延迟 ACK、SelfTest 的临时覆盖）；
