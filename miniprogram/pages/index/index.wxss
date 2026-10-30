@@ -364,6 +364,17 @@
   border-radius: 16rpx;
 }
 
+/* #33：最近连过区更矮，把空间留给实时扫描结果。 */
+.recent-list {
+  height: 240rpx;
+}
+
+.device-section-title {
+  margin: 16rpx 0 8rpx;
+  font-size: 24rpx;
+  color: #9a9aa5;
+}
+
 .device-row {
   padding: 20rpx 16rpx;
   border-bottom: 1rpx solid #22222a;
