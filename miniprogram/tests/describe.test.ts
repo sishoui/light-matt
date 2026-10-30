@@ -62,7 +62,17 @@ describe("describeCommand", () => {
       ),
     ).toBe(
       "SetSegment strip=0 seg=1 range=0-9 type=0x01 hue=265 sat=96 " +
-        "period=65294 p5=244 flags=0x01",
+        "period=65294 min_level=244 waveform=正弦 flags=0x01",
+    );
+    /* 呼吸段的波形从 flags bit1-2 解出：flags=0x04 → 锯齿。 */
+    expect(
+      describeCommand(
+        CMD.SET_SEGMENT,
+        new Uint8Array([0, 1, 0, 9, 1, 0x00, 0x00, 0xFF, 0xF4, 0x01, 0x00, 0x04]),
+      ),
+    ).toBe(
+      "SetSegment strip=0 seg=1 range=0-9 type=0x01 hue=0 sat=255 " +
+        "period=500 min_level=0 waveform=锯齿 flags=0x04",
     );
     /* 长度不足只给 hex，不猜半截参数。 */
     expect(describeCommand(CMD.SET_SEGMENT, new Uint8Array(0))).toBe("SetSegment");

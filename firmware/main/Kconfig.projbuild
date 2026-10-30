@@ -89,6 +89,22 @@ menu "Lumen"
             主机任务，否则刷新期间会阻塞协议栈；高于 IDLE(0) 与 app_main(1)
             即可，取 4 留出协议栈抢占余量。
 
+    config LUMEN_ANIM_FPS
+        int "动画帧率（fps）"
+        default 10
+        range 5 30
+        help
+            有动画段（呼吸 / 彩虹 / 流光）或剧本在播放时，渲染任务按
+            1000 / LUMEN_ANIM_FPS 毫秒的超时等待，超时即渲染下一帧
+            （docs/v2-effects-engine.md §3.1）。
+
+            默认 10（#20 帧率基线结论）：呼吸周期 334ms 时每周期约 33 帧，
+            肉眼足够平滑；RMT 负载不到 1%。**静态场景不受影响**：
+            need_frames() 为假时渲染任务仍阻塞在信号量上，零额外 CPU。
+
+            不要用第二个定时器任务：esp_timer 回调里渲染会持锁并与 BLE
+            回调抢单核，渲染任务自身的带超时 xSemaphoreTake 就够了。
+
     config LUMEN_STORE_TASK_STACK_SIZE
         int "存储任务栈大小（字节）"
         default 3072

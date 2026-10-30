@@ -62,7 +62,7 @@
         <view class="seg-swatch" style="background: {{item.hex}}"></view>
         <text class="seg-index">段 {{item.segId}}</text>
         <text class="seg-range">{{item.rangeText}}</text>
-        <text class="seg-tag" wx:if="{{!item.editable}}">非静态</text>
+        <text class="seg-tag {{item.animated ? 'anim' : ''}}">{{item.typeText}}</text>
         <text
           class="seg-delete"
           data-seg-id="{{item.segId}}"
@@ -103,6 +103,88 @@
       </button>
     </view>
     <text class="section-hint">{{segmentHintText || '区间是闭区间，例如 0 – 15；选了某段后再划区间会改它的范围'}}</text>
+  </view>
+
+  <!-- 5. 灯效模式（#30）：新段下发成静态单色还是呼吸。
+       呼吸参数是绝对值：滑块松手 / 点波形才发 SetSegment，选中呼吸段时
+       这些值从设备回报的段配置回填。 -->
+  <view class="section {{ready ? '' : 'disabled'}}">
+    <view class="section-head">
+      <text class="section-title">灯效</text>
+      <text class="section-value">{{segmentMode === 'breathing' ? '呼吸' : '静态单色'}}</text>
+    </view>
+
+    <view class="mode-row">
+      <view
+        class="mode-chip {{segmentMode === 'static' ? 'selected' : ''}}"
+        data-mode="static"
+        bindtap="onSegmentModeTap"
+      >静态单色</view>
+      <view
+        class="mode-chip {{segmentMode === 'breathing' ? 'selected' : ''}}"
+        data-mode="breathing"
+        bindtap="onSegmentModeTap"
+      >呼吸</view>
+    </view>
+
+    <view wx:if="{{breathingVisible}}" class="breath-params">
+      <view class="breath-row">
+        <text class="breath-label">周期</text>
+        <slider
+          class="breath-slider"
+          min="0"
+          max="{{breathingMaxPeriod}}"
+          step="10"
+          value="{{breathingPeriod}}"
+          disabled="{{!ready || breathingBusy}}"
+          activeColor="#4f8cff"
+          backgroundColor="#2a2a32"
+          block-size="20"
+          bindchanging="onBreathingPeriodChanging"
+          bindchange="onBreathingPeriodChange"
+        />
+        <text class="breath-value">{{breathingPeriodText}}</text>
+      </view>
+      <text class="section-hint">周期 0 = 静止；最短 {{breathingMinPeriod}}ms（约 3Hz，超过会被设备拒绝）</text>
+
+      <view class="breath-row">
+        <text class="breath-label">最暗</text>
+        <slider
+          class="breath-slider"
+          min="0"
+          max="255"
+          step="1"
+          value="{{breathingMinLevel}}"
+          disabled="{{!ready || breathingBusy}}"
+          activeColor="#4f8cff"
+          backgroundColor="#2a2a32"
+          block-size="20"
+          bindchanging="onBreathingMinLevelChanging"
+          bindchange="onBreathingMinLevelChange"
+        />
+        <text class="breath-value">{{breathingMinLevelText}}</text>
+      </view>
+      <text class="section-hint">最暗 0% 能暗到全黑；越大越不明显，接近 100% 几乎不呼吸</text>
+
+      <view class="wave-row">
+        <view
+          wx:for="{{waveformOptions}}"
+          wx:key="value"
+          class="wave-chip {{breathingWaveform === item.value ? 'selected' : ''}}"
+          data-value="{{item.value}}"
+          bindtap="onBreathingWaveformTap"
+        >{{item.name}}</view>
+      </view>
+
+      <button
+        class="range-apply {{breathingBusy ? 'busy' : ''}}"
+        disabled="{{!ready || breathingBusy}}"
+        bindtap="applyBreathing"
+      >
+        {{breathingBusy ? '下发中…' : '应用到选中段'}}
+      </button>
+      <text class="section-hint">{{breathingHintText || '呼吸在该段的 hue+sat 基色上脉冲；参数改动需点「应用到选中段」'}}</text>
+    </view>
   </view>
 
   <!-- 5. 颜色：色相环（单块 canvas）+ 饱和度。V 恒为 1，亮度由上面的滑块负责。

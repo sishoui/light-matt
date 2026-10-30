@@ -105,6 +105,33 @@ export const SEGMENT_TYPE = {
   COMET: 0x03,
 } as const;
 
+/**
+ * 呼吸波形（flags bit1-2，effects-spec §2.2）。
+ * UI 的顺序就是枚举值：0 正弦 / 1 三角 / 2 锯齿 / 3 方波。
+ */
+export const WAVEFORM = {
+  SINE: 0,
+  TRIANGLE: 1,
+  SAWTOOTH: 2,
+  SQUARE: 3,
+} as const;
+
+/** 波形展示名（只用于 UI 与日志，不参与协议）。 */
+export const WAVEFORM_NAMES: Record<number, string> = {
+  [WAVEFORM.SINE]: "正弦",
+  [WAVEFORM.TRIANGLE]: "三角",
+  [WAVEFORM.SAWTOOTH]: "锯齿",
+  [WAVEFORM.SQUARE]: "方波",
+};
+
+/**
+ * 呼吸周期下限（effects-spec §5，protocol §11.3 第 9 步）：
+ * 334ms ≈ 3Hz，光敏性癫痫安全线。period_ms == 0 是「静止」，不受此限。
+ */
+export const BREATHING_MIN_PERIOD_MS = 334;
+/** 周期字段是 2 字节小端（D3）。 */
+export const MAX_PERIOD_MS = 0xffff;
+
 /** 连续量节流上限：20Hz（docs/ble-notes.md 实测结论）。 */
 export const CONTINUOUS_INTERVAL_MS = 50;
 

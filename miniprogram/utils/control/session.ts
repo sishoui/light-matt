@@ -65,6 +65,7 @@ import { LED_COUNT_ACK_TIMEOUT_MS } from "./ledCount";
 import { MAX_LEDS, MIN_LEDS } from "../protocol/constants";
 import type { UsageLogSink } from "../usage/logger";
 import {
+  breathingSegment,
   cmdClearSegment,
   cmdQueryState,
   cmdSelfTest,
@@ -784,6 +785,54 @@ export class ControlSession {
     const epoch = this.reconnect.epoch;
     try {
       const ack = await this.setSegment(segment);
+      if (this.reconnect.isStale(epoch)) {
+        return { kind: "stale" };
+      }
+      if (!ack.ok) {
+        return { kind: "ack-error", ack };
+      }
+      return { kind: "ok", reports: [], end: { stripId: target.stripId, segMask: 0 } };
+    } catch (err) {
+      return { kind: "error", message: errorText(err) };
+    }
+  }
+
+  /**
+   * 把一个段改成呼吸灯效（#30）：SetSegment type=0x01 + 等 ACK。
+   *
+   * 呼吸参数是**绝对值**（不像色环那样节流）：周期 / 最暗亮度 / 波形都是
+   * 用户松手才提交的离散选择，走 sendCommand 等 ACK。设备拒绝时返回
+   * ack-error，页面据此提示原因（周期过短 / 保留位 / 区间冲突）。
+   *
+   * `rgb` 决定 hue+sat（呼吸的基准色）；`periodMs` / `minLevel` / `waveform`
+   * 是呼吸专属参数。periodMs = 0 表示「静止」。
+   */
+  async setSegmentBreathing(
+    target: SegmentTarget,
+    rgb: RGB,
+    periodMs: number,
+    minLevel: number,
+    waveform: number,
+    opts: SendOptions = {},
+  ): Promise<SegmentResult> {
+    if (this.transport.linkState !== "ready") {
+      return { kind: "error", message: "设备未连接" };
+    }
+    const hsv = rgbToHsv(rgb);
+    const segment = breathingSegment(
+      target.stripId,
+      target.segId,
+      target.start,
+      target.end,
+      Math.round((hsv.h / 360) * 0x10000) & 0xffff,
+      Math.round(hsv.s * 255),
+      periodMs,
+      minLevel,
+      waveform,
+    );
+    const epoch = this.reconnect.epoch;
+    try {
+      const ack = await this.setSegment(segment, opts);
       if (this.reconnect.isStale(epoch)) {
         return { kind: "stale" };
       }

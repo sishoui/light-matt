@@ -347,6 +347,91 @@
   background: #23232b;
 }
 
+/* 动画类段（#30 呼吸 / #31 彩虹·流光）用高亮标签与静态区分。 */
+.seg-tag.anim {
+  color: #9ec4ff;
+  background: #1a2438;
+}
+
+/* ---------------- 灯效模式与呼吸参数（#30） ---------------- */
+
+.mode-row {
+  display: flex;
+  gap: 12rpx;
+}
+
+.mode-chip {
+  flex: 1;
+  text-align: center;
+  padding: 14rpx 0;
+  border-radius: 12rpx;
+  font-size: 24rpx;
+  color: #9a9aa5;
+  background: #101014;
+  border: 1rpx solid #2a2a32;
+}
+
+.mode-chip.selected {
+  color: #1a1208;
+  background: #ffb478;
+  border-color: #ffb478;
+}
+
+.breath-params {
+  margin-top: 8rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+}
+
+.breath-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+.breath-label {
+  width: 70rpx;
+  font-size: 22rpx;
+  color: #9a9aa5;
+  flex-shrink: 0;
+}
+
+.breath-slider {
+  flex: 1;
+}
+
+.breath-value {
+  width: 120rpx;
+  text-align: right;
+  font-size: 22rpx;
+  color: #e8e8ee;
+  flex-shrink: 0;
+}
+
+.wave-row {
+  display: flex;
+  gap: 10rpx;
+  margin: 8rpx 0;
+}
+
+.wave-chip {
+  flex: 1;
+  text-align: center;
+  padding: 12rpx 0;
+  border-radius: 10rpx;
+  font-size: 22rpx;
+  color: #9a9aa5;
+  background: #101014;
+  border: 1rpx solid #2a2a32;
+}
+
+.wave-chip.selected {
+  color: #cfe0ff;
+  background: #1a2438;
+  border-color: #4f8cff;
+}
+
 .seg-delete {
   font-size: 22rpx;
   color: #ff8a8a;

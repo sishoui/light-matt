@@ -1964,9 +1964,9 @@ static void test_effects_dispatch(void)
     CHECK(!lumen_effect_type_known(0x04));
     CHECK(!lumen_effect_type_known(0xFF));
 
-    /* #25 只实现静态；动画类型明确「已知但未实现」。 */
+    /* #25 交付静态、#30 交付呼吸；#31 的彩虹 / 流光仍「已知但未实现」。 */
     CHECK(lumen_effect_type_implemented(LUMEN_EFFECT_STATIC));
-    CHECK(!lumen_effect_type_implemented(LUMEN_EFFECT_BREATHING));
+    CHECK(lumen_effect_type_implemented(LUMEN_EFFECT_BREATHING));
     CHECK(!lumen_effect_type_implemented(LUMEN_EFFECT_RAINBOW));
     CHECK(!lumen_effect_type_implemented(LUMEN_EFFECT_COMET));
 
@@ -2007,11 +2007,12 @@ static void test_effects_dispatch(void)
     lumen_effect_pixel(&seg, 9, 0, zero);
     CHECK(zero[0] == 0 && zero[1] == 0 && zero[2] == 0);
 
-    /* 动画类型与未知类型在 #25 都返回黑色（防御，不是降级路径）。 */
-    lumen_segment_t breathing = seg;
-    breathing.type = LUMEN_EFFECT_BREATHING;
+    /* 动画类型与未知类型在 #25 都返回黑色（防御，不是降级路径）。
+     * #30 起呼吸有像素实现，这里改成断言它不再是全黑，见 test_effects_breathing。 */
+    lumen_segment_t rainbow = seg;
+    rainbow.type = LUMEN_EFFECT_RAINBOW;
     memset(a, 0xEE, sizeof(a));
-    lumen_effect_pixel(&breathing, 10, 0, a);
+    lumen_effect_pixel(&rainbow, 10, 0, a);
     CHECK(a[0] == 0 && a[1] == 0 && a[2] == 0);
 
     lumen_segment_t unknown = seg;
@@ -2187,10 +2188,27 @@ static void test_segment_store_validate(void)
     CHECK(lumen_segment_store_validate(&store, 0, 1, 5, led_count, &flagged) ==
           LUMEN_RESULT_INVALID_PARAM);
 
-    /* 尚未实现的动画类型：拒绝（命令层本来就会回 UnknownCommand）。 */
+    /*
+     * #30：呼吸已实现，合法 period 通过；#31 的彩虹 / 流光仍未实现，拒绝
+     * （命令层本来就会回 UnknownCommand）。用独立的空段表，避免受上面
+     * 已占满 0-29 的段影响（这里只验 flags / 周期，不验重叠）。
+     */
+    lumen_segment_store_t fresh;
+    lumen_segment_store_init(&fresh);
+
     lumen_segment_t breathing = make_static(0, 4, 0, 255);
     breathing.type = LUMEN_EFFECT_BREATHING;
-    CHECK(lumen_segment_store_validate(&store, 0, 1, 5, led_count, &breathing) ==
+    breathing.period_ms = 1000;
+    CHECK(lumen_segment_store_validate(&fresh, 0, 1, 5, led_count, &breathing) ==
+          LUMEN_RESULT_OK);
+
+    lumen_segment_t rainbow = make_static(0, 4, 0, 255);
+    rainbow.type = LUMEN_EFFECT_RAINBOW;
+    CHECK(lumen_segment_store_validate(&fresh, 0, 1, 5, led_count, &rainbow) ==
+          LUMEN_RESULT_INVALID_PARAM);
+    lumen_segment_t comet = make_static(0, 4, 0, 255);
+    comet.type = LUMEN_EFFECT_COMET;
+    CHECK(lumen_segment_store_validate(&fresh, 0, 1, 5, led_count, &comet) ==
           LUMEN_RESULT_INVALID_PARAM);
 
     /* seg_id 越界。 */
@@ -2271,6 +2289,309 @@ static void test_segment_store_state_summary(void)
     CHECK(lumen_segment_store_count(NULL, 0) == 0);
     CHECK(lumen_segment_store_mask(NULL, 0) == 0);
     CHECK(lumen_segment_store_get(NULL, 0, 0) == NULL);
+}
+
+/* ---------------- #30：呼吸包络 / 相位 ---------------- */
+
+static void test_effects_breathing_phase(void)
+{
+    /* period = 0 是静止：相位恒 0，不论 now / t0。 */
+    CHECK(lumen_effect_breathing_phase_q16(0, 0, 0) == 0);
+    CHECK(lumen_effect_breathing_phase_q16(0, 12345, 999999) == 0);
+
+    /* 周期起点与半周期。 */
+    CHECK(lumen_effect_breathing_phase_q16(1000, 5000, 5000) == 0);
+    CHECK(lumen_effect_breathing_phase_q16(1000, 5000, 5500) == 32768);
+    /* 一个完整周期后回到 0（phase 由 mod 算出，不累计）。 */
+    CHECK(lumen_effect_breathing_phase_q16(1000, 5000, 6000) == 0);
+    /* 1/4 周期 = 16384。 */
+    CHECK(lumen_effect_breathing_phase_q16(1000, 0, 250) == 16384);
+
+    /*
+     * 无符号减法的回绕语义：now < t0（49 天回绕）时得到巨大正数，
+     * 先 mod 仍然给出正确相位，不会变成负数/巨值。
+     */
+    uint32_t late = 0xFFFFFF00u;
+    CHECK(lumen_effect_breathing_phase_q16(1000, late, (uint32_t)(late + 250u)) == 16384);
+
+    /*
+     * **天花板溢出测试**（effects-spec §6 的已知陷阱）：
+     * period_ms = 65535，r 取到最大 65534 时 (uint64_t)r << 16 = 4294836224，
+     * 距 2^32 只剩 131072。若用 32 位中间量，这个值虽然还没溢出，但任何
+     * 减法/加一偏差都会翻车。断言相位落在 [0, 65536) 且随 r 单调——
+     * 也就是「没有回绕成小值」。
+     */
+    const uint16_t max_period = 65535;
+    const uint32_t t0 = 0;
+    uint32_t prev = 0;
+    /* 稀疏扫全周期（5 个采样点足够看趋势），末尾 40ms 逐毫秒密集扫。 */
+    for (uint32_t r = 1; r < max_period; r += 1009u) {
+        uint32_t phase = lumen_effect_breathing_phase_q16(max_period, t0, r);
+        /* 永远 < 65536（Q16 的一整圈），从不回绕成小值。 */
+        CHECK(phase < 65536u);
+        /* 单调：r 增大，相位不减（同一周期内）。 */
+        CHECK(phase >= prev);
+        prev = phase;
+    }
+    for (uint32_t r = 65495u; r < max_period; ++r) {
+        uint32_t phase = lumen_effect_breathing_phase_q16(max_period, t0, r);
+        CHECK(phase < 65536u);
+        CHECK(phase >= prev);
+        /* 危险区：r<<16 已非常接近 2^32，32 位写法会在这里失真。 */
+        CHECK(phase >= 65494u);
+        prev = phase;
+    }
+    /* r 的最大合法值（65534，因为 r = elapsed % period 恒 < period）。 */
+    CHECK(lumen_effect_breathing_phase_q16(max_period, 0, 65534u) == 65534u);
+    /* 65534 在 Q16 里几乎是一整圈，绝不能变成 0 或负数。 */
+    CHECK(lumen_effect_breathing_phase_q16(max_period, 0, 65534u) > 65500u);
+
+    /*
+     * 无论 t0 多大、now 越过 32 位回绕点，相位都必须等于「真实经过时间 mod period」。
+     * 这是 49 天回绕的等价测试。
+     */
+    uint32_t t0_wrap = 0xFFFFFFFFu;
+    uint32_t now_wrap = 0x00000010u; /* 回绕后前进 17ms */
+    CHECK(lumen_effect_breathing_phase_q16(1000, t0_wrap, now_wrap) ==
+          (uint32_t)(((uint64_t)17u << 16) / 1000u));
+}
+
+static void test_effects_breathing_envelope(void)
+{
+    /* 四种波形：相位 0 都应为最暗（方波亦然，首尾各留 10% 斜坡）。 */
+    CHECK(lumen_effect_breathing_envelope_q16(0, LUMEN_WAVE_SINE) == 0);
+    CHECK(lumen_effect_breathing_envelope_q16(0, LUMEN_WAVE_TRIANGLE) == 0);
+    CHECK(lumen_effect_breathing_envelope_q16(0, LUMEN_WAVE_SAWTOOTH) == 0);
+    CHECK(lumen_effect_breathing_envelope_q16(0, LUMEN_WAVE_SQUARE) == 0);
+
+    /* 半周期：正弦/三角为满亮；锯齿为半亮；方波为满亮（高电平）。 */
+    CHECK(lumen_effect_breathing_envelope_q16(32768, LUMEN_WAVE_SINE) >= 65534u);
+    CHECK(lumen_effect_breathing_envelope_q16(32768, LUMEN_WAVE_TRIANGLE) >= 65534u);
+    /* 锯齿 phase 0.5 → 32768 左右。 */
+    uint16_t saw_mid = lumen_effect_breathing_envelope_q16(32768, LUMEN_WAVE_SAWTOOTH);
+    CHECK(saw_mid >= 32760u && saw_mid <= 32770u);
+    CHECK(lumen_effect_breathing_envelope_q16(32768, LUMEN_WAVE_SQUARE) == 65535u);
+
+    /* 正弦在 1/4 与 3/4 周期：对称，约 0.5。
+     * 0.5 × (1 - cos(π/2)) = 0.5。查表 64 点误差允许 ±1%。 */
+    uint16_t sine_q = lumen_effect_breathing_envelope_q16(16384, LUMEN_WAVE_SINE);
+    uint16_t sine_3q = lumen_effect_breathing_envelope_q16(49152, LUMEN_WAVE_SINE);
+    CHECK(sine_q >= 32000u && sine_q <= 33500u);
+    CHECK(sine_3q >= 32000u && sine_3q <= 33500u);
+    /* 对称。 */
+    CHECK(sine_q > sine_3q ? (sine_q - sine_3q) < 300u : (sine_3q - sine_q) < 300u);
+
+    /* 正弦端点：p 接近 65535 时回到 0（与起点连续）。 */
+    CHECK(lumen_effect_breathing_envelope_q16(65535, LUMEN_WAVE_SINE) < 300u);
+
+    /*
+     * 查表插值的下溢回归（本函数曾用 uint32 算 hi-lo）：
+     * 表是先升后降的，下降段 hi < lo。取一个**不在表点上**的下降相位
+     * （index=33、frac=512 → p = 33*1024 + 512 = 34304），真值约 65100，
+     * 必须落在峰值附近，不能是 uint32 下溢后变成的巨值或负值截断。
+     */
+    uint16_t sine_desc = lumen_effect_breathing_envelope_q16(34304, LUMEN_WAVE_SINE);
+    CHECK(sine_desc > 64500u && sine_desc <= 65535u);
+    /* 同一区间里 r 越大越暗（单调下降），跨过多个表点验证。 */
+    uint16_t prev_sine = 65535u;
+    for (uint32_t p = 33792u; p <= 65024u; p += 1024u) {
+        uint16_t v = lumen_effect_breathing_envelope_q16(p, LUMEN_WAVE_SINE);
+        CHECK(v <= prev_sine);
+        prev_sine = v;
+    }
+    /* 上升段同理：跨表点单调不减，且都在合法范围。 */
+    prev_sine = 0;
+    for (uint32_t p = 0; p <= 32768u; p += 1024u) {
+        uint16_t v = lumen_effect_breathing_envelope_q16(p, LUMEN_WAVE_SINE);
+        CHECK(v >= prev_sine);
+        CHECK(v <= 65535u);
+        prev_sine = v;
+    }
+
+    /* 三角：单调上升到中点再下降；p=1/4 为 0.5。 */
+    CHECK(lumen_effect_breathing_envelope_q16(16384, LUMEN_WAVE_TRIANGLE) >= 32760u);
+    CHECK(lumen_effect_breathing_envelope_q16(16384, LUMEN_WAVE_TRIANGLE) <= 32770u);
+    CHECK(lumen_effect_breathing_envelope_q16(49152, LUMEN_WAVE_TRIANGLE) >= 32760u);
+
+    /* 锯齿：线性上升，p 越大越大。 */
+    for (uint32_t p = 0; p < 65536u; p += 4096u) {
+        uint16_t lo = lumen_effect_breathing_envelope_q16(p, LUMEN_WAVE_SAWTOOTH);
+        CHECK(lo == (uint16_t)p || lo == (uint16_t)(p & 0xFFFFu));
+    }
+
+    /*
+     * 方波的 10% 斜坡（effects-spec §2.2「两端各留 10% 线性斜坡」）：
+     * p = 5% 时应约在 0.5（上升沿中段），p = 65% 在下降沿中段也约 0.5，
+     * 而 p = 30% / 80% 分别是满亮 / 全黑。
+     */
+    uint16_t square_up_mid = lumen_effect_breathing_envelope_q16(3277, LUMEN_WAVE_SQUARE);
+    CHECK(square_up_mid >= 32000u && square_up_mid <= 33500u);
+    uint16_t square_down_mid = lumen_effect_breathing_envelope_q16(36045, LUMEN_WAVE_SQUARE);
+    CHECK(square_down_mid >= 32000u && square_down_mid <= 33500u);
+    CHECK(lumen_effect_breathing_envelope_q16(19661, LUMEN_WAVE_SQUARE) == 65535u); /* 30% */
+    CHECK(lumen_effect_breathing_envelope_q16(52429, LUMEN_WAVE_SQUARE) == 0);      /* 80% */
+
+    /* 未知 waveform 值按正弦处理（不静默变黑）。 */
+    CHECK(lumen_effect_breathing_envelope_q16(32768, 9) >= 65534u);
+}
+
+static void test_effects_breathing_gain_and_pixel(void)
+{
+    /*
+     * min_level 极值（effects-spec §3.2）：
+     *  - min_level = 0：e' 在包络谷底能到 0（全黑），峰值满亮；
+     *  - min_level = 255：e' 恒为满亮（几乎不呼吸）；
+     *  - 中间值：谷底 = min_level/255，峰值 = 1。
+     */
+    const uint16_t period = 1000;
+    const uint32_t t0 = 0;
+    const uint8_t wave = LUMEN_WAVE_SINE;
+
+    /* 谷底在 phase 0（t = t0）。 */
+    uint32_t g0 = lumen_effect_breathing_gain_q16(period, 0, wave, t0, 0);
+    CHECK(g0 == 0); /* min_level 0 → 全黑 */
+    /* 峰值在 phase 0.5（t = 500ms）。 */
+    uint32_t gpeak = lumen_effect_breathing_gain_q16(period, 0, wave, t0, 500);
+    CHECK(gpeak >= 65534u);
+
+    /* min_level = 255：任何时刻都满亮。 */
+    for (uint32_t t = 0; t <= 1000; t += 100) {
+        uint32_t g = lumen_effect_breathing_gain_q16(period, 255, wave, t0, t);
+        CHECK(g == 65535u);
+    }
+
+    /* min_level = 128：谷底约 128/255 ≈ 0.502（Q16 ≈ 32897）。 */
+    uint32_t gmin = lumen_effect_breathing_gain_q16(period, 128, wave, t0, 0);
+    CHECK(gmin >= 32800u && gmin <= 33000u);
+    /* 且仍能呼吸到满亮。 */
+    uint32_t gmax = lumen_effect_breathing_gain_q16(period, 128, wave, t0, 500);
+    CHECK(gmax >= 65534u);
+
+    /* period = 0：相位恒 0 → 停在谷底（min_level 决定亮度），不随时间变。 */
+    uint32_t gp0_a = lumen_effect_breathing_gain_q16(0, 64, wave, 0, 100);
+    uint32_t gp0_b = lumen_effect_breathing_gain_q16(0, 64, wave, 0, 900000);
+    CHECK(gp0_a == gp0_b);
+    CHECK(gp0_a >= 16000u && gp0_a <= 17000u); /* 64/255 ≈ 0.251 × 65535 ≈ 16448 */
+
+    /* 增益缩放：0 增益得 0，满增益原样返回，四舍五入。 */
+    CHECK(lumen_effect_apply_gain_q16(255, 0) == 0);
+    CHECK(lumen_effect_apply_gain_q16(255, 65535) == 255);
+    CHECK(lumen_effect_apply_gain_q16(255, 32768) == 128); /* 127.5 → 128 */
+    CHECK(lumen_effect_apply_gain_q16(0, 65535) == 0);
+
+    /*
+     * 整颗像素：纯红呼吸，谷底必须能到全黑（ticket 的「min_level = 0 暗到全黑」）。
+     */
+    lumen_segment_t seg = {
+        .active = true, .start = 0, .end = 9, .type = LUMEN_EFFECT_BREATHING,
+        .hue = 0, .sat = 255, .period_ms = 1000, .p5 = 0, .flags = 0, .t0_ms = 0,
+    };
+    uint8_t rgb[3];
+    lumen_effect_pixel(&seg, 5, 0, rgb);
+    CHECK(rgb[0] == 0 && rgb[1] == 0 && rgb[2] == 0);
+    lumen_effect_pixel(&seg, 5, 500, rgb); /* 峰值 */
+    CHECK(rgb[0] == 255 && rgb[1] == 0 && rgb[2] == 0);
+
+    /* min_level 大 → 谷底仍很亮（几乎不呼吸）。 */
+    seg.p5 = 200;
+    lumen_effect_pixel(&seg, 5, 0, rgb);
+    CHECK(rgb[0] >= 195 && rgb[0] <= 205);
+
+    /* 波形切换真的改变输出（肉眼可分辨的前提）：锯齿在中点约半亮。 */
+    seg.p5 = 0;
+    seg.flags = (uint8_t)(LUMEN_WAVE_SAWTOOTH << 1);
+    lumen_effect_pixel(&seg, 5, 250, rgb); /* 1/4 周期 */
+    CHECK(rgb[0] >= 60 && rgb[0] <= 70);   /* 0.25 × 255 ≈ 64 */
+
+    /* 正弦在 1/4 周期约半亮（与锯齿不同）。 */
+    seg.flags = (uint8_t)(LUMEN_WAVE_SINE << 1);
+    lumen_effect_pixel(&seg, 5, 250, rgb);
+    CHECK(rgb[0] >= 120 && rgb[0] <= 135);
+
+    /* 三角在 1/4 周期约半亮；方波在 1/4 周期满亮。 */
+    seg.flags = (uint8_t)(LUMEN_WAVE_TRIANGLE << 1);
+    lumen_effect_pixel(&seg, 5, 250, rgb);
+    CHECK(rgb[0] >= 120 && rgb[0] <= 135);
+    seg.flags = (uint8_t)(LUMEN_WAVE_SQUARE << 1);
+    lumen_effect_pixel(&seg, 5, 250, rgb);
+    CHECK(rgb[0] == 255);
+
+    /* flag bit0（reverse）不影响呼吸输出（保留位，无实际意义）。 */
+    seg.flags = (uint8_t)((LUMEN_WAVE_SINE << 1) | 0x01);
+    uint8_t rgb_rev[3];
+    seg.flags = (uint8_t)(LUMEN_WAVE_SINE << 1);
+    lumen_effect_pixel(&seg, 5, 125, rgb);
+    seg.flags = (uint8_t)((LUMEN_WAVE_SINE << 1) | 0x01);
+    lumen_effect_pixel(&seg, 5, 125, rgb_rev);
+    CHECK(memcmp(rgb, rgb_rev, 3) == 0);
+
+    /*
+     * 一段呼吸 + 一段静态共存：合成后静态段不随时间变，呼吸段随时间变。
+     * 这是 ticket「一段呼吸 + 一段静态，互不干扰」的 host 证据。
+     */
+    lumen_segment_store_t store;
+    lumen_segment_store_init(&store);
+    lumen_segment_t b = {
+        .active = true, .start = 0, .end = 9, .type = LUMEN_EFFECT_BREATHING,
+        .hue = 0, .sat = 255, .period_ms = 1000, .p5 = 0, .flags = 0, .t0_ms = 0,
+    };
+    lumen_segment_t s = make_static(20, 29, 21845, 255); /* 纯绿 */
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, 64, &b) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 1, 64, &s) == LUMEN_RESULT_OK);
+
+    uint8_t t0_buf[64 * 3];
+    uint8_t t500_buf[64 * 3];
+    CHECK(lumen_segment_store_compose(&store, 0, t0_buf, 64, 0) == 64);
+    CHECK(lumen_segment_store_compose(&store, 0, t500_buf, 64, 500) == 64);
+    /* 呼吸段灯珠 0 在 t=0 全黑，在 t=500 满亮。 */
+    CHECK(t0_buf[0] == 0 && t0_buf[1] == 0 && t0_buf[2] == 0);
+    CHECK(t500_buf[0] == 255 && t500_buf[1] == 0 && t500_buf[2] == 0);
+    /* 静态绿段两个时刻完全相同。 */
+    CHECK(memcmp(&t0_buf[20 * 3], &t500_buf[20 * 3], 30) == 0);
+    CHECK(t0_buf[20 * 3 + 1] == 255);
+
+    /* 未覆盖区（10-19、30-63）仍为 0。 */
+    for (uint16_t i = 10; i <= 19; ++i) {
+        CHECK(t500_buf[i * 3] == 0 && t500_buf[i * 3 + 1] == 0 && t500_buf[i * 3 + 2] == 0);
+    }
+    for (uint16_t i = 30; i < 64; ++i) {
+        CHECK(t500_buf[i * 3] == 0 && t500_buf[i * 3 + 1] == 0 && t500_buf[i * 3 + 2] == 0);
+    }
+}
+
+/* ---------------- #30：帧循环判据 ---------------- */
+
+static void test_segment_store_needs_frames(void)
+{
+    lumen_segment_store_t store;
+    lumen_segment_store_init(&store);
+
+    /* 没有段：不需要帧循环。 */
+    CHECK(!lumen_segment_store_needs_frames(&store, 1));
+
+    /* 纯静态段：仍然不需要——这是「静态不空转」的判据本体。 */
+    lumen_segment_t red = make_static(0, 9, 0, 255);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, 64, &red) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_compose(&store, 0, (uint8_t[64 * 3]){0}, 64, 0) == 64);
+    CHECK(!lumen_segment_store_needs_frames(&store, 1));
+
+    /* 一段静态 + 一段呼吸：需要帧循环。 */
+    lumen_segment_t breath = make_static(20, 29, 0, 255);
+    breath.type = LUMEN_EFFECT_BREATHING;
+    breath.period_ms = 1000;
+    CHECK(lumen_segment_store_set(&store, 0, 1, 1, 64, &breath) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_needs_frames(&store, 1));
+
+    /* 清掉呼吸段后回到静态模式（帧循环随之关闭）。 */
+    CHECK(lumen_segment_store_clear(&store, 0, 1));
+    CHECK(!lumen_segment_store_needs_frames(&store, 1));
+
+    /* strip_count 之外的段不算：strip_count 0 时按全部灯带判（防御分支）。 */
+    CHECK(lumen_segment_store_set(&store, 0, 1, 1, 64, &breath) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_needs_frames(&store, 0));
+
+    /* 参数防御。 */
+    CHECK(!lumen_segment_store_needs_frames(NULL, 1));
 }
 
 /* 灯珠数量减少时裁剪越界段（不自动缩短区间）。 */
@@ -2393,12 +2714,66 @@ static void test_segment_commands(void)
     lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
 
-    /* 动画类型（已知但未实现）：UnknownCommand，不是静默变黑。 */
+    /* #30：呼吸（已知且已实现）→ OK，参数被完整解析到 outcome.segment。
+     * 载荷 12 字节：strip seg start end type hue_lo hue_hi sat period_lo period_hi p5 flags。 */
     frame.payload_len = 12;
     frame.payload[4] = 0x01; /* breathing */
+    frame.payload[5] = 0x10;
+    frame.payload[6] = 0x0E; /* hue = 0x0E10 */
+    frame.payload[7] = 0xFF; /* sat */
+    frame.payload[8] = 0xF4;
+    frame.payload[9] = 0x01; /* period = 0x01F4 = 500ms */
+    frame.payload[10] = 0x60; /* min_level = 96 */
+    frame.payload[11] = 0x00; /* flags: waveform 0 (sine) */
+    frame.payload[2] = 20;
+    frame.payload[3] = 25;
+    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(outcome.segment_op);
+    CHECK(outcome.segment.type == LUMEN_EFFECT_BREATHING);
+    CHECK(outcome.segment.period_ms == 0x01F4);
+    CHECK(outcome.segment.p5 == 0x60);
+    CHECK(outcome.segment.flags == 0);
+
+    /* 周期低于 3Hz 下限（334ms）→ InvalidParam，不产生写入意图。 */
+    frame.payload[8] = 0x4D; /* 333 */
+    frame.payload[9] = 0x01;
+    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(!outcome.segment_op);
+    /* 正好 334 是合法下限。 */
+    frame.payload[8] = 0x4E; /* 334 */
+    frame.payload[9] = 0x01;
+    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    /* period = 0（静止）不受下限约束。 */
+    frame.payload[8] = 0x00;
+    frame.payload[9] = 0x00;
+    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+
+    /* flags 保留位（bit3-7）必须为 0。 */
+    frame.payload[8] = 0xF4;
+    frame.payload[9] = 0x01;
+    frame.payload[11] = 0x08; /* bit3 置位 */
+    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(!outcome.segment_op);
+    /* bit0 reverse 与 bit1-2 waveform 是允许的。 */
+    frame.payload[11] = 0x07; /* reverse + waveform 3 */
+    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(outcome.segment.flags == 0x07);
+
+    /* 彩虹 / 流光（已知但未实现，由 #31 交付）→ UnknownCommand。 */
+    frame.payload_len = 12;
+    frame.payload[4] = 0x02;
     lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
     CHECK(!outcome.segment_op);
+    frame.payload[4] = 0x03;
+    lumen_command_dispatch(&frame, &state, &segments, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
 
     /* 静态段却给了 12 字节载荷：先读 type 再定长 → BadLength。 */
     frame.payload[4] = 0x00;
@@ -2551,8 +2926,12 @@ int main(int argc, char **argv)
     test_segment_store_validate();
     test_segment_store_state_summary();
     test_segment_store_prune();
+    test_segment_store_needs_frames();
     test_segment_commands();
     test_encode_segment_reports();
+    test_effects_breathing_phase();
+    test_effects_breathing_envelope();
+    test_effects_breathing_gain_and_pixel();
 
     if (g_failures != 0) {
         fprintf(stderr, "\n%d/%d checks failed\n", g_failures, g_checks);

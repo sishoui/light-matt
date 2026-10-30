@@ -12,13 +12,16 @@
  */
 
 import {
+  BREATHING_MIN_PERIOD_MS,
   MAX_LEDS,
+  MAX_PERIOD_MS,
   MAX_SEGMENTS,
   MAX_STRIPS,
   MIN_LEDS,
   NO_SCRIPT,
   SEGMENT_TYPE,
   STATE_BYTES,
+  WAVEFORM,
 } from "./constants";
 import type {
   AckResult,
@@ -115,13 +118,15 @@ export function segmentParamLength(type: number): number {
 /**
  * SetSegment 0x10：载荷 `strip_id, seg_id, start, end, type, params(3|7)`。
  *
- * #25 只支持静态单色：动画类型虽然布局已定（7 字节参数块），但固件当前回
- * UnknownCommand（像素实现由 #30/#31 交付）。构造器**仍然允许**构造动画帧
- * ——协议布局是权威，UI 需要能发出这些帧并用 ACK 明确告诉用户「要升级固件」。
+ * #25 交付静态单色；#30 交付呼吸（type 0x01）。彩虹 / 流光（0x02/0x03）的
+ * 像素由 #31 落地，但**布局早已定稿**，构造器仍然允许构造这两类帧——
+ * 协议布局是权威，UI / 日志需要能发出它们，并用 ACK 明确告诉用户
+ * 「要升级固件」。固件对未实现类型回 UnknownCommand（不静默变黑）。
  *
- * 校验只做构造层能判定的部分（字节范围、start ≤ end、段类型已知）；
- * 「end < led_count」与「不重叠」是设备侧权威校验（§11.3 第 6/7 步），
- * 这里不做，以免 App 与设备的 led_count 快照不一致时误拒。
+ * 校验只做构造层能判定的部分（字节范围、start ≤ end、段类型已知、
+ * 呼吸的周期下限与 flags 保留位）；「end < led_count」与「不重叠」是
+ * 设备侧权威校验（§11.3 第 6/7 步），这里不做，以免 App 与设备的
+ * led_count 快照不一致时误拒。
  */
 export function cmdSetSegment(segment: SegmentConfig): CommandRequest {
   const stripId = assertStripId(segment.stripId);
@@ -151,13 +156,26 @@ export function cmdSetSegment(segment: SegmentConfig): CommandRequest {
   payload[7] = sat;
   if (paramLen > 3) {
     const period = segment.periodMs;
-    if (!Number.isInteger(period) || period < 0 || period > 0xffff) {
-      throw new RangeError(`period_ms 必须是 0-65535 的整数，收到 ${period}`);
+    if (!Number.isInteger(period) || period < 0 || period > MAX_PERIOD_MS) {
+      throw new RangeError(`period_ms 必须是 0-${MAX_PERIOD_MS} 的整数，收到 ${period}`);
+    }
+    const flags = assertByte(segment.flags, "flags");
+    if (segment.type === SEGMENT_TYPE.BREATHING) {
+      /* effects-spec §5 / protocol §11.3 第 8-9 步，在本端就拒绝：
+       * period != 0 时 ≥ 334；flags bit3-7 必须为 0。 */
+      if (period !== 0 && period < BREATHING_MIN_PERIOD_MS) {
+        throw new RangeError(
+          `呼吸周期不能短于 ${BREATHING_MIN_PERIOD_MS}ms（约 3Hz），收到 ${period}`,
+        );
+      }
+      if ((flags & 0xf8) !== 0) {
+        throw new RangeError(`呼吸 flags 的保留位 bit3-7 必须为 0，收到 0x${flags.toString(16)}`);
+      }
     }
     payload[8] = period & 0xff;
     payload[9] = (period >> 8) & 0xff;
     payload[10] = assertByte(segment.p5, "p5");
-    payload[11] = assertByte(segment.flags, "flags");
+    payload[11] = flags;
   }
   return { command: 0x10, payload };
 }
@@ -172,6 +190,56 @@ export function staticSegment(
   sat: number,
 ): SegmentConfig {
   return { stripId, segId, start, end, type: SEGMENT_TYPE.STATIC, hue, sat, periodMs: 0, p5: 0, flags: 0 };
+}
+
+/**
+ * 打呼吸的 flags 字节（effects-spec §2.2）：
+ *   bit0 reverse（保留，无实际意义）、bit1-2 waveform、bit3-7 = 0。
+ *
+ * waveform 只有 2 位，所以先 &3 再左移——传错值也不会污染保留位。
+ */
+export function breathingFlags(waveform: number, reverse = false): number {
+  const wave = waveform & 0x03;
+  return ((wave << 1) & 0x06) | (reverse ? 0x01 : 0);
+}
+
+/** 从 flags 解出波形（bit1-2）。 */
+export function breathingWaveform(flags: number): number {
+  return (flags >> 1) & 0x03;
+}
+
+/**
+ * 构造一个呼吸段（#30）。
+ *
+ * `minLevel` 是「最暗时的亮度占比」0-255（0 → 能暗到全黑，200 左右几乎不呼吸）；
+ * `waveform` 取 WAVEFORM 枚举；`reverse` 写进 flags bit0（当前无视觉意义，保留）。
+ *
+ * 只装配数据，校验全部在 cmdSetSegment（周期下限、保留位、区间）。
+ */
+export function breathingSegment(
+  stripId: number,
+  segId: number,
+  start: number,
+  end: number,
+  hue: number,
+  sat: number,
+  periodMs: number,
+  minLevel: number,
+  waveform: number = WAVEFORM.SINE,
+  reverse = false,
+): SegmentConfig {
+  return {
+    stripId,
+    segId,
+    start,
+    end,
+    type: SEGMENT_TYPE.BREATHING,
+    hue,
+    sat,
+    periodMs,
+    p5: minLevel,
+    flags: breathingFlags(waveform, reverse),
+  };
 }
 
 /** ClearSegment 0x11：载荷 `strip_id, seg_id`。 */

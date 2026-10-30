@@ -280,18 +280,24 @@ static void render_task(void *arg)
 
     /*
      * 自检开始后渲染任务必须按步醒来，因此等待超时取「距离下一次换色的
-     * tick 数」；启动补发窗口内也按固定间隔醒来。两者都不成立时仍然
-     * portMAX_DELAY 阻塞在信号量上，不轮询。
+     * tick 数」；启动补发窗口内也按固定间隔醒来。
      *
-     * #25 只有静态段：没有动画帧循环，静态场景与 v1 一样零额外 CPU
-     * （docs/v2-effects-engine.md §3.1）。帧循环由 #30/#31 的 need_frames 加入。
+     * 两种模式（docs/v2-effects-engine.md §3.1）：
+     *  - **静态模式**（need_frames == false）：仍然 portMAX_DELAY 阻塞在
+     *    信号量上，只有 commit / 段变更唤醒。与 v1 完全一致，零额外 CPU、
+     *    零额外 RMT——静态段不会因为这个帧循环而空转刷帧。
+     *  - **动画模式**（need_frames == true）：带 1000/CONFIG_LUMEN_ANIM_FPS
+     *    超时等待，超时即渲染下一帧。不另起定时器任务（理由见 Kconfig）。
      */
     uint8_t logged_step = 0xFF;
     /* 启动补发计数：前几次醒来不看去重，强制把像素再推一遍。 */
     uint8_t boot_reassert_left = LUMEN_BOOT_REASSERT_COUNT;
+    /* 帧循环状态切换只打一次日志，方便串口上看「模式真的切了」。 */
+    bool logged_anim_mode = false;
 
     for (;;) {
         TickType_t wait = portMAX_DELAY;
+        bool anim_mode = false;
         xSemaphoreTake(s_state_lock, portMAX_DELAY);
         if (boot_reassert_left > 0) {
             /* 补发窗口内按固定间隔醒来，覆盖灯带电源建立的那段时间。 */
@@ -306,8 +312,33 @@ static void render_task(void *arg)
                     ? pdMS_TO_TICKS((uint32_t)((remaining_us + 999) / 1000))
                     : 1;
             wait = ticks > 0 ? ticks : 1;
+        } else if (lumen_segment_store_needs_frames(&s_segments, s_state.strip_count)) {
+            /*
+             * 动画模式：按帧率超时等待。取较短的 tick 数防止 FPS 上限
+             * （30fps ≈ 33ms）在某些 tick 率下四舍五入成 0（0 = 不等待，
+             * 会变成忙循环）。至少 1 tick。
+             */
+            TickType_t anim_ticks = pdMS_TO_TICKS(1000u / (uint32_t)CONFIG_LUMEN_ANIM_FPS);
+            wait = anim_ticks > 0 ? anim_ticks : 1;
+            anim_mode = true;
         }
         xSemaphoreGive(s_state_lock);
+
+        if (anim_mode != logged_anim_mode) {
+            uint32_t drawn = 0;
+            uint32_t skipped = 0;
+            lumen_led_render_counters(&drawn, &skipped);
+            logged_anim_mode = anim_mode;
+            /*
+             * 串口上「静态不空转 / 动画持续刷」的判定证据（#30 验收点）：
+             * 切换时打一行，并带上到目前为止的累计刷新 / 跳过次数。
+             * 纯静态场景从启动到关灯都只有这一行 + 状态变更的 render 行，
+             * 动画模式下每 10 帧一行的 render seg 会持续出现。
+             */
+            ESP_LOGI(TAG, "帧循环模式 -> %s（fps=%d）已绘制=%u 跳过=%u",
+                     anim_mode ? "动画" : "静态（阻塞等待，不空转）", CONFIG_LUMEN_ANIM_FPS,
+                     (unsigned)drawn, (unsigned)skipped);
+        }
 
         /* 超时（自检换色 / 启动补发）与状态信号都会走到这里；统一重渲染。 */
         (void)xSemaphoreTake(s_render_signal, wait);
@@ -385,6 +416,8 @@ esp_err_t lumen_led_engine_init(void)
     }
 
     lumen_gamma_init();
+    /* #30：正弦包络查表在这里建好（用 math.h，只在初始化时），渲染路径零浮点。 */
+    lumen_effects_init();
     lumen_selftest_reset(&s_selftest);
     lumen_led_count_job_init(&s_led_count_job);
     lumen_segment_store_init(&s_segments);

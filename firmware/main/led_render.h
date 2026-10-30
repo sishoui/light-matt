@@ -40,3 +40,14 @@ void lumen_led_render_snapshot(led_strip_handle_t strip, const lumen_state_t *sn
  * 新句柄的像素缓冲是空的（重建后）以及上电补发窗口内都必须调用。
  */
 void lumen_led_render_invalidate(void);
+
+/*
+ * 帧循环的累计计数（#30）：
+ *   drawn   —— 真正写进灯带的帧数（refresh 成功）
+ *   skipped —— 像素与上一帧逐字节相同而跳过 refresh 的次数
+ *
+ * 用途是让「静态不空转、动画持续刷」在串口上可判定：动画模式下 drawn
+ * 随帧率增长；纯静态模式根本没有帧循环，两个计数都不动。
+ * 任一参数可为 NULL。
+ */
+void lumen_led_render_counters(uint32_t *drawn, uint32_t *skipped);

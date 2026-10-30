@@ -21,9 +21,23 @@ static bool s_rendered_valid;
 static uint16_t s_rendered_count;
 static uint8_t s_rendered_frame[LUMEN_MAX_LEDS * 3];
 
+/* 帧循环计数（#30）：串口可判定的「真刷 / 跳过」累计值。 */
+static uint32_t s_frames_drawn;
+static uint32_t s_frames_skipped;
+
 void lumen_led_render_invalidate(void)
 {
     s_rendered_valid = false;
+}
+
+void lumen_led_render_counters(uint32_t *drawn, uint32_t *skipped)
+{
+    if (drawn != NULL) {
+        *drawn = s_frames_drawn;
+    }
+    if (skipped != NULL) {
+        *skipped = s_frames_skipped;
+    }
 }
 
 /*
@@ -95,22 +109,37 @@ void lumen_led_render_snapshot(led_strip_handle_t strip, const lumen_state_t *sn
 
     if (s_rendered_valid && count == s_rendered_count &&
         memcmp(frame, s_rendered_frame, (size_t)count * 3u) == 0) {
-        ESP_LOGD(TAG, "render skip: 像素未变 n=%u seg=%d", count, segmented ? 1 : 0);
+        ++s_frames_skipped;
+        /* docs/v2-effects-engine.md §3.2：跳过打 DEBUG，真刷打 INFO 带帧号。
+         * 「一段呼吸 + 一段静态」时静态段的像素每帧重算但结果相同；
+         * 若整帧都没变（例如周期极长或动画段恰好停在同值），这里就是证据。 */
+        ESP_LOGD(TAG, "帧未变，跳过 refresh（drawn=%u skipped=%u）", (unsigned)s_frames_drawn,
+                 (unsigned)s_frames_skipped);
         return; /* 状态没变，不碰灯带 */
     }
 
-    /* 渲染是灯带「有没有反应」唯一可观测的固件侧证据：开 INFO 是为了
-     * 真机排障时能看到每一次真正写进灯带的像素。分段时打印首/中/末三颗
-     * 作为抽样（整条 192 字节逐字节打印会淹掉串口），完整像素可对照日志
-     * 里的段配置命令复现。 */
-    if (segmented) {
+    /*
+     * 渲染是灯带「有没有反应」唯一可观测的固件侧证据。
+     *
+     * 动画模式下画帧是连续的（默认 10fps）：逐帧 INFO 在 115200 下约
+     * 5-15% 占空，会挤占 RMT×BLE 共存验证所需的串口带宽，也可能让日志本身
+     * 影响帧间隔。所以动画模式按「每 10 帧一行」限流，行里带帧号与累计
+     * drawn/skipped，足以判定帧循环确实在跑；非动画模式（状态变更驱动）
+     * 仍然每帧一行，与 v1/#25 的行为一致。
+     */
+    bool animating = segmented && segments != NULL &&
+                     lumen_segment_store_needs_frames(segments, snapshot->strip_count);
+    if (animating && (s_frames_drawn % 10u) != 0u) {
+        /* 限流窗口内不打印，但仍要真正刷灯。 */
+    } else if (segmented) {
         uint16_t mid = (uint16_t)(count / 2u);
         ESP_LOGI(TAG,
-                 "render seg: n=%u b=%u p=%u [0]=%u,%u,%u [%u]=%u,%u,%u [%u]=%u,%u,%u",
-                 count, brightness, snapshot->power, frame[0], frame[1], frame[2], mid,
-                 frame[mid * 3u], frame[mid * 3u + 1], frame[mid * 3u + 2],
-                 (unsigned)(count - 1), frame[(count - 1u) * 3u], frame[(count - 1u) * 3u + 1],
-                 frame[(count - 1u) * 3u + 2]);
+                 "render seg: n=%u b=%u p=%u frame=%u [0]=%u,%u,%u [%u]=%u,%u,%u "
+                 "[%u]=%u,%u,%u",
+                 count, brightness, snapshot->power, (unsigned)s_frames_drawn, frame[0],
+                 frame[1], frame[2], mid, frame[mid * 3u], frame[mid * 3u + 1],
+                 frame[mid * 3u + 2], (unsigned)(count - 1), frame[(count - 1u) * 3u],
+                 frame[(count - 1u) * 3u + 1], frame[(count - 1u) * 3u + 2]);
     } else {
         ESP_LOGI(TAG, "render: (%u,%u,%u) x %u brightness=%u power=%u", rgb[0], rgb[1], rgb[2],
                  count, brightness, snapshot->power);
@@ -121,6 +150,7 @@ void lumen_led_render_snapshot(led_strip_handle_t strip, const lumen_state_t *sn
         return;
     }
 
+    ++s_frames_drawn;
     memcpy(s_rendered_frame, frame, (size_t)count * 3u);
     s_rendered_count = count;
     s_rendered_valid = true;

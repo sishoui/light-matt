@@ -80,9 +80,10 @@ uint8_t lumen_segment_store_validate(const lumen_segment_store_t *store, uint8_t
     }
 
     /*
-     * 8 flags 保留位 / 9 周期下限。
+     * 8 flags 保留位 / 9 周期下限（docs/protocol.md §11.3 第 8/9 步）。
+     *
      * 静态段没有周期字段，flags 必须为 0（effects-spec §2.1：静态无 flags）。
-     * 动画类型的保留位与周期下限在 #30/#31 实现时补进这里。
+     * 动画类型的保留位与周期下限按类型分别判定。
      */
     if (candidate->type == LUMEN_EFFECT_STATIC) {
         if (candidate->flags != 0) {
@@ -94,6 +95,19 @@ uint8_t lumen_segment_store_validate(const lumen_segment_store_t *store, uint8_t
          * 这里再拒一次是防御，避免绕过命令层直接写段（host 测试 / 未来剧本）。
          */
         return LUMEN_RESULT_INVALID_PARAM;
+    } else if (candidate->type == LUMEN_EFFECT_BREATHING) {
+        /*
+         * 呼吸（effects-spec §2.2 / §5 第 8-9 步）：
+         *   bit0 reverse（保留，无实际意义）、bit1-2 waveform、bit3-7 必须为 0；
+         *   period_ms != 0 时必须 ≥ 334（≈3Hz，光敏性癫痫安全线）。
+         * period_ms = 0 是合法值（静止），不受下限约束。
+         */
+        if ((candidate->flags & 0xF8u) != 0) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        if (candidate->period_ms != 0 && candidate->period_ms < LUMEN_BREATHING_MIN_PERIOD_MS) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
     }
 
     return LUMEN_RESULT_OK;
@@ -167,6 +181,25 @@ uint8_t lumen_segment_store_mask(const lumen_segment_store_t *store, uint8_t str
 bool lumen_segment_store_any_active(const lumen_segment_store_t *store, uint8_t strip_id)
 {
     return lumen_segment_store_count(store, strip_id) > 0;
+}
+
+bool lumen_segment_store_needs_frames(const lumen_segment_store_t *store, uint8_t strip_count)
+{
+    if (store == NULL) {
+        return false;
+    }
+    if (strip_count == 0 || strip_count > LUMEN_MAX_STRIPS) {
+        strip_count = LUMEN_MAX_STRIPS;
+    }
+    for (uint8_t strip = 0; strip < strip_count; ++strip) {
+        for (uint8_t slot = 0; slot < LUMEN_MAX_SEGMENTS; ++slot) {
+            const lumen_segment_t *seg = &store->slot[strip][slot];
+            if (seg->active && lumen_effect_is_animated(seg->type)) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 void lumen_segment_store_state_rgb(const lumen_segment_store_t *store, uint8_t strip_id,

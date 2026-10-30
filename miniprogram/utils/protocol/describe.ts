@@ -8,12 +8,44 @@
  * 保证日志永远有可对照的原始数据。
  */
 
-import { CMD, DEVICE_CMD, commandName } from "./constants";
+import {
+  CMD,
+  DEVICE_CMD,
+  SEGMENT_TYPE,
+  WAVEFORM_NAMES,
+  commandName,
+} from "./constants";
+import { breathingWaveform, segmentParamLength } from "./commands";
 import { bytesToHex } from "./hex";
 import type { AckResult, DeviceState, SegmentListEnd, SegmentReport } from "./types";
 
 function hex2(value: number): string {
   return `0x${(value & 0xff).toString(16).padStart(2, "0").toUpperCase()}`;
+}
+
+/** 呼吸波形名（effects-spec §2.2）；未知值原样给数字。 */
+function waveformName(waveform: number): string {
+  return WAVEFORM_NAMES[waveform] ?? `wave${waveform}`;
+}
+
+/**
+ * 段参数的展示文本，按 type 解释同一个 p5 字段：
+ *   0x00 静态：没有参数（hue/sat 已在外面）；
+ *   0x01 呼吸：period / min_level / waveform；
+ *   0x02/0x03：period / span|tail / flags（#31 落地，日志先能读）。
+ */
+function describeSegmentParams(type: number, periodMs: number, p5: number, flags: number): string {
+  if (type === SEGMENT_TYPE.STATIC) {
+    return "";
+  }
+  if (type === SEGMENT_TYPE.BREATHING) {
+    return (
+      ` period=${periodMs} min_level=${p5} ` +
+      `waveform=${waveformName(breathingWaveform(flags))} flags=${hex2(flags)}`
+    );
+  }
+  const p5Name = type === SEGMENT_TYPE.RAINBOW ? "span" : "tail";
+  return ` period=${periodMs} ${p5Name}=${p5} flags=${hex2(flags)}`;
 }
 
 /** 小程序 → 设备命令：命令名 + 从载荷解析出的参数。 */
@@ -33,16 +65,28 @@ export function describeCommand(command: number, payload: Uint8Array): string {
       return payload.length === 3
         ? `${name} strip=${payload[0]} count=${payload[1] | (payload[2] << 8)}`
         : `${name} ${bytesToHex(payload)}`;
-    case CMD.SET_SEGMENT:
+    case CMD.SET_SEGMENT: {
       /* 载荷 strip, seg, start, end, type, params；长度不符时只给 hex，不猜。 */
-      if (payload.length === 0) {
-        return name;
+      if (payload.length < 5) {
+        return payload.length === 0 ? name : `${name} ${bytesToHex(payload)}`;
       }
-      return payload.length >= 5
-        ? `${name} strip=${payload[0]} seg=${payload[1]} range=${payload[2]}-${payload[3]} ` +
-            `type=${hex2(payload[4])} hue=${payload[5] | ((payload[6] ?? 0) << 8)} ` +
-            `sat=${payload[7] ?? 0}${payload.length > 5 + 3 ? ` period=${payload[8] | ((payload[9] ?? 0) << 8)} p5=${payload[10] ?? 0} flags=${hex2(payload[11] ?? 0)}` : ""}`
-        : `${name} ${bytesToHex(payload)}`;
+      const type = payload[4];
+      const paramLen = segmentParamLength(type);
+      if (paramLen === 0 || payload.length !== 5 + paramLen) {
+        return `${name} ${bytesToHex(payload)}`;
+      }
+      const anim = paramLen > 3;
+      return (
+        `${name} strip=${payload[0]} seg=${payload[1]} range=${payload[2]}-${payload[3]} ` +
+        `type=${hex2(type)} hue=${payload[5] | (payload[6] << 8)} sat=${payload[7]}` +
+        describeSegmentParams(
+          type,
+          anim ? payload[8] | (payload[9] << 8) : 0,
+          anim ? payload[10] : 0,
+          anim ? payload[11] : 0,
+        )
+      );
+    }
     case CMD.CLEAR_SEGMENT:
       return payload.length === 2
         ? `${name} strip=${payload[0]} seg=${payload[1]}`
@@ -121,7 +165,7 @@ export function describeSegmentReport(report: SegmentReport): string {
     `SegmentReport strip=${report.stripId} seg=${report.segId} ` +
     `range=${report.start}-${report.end} type=${hex2(report.type)} ` +
     `hue=${report.hue} sat=${report.sat}` +
-    (report.type === 0x00 ? "" : ` period=${report.periodMs} p5=${report.p5} flags=${hex2(report.flags)}`)
+    describeSegmentParams(report.type, report.periodMs, report.p5, report.flags)
   );
 }
 
