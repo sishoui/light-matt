@@ -11,6 +11,12 @@
  * 初始化流水线（MTU → services → chars → 重新订阅 notify → 读 State），
  * 本模块只在拿到 State 后更新本地镜像，绝不用本地缓存覆盖设备。
  *
+ * 拆分后的协作模块（同级 utils/control/）：
+ *  - reconnect.ts：连接生命周期监督者（退避回连 / epoch / 手动/自动互斥）；
+ *  - device-cache.ts：deviceId 缓存（只存身份，不存状态）；
+ *  - platform.ts：平台/开发版探测 + 无状态兜底快照。
+ * 本文件只保留「命令语义 + 本地状态镜像 + 节流通道」。
+ *
  * #34：成功连接（ready）时向可选的使用日志落点记一条「谁 × 哪台 × 什么时候」。
  * 日志是同步、吞异常、不 await 的旁路——BLE 控制不依赖后端，后端不可达也不影响它。
  */
@@ -52,17 +58,24 @@ import type {
   LinkState,
   RGB,
 } from "../protocol/types";
+import {
+  clearCachedDevice,
+  createWxStorage,
+  DEVICE_CACHE_KEY,
+  loadCachedDevice,
+  saveCachedDevice,
+  type CachedDevice,
+  type SessionStorage,
+} from "./device-cache";
+import { detectDevMode, detectPlatform, fallbackState } from "./platform";
+import { ReconnectSupervisor } from "./reconnect";
+
+export { DEVICE_CACHE_KEY, detectDevMode, detectPlatform };
+export type { CachedDevice, SessionStorage };
 
 export type ContinuousUpdate =
   | { kind: "brightness"; value: number }
   | { kind: "color"; rgb: RGB };
-
-/** deviceId 缓存后端。默认 wx.storage；单测注入内存实现（不是 BLE 假件）。 */
-export interface SessionStorage {
-  get(key: string): string | null;
-  set(key: string, value: string): void;
-  remove(key: string): void;
-}
 
 export interface SessionOptions {
   platform: "android" | "ios" | "other";
@@ -103,16 +116,7 @@ export type CommandResult =
 /** #9 起沿用的名字；与 CommandResult 完全等价。 */
 export type PowerResult = CommandResult;
 
-/** deviceId 缓存键（含版本，避免读到旧结构）。 */
-export const DEVICE_CACHE_KEY = "lumen.lastDevice.v1";
-
-const DEFAULT_RECONNECT_DELAYS_MS = [1000, 2000, 4000];
 const DEFAULT_RETRY_AFTER_GAP_MS = 500;
-
-interface CachedDevice {
-  deviceId: string;
-  name?: string;
-}
 
 const defaultTimer: TimerApi = {
   setTimeout: (fn, ms) => setTimeout(fn, ms),
@@ -125,81 +129,6 @@ function delayWith(timer: TimerApi, ms: number): Promise<void> {
   });
 }
 
-/** 默认 storage：wx.setStorageSync。Node 单测里没有 wx，调用一律安全降级。 */
-function createWxStorage(): SessionStorage {
-  const available =
-    typeof wx !== "undefined" &&
-    typeof wx.getStorageSync === "function" &&
-    typeof wx.setStorageSync === "function";
-  return {
-    get(key) {
-      if (!available) return null;
-      try {
-        const value = wx.getStorageSync(key);
-        return typeof value === "string" && value.length > 0 ? value : null;
-      } catch {
-        return null;
-      }
-    },
-    set(key, value) {
-      if (!available) return;
-      try {
-        wx.setStorageSync(key, value);
-      } catch {
-        /* 存储失败不影响连接 */
-      }
-    },
-    remove(key) {
-      if (!available) return;
-      try {
-        wx.removeStorageSync(key);
-      } catch {
-        /* ignore */
-      }
-    },
-  };
-}
-
-/**
- * 还没有设备状态时的兜底快照：只用于页面渲染，不写入设备。
- * （正常路径下 latestState 在连接流水线读 State 后必然存在。）
- */
-function fallbackState(rgb: RGB, power: 0 | 1 = 1, brightness = 0): DeviceState {
-  return {
-    power,
-    brightness,
-    r: rgb.r,
-    g: rgb.g,
-    b: rgb.b,
-    ledCount: 0,
-    maxBrightness: 255,
-  };
-}
-
-/** 从 wx 取平台；devtools 归到 other（BLE 能力只模拟一部分）。 */
-export function detectPlatform(): "android" | "ios" | "other" {
-  try {
-    const info = wx.getDeviceInfo?.() ?? wx.getSystemInfoSync();
-    const platform = String((info as { platform?: string }).platform ?? "").toLowerCase();
-    if (platform === "android") return "android";
-    if (platform === "ios") return "ios";
-    return "other";
-  } catch {
-    return "other";
-  }
-}
-
-/** 开发版判断：develop / trial 都打 hex，正式版不打。 */
-export function detectDevMode(): boolean {
-  try {
-    const info = wx.getAccountInfoSync?.();
-    const env = info?.miniProgram?.envVersion;
-    return env === "develop" || env === "trial";
-  } catch {
-    return false;
-  }
-}
-
 export class ControlSession {
   readonly transport: BleTransport;
   private readonly throttle: LatestWinsThrottle<ContinuousUpdate>;
@@ -207,9 +136,9 @@ export class ControlSession {
   /** 亮度 0 时开灯，用最近一次非 0 亮度恢复（#9）。 */
   private lastNonZeroBrightness = 128;
 
-  private readonly reconnectTimer: TimerApi;
-  private readonly reconnectDelaysMs: number[];
   private readonly retryAfterGapMs: number;
+  /** 10008 间隔重试的计时器：与回连退避共用同一个注入实例。 */
+  private readonly reconnectTimer: TimerApi;
   private readonly storage: SessionStorage;
   /** #34：成功连接时记一条使用日志（可选，绝不参与控制路径）。 */
   private readonly usageLogger: UsageLogSink | null;
@@ -219,33 +148,16 @@ export class ControlSession {
   private cached: CachedDevice | null = null;
   /**
    * 当前正在建立/已建立的连接身份（#34 日志用）。
-   * ready 事件里拿不到 transport 的 deviceId，所以在发起 connect 时记下。
+   * `ready` 事件里拿不到 transport 的 deviceId，所以在发起 connect 时记下。
    */
   private activeDevice: CachedDevice | null = null;
-  /** #34：已为哪个连接代次记过使用日志，保证一次连接会话只记一条。 */
-  private usageLoggedEpoch = -1;
-  /** 有回连意图时为 true；主动断开 / 用户扫描 / 手动连接都会清掉。 */
-  private reconnectDesired = false;
-  /** 已发起的自动回连次数（0 表示还没重试过）。 */
-  private reconnectAttempts = 0;
-  private reconnectHandle: ReturnType<typeof setTimeout> | null = null;
-  private reconnectRunning = false;
-  /** 本轮退避已耗尽：onShow 不再自动重来，只留手动入口（禁止无限循环）。 */
-  private reconnectExhausted = false;
-  private manualConnecting = false;
-  /** 用户主动断开后，进前台不再擅自回连；下次手动连接/扫描时解除。 */
-  private suppressAutoReconnect = false;
-
   /**
-   * 连接代次：每次「连接身份」变化都 +1——进入 ready、主动断开、非主动断线、
-   * 适配器关闭。
-   *
-   * 唯一用途：判断一条飞行中的命令是不是**旧连接上的**。
-   *  - 成功 / 非零 ACK：旧连接的结论一律作废，不覆盖回连后读到的新 State → `stale`；
-   *  - 异常：照常向上抛（错误提示必须能被用户看到，不能被 stale 吞掉）。
+   * #34：下一次 `ready` 是否要记一条使用日志。只有「发起一次连接」
+   * （手动 / 自动回连，同一条 host.connect）才置位；ready 消费后清掉，
+   * 保证一次连接会话一条记录。
    */
-  private linkEpoch = 0;
-  private lastLinkState: LinkState;
+  private usageArmed = false;
+  private readonly reconnect: ReconnectSupervisor;
 
   constructor(opts: SessionOptions) {
     const log = new FrameLog({ mirrorToConsole: opts.devMode });
@@ -258,15 +170,40 @@ export class ControlSession {
       this.transport = new BleTransport(transportOptions);
     }
 
-    this.reconnectTimer = opts.reconnectTimer ?? defaultTimer;
-    this.reconnectDelaysMs =
-      opts.reconnectDelaysMs !== undefined && opts.reconnectDelaysMs.length > 0
-        ? [...opts.reconnectDelaysMs]
-        : [...DEFAULT_RECONNECT_DELAYS_MS];
+    const reconnectTimer = opts.reconnectTimer ?? defaultTimer;
+    this.reconnectTimer = reconnectTimer;
     this.retryAfterGapMs = opts.retryAfterGapMs ?? DEFAULT_RETRY_AFTER_GAP_MS;
     this.storage = opts.storage ?? createWxStorage();
-    this.cached = this.loadCachedDevice();
-    this.lastLinkState = this.transport.linkState;
+    this.cached = loadCachedDevice(this.storage);
+
+    this.reconnect = new ReconnectSupervisor(
+      {
+        linkState: () => this.transport.linkState,
+        cached: () => this.cached,
+        connect: (deviceId, name) => {
+          // #34：自动回连也是「一次连接会话」，成功（ready）后同样记一条。
+          this.armUsageLog(deviceId, name);
+          return this.transport.connect(deviceId, name).catch((err: unknown) => {
+            // 这次回连失败：撤掉置位，别让后面不相干的 ready 补记一条假会话。
+            this.usageArmed = false;
+            throw err;
+          });
+        },
+        disconnect: () => this.transport.disconnect(),
+        refresh: () => this.refreshState(),
+        clearDeviceState: () => this.clearDeviceState(),
+        onConnected: (state) => {
+          if (state !== null && state !== undefined && typeof state === "object") {
+            this.latestState = state as DeviceState;
+          }
+        },
+      },
+      {
+        timer: reconnectTimer,
+        delaysMs: opts.reconnectDelaysMs,
+        initialLink: this.transport.linkState,
+      },
+    );
 
     // 单一 20Hz 闸门服务亮度与颜色，避免两路各 20Hz 叠成 40Hz。
     this.throttle = new LatestWinsThrottle<ContinuousUpdate>(
@@ -280,7 +217,7 @@ export class ControlSession {
         return this.transport.write(req).then(
           () => undefined,
           (err) => {
-            this.handleCommandFailure(err);
+            this.reconnect.handleCommandFailure(err);
           },
         );
       },
@@ -288,7 +225,13 @@ export class ControlSession {
     );
 
     // 内部监听必须早于页面注册，保证断线时先清本地状态再通知 UI。
-    this.transport.onLink((state, detail) => this.handleLinkChange(state, detail));
+    // #34：同一条 ready 事件上先记使用日志（成功的连接会话），再交回监督者。
+    this.transport.onLink((state, detail) => {
+      if (state === "ready") {
+        this.noteUsageOnce();
+      }
+      this.reconnect.handleLinkChange(state, detail);
+    });
 
     this.transport.onState((state) => {
       this.latestState = state;
@@ -317,7 +260,7 @@ export class ControlSession {
 
   /** 是否还有未完成的自动回连意图（UI/测试可观察）。 */
   get reconnectPending(): boolean {
-    return this.reconnectDesired;
+    return this.reconnect.pending;
   }
 
   /** 进页面：只打开适配器；有 deviceId 缓存时由 onShow 触发静默回连。 */
@@ -331,8 +274,7 @@ export class ControlSession {
 
   async scan(): Promise<void> {
     // 用户主动扫描 = 接管连接意图：取消待执行的自动回连，避免和扫描抢链路。
-    this.abandonReconnect();
-    this.suppressAutoReconnect = false;
+    this.reconnect.scanIntent();
     await this.transport.startScan();
   }
 
@@ -342,89 +284,41 @@ export class ControlSession {
 
   async connect(deviceId: string, name?: string): Promise<DeviceState> {
     // 手动连接优先：取消退避计时器与回连意图，并重置尝试次数（spec #41）。
-    this.abandonReconnect();
-    this.suppressAutoReconnect = false;
-    this.manualConnecting = true;
-    // #34：记下本次连接身份；ready 事件据此写使用日志（一次会话一条）。
-    this.activeDevice = {
-      deviceId,
-      ...(name !== undefined && name.length > 0 ? { name } : {}),
-    };
+    this.reconnect.manualConnectBegin();
+    // #34：记下本次连接身份并置位——ready 事件据此写使用日志（一次会话一条）。
+    this.armUsageLog(deviceId, name);
     try {
       const state = await this.transport.connect(deviceId, name);
       this.latestState = state;
+      // 「已连同一台设备」时 transport.connect 只重读 State、不发 ready：
+      // 没有发生新的连接会话，撤掉置位，避免下一次 ready 补记一条假会话。
+      this.usageArmed = false;
       // 只有完整初始化成功后才缓存 deviceId（失败的下次扫描更可靠）。
-      this.cacheDevice(deviceId, name);
+      this.cached = saveCachedDevice(this.storage, deviceId, name);
       return state;
     } catch (err) {
+      // 连接失败：撤掉日志置位，避免后面不相干的 ready 误记一条。
+      this.usageArmed = false;
       // 10002 / 10013：设备不在附近或 deviceId 失效（iOS UUID 会变），清缓存。
       if (err instanceof WxCallError && (err.errCode === 10002 || err.errCode === 10013)) {
         this.clearCachedDevice();
       }
       throw err;
     } finally {
-      this.manualConnecting = false;
+      this.reconnect.manualConnectEnd();
     }
   }
 
   async disconnect(): Promise<void> {
     // 主动断开：不触发自动回连，也不再让 onShow 擅自重连。
-    this.abandonReconnect();
-    this.suppressAutoReconnect = true;
     this.throttle.cancel();
-    await this.transport.disconnect();
+    await this.reconnect.disconnectIntent();
     this.latestState = null;
-    this.linkEpoch += 1;
   }
 
-  /**
-   * 页面 onShow：有 deviceId 缓存且当前未连接时静默回连。
-   *
-   * 不得打断正在进行的扫描 / 手动连接 / 自动回连：这些状态下直接返回。
-   * 已连接时只做一次 State 复核（设备是权威；后台期间可能被系统断开）。
-   * 退避已耗尽的一轮不再自动重来（禁止无限循环），只留手动入口。
-   */
+  /** 页面 onShow：回连决策全部交给监督者（不打断扫描 / 手动连接）。 */
   async onShow(): Promise<void> {
-    if (this.reconnectRunning || this.manualConnecting) {
-      return;
-    }
-    const link = this.transport.linkState;
-    if (link === "scanning" || link === "connecting" || link === "initializing") {
-      return; // 用户正在扫描/连接，onShow 不抢链路
-    }
-    if (link === "ready") {
-      // 后台可能被系统断连：读一次 State 复核，失败按「可能断线」处理。
-      void this.refreshState().catch((err) => {
-        if (triage(err) === "reconnect") {
-          void this.forceReconnect("连接已断开");
-        }
-      });
-      return;
-    }
-    if (this.cached === null || this.suppressAutoReconnect) {
-      return;
-    }
-    if (link === "adapter-off" || link === "uninitialized") {
-      // 适配器没开：只记回连意图，等 onBluetoothAdapterStateChange；
-      // 10001 是非致命的，这里绝不能弹错或空转。
-      if (!this.reconnectExhausted) {
-        this.reconnectDesired = true;
-      }
-      return;
-    }
-    if (link !== "idle" && link !== "failed") {
-      return;
-    }
-    if (this.reconnectExhausted) {
-      // 上一轮 1s/2s/4s 已用完：不自动重来，用户点连接条手动重连。
-      return;
-    }
-    // 未连接且有缓存：立即静默试一次；失败后按 2s/4s 继续（总次数仍不超过 3 次）。
-    this.reconnectDesired = true;
-    this.reconnectAttempts = 0;
-    this.reconnectExhausted = false;
-    this.clearReconnectTimer();
-    await this.runReconnectAttempt();
+    await this.reconnect.onShow();
   }
 
   /**
@@ -436,13 +330,13 @@ export class ControlSession {
    *  - 10001 → 非致命，不重试，等适配器状态事件。
    */
   async sendCommand(req: CommandRequest, opts: SendOptions = {}): Promise<AckResult> {
-    const epoch = this.linkEpoch;
+    const epoch = this.reconnect.epoch;
     try {
       return await this.transport.sendAndWaitAck(req, opts);
     } catch (err) {
       if (triage(err) === "retry-after-gap") {
         await delayWith(this.reconnectTimer, this.retryAfterGapMs);
-        if (epoch !== this.linkEpoch) {
+        if (this.reconnect.isStale(epoch)) {
           throw err; // 等待期间已断开/重连：这条命令不再写
         }
         try {
@@ -452,14 +346,14 @@ export class ControlSession {
         } catch (retryErr) {
           if (triage(retryErr) === "retry-after-gap") {
             // 加间隔后仍失败：链路重建（不再重试写）。
-            void this.forceReconnect("蓝牙链路异常，正在重连");
+            void this.reconnect.forceReconnect("蓝牙链路异常，正在重连");
           } else {
-            this.handleCommandFailure(retryErr);
+            this.reconnect.handleCommandFailure(retryErr);
           }
           throw retryErr;
         }
       }
-      this.handleCommandFailure(err);
+      this.reconnect.handleCommandFailure(err);
       throw err;
     }
   }
@@ -482,7 +376,7 @@ export class ControlSession {
     if (this.transport.linkState !== "ready") {
       return { kind: "error", message: "设备未连接" };
     }
-    const epoch = this.linkEpoch;
+    const epoch = this.reconnect.epoch;
     try {
       // 走 #11 的统一命令通道（10008 加间隔重试 / 断线触发重连），
       // 但 ACK 超时仍是 3000ms，且不设 retryOnTimeout：重建是重操作，
@@ -491,7 +385,7 @@ export class ControlSession {
         timeoutMs: LED_COUNT_ACK_TIMEOUT_MS,
       });
       // #11：旧连接上飞行的 ACK 晚到，不得覆盖回连后读到的新 State。
-      if (this.isStaleEpoch(epoch)) {
+      if (this.reconnect.isStale(epoch)) {
         return { kind: "stale" };
       }
       if (!ack.ok) {
@@ -539,10 +433,10 @@ export class ControlSession {
    * 旧连接上飞行的 ACK 晚到达时，不要在新连接上弹「自检失败」。
    */
   async selfTest(): Promise<CommandResult> {
-    const epoch = this.linkEpoch;
+    const epoch = this.reconnect.epoch;
     try {
       const ack = await this.sendCommand(cmdSelfTest(), { retryOnTimeout: 1 });
-      if (this.isStaleEpoch(epoch)) {
+      if (this.reconnect.isStale(epoch)) {
         return { kind: "stale" };
       }
       if (!ack.ok) {
@@ -648,7 +542,7 @@ export class ControlSession {
    * 是更新的值，旧 ACK 不得把颜色改回去。
    */
   async applyPreset(rgb: RGB): Promise<CommandResult> {
-    const epoch = this.linkEpoch;
+    const epoch = this.reconnect.epoch;
     try {
       const color = clampRgb(rgb);
       const brightness = presetBrightness(this.latestState, this.lastNonZeroBrightness);
@@ -658,7 +552,7 @@ export class ControlSession {
       const ack = await this.sendCommand(cmdSetAll(1, brightness, color), {
         retryOnTimeout: 1,
       });
-      if (this.isStaleEpoch(epoch)) {
+      if (this.reconnect.isStale(epoch)) {
         return { kind: "stale" };
       }
       if (!ack.ok) {
@@ -705,7 +599,7 @@ export class ControlSession {
 
   /** 开关：离散路径，等 ACK。成功时用设备语义更新本地状态。 */
   async setPower(on: boolean): Promise<PowerResult> {
-    const epoch = this.linkEpoch;
+    const epoch = this.reconnect.epoch;
     try {
       // 亮度 0 时直接开灯视觉上等于没开：先用最近一次非 0 亮度恢复。
       // 正常关灯（brightness > 0）不会走这里——SetPower 本身保留亮度（§7）。
@@ -719,7 +613,7 @@ export class ControlSession {
         // 连续量不重传（spec §9）：亮度这一帧只发一次；ACK 超时按可能的断线处理。
         // 只有后面的 SetPower 允许重发一次。
         const brightnessAck = await this.sendCommand(cmdSetBrightness(restored));
-        if (this.isStaleEpoch(epoch)) {
+        if (this.reconnect.isStale(epoch)) {
           return { kind: "stale" };
         }
         if (!brightnessAck.ok) {
@@ -733,7 +627,7 @@ export class ControlSession {
       const ack = await this.sendCommand(cmdSetPower(on), {
         retryOnTimeout: 1,
       });
-      if (this.isStaleEpoch(epoch)) {
+      if (this.reconnect.isStale(epoch)) {
         return { kind: "stale" };
       }
       if (!ack.ok) {
@@ -773,88 +667,14 @@ export class ControlSession {
   }
 
   destroy(): void {
-    this.reconnectDesired = false;
-    this.clearReconnectTimer();
+    this.reconnect.destroy();
     this.throttle.cancel();
     this.transport.destroy();
   }
 
   // ------------------------------------------------------------------
-  // 连接生命周期（#11）
+  // 内部
   // ------------------------------------------------------------------
-
-  private handleLinkChange(state: LinkState, detail?: LinkDetail): void {
-    const previous = this.lastLinkState;
-    this.lastLinkState = state;
-
-    if (state === "ready") {
-      // 新连接（首次 / 回连）：seq 已由传输层重置为 0x01；这里重置退避与过期判定代次。
-      this.linkEpoch += 1;
-      this.reconnectDesired = false;
-      this.reconnectAttempts = 0;
-      this.reconnectExhausted = false;
-      this.suppressAutoReconnect = false;
-      this.clearReconnectTimer();
-      // #34：一次成功的连接会话 = 一条使用日志（心跳/失败尝试都不记）。
-      this.noteUsageOnce();
-      return;
-    }
-
-    if (state === "adapter-off") {
-      this.linkEpoch += 1;
-      this.clearDeviceState();
-      this.clearReconnectTimer();
-      // 只有「本来连着 / 本来就想回连」才挂起回连意图；
-      // 纯扫描意图优先，适配器恢复后交给 transport 自动续扫。
-      if (
-        previous === "ready" ||
-        previous === "initializing" ||
-        previous === "connecting" ||
-        this.reconnectDesired
-      ) {
-        this.reconnectDesired = this.cached !== null && !this.suppressAutoReconnect;
-      }
-      return;
-    }
-
-    if (state === "idle") {
-      if (detail?.reconnectable === true) {
-        // 非主动断线：UI 立即失去设备状态（不显示过期状态）。
-        this.linkEpoch += 1;
-        this.clearDeviceState();
-        if (this.manualConnecting || this.reconnectRunning) {
-          // 初始化中被打断：由 connect()/本次回连的 catch 处理，这里不重复排。
-          return;
-        }
-        if (this.cached !== null && !this.suppressAutoReconnect) {
-          // 新的一轮断线：退避从 1s 重新数，并清掉上一轮的耗尽标记。
-          this.reconnectDesired = true;
-          this.reconnectAttempts = 0;
-          this.reconnectExhausted = false;
-          this.scheduleReconnect();
-        }
-        return;
-      }
-      // 适配器恢复 / 停扫后的 idle：如果还挂着回连意图，按退避节奏继续。
-      if (
-        (previous === "adapter-off" || previous === "uninitialized" || previous === "scanning") &&
-        this.reconnectDesired &&
-        this.cached !== null
-      ) {
-        this.reconnectAttempts = 0;
-        this.scheduleReconnect();
-      }
-      return;
-    }
-
-    if (state === "failed") {
-      // 一次回连尝试失败：由 runReconnectAttempt 的 catch 排下一次；
-      // 其它来源的失败（手动连接）不自动退避。
-      if (this.reconnectDesired && !this.reconnectRunning && !this.manualConnecting) {
-        this.scheduleReconnect();
-      }
-    }
-  }
 
   /** 清本地设备镜像与节流残留：断线后不保留旧状态显示。 */
   private clearDeviceState(): void {
@@ -865,24 +685,23 @@ export class ControlSession {
   /**
    * #34：一次成功的连接会话记一条使用日志。
    *
-   * 三条纪律，全部体现在这个函数里：
-   *  1. **只记成功**：调用点只在 `ready`（首次连接 / 自动回连 / 手动重连都走
-   *     同一条 ready 事件），失败的连接尝试、退避重试本身都不产生记录；
-   *  2. **一次会话一条**：用连接代次去重，同一代次重复的 ready 不会写第二条；
+   * 三条纪律，全部体现在这里：
+   *  1. **只记成功**：`usageArmed` 只在发起一次 connect 时置位（手动 / 自动回连
+   *     走同一条 ready 事件），失败不置位、也不记录；
+   *  2. **一次会话一条**：ready 消费该标记，同一次连接不会写第二条；
    *  3. **同步、吞异常、不 await**：日志落点是 fire-and-forget 的旁路，
    *     BLE 连接与控制绝不等待它，后端挂了也感知不到。
    */
   private noteUsageOnce(): void {
+    if (!this.usageArmed) {
+      return;
+    }
+    this.usageArmed = false;
+
     const logger = this.usageLogger;
     if (logger === null) {
       return;
     }
-    const epoch = this.linkEpoch;
-    if (this.usageLoggedEpoch === epoch) {
-      return;
-    }
-    this.usageLoggedEpoch = epoch;
-
     const device = this.activeDevice;
     const deviceId = device?.deviceId ?? this.transport.currentDeviceId ?? null;
     const deviceName = device?.name ?? null;
@@ -893,167 +712,17 @@ export class ControlSession {
     }
   }
 
-  /** 取消当前这一轮自动回连（用户扫描 / 手动连接 / 主动断开时调用）。 */
-  private abandonReconnect(): void {
-    this.reconnectDesired = false;
-    this.reconnectAttempts = 0;
-    this.reconnectExhausted = false;
-    this.clearReconnectTimer();
-  }
-
-  private scheduleReconnect(): void {
-    if (!this.reconnectDesired || this.cached === null || this.reconnectHandle !== null) {
-      return;
-    }
-    if (this.reconnectRunning) {
-      return;
-    }
-    if (this.reconnectAttempts >= this.reconnectDelaysMs.length) {
-      // 有限次：耗尽后停在这里，链路停在最后一次失败的 failed，
-      // 页面显示「未连接」并由连接条提供扫描/手动重连入口。绝不无限循环。
-      this.reconnectDesired = false;
-      this.reconnectExhausted = true;
-      this.clearReconnectTimer();
-      return;
-    }
-    const wait = this.reconnectDelaysMs[this.reconnectAttempts];
-    this.reconnectHandle = this.reconnectTimer.setTimeout(() => {
-      this.reconnectHandle = null;
-      void this.runReconnectAttempt();
-    }, wait);
-  }
-
-  /** 一次自动回连：完整走 transport.connect（重新订阅 notify + 读 State）。 */
-  private async runReconnectAttempt(): Promise<void> {
-    if (!this.reconnectDesired || this.reconnectRunning || this.cached === null) {
-      return;
-    }
-    const link = this.transport.linkState;
-    if (link === "adapter-off" || link === "uninitialized") {
-      return; // 等适配器事件，不消耗尝试次数
-    }
-    if (
-      link === "scanning" ||
-      link === "connecting" ||
-      link === "initializing" ||
-      link === "ready"
-    ) {
-      return; // 不打断扫描 / 手动连接
-    }
-
-    this.reconnectRunning = true;
-    this.reconnectAttempts += 1;
-    const target = this.cached;
-    // #34：回连也是「一次连接会话」，成功后同样记一条（失败不记）。
-    this.activeDevice = { ...target };
-    let failed = false;
-    try {
-      const state = await this.transport.connect(target.deviceId, target.name);
-      // ready 事件负责清掉回连意图；这里只兜底同步本地镜像。
-      this.latestState = state;
-    } catch {
-      failed = true;
-    } finally {
-      this.reconnectRunning = false;
-    }
-    // 必须在 reconnectRunning 复位之后再排下一次，否则 scheduleReconnect 会直接返回，
-    // 退避链就断在一次失败上（只剩 1s 这一次）。
-    if (failed && this.reconnectDesired) {
-      this.scheduleReconnect();
-    }
-  }
-
-  /**
-   * 链路疑似已断（10006 / 写超时 / 连续 10008）时强制重建连接。
-   *
-   * 若传输层已经把状态切到 idle（带 reconnectable），这里直接返回——
-   * 避免和 onLink 触发的退避重复排程。
-   */
-  private async forceReconnect(reason: string): Promise<void> {
-    if (this.reconnectDesired || this.cached === null || this.suppressAutoReconnect) {
-      return;
-    }
-    console.warn(`[lumen] ${reason}，准备回连`);
-    this.reconnectDesired = true;
-    this.reconnectAttempts = 0;
-    this.reconnectExhausted = false;
-    this.clearReconnectTimer();
-    this.clearDeviceState();
-    this.linkEpoch += 1;
-    try {
-      await this.transport.disconnect();
-    } catch {
-      /* 已断开时 close 失败无所谓 */
-    }
-    if (!this.reconnectDesired) {
-      return;
-    }
-    this.scheduleReconnect();
-  }
-
-  /** 命令失败后的分诊：10006 直接重连；ACK 超时先读 State 探活再决定。 */
-  private handleCommandFailure(err: unknown): void {
-    const action = triage(err);
-    if (action !== "reconnect") {
-      // retry-after-gap 由 sendCommand 负责重试；wait-adapter 等适配器事件；
-      // fatal 交给调用方提示用户。
-      return;
-    }
-    // 10006 = no connection：链路确定已断，直接重建，不浪费 2s 去 read。
-    const errCode = err instanceof WxCallError ? err.errCode : undefined;
-    if (errCode === 10006 || this.transport.linkState !== "ready") {
-      void this.forceReconnect("连接已断开");
-      return;
-    }
-    // ACK 超时（可能只是丢了一帧）：读一次 State 探活，读不到才重建。
-    // 无论如何都不重传这条命令（连续量不重传；离散量由调用方决定）。
-    void this.refreshState().catch(() => {
-      void this.forceReconnect("连接已断开");
-    });
-  }
-
-  private isStaleEpoch(epoch: number): boolean {
-    return epoch !== this.linkEpoch;
-  }
-
-  private clearReconnectTimer(): void {
-    if (this.reconnectHandle !== null) {
-      this.reconnectTimer.clearTimeout(this.reconnectHandle);
-      this.reconnectHandle = null;
-    }
-  }
-
-  private loadCachedDevice(): CachedDevice | null {
-    const raw = this.storage.get(DEVICE_CACHE_KEY);
-    if (raw === null) {
-      return null;
-    }
-    try {
-      const parsed = JSON.parse(raw) as { deviceId?: unknown; name?: unknown };
-      if (typeof parsed?.deviceId !== "string" || parsed.deviceId.length === 0) {
-        return null;
-      }
-      return {
-        deviceId: parsed.deviceId,
-        ...(typeof parsed.name === "string" && parsed.name.length > 0
-          ? { name: parsed.name }
-          : {}),
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  private cacheDevice(deviceId: string, name?: string): void {
-    this.cached = {
+  /** 发起一次连接：记下身份并置位「下一个 ready 要记一条使用日志」。 */
+  private armUsageLog(deviceId: string, name?: string): void {
+    this.activeDevice = {
       deviceId,
       ...(name !== undefined && name.length > 0 ? { name } : {}),
     };
-    this.storage.set(DEVICE_CACHE_KEY, JSON.stringify(this.cached));
+    this.usageArmed = true;
   }
 
   private clearCachedDevice(): void {
     this.cached = null;
-    this.storage.remove(DEVICE_CACHE_KEY);
+    clearCachedDevice(this.storage);
   }
 }
