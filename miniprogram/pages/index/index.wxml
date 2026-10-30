@@ -61,7 +61,10 @@
       >
         <view class="seg-swatch" style="background: {{item.hex}}"></view>
         <text class="seg-index">段 {{item.segId}}</text>
-        <text class="seg-range">{{item.rangeText}}</text>
+        <view class="seg-main">
+          <text class="seg-range">{{item.rangeText}}</text>
+          <text wx:if="{{item.paramText}}" class="seg-param">{{item.paramText}}</text>
+        </view>
         <text class="seg-tag {{item.animated ? 'anim' : ''}}">{{item.typeText}}</text>
         <text
           class="seg-delete"
@@ -105,26 +108,23 @@
     <text class="section-hint">{{segmentHintText || '区间是闭区间，例如 0 – 15；选了某段后再划区间会改它的范围'}}</text>
   </view>
 
-  <!-- 5. 灯效模式（#30）：新段下发成静态单色还是呼吸。
-       呼吸参数是绝对值：滑块松手 / 点波形才发 SetSegment，选中呼吸段时
-       这些值从设备回报的段配置回填。 -->
+  <!-- 5. 灯效模式（#30 / #31）：新段下发成静态 / 呼吸 / 彩虹 / 流光。
+       动画参数是绝对值：滑块松手 / 点波形 / 点方向才发 SetSegment，
+       选中动画段时这些值从设备回报的段配置回填。 -->
   <view class="section {{ready ? '' : 'disabled'}}">
     <view class="section-head">
       <text class="section-title">灯效</text>
-      <text class="section-value">{{segmentMode === 'breathing' ? '呼吸' : '静态单色'}}</text>
+      <text class="section-value">{{segmentMode === 'breathing' ? '呼吸' : (segmentMode === 'rainbow' ? '彩虹' : (segmentMode === 'comet' ? '流光' : '静态单色'))}}</text>
     </view>
 
     <view class="mode-row">
       <view
-        class="mode-chip {{segmentMode === 'static' ? 'selected' : ''}}"
-        data-mode="static"
+        wx:for="{{segmentModeOptions}}"
+        wx:key="mode"
+        class="mode-chip {{segmentMode === item.mode ? 'selected' : ''}}"
+        data-mode="{{item.mode}}"
         bindtap="onSegmentModeTap"
-      >静态单色</view>
-      <view
-        class="mode-chip {{segmentMode === 'breathing' ? 'selected' : ''}}"
-        data-mode="breathing"
-        bindtap="onSegmentModeTap"
-      >呼吸</view>
+      >{{item.name}}</view>
     </view>
 
     <view wx:if="{{breathingVisible}}" class="breath-params">
@@ -184,6 +184,89 @@
         {{breathingBusy ? '下发中…' : '应用到选中段'}}
       </button>
       <text class="section-hint">{{breathingHintText || '呼吸在该段的 hue+sat 基色上脉冲；参数改动需点「应用到选中段」'}}</text>
+    </view>
+
+    <!-- 彩虹 / 流光参数（#31）。p5 字段按类型解释：彩虹 = span、流光 = tail；
+         两者共用周期与方向。周期下限 200ms（5Hz，比呼吸的 334 宽松）。 -->
+    <view wx:if="{{animVisible}}" class="breath-params">
+      <view class="breath-row">
+        <text class="breath-label">周期</text>
+        <slider
+          class="breath-slider"
+          min="0"
+          max="{{animMaxPeriod}}"
+          step="10"
+          value="{{animPeriod}}"
+          disabled="{{!ready || animBusy}}"
+          activeColor="#4f8cff"
+          backgroundColor="#2a2a32"
+          block-size="20"
+          bindchanging="onAnimPeriodChanging"
+          bindchange="onAnimPeriodChange"
+        />
+        <text class="breath-value">{{animPeriodText}}</text>
+      </view>
+      <text class="section-hint">周期 0 = 静止；最短 {{animMinPeriod}}ms（5Hz）</text>
+
+      <view wx:if="{{segmentMode === 'rainbow'}}" class="breath-row">
+        <text class="breath-label">跨度</text>
+        <slider
+          class="breath-slider"
+          min="0"
+          max="255"
+          step="1"
+          value="{{animSpan}}"
+          disabled="{{!ready || animBusy}}"
+          activeColor="#4f8cff"
+          backgroundColor="#2a2a32"
+          block-size="20"
+          bindchanging="onAnimSpanChanging"
+          bindchange="onAnimSpanChange"
+        />
+        <text class="breath-value">{{animSpanText}}</text>
+      </view>
+      <text wx:if="{{segmentMode === 'rainbow'}}" class="section-hint">跨度 0 = 整条同色；255 = 沿灯带铺满一整圈</text>
+
+      <view wx:if="{{segmentMode === 'comet'}}" class="breath-row">
+        <text class="breath-label">拖尾</text>
+        <slider
+          class="breath-slider"
+          min="0"
+          max="255"
+          step="1"
+          value="{{animTail}}"
+          disabled="{{!ready || animBusy}}"
+          activeColor="#4f8cff"
+          backgroundColor="#2a2a32"
+          block-size="20"
+          bindchanging="onAnimTailChanging"
+          bindchange="onAnimTailChange"
+        />
+        <text class="breath-value">{{animTailText}}</text>
+      </view>
+      <text wx:if="{{segmentMode === 'comet'}}" class="section-hint">拖尾 0 = 硬边亮点；越大越是长拖尾</text>
+
+      <view class="wave-row">
+        <view
+          class="wave-chip {{!animReverse ? 'selected' : ''}}"
+          data-value="0"
+          bindtap="onAnimReverseTap"
+        >正向</view>
+        <view
+          class="wave-chip {{animReverse ? 'selected' : ''}}"
+          data-value="1"
+          bindtap="onAnimReverseTap"
+        >反向</view>
+      </view>
+
+      <button
+        class="range-apply {{animBusy ? 'busy' : ''}}"
+        disabled="{{!ready || animBusy}}"
+        bindtap="applyAnimation"
+      >
+        {{animBusy ? '下发中…' : '应用到选中段'}}
+      </button>
+      <text class="section-hint">{{animHintText || '基准色取色环当前颜色；参数改动需点「应用到选中段」'}}</text>
     </view>
   </view>
 

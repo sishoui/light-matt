@@ -73,6 +73,8 @@ import {
   cmdSetLedCount,
   cmdSetPower,
   cmdSetSegment,
+  cometSegment,
+  rainbowSegment,
   staticSegment,
 } from "../protocol/commands";
 import { rgbToHsv } from "../color/hsv";
@@ -769,32 +771,13 @@ export class ControlSession {
    * 返回 ACK 结果（InvalidParam 表示设备拒绝了区间或与其它段重叠）。
    */
   async setSegmentColor(target: SegmentTarget, rgb: RGB): Promise<SegmentResult> {
-    if (this.transport.linkState !== "ready") {
-      return { kind: "error", message: "设备未连接" };
-    }
     // 色环给的是 RGB；协议的静态参数是 hue+sat。用 HSV 反推（V 恒为 1）。
-    const hsv = rgbToHsv(rgb);
-    const segment = staticSegment(
-      target.stripId,
-      target.segId,
-      target.start,
-      target.end,
-      Math.round((hsv.h / 360) * 0x10000) & 0xffff,
-      Math.round(hsv.s * 255),
+    const [hue, sat] = this.segmentHueSat(rgb);
+    return this.sendSegmentAwaitingAck(
+      target,
+      staticSegment(target.stripId, target.segId, target.start, target.end, hue, sat),
+      {},
     );
-    const epoch = this.reconnect.epoch;
-    try {
-      const ack = await this.setSegment(segment);
-      if (this.reconnect.isStale(epoch)) {
-        return { kind: "stale" };
-      }
-      if (!ack.ok) {
-        return { kind: "ack-error", ack };
-      }
-      return { kind: "ok", reports: [], end: { stripId: target.stripId, segMask: 0 } };
-    } catch (err) {
-      return { kind: "error", message: errorText(err) };
-    }
   }
 
   /**
@@ -815,21 +798,111 @@ export class ControlSession {
     waveform: number,
     opts: SendOptions = {},
   ): Promise<SegmentResult> {
+    const [hue, sat] = this.segmentHueSat(rgb);
+    return this.sendSegmentAwaitingAck(
+      target,
+      breathingSegment(
+        target.stripId,
+        target.segId,
+        target.start,
+        target.end,
+        hue,
+        sat,
+        periodMs,
+        minLevel,
+        waveform,
+      ),
+      opts,
+    );
+  }
+
+  /**
+   * 把一个段改成彩虹灯效（#31）：SetSegment type=0x02 + 等 ACK。
+   *
+   * `span` 是沿灯带的色相跨度（0 = 整条同色、255 = 铺满整圈）；
+   * `reverse` 让色相沿灯带递减。周期下限是 200ms（5Hz），比呼吸宽松。
+   */
+  async setSegmentRainbow(
+    target: SegmentTarget,
+    rgb: RGB,
+    periodMs: number,
+    span: number,
+    reverse = false,
+    opts: SendOptions = {},
+  ): Promise<SegmentResult> {
+    const [hue, sat] = this.segmentHueSat(rgb);
+    return this.sendSegmentAwaitingAck(
+      target,
+      rainbowSegment(
+        target.stripId,
+        target.segId,
+        target.start,
+        target.end,
+        hue,
+        sat,
+        periodMs,
+        span,
+        reverse,
+      ),
+      opts,
+    );
+  }
+
+  /**
+   * 把一个段改成流光灯效（#31）：SetSegment type=0x03 + 等 ACK。
+   *
+   * `tail` 是拖尾长度（0 = 硬边亮点、255 = 整条都是尾）；
+   * `reverse` 让亮点反向移动。
+   */
+  async setSegmentComet(
+    target: SegmentTarget,
+    rgb: RGB,
+    periodMs: number,
+    tail: number,
+    reverse = false,
+    opts: SendOptions = {},
+  ): Promise<SegmentResult> {
+    const [hue, sat] = this.segmentHueSat(rgb);
+    return this.sendSegmentAwaitingAck(
+      target,
+      cometSegment(
+        target.stripId,
+        target.segId,
+        target.start,
+        target.end,
+        hue,
+        sat,
+        periodMs,
+        tail,
+        reverse,
+      ),
+      opts,
+    );
+  }
+
+  /** 用户空间 RGB → 协议的 (hue 0-65535, sat 0-255)（四种灯效共用前缀）。 */
+  private segmentHueSat(rgb: RGB): [number, number] {
+    const hsv = rgbToHsv(rgb);
+    return [
+      Math.round((hsv.h / 360) * 0x10000) & 0xffff,
+      Math.round(hsv.s * 255),
+    ];
+  }
+
+  /**
+   * 动画类段的统一下发路径（#30/#31）：SetSegment + 等 ACK。
+   *
+   * 三类的差异只在装配好的 SegmentConfig，传输与结果分诊完全一致——
+   * 抽出来避免三份几乎相同的 reconnect.isStale / ack-error 分支漂移。
+   */
+  private async sendSegmentAwaitingAck(
+    target: SegmentTarget,
+    segment: SegmentConfig,
+    opts: SendOptions,
+  ): Promise<SegmentResult> {
     if (this.transport.linkState !== "ready") {
       return { kind: "error", message: "设备未连接" };
     }
-    const hsv = rgbToHsv(rgb);
-    const segment = breathingSegment(
-      target.stripId,
-      target.segId,
-      target.start,
-      target.end,
-      Math.round((hsv.h / 360) * 0x10000) & 0xffff,
-      Math.round(hsv.s * 255),
-      periodMs,
-      minLevel,
-      waveform,
-    );
     const epoch = this.reconnect.epoch;
     try {
       const ack = await this.setSegment(segment, opts);

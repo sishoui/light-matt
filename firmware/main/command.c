@@ -226,16 +226,20 @@ uint16_t lumen_command_strip_count(const lumen_state_t *current, const uint16_t 
 }
 
 /*
- * SetSegment 0x10（#25 / #30）。
+ * SetSegment 0x10（#25 / #30 / #31）。
  *
  * 校验顺序严格按 docs/protocol.md §11.3：
  *   3 载荷长度（在 lumen_command_payload_len_ok / 上方完成，先读 type 再定长）
  *   4 type 已知
  *   5-9 strip 范围 / 区间 / 重叠 / flags / 周期 —— lumen_segment_store_validate
  *
- * #30 起呼吸（0x01）可下发；彩虹 / 流光（0x02/0x03）仍由 #31 交付，
- * 此时回 UnknownCommand 而不是静默变黑：与 §6.1「未实现的 v2 命令回 0x02」
- * 同一原则，小程序据此提示「该灯效需要升级固件」（D7 不静默降级）。
+ * 四种灯效全部已实现（#31 起彩虹 / 流光也可下发）。类型→载荷长度的映射来自
+ * lumen_effect_param_len（静态 3、其余 7），flags 保留位与周期下限按类型
+ * 分别判定（呼吸 bit3-7 / ≥334，彩虹·流光 bit1-7 / ≥200）——这些都集中在
+ * segment_store 的第 8/9 步，命令层不再各写一份。
+ *
+ * 保留 implemented 检查：它现在是全真，但协议未来新增类型时旧固件会在这里
+ * 明确回 UnknownCommand（而不是静默变黑），与 §6.1 同一原则（D7）。
  */
 static void dispatch_set_segment(const lumen_frame_t *frame, const lumen_state_t *current,
                                  const lumen_segment_store_t *segments,
@@ -258,7 +262,7 @@ static void dispatch_set_segment(const lumen_frame_t *frame, const lumen_state_t
         return;
     }
     if (!lumen_effect_type_implemented(type)) {
-        /* 已知但尚未实现（#30/#31）：明确回 UnknownCommand，不假装成功。 */
+        /* 协议已知但本固件未实现：明确回 UnknownCommand，不假装成功。 */
         outcome->result_code = LUMEN_RESULT_UNKNOWN_COMMAND;
         return;
     }

@@ -84,8 +84,30 @@ describe("describeCommand", () => {
     expect(describeCommand(CMD.QUERY_SCRIPT, new Uint8Array([0]))).toBe("QueryScript 00");
   });
 
-  it("载荷长度不符时保留命令名与原始 hex，不丢证据", () => {
-    expect(describeCommand(CMD.SET_POWER, new Uint8Array([0, 1]))).toBe("SetPower 00 01");
+  it("#31 彩虹 / 流光的 p5 按类型解释为 span / tail，flags 只余 reverse", () => {
+    /* 彩虹：strip seg start end type hue(2) sat period(2) span flags —— span=0x80、正向。 */
+    expect(
+      describeCommand(
+        CMD.SET_SEGMENT,
+        new Uint8Array([0, 1, 0, 9, 0x02, 0x10, 0x0e, 0xff, 0xe8, 0x03, 0x80, 0x00]),
+      ),
+    ).toBe(
+      "SetSegment strip=0 seg=1 range=0-9 type=0x02 hue=3600 sat=255 " +
+        "period=1000 span=128 reverse=0 flags=0x00",
+    );
+    /* 流光：同一个 p5 位置解释成 tail；flags bit0 置位 → reverse=1。 */
+    expect(
+      describeCommand(
+        CMD.SET_SEGMENT,
+        new Uint8Array([0, 1, 0, 9, 0x03, 0x10, 0x0e, 0xff, 0x20, 0x03, 0x40, 0x01]),
+      ),
+    ).toBe(
+      "SetSegment strip=0 seg=1 range=0-9 type=0x03 hue=3600 sat=255 " +
+        "period=800 tail=64 reverse=1 flags=0x01",
+    );
+  });
+
+  it("载荷长度不符时保留命令名与原始 hex，不丢证据", () => {    expect(describeCommand(CMD.SET_POWER, new Uint8Array([0, 1]))).toBe("SetPower 00 01");
     expect(describeCommand(CMD.SET_LED_COUNT, new Uint8Array([1]))).toBe("SetLedCount 01");
     expect(describeCommand(0x7f, new Uint8Array([0xde]))).toBe("0x7F DE");
   });

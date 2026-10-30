@@ -129,6 +129,13 @@ export const WAVEFORM_NAMES: Record<number, string> = {
  * 334ms ≈ 3Hz，光敏性癫痫安全线。period_ms == 0 是「静止」，不受此限。
  */
 export const BREATHING_MIN_PERIOD_MS = 334;
+
+/**
+ * 彩虹 / 流光的周期下限（effects-spec §5 / D5）：200ms = 5Hz。
+ * 这两类是空间移动而不是亮度闪烁，所以比呼吸宽松；彩虹与流光共用同一条规则。
+ */
+export const ANIMATION_MIN_PERIOD_MS = 200;
+
 /** 周期字段是 2 字节小端（D3）。 */
 export const MAX_PERIOD_MS = 0xffff;
 

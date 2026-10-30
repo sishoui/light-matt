@@ -12,6 +12,7 @@
  */
 
 import {
+  ANIMATION_MIN_PERIOD_MS,
   BREATHING_MIN_PERIOD_MS,
   MAX_LEDS,
   MAX_PERIOD_MS,
@@ -118,13 +119,16 @@ export function segmentParamLength(type: number): number {
 /**
  * SetSegment 0x10：载荷 `strip_id, seg_id, start, end, type, params(3|7)`。
  *
- * #25 交付静态单色；#30 交付呼吸（type 0x01）。彩虹 / 流光（0x02/0x03）的
- * 像素由 #31 落地，但**布局早已定稿**，构造器仍然允许构造这两类帧——
- * 协议布局是权威，UI / 日志需要能发出它们，并用 ACK 明确告诉用户
- * 「要升级固件」。固件对未实现类型回 UnknownCommand（不静默变黑）。
+ * #25 交付静态单色；#30 交付呼吸（type 0x01）；#31 交付彩虹（0x02）与
+ * 流光（0x03）。四类的参数块布局都在 effects-spec §2 定稿：
+ *   静态     hue(2) sat(1)
+ *   呼吸     hue(2) sat(1) period(2) min_level(1) flags(1)
+ *   彩虹     hue(2) sat(1) period(2) span(1) flags(1)
+ *   流光     hue(2) sat(1) period(2) tail(1) flags(1)
+ * 后三者的 p5 字段语义不同（min_level / span / tail），但字节位置相同。
  *
  * 校验只做构造层能判定的部分（字节范围、start ≤ end、段类型已知、
- * 呼吸的周期下限与 flags 保留位）；「end < led_count」与「不重叠」是
+ * 周期下限与 flags 保留位）；「end < led_count」与「不重叠」是
  * 设备侧权威校验（§11.3 第 6/7 步），这里不做，以免 App 与设备的
  * led_count 快照不一致时误拒。
  */
@@ -162,7 +166,7 @@ export function cmdSetSegment(segment: SegmentConfig): CommandRequest {
     const flags = assertByte(segment.flags, "flags");
     if (segment.type === SEGMENT_TYPE.BREATHING) {
       /* effects-spec §5 / protocol §11.3 第 8-9 步，在本端就拒绝：
-       * period != 0 时 ≥ 334；flags bit3-7 必须为 0。 */
+       * period != 0 时 ≥ 334；flags bit3-7 必须为 0（bit1-2 是 waveform）。 */
       if (period !== 0 && period < BREATHING_MIN_PERIOD_MS) {
         throw new RangeError(
           `呼吸周期不能短于 ${BREATHING_MIN_PERIOD_MS}ms（约 3Hz），收到 ${period}`,
@@ -170,6 +174,19 @@ export function cmdSetSegment(segment: SegmentConfig): CommandRequest {
       }
       if ((flags & 0xf8) !== 0) {
         throw new RangeError(`呼吸 flags 的保留位 bit3-7 必须为 0，收到 0x${flags.toString(16)}`);
+      }
+    } else {
+      /* 彩虹 / 流光：period != 0 时 ≥ 200（5Hz）；flags **bit1-7** 全部保留，
+       * 只有 bit0 reverse（比呼吸更严——没有 waveform 位可借）。 */
+      if (period !== 0 && period < ANIMATION_MIN_PERIOD_MS) {
+        throw new RangeError(
+          `彩虹/流光周期不能短于 ${ANIMATION_MIN_PERIOD_MS}ms（5Hz），收到 ${period}`,
+        );
+      }
+      if ((flags & 0xfe) !== 0) {
+        throw new RangeError(
+          `彩虹/流光 flags 的保留位 bit1-7 必须为 0，收到 0x${flags.toString(16)}`,
+        );
       }
     }
     payload[8] = period & 0xff;
@@ -242,8 +259,89 @@ export function breathingSegment(
   };
 }
 
-/** ClearSegment 0x11：载荷 `strip_id, seg_id`。 */
-export function cmdClearSegment(stripId: number, segId: number): CommandRequest {
+/* ---------------- #31 彩虹 / 流光 ---------------- */
+
+/**
+ * 彩虹 / 流光的 flags 字节（effects-spec §2.3-§2.4）：
+ *   bit0 reverse；**bit1-7 保留 = 0**（与呼吸不同，这里没有 waveform 位）。
+ *
+ * 只装配 bit0，保留位恒 0——传 true/false 以外的东西也不会污染协议。
+ */
+export function directionFlags(reverse = false): number {
+  return reverse ? 0x01 : 0x00;
+}
+
+/** 从 flags 解出反向标志（bit0）。彩虹与流光共用。 */
+export function segmentReverse(flags: number): boolean {
+  return (flags & 0x01) !== 0;
+}
+
+/**
+ * 构造一个彩虹段（#31）。
+ *
+ * `span` 是沿灯带的色相跨度：0 = 整条同色（色相随时间循环）、
+ * 255 = 铺满一整圈、中间值线性连续（effects-spec §2.3）。
+ * 基准色 hue+sat 来自色环；`reverse` 让色相沿灯带递减。
+ *
+ * 只装配数据，校验全部在 cmdSetSegment（周期下限、保留位、区间）。
+ */
+export function rainbowSegment(
+  stripId: number,
+  segId: number,
+  start: number,
+  end: number,
+  hue: number,
+  sat: number,
+  periodMs: number,
+  span: number,
+  reverse = false,
+): SegmentConfig {
+  return {
+    stripId,
+    segId,
+    start,
+    end,
+    type: SEGMENT_TYPE.RAINBOW,
+    hue,
+    sat,
+    periodMs,
+    p5: span,
+    flags: directionFlags(reverse),
+  };
+}
+
+/**
+ * 构造一个流光段（#31）。
+ *
+ * `tail` 是拖尾长度：0 = 硬边亮点（无尾）、255 = 整条都是尾（§2.4）。
+ * `reverse` 让亮点反向移动。基准色 hue+sat 来自色环。
+ */
+export function cometSegment(
+  stripId: number,
+  segId: number,
+  start: number,
+  end: number,
+  hue: number,
+  sat: number,
+  periodMs: number,
+  tail: number,
+  reverse = false,
+): SegmentConfig {
+  return {
+    stripId,
+    segId,
+    start,
+    end,
+    type: SEGMENT_TYPE.COMET,
+    hue,
+    sat,
+    periodMs,
+    p5: tail,
+    flags: directionFlags(reverse),
+  };
+}
+
+/** ClearSegment 0x11：载荷 `strip_id, seg_id`。 */export function cmdClearSegment(stripId: number, segId: number): CommandRequest {
   const strip = assertStripId(stripId);
   if (!Number.isInteger(segId) || segId < 0 || segId >= MAX_SEGMENTS) {
     throw new RangeError(`seg_id 必须是 0-${MAX_SEGMENTS - 1} 的整数，收到 ${segId}`);

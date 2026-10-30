@@ -1965,11 +1965,12 @@ static void test_effects_dispatch(void)
     CHECK(!lumen_effect_type_known(0x04));
     CHECK(!lumen_effect_type_known(0xFF));
 
-    /* #25 交付静态、#30 交付呼吸；#31 的彩虹 / 流光仍「已知但未实现」。 */
+    /* 四种类型的像素实现全部就绪（#25 静态 / #30 呼吸 / #31 彩虹+流光）。 */
     CHECK(lumen_effect_type_implemented(LUMEN_EFFECT_STATIC));
     CHECK(lumen_effect_type_implemented(LUMEN_EFFECT_BREATHING));
-    CHECK(!lumen_effect_type_implemented(LUMEN_EFFECT_RAINBOW));
-    CHECK(!lumen_effect_type_implemented(LUMEN_EFFECT_COMET));
+    CHECK(lumen_effect_type_implemented(LUMEN_EFFECT_RAINBOW));
+    CHECK(lumen_effect_type_implemented(LUMEN_EFFECT_COMET));
+    CHECK(!lumen_effect_type_implemented(0x04));
 
     /* 参数块长度（effects-spec §2.5）。 */
     CHECK(lumen_effect_param_len(LUMEN_EFFECT_STATIC) == 3);
@@ -2008,14 +2009,8 @@ static void test_effects_dispatch(void)
     lumen_effect_pixel(&seg, 9, 0, zero);
     CHECK(zero[0] == 0 && zero[1] == 0 && zero[2] == 0);
 
-    /* 动画类型与未知类型在 #25 都返回黑色（防御，不是降级路径）。
-     * #30 起呼吸有像素实现，这里改成断言它不再是全黑，见 test_effects_breathing。 */
-    lumen_segment_t rainbow = seg;
-    rainbow.type = LUMEN_EFFECT_RAINBOW;
-    memset(a, 0xEE, sizeof(a));
-    lumen_effect_pixel(&rainbow, 10, 0, a);
-    CHECK(a[0] == 0 && a[1] == 0 && a[2] == 0);
-
+    /* 动画类型与未知类型：未知类型在 #25/#30/#31 都返回黑色（防御，不是降级
+     * 路径）。彩虹的像素由 test_effects_rainbow_* 单独断言。 */
     lumen_segment_t unknown = seg;
     unknown.type = 0x7F;
     memset(a, 0xEE, sizeof(a));
@@ -2190,9 +2185,10 @@ static void test_segment_store_validate(void)
           LUMEN_RESULT_INVALID_PARAM);
 
     /*
-     * #30：呼吸已实现，合法 period 通过；#31 的彩虹 / 流光仍未实现，拒绝
-     * （命令层本来就会回 UnknownCommand）。用独立的空段表，避免受上面
-     * 已占满 0-29 的段影响（这里只验 flags / 周期，不验重叠）。
+     * #31：四种动画类型全部实现，合法 period 通过（呼吸 1000ms、彩虹/流光
+     * 500ms 都高于各自下限）。用独立的空段表，避免受上面已占满 0-29 的段
+     * 影响（这里只验 flags / 周期，不验重叠）；跨段共存与合成在
+     * test_effects_rainbow_comet_coexist 里单独验。
      */
     lumen_segment_store_t fresh;
     lumen_segment_store_init(&fresh);
@@ -2205,12 +2201,15 @@ static void test_segment_store_validate(void)
 
     lumen_segment_t rainbow = make_static(0, 4, 0, 255);
     rainbow.type = LUMEN_EFFECT_RAINBOW;
+    rainbow.period_ms = 500;
     CHECK(lumen_segment_store_validate(&fresh, 0, 1, 5, led_count, &rainbow) ==
-          LUMEN_RESULT_INVALID_PARAM);
+          LUMEN_RESULT_OK);
+
     lumen_segment_t comet = make_static(0, 4, 0, 255);
     comet.type = LUMEN_EFFECT_COMET;
+    comet.period_ms = 500;
     CHECK(lumen_segment_store_validate(&fresh, 0, 1, 5, led_count, &comet) ==
-          LUMEN_RESULT_INVALID_PARAM);
+          LUMEN_RESULT_OK);
 
     /* seg_id 越界。 */
     CHECK(lumen_segment_store_set(&store, 0, 1, 8, led_count, &ok) ==
@@ -2560,6 +2559,408 @@ static void test_effects_breathing_gain_and_pixel(void)
     }
 }
 
+/* ---------------- #31：彩虹 / 流光 ---------------- */
+
+static lumen_segment_t make_animated(uint8_t type, uint8_t start, uint8_t end, uint16_t hue,
+                                     uint8_t sat, uint16_t period_ms, uint8_t p5, uint8_t flags,
+                                     uint32_t t0_ms)
+{
+    lumen_segment_t seg;
+    memset(&seg, 0, sizeof(seg));
+    seg.active = true;
+    seg.start = start;
+    seg.end = end;
+    seg.type = type;
+    seg.hue = hue;
+    seg.sat = sat;
+    seg.period_ms = period_ms;
+    seg.p5 = p5;
+    seg.flags = flags;
+    seg.t0_ms = t0_ms;
+    return seg;
+}
+
+/* 段内某偏移的最大权重下标（流光头部）。tail > 0 时头部唯一性不保证，调用方自行判断。 */
+static uint16_t comet_brightest_offset(const lumen_segment_t *seg, uint32_t now_ms)
+{
+    uint16_t n = lumen_effect_segment_length(seg);
+    uint16_t best = 0;
+    uint32_t best_gain = 0;
+    for (uint16_t off = 0; off < n; ++off) {
+        uint32_t gain =
+            lumen_effect_comet_gain_q16(seg, (uint16_t)(seg->start + off), now_ms);
+        if (gain > best_gain) {
+            best_gain = gain;
+            best = off;
+        }
+    }
+    return best;
+}
+
+static void test_effects_rainbow_hue(void)
+{
+    /* span = 0：整条同色，色相只随时间走（§3.3 第一条验收点）。 */
+    lumen_segment_t flat = make_animated(LUMEN_EFFECT_RAINBOW, 0, 15, 0, 255, 1000, 0, 0, 0);
+    for (uint16_t i = 0; i < 16; ++i) {
+        CHECK(lumen_effect_rainbow_hue(&flat, i, 0) == 0);
+        CHECK(lumen_effect_rainbow_hue(&flat, i, 250) == 16384); /* 1/4 周期 */
+        CHECK(lumen_effect_rainbow_hue(&flat, i, 500) == 32768); /* 半周期 */
+    }
+    /* 一个 / 两个完整周期后回到起点（相位由 mod 算出，不累计）。 */
+    CHECK(lumen_effect_rainbow_hue(&flat, 3, 1000) == 0);
+    CHECK(lumen_effect_rainbow_hue(&flat, 3, 2000) == 0);
+    /* 基准 hue 平移整段：40000 + 16384 = 56384，未回绕。 */
+    flat.hue = 40000;
+    CHECK(lumen_effect_rainbow_hue(&flat, 9, 250) == 56384);
+    /* 基准 hue 靠近满圈时正确回绕到小值（不是负数/错色）。 */
+    flat.hue = 60000;
+    CHECK(lumen_effect_rainbow_hue(&flat, 9, 500) == (uint16_t)((60000u + 32768u) % 65536u));
+
+    /* span = 255：沿灯带铺满一整圈（N = 16，每颗 65536/16 = 4096）。 */
+    lumen_segment_t full = make_animated(LUMEN_EFFECT_RAINBOW, 0, 15, 0, 255, 1000, 255, 0, 0);
+    for (uint16_t i = 0; i < 16; ++i) {
+        CHECK(lumen_effect_rainbow_hue(&full, i, 0) == (uint16_t)(i * 4096u));
+        /* 相位平移 1/4 圈：每颗灯 +16384，并正确回绕。 */
+        uint16_t expected = (uint16_t)((i * 4096u + 16384u) & 0xFFFFu);
+        CHECK(lumen_effect_rainbow_hue(&full, i, 250) == expected);
+    }
+    /* 一整圈后与起点逐像素相同（相位回绕）。 */
+    for (uint16_t i = 0; i < 16; ++i) {
+        CHECK(lumen_effect_rainbow_hue(&full, i, 1000) == lumen_effect_rainbow_hue(&full, i, 0));
+        CHECK(lumen_effect_rainbow_hue(&full, i, 1001) == lumen_effect_rainbow_hue(&full, i, 1));
+    }
+
+    /*
+     * 空间项用**段内偏移**而不是整条灯带下标：段 [8-23] 的第 0 颗仍是 hue 0。
+     * 用错下标会让第二段的彩虹从半圈开始，跨段出现硬跳变。
+     */
+    lumen_segment_t offset =
+        make_animated(LUMEN_EFFECT_RAINBOW, 8, 23, 0, 255, 1000, 255, 0, 0);
+    CHECK(lumen_effect_rainbow_hue(&offset, 8, 0) == 0);
+    CHECK(lumen_effect_rainbow_hue(&offset, 9, 0) == 4096);
+    CHECK(lumen_effect_rainbow_hue(&offset, 23, 0) == (uint16_t)(15u * 4096u));
+
+    /*
+     * 中间 span 连续可调（ticket 第 3 条）：末端色相随 span 单调增长，
+     * 不是 0 / 65535 的二值跳变。
+     */
+    uint16_t prev = 0;
+    for (uint32_t span = 0; span <= 255; span += 51) {
+        lumen_segment_t s =
+            make_animated(LUMEN_EFFECT_RAINBOW, 0, 15, 0, 255, 1000, (uint8_t)span, 0, 0);
+        CHECK(lumen_effect_rainbow_hue(&s, 0, 0) == 0);
+        uint16_t end_hue = lumen_effect_rainbow_hue(&s, 15, 0);
+        CHECK(end_hue >= prev);
+        prev = end_hue;
+    }
+    /* span = 127 的末端 = 15/16 × 127/255 × 65536 ≈ 30600（既不是 0 也不是整圈）。 */
+    lumen_segment_t half = make_animated(LUMEN_EFFECT_RAINBOW, 0, 15, 0, 255, 1000, 127, 0, 0);
+    uint16_t half_end = lumen_effect_rainbow_hue(&half, 15, 0);
+    CHECK(half_end >= 30500 && half_end <= 30700);
+    CHECK(half_end != 0 && half_end != 0xFFFFu);
+
+    /* reverse（flags bit0）：色相沿灯带递减。 */
+    lumen_segment_t rev = make_animated(LUMEN_EFFECT_RAINBOW, 0, 15, 0, 255, 1000, 255, 0x01, 0);
+    CHECK(lumen_effect_rainbow_hue(&rev, 0, 0) == 0);
+    CHECK(lumen_effect_rainbow_hue(&rev, 1, 0) == (uint16_t)(65536u - 4096u)); /* 61440 */
+    CHECK(lumen_effect_rainbow_hue(&rev, 15, 0) == 4096);
+    /* 时间项与方向项可叠加，反向整圈也不出错。 */
+    CHECK(lumen_effect_rainbow_hue(&rev, 1, 250) ==
+          (uint16_t)((65536u - 4096u + 16384u) & 0xFFFFu));
+
+    /*
+     * **色相 32 位溢出（ticket 点名的最高风险项）**
+     *
+     * 满周期、最坏角：span = 255（空间项可达 65536）、基准 hue = 0xFFFF、
+     * 相位拉到周期末端。逐像素与 **64 位参考值** 对齐——只要实现里任何一处
+     * 用 32 位中间量并在满圈附近回绕，这里必然失配（错色）。
+     *
+     * 32 位写法的余量具体有多薄：phase = 65534 时
+     *   (uint32_t)phase << 16 = 4,294,836,224（距 2^32 仅 131,072），
+     * 再加 hue(65535) 与空间项(64512) 后是 4,294,966,271——距 2^32 只剩 1025。
+     * 任何「先把相位再乘一次 65536」的写法（相位已经是 Q16 色相刻度）都会
+     * 在这里翻车：4,294,901,760 + 65,535 + 64,512 = 4,295,031,807 > 2^32。
+     * 用 64 位累加 + 最后一次性取模就没有这个问题。
+     */
+    lumen_segment_t corner =
+        make_animated(LUMEN_EFFECT_RAINBOW, 0, 63, 0xFFFF, 255, 65535, 255, 0, 0);
+    for (uint32_t t = 0; t < 65535u; t += 4093u) {
+        uint32_t phase = lumen_effect_breathing_phase_q16(65535, 0, t);
+        for (uint16_t i = 0; i < 64; ++i) {
+            int64_t ref = (int64_t)0xFFFF + (int64_t)phase +
+                          (int64_t)(((uint64_t)i * 255u * 65536u) / (64u * 255u));
+            ref %= 65536;
+            if (ref < 0) {
+                ref += 65536;
+            }
+            CHECK(lumen_effect_rainbow_hue(&corner, i, t) == (uint16_t)ref);
+        }
+    }
+    /* 周期末端（相位最大）单独密集扫：这里就是 32 位写法失真的地方。 */
+    for (uint32_t t = 65000u; t < 65535u; t += 17u) {
+        uint32_t phase = lumen_effect_breathing_phase_q16(65535, 0, t);
+        for (uint16_t i = 0; i < 64; ++i) {
+            int64_t ref = (int64_t)0xFFFF + (int64_t)phase +
+                          (int64_t)(((uint64_t)i * 255u * 65536u) / (64u * 255u));
+            ref %= 65536;
+            if (ref < 0) {
+                ref += 65536;
+            }
+            CHECK(lumen_effect_rainbow_hue(&corner, i, t) == (uint16_t)ref);
+        }
+    }
+
+    /* 参数防御：非活动段 / NULL / 越界下标返回 0，不崩。 */
+    lumen_segment_t off = full;
+    off.active = false;
+    CHECK(lumen_effect_rainbow_hue(&off, 0, 0) == 0);
+    CHECK(lumen_effect_rainbow_hue(NULL, 0, 0) == 0);
+    CHECK(lumen_effect_rainbow_hue(&full, 16, 0) == 0);
+    CHECK(lumen_effect_rainbow_hue(&full, 0, 0) == 0); /* 边界：段首合法 */
+}
+
+static void test_effects_rainbow_pixel(void)
+{
+    /* 像素层：span = 0 整段同色；span = 255 段内颜色各不相同。 */
+    lumen_segment_t flat = make_animated(LUMEN_EFFECT_RAINBOW, 0, 15, 0, 255, 1000, 0, 0, 0);
+    uint8_t a[3];
+    uint8_t b[3];
+    lumen_effect_pixel(&flat, 0, 0, a);
+    lumen_effect_pixel(&flat, 15, 0, b);
+    CHECK(memcmp(a, b, 3) == 0);
+    CHECK(a[0] == 255 && a[1] == 0 && a[2] == 0); /* hue 0 = 纯红 */
+
+    /* 时间推进到约 1/3 圈后整段变绿（相位 ≈ 21823，扇区 1 的末端）。 */
+    lumen_effect_pixel(&flat, 0, 333, a); /* phase ≈ 21823 */
+    CHECK(a[0] <= 2 && a[1] >= 250 && a[2] == 0);
+
+    lumen_segment_t full = make_animated(LUMEN_EFFECT_RAINBOW, 0, 15, 0, 255, 1000, 255, 0, 0);
+    uint8_t first[3];
+    lumen_effect_pixel(&full, 0, 0, first);
+    CHECK(first[0] == 255 && first[1] == 0 && first[2] == 0);
+    /* 第 4 颗（i=4，hue=16384）落在 90° 附近：绿通道明显大于红。 */
+    lumen_effect_pixel(&full, 4, 0, first);
+    CHECK(first[1] > first[0]);
+    /* 第 8 颗（hue=32768）是 180°：主通道是绿/蓝，红应接近 0。 */
+    lumen_effect_pixel(&full, 8, 0, first);
+    CHECK(first[0] < 40);
+    /* sat = 0 → 全白，与位置无关（V 恒为 1）。 */
+    full.sat = 0;
+    for (uint16_t i = 0; i < 16; ++i) {
+        lumen_effect_pixel(&full, i, 0, first);
+        CHECK(first[0] == 255 && first[1] == 255 && first[2] == 255);
+    }
+
+    /* 时间推进让同一颗灯换色（动画真的在走）。 */
+    full.sat = 255;
+    lumen_effect_pixel(&full, 3, 0, a);
+    lumen_effect_pixel(&full, 3, 250, b);
+    CHECK(memcmp(a, b, 3) != 0);
+}
+
+static void test_effects_comet_gain(void)
+{
+    const uint16_t n = 16;
+
+    /* tail = 0：硬边，只有头部一颗亮（§3.4 第一条验收点）。 */
+    lumen_segment_t hard = make_animated(LUMEN_EFFECT_COMET, 0, 15, 0, 255, 1000, 0, 0, 0);
+    CHECK(lumen_effect_comet_gain_q16(&hard, 0, 0) == 65535); /* exp(0) = 1 */
+    for (uint16_t off = 1; off < n; ++off) {
+        CHECK(lumen_effect_comet_gain_q16(&hard, off, 0) == 0);
+    }
+    /* 头部随相位移动：半周期在中间，整周期回到起点。 */
+    CHECK(comet_brightest_offset(&hard, 0) == 0);
+    CHECK(comet_brightest_offset(&hard, 500) == 8);
+    CHECK(comet_brightest_offset(&hard, 250) == 4);
+    /* 相位回绕：t = period 与 t = 0 逐像素相同（头部回到段首）。 */
+    CHECK(comet_brightest_offset(&hard, 1000) == 0);
+    for (uint16_t off = 0; off < n; ++off) {
+        CHECK(lumen_effect_comet_gain_q16(&hard, off, 1000) ==
+              lumen_effect_comet_gain_q16(&hard, off, 0));
+    }
+
+    /*
+     * tail = 255：整条都是尾。头部仍是最亮，尾部单调变暗但**不为 0**
+     * （长拖尾）。沿灯带在头部之后的权重递减。
+     */
+    lumen_segment_t long_tail = make_animated(LUMEN_EFFECT_COMET, 0, 15, 0, 255, 1000, 255, 0, 0);
+    uint32_t head = lumen_effect_comet_gain_q16(&long_tail, 0, 0);
+    CHECK(head == 65535);
+    uint32_t prev_gain = head;
+    for (uint16_t off = 1; off < n; ++off) {
+        uint32_t gain = lumen_effect_comet_gain_q16(&long_tail, off, 0);
+        CHECK(gain < prev_gain); /* 严格递减（尾部） */
+        CHECK(gain > 0);         /* 长尾覆盖整条，不提前截断 */
+        prev_gain = gain;
+    }
+    /* 最远一颗约为 exp(-3 × 15/16) × 65535 ≈ 3400（不是 0）。 */
+    CHECK(prev_gain >= 2500 && prev_gain <= 4000);
+
+    /* tail = 0 与 tail = 255 之间连续（尾部覆盖灯珠数随 tail 单调增长）。 */
+    lumen_segment_t mid = make_animated(LUMEN_EFFECT_COMET, 0, 15, 0, 255, 1000, 128, 0, 0);
+    uint32_t mid_off8 = lumen_effect_comet_gain_q16(&mid, 8, 0);
+    CHECK(mid_off8 > 0);                       /* tail = 128 时第 8 颗在尾内 */
+    CHECK(lumen_effect_comet_gain_q16(&hard, 8, 0) == 0); /* tail = 0 时不在 */
+    CHECK(lumen_effect_comet_gain_q16(&long_tail, 8, 0) > mid_off8); /* 尾更长更亮 */
+
+    /*
+     * reverse（flags bit0）：镜像段内下标。相位 0 时头部在段尾而不是段首；
+     * 随时间从高索引走向低索引。
+     */
+    lumen_segment_t rev = make_animated(LUMEN_EFFECT_COMET, 0, 15, 0, 255, 1000, 0, 0x01, 0);
+    CHECK(lumen_effect_comet_gain_q16(&rev, 15, 0) == 65535);
+    CHECK(lumen_effect_comet_gain_q16(&rev, 0, 0) == 0);
+    CHECK(comet_brightest_offset(&rev, 0) == 15);
+    CHECK(comet_brightest_offset(&rev, 250) == 15 - 4);
+    CHECK(comet_brightest_offset(&rev, 500) == 15 - 8);
+    /* 正向与反向在同一时刻是镜像关系。 */
+    for (uint16_t off = 0; off < n; ++off) {
+        CHECK(lumen_effect_comet_gain_q16(&rev, off, 250) ==
+              lumen_effect_comet_gain_q16(&hard, (uint16_t)(n - 1u - off), 250));
+    }
+
+    /* period = 0：静止，头部固定在段首（相位 0），不随时间变。 */
+    lumen_segment_t still = make_animated(LUMEN_EFFECT_COMET, 0, 15, 0, 255, 0, 0, 0, 0);
+    CHECK(lumen_effect_comet_gain_q16(&still, 0, 0) == 65535);
+    CHECK(lumen_effect_comet_gain_q16(&still, 0, 123456) == 65535);
+    CHECK(lumen_effect_comet_gain_q16(&still, 5, 123456) == 0);
+
+    /* 段起点不为 0：头部落在段首像素上，而不是整条灯带的 0 号。 */
+    lumen_segment_t offset = make_animated(LUMEN_EFFECT_COMET, 10, 25, 0, 255, 1000, 0, 0, 0);
+    CHECK(lumen_effect_comet_gain_q16(&offset, 10, 0) == 65535);
+    CHECK(lumen_effect_comet_gain_q16(&offset, 0, 0) == 0);
+    CHECK(lumen_effect_comet_gain_q16(&offset, 18, 500) == 65535); /* 段内偏移 8 */
+
+    /* 像素层：硬边头部是纯红，尾部按权重变暗；tail = 0 时非头全黑。 */
+    lumen_segment_t seg = make_animated(LUMEN_EFFECT_COMET, 0, 15, 0, 255, 1000, 0, 0, 0);
+    uint8_t rgb[3];
+    lumen_effect_pixel(&seg, 0, 0, rgb);
+    CHECK(rgb[0] == 255 && rgb[1] == 0 && rgb[2] == 0);
+    lumen_effect_pixel(&seg, 3, 0, rgb);
+    CHECK(rgb[0] == 0 && rgb[1] == 0 && rgb[2] == 0);
+
+    lumen_segment_t tail = make_animated(LUMEN_EFFECT_COMET, 0, 15, 0, 255, 1000, 200, 0, 0);
+    lumen_effect_pixel(&tail, 0, 0, rgb);
+    CHECK(rgb[0] == 255);
+    uint8_t trail[3];
+    lumen_effect_pixel(&tail, 4, 0, trail);
+    CHECK(trail[0] > 0 && trail[0] < 255); /* 拖尾：暗但不黑 */
+
+    /* 参数防御。 */
+    lumen_segment_t off = seg;
+    off.active = false;
+    CHECK(lumen_effect_comet_gain_q16(&off, 0, 0) == 0);
+    CHECK(lumen_effect_comet_gain_q16(NULL, 0, 0) == 0);
+    CHECK(lumen_effect_comet_gain_q16(&seg, 16, 0) == 0);
+}
+
+/*
+ * #31 的核心验收：彩虹 + 流光 + 静态在同一帧里跨段共存，且两段流光的
+ * 相位**确实不连续**（D4 已定的取舍——测试要确认它按设计断裂，而不是
+ * 意外地连成一条）。
+ */
+static void test_effects_rainbow_comet_coexist(void)
+{
+    lumen_segment_store_t store;
+    lumen_segment_store_init(&store);
+
+    lumen_segment_t rainbow =
+        make_animated(LUMEN_EFFECT_RAINBOW, 0, 15, 0, 255, 1000, 255, 0, 0);
+    lumen_segment_t comet =
+        make_animated(LUMEN_EFFECT_COMET, 16, 31, 0, 255, 1000, 64, 0, 0);
+    lumen_segment_t stat = make_static(32, 47, 21845, 255); /* 纯绿 */
+
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, 64, &rainbow) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 1, 64, &comet) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 2, 64, &stat) == LUMEN_RESULT_OK);
+
+    /* 有彩虹 / 流光 → 需要帧循环（动画类判据）。 */
+    CHECK(lumen_segment_store_needs_frames(&store, 1));
+
+    uint8_t t0[64 * 3];
+    uint8_t t250[64 * 3];
+    CHECK(lumen_segment_store_compose(&store, 0, t0, 64, 0) == 64);
+    CHECK(lumen_segment_store_compose(&store, 0, t250, 64, 250) == 64);
+
+    /* 彩虹段：段内颜色变化，且随时间变化。 */
+    CHECK(memcmp(&t0[0 * 3], &t0[8 * 3], 3) != 0);
+    CHECK(memcmp(&t0[0 * 3], &t250[0 * 3], 3) != 0);
+    /* 流光段：头部在 t=0 于 16，t=250 于 20（周期 1000，1/4 圈 = 4 颗）。 */
+    CHECK(t0[16 * 3] == 255 && t0[16 * 3 + 1] == 0 && t0[16 * 3 + 2] == 0);
+    CHECK(t250[20 * 3] == 255);
+    CHECK(t250[16 * 3] == 0); /* 头部已经离开段首 */
+    /* 静态段：两个时刻完全相同。 */
+    CHECK(memcmp(&t0[32 * 3], &t250[32 * 3], 48) == 0);
+    CHECK(t0[32 * 3 + 1] == 255 && t0[32 * 3] == 0);
+    /* 未覆盖区（48-63）仍是 0。 */
+    for (uint16_t i = 48; i < 64; ++i) {
+        CHECK(t0[i * 3] == 0 && t0[i * 3 + 1] == 0 && t0[i * 3 + 2] == 0);
+        CHECK(t250[i * 3] == 0 && t250[i * 3 + 1] == 0 && t250[i * 3 + 2] == 0);
+    }
+
+    /* 只有彩虹 / 只有流光时也需要帧循环（不是靠静态段顺带带起来的）。 */
+    lumen_segment_store_t only;
+    lumen_segment_store_init(&only);
+    CHECK(lumen_segment_store_set(&only, 0, 1, 0, 64, &rainbow) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_needs_frames(&only, 1));
+    lumen_segment_store_init(&only);
+    CHECK(lumen_segment_store_set(&only, 0, 1, 0, 64, &comet) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_needs_frames(&only, 1));
+
+    /*
+     * **跨段相位不连续（D4）**
+     *
+     * 两段同参数流光，A [0-15] t0=0、B [16-31] t0=500ms（周期 1000）。
+     * now = 1000 时：A 的段内相位 = 0 → 头部在 A 的偏移 0（像素 0）；
+     *                 B 的段内相位 = 0.5 → 头部在 B 的偏移 8（像素 24）。
+     *
+     * 「意外连续」的实现会让两段的相位共享同一个时间基准，头部在
+     * 像素 0 与 16 同时出现（或整条只有一条拖尾）。这里断言：
+     *   - 两个头部都在、且偏移不同；
+     *   - B 的段首像素（16）**不是**头部，边界上没有延续的拖尾；
+     * 这就是「按设计断裂」的证据。
+     */
+    lumen_segment_store_t split;
+    lumen_segment_store_init(&split);
+    lumen_segment_t a = make_animated(LUMEN_EFFECT_COMET, 0, 15, 0, 255, 1000, 0, 0, 0);
+    lumen_segment_t b = make_animated(LUMEN_EFFECT_COMET, 16, 31, 0, 255, 1000, 0, 0, 500);
+    CHECK(lumen_segment_store_set(&split, 0, 1, 0, 64, &a) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_set(&split, 0, 1, 1, 64, &b) == LUMEN_RESULT_OK);
+
+    uint8_t buf[64 * 3];
+    CHECK(lumen_segment_store_compose(&split, 0, buf, 64, 1000) == 64);
+    CHECK(buf[0 * 3] == 255);  /* A 头部在段首 */
+    CHECK(buf[15 * 3] == 0);   /* A 段尾已离开头部 */
+    CHECK(buf[16 * 3] == 0);   /* B 段首不是头部 → 边界断裂 */
+    CHECK(buf[24 * 3] == 255); /* B 头部在段内偏移 8 */
+    CHECK(buf[25 * 3] == 0);   /* tail = 0：硬边，相邻像素不继承亮度 */
+
+    /* 相位与几何上「连续」会得到的头部位置是 16（B 偏移 0）；断言它不是。 */
+    CHECK(comet_brightest_offset(&b, 1000) == 8);
+    CHECK(comet_brightest_offset(&a, 1000) == 0);
+
+    /*
+     * 反之，两段 t0 相同时头部偏移相同（每段各自从自己的 t0 起算），
+     * 这也证明相位是**每段独立**而不是全局推进的单一相位。
+     * now = 750 → 相位 0.75 → 头部在段内偏移 12。
+     */
+    lumen_segment_t b_same = make_animated(LUMEN_EFFECT_COMET, 16, 31, 0, 255, 1000, 0, 0, 0);
+    CHECK(lumen_segment_store_set(&split, 0, 1, 1, 64, &b_same) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_compose(&split, 0, buf, 64, 750) == 64);
+    CHECK(buf[0 * 3] == 0);         /* A 头部已离开段首 */
+    CHECK(buf[12 * 3] == 255);      /* A 头部 = 0 + 12 */
+    CHECK(comet_brightest_offset(&a, 750) == 12);
+    CHECK(comet_brightest_offset(&b_same, 750) == 12);
+    CHECK(buf[28 * 3] == 255);      /* B 头部 = 16 + 12 */
+
+    /* 相位回绕：now = period 与 now = 0 的整帧逐字节相同。 */
+    uint8_t cyc0[64 * 3];
+    uint8_t cyc1[64 * 3];
+    CHECK(lumen_segment_store_compose(&store, 0, cyc0, 64, 0) == 64);
+    CHECK(lumen_segment_store_compose(&store, 0, cyc1, 64, 1000) == 64);
+    CHECK(memcmp(cyc0, cyc1, 64 * 3) == 0);
+}
+
 /* ---------------- #30：帧循环判据 ---------------- */
 
 static void test_segment_store_needs_frames(void)
@@ -2766,15 +3167,48 @@ static void test_segment_commands(void)
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.segment.flags == 0x07);
 
-    /* 彩虹 / 流光（已知但未实现，由 #31 交付）→ UnknownCommand。 */
+    /*
+     * 彩虹 / 流光（#31）：已实现，合法周期 → OK，写入意图带正确 type。
+     * 用 300ms（高于 200 的 5Hz 下限、低于呼吸的 334）证明这两类的下限
+     * 确实按类型区分，而不是沿用呼吸的 334。
+     */
     frame.payload_len = 12;
+    frame.payload[8] = 0x2C; /* 300 */
+    frame.payload[9] = 0x01;
+    frame.payload[10] = 0xFF; /* span / tail = 255（边界值） */
+    frame.payload[11] = 0x00;
     frame.payload[4] = 0x02;
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
-    CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
-    CHECK(!outcome.segment_op);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(outcome.segment_op);
+    CHECK(outcome.segment.type == LUMEN_EFFECT_RAINBOW);
     frame.payload[4] = 0x03;
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
-    CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(outcome.segment.type == LUMEN_EFFECT_COMET);
+
+    /* 彩虹 / 流光：period 199 < 200 → InvalidParam（5Hz 下限）。 */
+    frame.payload[8] = 0xC7; /* 199 */
+    frame.payload[9] = 0x00;
+    frame.payload[4] = 0x02;
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(!outcome.segment_op);
+    /* 正好 200 是合法下限。 */
+    frame.payload[8] = 0xC8;
+    frame.payload[9] = 0x00;
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+
+    /* 彩虹 / 流光：bit1-7 保留（比呼吸更严，bit0 reverse 允许）。 */
+    frame.payload[11] = 0x02; /* bit1 置位 */
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(!outcome.segment_op);
+    frame.payload[11] = 0x01; /* 只有 reverse */
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(outcome.segment.flags == 0x01);
 
     /* 静态段却给了 12 字节载荷：先读 type 再定长 → BadLength。 */
     frame.payload[4] = 0x00;
@@ -3256,6 +3690,10 @@ int main(int argc, char **argv)
     test_effects_breathing_phase();
     test_effects_breathing_envelope();
     test_effects_breathing_gain_and_pixel();
+    test_effects_rainbow_hue();
+    test_effects_rainbow_pixel();
+    test_effects_comet_gain();
+    test_effects_rainbow_comet_coexist();
     test_blob_strip_counts();
     test_set_segment_uses_own_strip_count();
     test_planar_parse_list();

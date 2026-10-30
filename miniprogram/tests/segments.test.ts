@@ -17,9 +17,13 @@ import {
   cmdClearSegment,
   cmdQueryStrip,
   cmdSetSegment,
+  cometSegment,
+  directionFlags,
   parseSegmentListEnd,
   parseSegmentReport,
+  rainbowSegment,
   segmentParamLength,
+  segmentReverse,
   staticSegment,
 } from "../utils/protocol/commands";
 import {
@@ -28,6 +32,7 @@ import {
 } from "../utils/protocol/describe";
 import { encodeFrame } from "../utils/protocol/frame";
 import {
+  ANIMATION_MIN_PERIOD_MS,
   BREATHING_MIN_PERIOD_MS,
   SEGMENT_TYPE,
   WAVEFORM,
@@ -37,9 +42,13 @@ import {
   activeCount,
   breathingLabel,
   buildSegmentRows,
+  cometLabel,
   firstFreeSegId,
   overlapError,
   parseRangeInput,
+  rainbowLabel,
+  spanText,
+  tailText,
 } from "../pages/index/segment-view";
 import { StripQueryCollector } from "../utils/ble/strip-collector";
 
@@ -166,6 +175,32 @@ describe("SegmentReport / SegmentListEnd 解析", () => {
     expect(report.periodMs).toBe(0x01f4);
     expect(report.p5).toBe(0x60);
     expect(report.flags).toBe(0x00);
+  });
+
+  it("#31 彩虹 / 流光的 SegmentReport：p5 与 flags 原样解析，日志按类型解释", () => {
+    const rainbow = parseSegmentReport(
+      hexToBytes(vector("segment_report_rainbow").payload_hex) as Uint8Array,
+    );
+    expect(rainbow.type).toBe(SEGMENT_TYPE.RAINBOW);
+    expect(rainbow.periodMs).toBe(1000);
+    expect(rainbow.p5).toBe(128); /* span */
+    expect(rainbow.flags).toBe(0x00);
+    expect(describeSegmentReport(rainbow)).toBe(
+      "SegmentReport strip=0 seg=1 range=0-9 type=0x02 hue=3600 sat=255 " +
+        "period=1000 span=128 reverse=0 flags=0x00",
+    );
+
+    const comet = parseSegmentReport(
+      hexToBytes(vector("segment_report_comet").payload_hex) as Uint8Array,
+    );
+    expect(comet.type).toBe(SEGMENT_TYPE.COMET);
+    expect(comet.periodMs).toBe(800);
+    expect(comet.p5).toBe(64); /* tail */
+    expect(comet.flags).toBe(0x01);
+    expect(describeSegmentReport(comet)).toBe(
+      "SegmentReport strip=0 seg=1 range=0-9 type=0x03 hue=3600 sat=255 " +
+        "period=800 tail=64 reverse=1 flags=0x01",
+    );
   });
 
   it("长度与 type 不符 / 类型未知 / start > end 都拒绝", () => {
@@ -433,5 +468,149 @@ describe("#30 呼吸：flags / 构造器下限 / 波形 / 行视图", () => {
     /* period = 0 → 「静止」，不显示 0ms（避免用户以为没生效）。 */
     const still = { ...report, periodMs: 0 };
     expect(breathingLabel(still)).toBe("静止 · 最暗 25%");
+  });
+});
+
+describe("#31 彩虹 / 流光：构造器 / 向量 / 行视图", () => {
+  it("flags 只有 bit0：directionFlags 不污染保留位", () => {
+    expect(directionFlags(false)).toBe(0x00);
+    expect(directionFlags(true)).toBe(0x01);
+    expect(segmentReverse(0x00)).toBe(false);
+    expect(segmentReverse(0x01)).toBe(true);
+    /* bit1-7 是保留位：即便传进来也不被当作反向。 */
+    expect(segmentReverse(0xfe)).toBe(false);
+    expect(segmentReverse(0xff)).toBe(true);
+  });
+
+  it("set_segment_rainbow 向量逐字节复现（12B 载荷，span=128）", () => {
+    const c = vector("set_segment_rainbow");
+    const seg = rainbowSegment(0, 1, 0, 9, 0x0e10, 0xff, 1000, 128);
+    const req = cmdSetSegment(seg);
+    expect(req.payload.length).toBe(12);
+    expect(bytesToCompactHex(req.payload)).toBe(c.payload_hex);
+    expect(bytesToCompactHex(encodeFrame(req.command, c.seq as number, req.payload))).toBe(
+      c.frame_hex,
+    );
+  });
+
+  it("set_segment_comet 向量逐字节复现（12B 载荷，tail=64）", () => {
+    const c = vector("set_segment_comet");
+    const seg = cometSegment(0, 1, 0, 9, 0x0e10, 0xff, 800, 64);
+    const req = cmdSetSegment(seg);
+    expect(bytesToCompactHex(req.payload)).toBe(c.payload_hex);
+    expect(bytesToCompactHex(encodeFrame(req.command, c.seq as number, req.payload))).toBe(
+      c.frame_hex,
+    );
+  });
+
+  it("边界向量：span=0 / span=255 / tail=0 / tail=255 / reverse", () => {
+    const checks: Array<[string, ReturnType<typeof rainbowSegment>]> = [
+      ["set_segment_rainbow_span_zero", rainbowSegment(0, 1, 0, 9, 0x0e10, 0xff, 600, 0)],
+      ["set_segment_rainbow_span_full", rainbowSegment(0, 1, 0, 9, 0x0e10, 0xff, 200, 255)],
+      ["set_segment_rainbow_reverse", rainbowSegment(0, 1, 0, 9, 0x0e10, 0xff, 800, 255, true)],
+    ];
+    for (const [name, seg] of checks) {
+      const c = vector(name);
+      const req = cmdSetSegment(seg);
+      expect(bytesToCompactHex(req.payload), name).toBe(c.payload_hex);
+      expect(bytesToCompactHex(encodeFrame(req.command, c.seq as number, req.payload)), name).toBe(
+        c.frame_hex,
+      );
+    }
+
+    const cometChecks: Array<[string, ReturnType<typeof cometSegment>]> = [
+      ["set_segment_comet_tail_zero", cometSegment(0, 1, 0, 9, 0x0e10, 0xff, 800, 0)],
+      ["set_segment_comet_tail_full", cometSegment(0, 1, 0, 9, 0x0e10, 0xff, 500, 255)],
+      ["set_segment_comet_reverse", cometSegment(0, 1, 0, 9, 0x0e10, 0xff, 800, 128, true)],
+    ];
+    for (const [name, seg] of cometChecks) {
+      const c = vector(name);
+      const req = cmdSetSegment(seg);
+      expect(bytesToCompactHex(req.payload), name).toBe(c.payload_hex);
+      expect(bytesToCompactHex(encodeFrame(req.command, c.seq as number, req.payload)), name).toBe(
+        c.frame_hex,
+      );
+    }
+  });
+
+  it("周期下限 200（5Hz）与 flags 保留位 bit1-7 在本端就拒绝", () => {
+    /* 199 拒绝、200 接受、0 接受（静止）。 */
+    expect(() =>
+      cmdSetSegment(rainbowSegment(0, 0, 0, 5, 0, 0xff, ANIMATION_MIN_PERIOD_MS - 1, 128)),
+    ).toThrow(RangeError);
+    expect(() =>
+      cmdSetSegment(rainbowSegment(0, 0, 0, 5, 0, 0xff, ANIMATION_MIN_PERIOD_MS, 128)),
+    ).not.toThrow();
+    expect(() => cmdSetSegment(rainbowSegment(0, 0, 0, 5, 0, 0xff, 0, 128))).not.toThrow();
+    expect(() => cmdSetSegment(cometSegment(0, 0, 0, 5, 0, 0xff, 150, 64))).toThrow(RangeError);
+
+    /* 彩虹 / 流光：bit1 起全部保留（与呼吸不同，没有 waveform 位可借）。 */
+    expect(() =>
+      cmdSetSegment({ ...rainbowSegment(0, 0, 0, 5, 0, 0xff, 500, 128), flags: 0x02 }),
+    ).toThrow(RangeError);
+    expect(() =>
+      cmdSetSegment({ ...cometSegment(0, 0, 0, 5, 0, 0xff, 500, 64), flags: 0x08 }),
+    ).toThrow(RangeError);
+    /* bit0 reverse 合法。 */
+    expect(() =>
+      cmdSetSegment({ ...rainbowSegment(0, 0, 0, 5, 0, 0xff, 500, 128), flags: 0x01 }),
+    ).not.toThrow();
+
+    /* span / tail 仍是 0-255 的字节。 */
+    expect(() => cmdSetSegment(rainbowSegment(0, 0, 0, 5, 0, 0xff, 500, 256))).toThrow(
+      RangeError,
+    );
+    expect(() => cmdSetSegment(cometSegment(0, 0, 0, 5, 0, 0xff, 500, -1))).toThrow(RangeError);
+  });
+
+  it("彩虹 / 流光行视图：类型标签与参数摘要", () => {
+    const rainbowReport = {
+      stripId: 0,
+      segId: 2,
+      start: 0,
+      end: 15,
+      type: SEGMENT_TYPE.RAINBOW,
+      hue: 0,
+      sat: 255,
+      periodMs: 1000,
+      p5: 0,
+      flags: 0,
+    };
+    const rows = buildSegmentRows([rainbowReport], 2, segmentHueSatToRgb);
+    expect(rows[0].typeText).toBe("彩虹");
+    expect(rows[0].animated).toBe(true);
+    expect(rows[0].breathText).toBe("");
+    expect(rows[0].paramText).toBe("1000ms · 整条同色 · 正向");
+    expect(rainbowLabel(rainbowReport)).toBe("1000ms · 整条同色 · 正向");
+
+    /* span = 255 → 「整圈」；中间值按百分比描述。 */
+    expect(spanText(0)).toBe("整条同色");
+    expect(spanText(255)).toBe("整圈");
+    expect(spanText(128)).toBe("跨 50% 圈");
+
+    const cometReport = {
+      ...rainbowReport,
+      type: SEGMENT_TYPE.COMET,
+      p5: 0,
+      flags: 0x01,
+    };
+    const cometRows = buildSegmentRows([cometReport], 2, segmentHueSatToRgb);
+    expect(cometRows[0].typeText).toBe("流光");
+    expect(cometRows[0].paramText).toBe("1000ms · 无拖尾 · 反向");
+    expect(tailText(0)).toBe("无拖尾");
+    expect(tailText(255)).toBe("整条拖尾");
+    expect(tailText(128)).toBe("拖尾 50%");
+
+    /* period = 0 是「静止」，与呼吸同一条文案规则。 */
+    expect(rainbowLabel({ ...rainbowReport, periodMs: 0 })).toBe("静止 · 整条同色 · 正向");
+
+    /* 静态段没有参数摘要（paramText 为空串）。 */
+    const staticRows = buildSegmentRows(
+      [{ ...rainbowReport, type: SEGMENT_TYPE.STATIC, periodMs: 0, p5: 0, flags: 0 }],
+      null,
+      segmentHueSatToRgb,
+    );
+    expect(staticRows[0].paramText).toBe("");
+    expect(staticRows[0].breathText).toBe("");
   });
 });

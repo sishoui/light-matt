@@ -11,7 +11,7 @@
  */
 
 import { MAX_SEGMENTS, SEGMENT_TYPE, WAVEFORM_NAMES } from "../../utils/protocol/constants";
-import { breathingWaveform } from "../../utils/protocol/commands";
+import { breathingWaveform, segmentReverse } from "../../utils/protocol/commands";
 import type { RGB, SegmentReport, SegmentTarget } from "../../utils/protocol/types";
 import { rgbToHex } from "../../utils/color/hsv";
 
@@ -24,16 +24,21 @@ export interface SegmentRow {
   hex: string;
   /** 区间文本，如 "0-15"。 */
   rangeText: string;
-  /** 类型标签（"静态" / "呼吸·正弦 1000ms" / …）。 */
+  /** 类型标签（"静态" / "呼吸" / "彩虹" / "流光"）。 */
   typeText: string;
   /** 选中态。 */
   selected: boolean;
   /** 是否可编辑（目前四种类型都可选中编辑）。 */
   editable: boolean;
-  /** 是否动画类（UI 据此显示 / 隐藏呼吸参数区）。 */
+  /** 是否动画类（UI 据此显示 / 隐藏参数区）。 */
   animated: boolean;
   /** 呼吸专属参数展示（非呼吸段为空串）。 */
   breathText: string;
+  /**
+   * 动画参数摘要（#31）：呼吸显示波形 / 周期 / 最暗，彩虹与流光显示
+   * 周期 / span|tail / 方向。静态段为空串。供列表副标题使用。
+   */
+  paramText: string;
 }
 
 export interface RangeInputResult {
@@ -123,9 +128,10 @@ export function overlapError(
  * 把设备的 SegmentReport 列表转成行视图。
  *
  * 四种灯效都有 hue+sat 基准色（effects-spec §2），所以色块对任何类型都可用：
- * 静态段就是它的像素色，呼吸段是它脉动的基色。
+ * 静态段就是它的像素色，动画段是它的基准色。
  *
- * #30：呼吸段额外带周期 / 波形 / 最暗亮度的可读文本，UI 据此显示参数；
+ * #30：呼吸段额外带周期 / 波形 / 最暗亮度的可读文本。
+ * #31：彩虹 / 流光带周期 / span|tail / 方向的可读文本。
  * 动画类型标记 animated = true，只有静态段是 false。
  */
 export function buildSegmentRows(
@@ -140,7 +146,8 @@ export function buildSegmentRows(
       const rgb = hueSatToRgb(report.hue, report.sat);
       const animated = report.type !== SEGMENT_TYPE.STATIC;
       switch (report.type) {
-        case SEGMENT_TYPE.BREATHING:
+        case SEGMENT_TYPE.BREATHING: {
+          const label = breathingLabel(report);
           return {
             segId: report.segId,
             start: report.start,
@@ -151,19 +158,21 @@ export function buildSegmentRows(
             selected: selectedSegId === report.segId,
             editable: true,
             animated: true,
-            breathText: breathingLabel(report),
+            breathText: label,
+            paramText: label,
           };
+        }
         case SEGMENT_TYPE.RAINBOW:
-          return baseRow(report, rgb, selectedSegId, "彩虹", true);
+          return animatedRow(report, rgb, selectedSegId, "彩虹", rainbowLabel(report));
         case SEGMENT_TYPE.COMET:
-          return baseRow(report, rgb, selectedSegId, "流光", true);
+          return animatedRow(report, rgb, selectedSegId, "流光", cometLabel(report));
         default:
           return baseRow(report, rgb, selectedSegId, "静态", animated);
       }
     });
 }
 
-/** 非呼吸类型的统一行构造（不含 breathText）。 */
+/** 非呼吸类型的统一行构造（不含呼吸参数文本）。 */
 function baseRow(
   report: SegmentReport,
   rgb: RGB,
@@ -182,6 +191,21 @@ function baseRow(
     editable: true,
     animated,
     breathText: "",
+    paramText: "",
+  };
+}
+
+/** 彩虹 / 流光的行（带参数摘要）。 */
+function animatedRow(
+  report: SegmentReport,
+  rgb: RGB,
+  selectedSegId: number | null,
+  typeText: string,
+  paramText: string,
+): SegmentRow {
+  return {
+    ...baseRow(report, rgb, selectedSegId, typeText, true),
+    paramText,
   };
 }
 
@@ -201,6 +225,58 @@ export function breathingLabel(report: SegmentReport): string {
 /** flags → 波形名（bits1-2）。 */
 export function waveformName(flags: number): string {
   return WAVEFORM_NAMES[breathingWaveform(flags)] ?? "正弦";
+}
+
+/**
+ * 彩虹参数的可读文本，如 "1000ms · 整圈 · 正向"。
+ *
+ * span 的语义（effects-spec §2.3）对用户不直观，这里给三档描述而不是裸数字：
+ * 0 = 整条同色、255 = 铺满整圈、其余按百分比给出「跨多少圈」。
+ * period = 0 是「静止」，必须显式说出来。
+ */
+export function rainbowLabel(report: SegmentReport): string {
+  return `${periodText(report.periodMs)} · ${spanText(report.p5)} · ${directionText(report.flags)}`;
+}
+
+/**
+ * 流光参数的可读文本，如 "800ms · 无拖尾 · 正向"。
+ *
+ * tail = 0 是硬边亮点；1 起按「尾部覆盖段长多少」描述（0-255 的百分比）。
+ */
+export function cometLabel(report: SegmentReport): string {
+  return `${periodText(report.periodMs)} · ${tailText(report.p5)} · ${directionText(report.flags)}`;
+}
+
+/** 周期文本：0 是「静止」。 */
+export function periodText(periodMs: number): string {
+  return periodMs === 0 ? "静止" : `${periodMs}ms`;
+}
+
+/** span（0-255）→ "整条同色" / "整圈" / "跨 N% 圈"。 */
+export function spanText(span: number): string {
+  if (span === 0) {
+    return "整条同色";
+  }
+  if (span === 255) {
+    return "整圈";
+  }
+  return `跨 ${Math.round((span / 255) * 100)}% 圈`;
+}
+
+/** tail（0-255）→ "无拖尾" / "整条拖尾" / "拖尾 N%"。 */
+export function tailText(tail: number): string {
+  if (tail === 0) {
+    return "无拖尾";
+  }
+  if (tail === 255) {
+    return "整条拖尾";
+  }
+  return `拖尾 ${Math.round((tail / 255) * 100)}%`;
+}
+
+/** reverse（flags bit0）→ "正向" / "反向"。 */
+export function directionText(flags: number): string {
+  return segmentReverse(flags) ? "反向" : "正向";
 }
 
 /** p5（0-255）→ 百分比文本。 */

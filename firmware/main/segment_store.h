@@ -35,8 +35,8 @@ void lumen_segment_store_reset_strip(lumen_segment_store_t *store, uint8_t strip
  *   5 strip_id 范围   0 ≤ strip_id < strip_count（#25 只有 1 条灯带，传 1 也是 InvalidParam）
  *   6 段区间          start ≤ end 且 end < led_count
  *   7 段重叠          与同 strip 的其它活动段无交集（同 seg_id 视为替换自身）
- *   8 flags 保留位    静态段 flags 必须为 0
- *   9 周期下限        静态段不检查（没有周期字段）
+ *   8 flags 保留位    静态必须 0；呼吸 bit3-7、彩虹·流光 bit1-7 必须 0
+ *   9 周期下限        呼吸 ≥334、彩虹/流光 ≥200（period = 0 均不受限）
  *
  * 返回 LUMEN_RESULT_OK 或 LUMEN_RESULT_INVALID_PARAM。
  */
