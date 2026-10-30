@@ -37,6 +37,23 @@ import {
   clampBrightness,
   effectiveMaxBrightness,
 } from "./brightness";
+import {
+  abandonSwitch,
+  beginSwitch,
+  initialSwitchState,
+  isSwitching,
+  retrySwitch,
+  switchedDisconnected,
+  switchedReady,
+  switchFailed,
+  type SwitchState,
+} from "./device-switch";
+import {
+  forgetDevice,
+  loadRecentDevices,
+  recordConnection,
+  type RecentDevice,
+} from "./device-history";
 import { LED_COUNT_ACK_TIMEOUT_MS } from "./ledCount";
 import { MAX_LEDS, MIN_LEDS } from "../protocol/constants";
 import {
@@ -143,6 +160,10 @@ export class ControlSession {
   /** 缓存的设备身份：回连与进前台静默回连都用它（设备是状态权威，不缓存状态）。 */
   private cached: CachedDevice | null = null;
   private readonly reconnect: ReconnectSupervisor;
+  /** #33 设备切换状态机（主动切换，与上面的自动回连完全分开）。 */
+  private switchState: SwitchState = initialSwitchState();
+  /** 「最近连过」列表：按最后连接时间降序，上限由 device-history 决定。 */
+  private recent: RecentDevice[];
 
   constructor(opts: SessionOptions) {
     const log = new FrameLog({ mirrorToConsole: opts.devMode });
@@ -158,6 +179,7 @@ export class ControlSession {
     this.retryAfterGapMs = opts.retryAfterGapMs ?? DEFAULT_RETRY_AFTER_GAP_MS;
     this.storage = opts.storage ?? createWxStorage();
     this.cached = loadCachedDevice(this.storage);
+    this.recent = loadRecentDevices(this.storage);
 
     this.reconnect = new ReconnectSupervisor(
       {
@@ -256,15 +278,105 @@ export class ControlSession {
       this.latestState = state;
       // 只有完整初始化成功后才缓存 deviceId（失败的下次扫描更可靠）。
       this.cached = saveCachedDevice(this.storage, deviceId, name);
+      this.recent = recordConnection(this.storage, deviceId, name, Date.now());
       return state;
     } catch (err) {
       // 10002 / 10013：设备不在附近或 deviceId 失效（iOS UUID 会变），清缓存。
       if (err instanceof WxCallError && (err.errCode === 10002 || err.errCode === 10013)) {
         this.clearCachedDevice();
+        this.recent = forgetDevice(this.storage, deviceId);
       }
       throw err;
     } finally {
       this.reconnect.manualConnectEnd();
+    }
+  }
+
+  /**
+   * #33 切换到指定设备。
+   *
+   * 与 connect 的区别：这是**主动切换**，当前可能还连着别的设备。
+   * 流程：先断开（单连接约束）→ 再连新的 → 成功后把这个设备的配置从设备读回来。
+   *
+   * 失败时**停在未连接 + 保留目标供重试**，不自动回滚到上一台：
+   * 上一台此时可能也不可用，来回拨号会让用户不知道点哪个按钮
+   * （见 device-switch.ts 顶部注释）。也绝不进 1s/2s/4s 的自动回连退避。
+   */
+  async switchTo(deviceId: string, name?: string): Promise<DeviceState> {
+    if (isSwitching(this.switchState)) {
+      throw new Error("正在切换设备，请稍候");
+    }
+    this.switchState = beginSwitch(this.switchState, deviceId, name, this.transport.linkState);
+
+    if (this.switchState.phase === "disconnecting") {
+      try {
+        // 主动断开当前设备：取消节流与回连意图，避免旧连接的命令串到新连接上。
+        this.throttle.cancel();
+        await this.reconnect.disconnectIntent();
+        this.latestState = null;
+      } catch (err) {
+        // 断开报错也照样往下连：目标状态是「连上新设备」，
+        // 卡在 disconnecting 只会让用户看不到任何进展。
+        console.warn(`[lumen] 切换前断开失败：${errorText(err)}`);
+      }
+      this.switchState = switchedDisconnected(this.switchState);
+    }
+
+    try {
+      const state = await this.connect(deviceId, name);
+      this.switchState = switchedReady(this.switchState);
+      // 设备是权威：切换后所有设备级状态都来自新设备。
+      // 分段/剧本的读取在这里之后追加（#25/#32），见 refreshDeviceConfig 的接缝。
+      await this.refreshDeviceConfig();
+      return state;
+    } catch (err) {
+      this.switchState = switchFailed(this.switchState, errorText(err));
+      // 不清 cached：用户可能只是暂时连不上，重试入口还要用它。
+      throw err;
+    }
+  }
+
+  /**
+   * 重试上一次失败的切换。
+   * 没有失败目标时报错，由页面决定是否提示（通常不应该走到）。
+   */
+  async retrySwitch(): Promise<DeviceState> {
+    const next = retrySwitch(this.switchState, this.transport.linkState);
+    if (next === this.switchState || next.target === null) {
+      throw new Error("没有可重试的切换目标");
+    }
+    const target = next.target;
+    // 先回到 idle 再走完整流程，避免 isSwitching 守卫挡住自己。
+    this.switchState = initialSwitchState();
+    return this.switchTo(target.deviceId, target.name);
+  }
+
+  /** 放弃切换 / 页面卸载：清状态机，不再保留目标。 */
+  cancelSwitch(): void {
+    this.switchState = abandonSwitch();
+  }
+
+  get deviceSwitch(): SwitchState {
+    return { ...this.switchState, target: this.switchState.target && { ...this.switchState.target } };
+  }
+
+  /** 「最近连过」列表（按最后连接时间降序，不依赖后端）。 */
+  get recentDevices(): RecentDevice[] {
+    return this.recent.map((entry) => ({ ...entry }));
+  }
+
+  /**
+   * 切换成功后加载新设备的真实配置。
+   *
+   * #33 目前的义务是：设备级状态必须全部重置并重新从设备读，不能残留上一台。
+   * 分段配置与剧本库的读取在这个接缝之后接入（#25 / #32）——
+   * 它们各自会在这里追加一条读命令，而不是另建一条切换路径。
+   */
+  private async refreshDeviceConfig(): Promise<void> {
+    // 连接流水线里已经读过 State（transport.connect 内部），这里只需确保
+    // 本地镜像与设备一致；分段/剧本读取在后续票追加。
+    if (this.transport.linkState === "ready") {
+      await this.refreshState();
     }
   }
 
