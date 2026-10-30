@@ -221,15 +221,39 @@ static void rebuild_led_count_if_pending(void)
 
     led_strip_handle_t old;
     lumen_state_t snapshot;
+    uint16_t old_count;
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
     old = s_strip;
+    /* 旧数量要在 complete() 覆盖 s_state.led_count 之前取出来。 */
+    old_count = s_state.led_count;
     s_strip = fresh;
     /* 只改数量：重建期间其它命令可能已改过开关/亮度/颜色，那些值原样保留。 */
     bool committed = lumen_led_count_job_complete(&s_led_count_job, true, &s_state);
     snapshot = s_state;
     xSemaphoreGive(s_state_lock);
 
+    /*
+     * 把旧灯带整体清黑，再删句柄。
+     *
+     * 原因：WS2812B 每颗灯会把最后一次收到的像素锁存住，直到再收到数据。
+     * 新句柄只驱动 target 颗，超出 target 的那些灯**收不到任何新数据**，
+     * 会一直停在改数量之前的颜色上——用户看到的就是「前 10 颗受控变
+     * 颜色、后 20 颗仍然亮着」。协议 §11.3 只要求「新数量立即生效」，
+     * 没说剩余灯珠怎么办；从用户视角它们必须熄灭，否则像是没生效。
+     *
+     * 清黑用旧句柄按旧数量做（旧句柄的 max_leds 覆盖得到那些多出来的灯），
+     * 必须在 del 之前、且只能在渲染任务里做（句柄唯一所有者）。
+     * 这是一个额外的一次性 refresh，不进入常规渲染路径。
+     */
     if (old != NULL) {
+        for (uint16_t i = 0; i < old_count; ++i) {
+            led_strip_set_pixel(old, i, 0, 0, 0);
+        }
+        esp_err_t clear_err = led_strip_refresh(old);
+        if (clear_err != ESP_OK) {
+            ESP_LOGW(TAG, "led count rebuild: 清黑旧灯带失败 %s（多余灯珠可能保持旧色）",
+                     esp_err_to_name(clear_err));
+        }
         /* 旧句柄只有渲染任务碰，del 不会与任何刷新并发。 */
         led_strip_del(old);
     }
