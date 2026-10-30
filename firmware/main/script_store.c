@@ -436,6 +436,22 @@ bool lumen_script_playback_tick(const lumen_script_t *script, lumen_script_playb
     return stage_changed;
 }
 
+void lumen_script_playback_hold(lumen_script_playback_t *playback, uint32_t now_ms)
+{
+    if (playback == NULL || playback->state != LUMEN_PLAYBACK_PLAYING) {
+        return;
+    }
+    /*
+     * 把这段时间同时记进 pause_offset 并推 last_tick_ms：
+     *  - elapsed 不动 → 播放头不会被自检的 2 秒推过一整个阶段；
+     *  - script_time = now - pause_offset 保持不变 → 自检结束后相位不跳。
+     * 与 pause() 的区别是**不改 playback_state**（UI 上仍是「播放中」）。
+     */
+    uint32_t delta = (uint32_t)(now_ms - playback->last_tick_ms);
+    playback->pause_offset_ms += delta;
+    playback->last_tick_ms = now_ms;
+}
+
 bool lumen_script_playback_active(const lumen_script_playback_t *playback)
 {
     if (playback == NULL) {

@@ -4282,6 +4282,56 @@ static void test_script_playback_pause_resume(void)
     CHECK(lumen_script_playback_time(&pb, 8300) == 8300);
 }
 
+/*
+ * 自检覆盖期间不推进播放头（v2-effects-engine §7.1）：
+ * 播放中跑 2 秒自检，结束后必须从原阶段原相位继续，不能一次补进 2 秒。
+ */
+static void test_script_playback_hold_during_selftest(void)
+{
+    lumen_script_store_t store;
+    lumen_script_store_init(&store);
+    CHECK(script_download(&store, 0, 4, 1000));
+    const lumen_script_t *script = lumen_script_get(&store, 0);
+    CHECK(script != NULL);
+
+    lumen_script_playback_t pb;
+    lumen_script_playback_init(&pb);
+    lumen_script_playback_select(&pb, 0, true, 0);
+    lumen_script_playback_play(&pb, 0);
+
+    uint32_t t = 0;
+    (void)lumen_script_playback_tick(script, &pb, 300, &t);
+    CHECK(pb.stage_index == 0);
+    CHECK(pb.elapsed_ms == 300);
+    CHECK(t == 300);
+
+    /* 自检 2000ms：每帧醒来都按住时间轴（模拟渲染任务的 tick 循环）。 */
+    for (uint32_t now = 400; now <= 2300; now += 100) {
+        lumen_script_playback_hold(&pb, now);
+        const uint32_t held = lumen_script_playback_time(&pb, now);
+        CHECK(held == 300); /* 时间轴冻结在自检开始的那一刻 */
+    }
+    CHECK(pb.stage_index == 0);
+    CHECK(pb.elapsed_ms == 300);
+    CHECK(pb.state == LUMEN_PLAYBACK_PLAYING); /* hold 不改状态 */
+
+    /* 自检结束：继续播放。此时阶段内只有 300ms，再走 600ms 仍不到 1000ms。 */
+    (void)lumen_script_playback_tick(script, &pb, 2900, &t);
+    CHECK(pb.stage_index == 0); /* 300 + 600 = 900ms，未满 1000ms */
+    CHECK(t == 900);
+    /* 再 200ms（1000ms 整）→ 进入阶段 1，阶段内 100ms。 */
+    (void)lumen_script_playback_tick(script, &pb, 3100, &t);
+    CHECK(pb.stage_index == 1);
+    CHECK(pb.elapsed_ms == 100);
+    CHECK(t == 1100);
+
+    /* hold 对停止 / 暂停态是空操作（不改变任何时间量）。 */
+    lumen_script_playback_stop(&pb, 4000);
+    const uint32_t before = lumen_script_playback_time(&pb, 4000);
+    lumen_script_playback_hold(&pb, 9000);
+    CHECK(lumen_script_playback_time(&pb, 9000) == before);
+}
+
 static void test_script_blob_roundtrip(void)
 {
     uint16_t counts[LUMEN_MAX_STRIPS] = {30, 12, 0, 0, 0, 0, 0, 0};
@@ -4432,6 +4482,7 @@ int main(int argc, char **argv)
     test_script_multiple_scripts();
     test_script_playback_advance();
     test_script_playback_pause_resume();
+    test_script_playback_hold_during_selftest();
     test_script_blob_roundtrip();
     test_planar_parse_list();
     test_planar_init_validation();
