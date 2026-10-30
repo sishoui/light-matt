@@ -13,6 +13,7 @@ miniprogram/project.private.config.json
 # 通用
 .DS_Store
 *.log
+__pycache__/
 .vscode/.browse.VSCodeCounter
 
 # 发布辅助（由脚本生成，不入库）

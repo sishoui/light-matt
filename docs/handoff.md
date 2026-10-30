@@ -16,7 +16,7 @@
 | GitHub #2 / #3 / #5 / #6 / #8–#13 | 已关闭 |
 | GitHub #4 灯带点亮与电气基线 | **已关闭**（真实实测，见下） |
 | GitHub #7 RMT × BLE 共存 | 开着：**实验固件与方案已就绪，五组长跑数据待填** |
-| GitHub #14 端到端真机验收 | 开着：**当前唯一的主线任务** |
+| GitHub #14 端到端真机验收 | 开着：**固件/代码侧七条全通过，人眼/手机一侧待验** |
 | GitHub #1 spec | 父 issue，等 #14 完成后关闭 |
 
 验证基线（改代码后应保持）：
@@ -35,8 +35,33 @@ scripts\build-firmware.cmd                  REM 分区余量 62%
 **跑 #14 的七条清单**，手册在 [`docs/end-to-end-acceptance.md`](../end-to-end-acceptance.md)。
 每条都有操作步骤和记录表，结论写回该文件第 4 节。
 
-设备当前状态：已烧 `integration/lumen-mvp` 固件，广播名 `Lumen-5662`，
-灯珠数已设为 **64**（与实物一致），小程序 AppID `wx0a46668333178576`。
+### 2.1 固件/代码侧已经跑完（2026-10-30）
+
+`scripts/acceptance-probe.py` 用 **PC 当 central**（bleak）把协议层证据跑全了，
+边跑边抓串口。七条的「固件/代码侧」列全部 ☑ 通过：
+
+```bat
+python scripts/acceptance-probe.py                  REM 全套，跑完自动恢复现场
+python scripts/acceptance-probe.py --group basic    REM ①②③④
+python scripts/acceptance-probe.py --group count    REM ⑥ 的数量边界
+python scripts/acceptance-probe.py --group persist  REM 写状态，人工复位后看是否恢复
+```
+
+要点：写状态后**必须真的复位**再抓启动日志，`state restored: ...` 那行才是持久化证据。
+数量减少的重建链路在串口上是
+`RX cmd=0x06 → 已排队 → rebuild begin → render xN → led count -> N → ACK`。
+
+**还没跑的只有「人眼/手机」那一列**：灯带真实颜色、亮灭、拖动跟手、状态条文案、
+回连后的 UI、隐藏面板可读性。这些不能用固件侧日志替代——详见 §3.2。
+
+### 2.2 设备当前状态
+
+已烧 `integration/lumen-mvp` 固件，广播名 `Lumen-5662`，
+灯珠数 **64**（与实物一致），开灯 / 亮度 128 / 暖白，
+小程序 AppID `wx0a46668333178576`。
+
+> 本会话开始时设备实际是 `leds=20`（交接文档写 64，对不上），已通过
+> `SetLedCount(64)` 改回实物数量并确认重启后仍为 64。
 
 **还没跑过的**：#7 的五组 RMT × BLE 长跑（单组 30 分钟），方案在
 [`docs/rmt-ble-stability.md`](../rmt-ble-stability.md)。
@@ -98,6 +123,21 @@ python scripts/capture-serial.py COM6 10 --reset  # 先复位再抓启动日志
 产品固件每帧只打一行 `RX cmd=.. seq=.. len=.. result=.. power=.. brightness=.. rgb=..`，
 小程序面板的 seq 同时显示十进制与十六进制，两边可逐帧对齐。要看原始 hex 才调 DEBUG。
 
+### 3.5 设备被占住 ≠ 设备坏了
+
+协议是**单连接、断开才重新广播**。如果扫描扫不到 `Lumen-5662`，八成是手机上的
+小程序还在自动回连（1s/2s/4s 退避）。先杀掉小程序或退回后台，等它断开再跑探针。
+`acceptance-probe.py` 扫不到设备时就是这个提示。
+
+同理：跑探针前先确认没有别的 central 连着，否则 `BleakClient` 连接会超时。
+
+### 3.6 探针脚本的坑（已修，别再踩）
+
+`acceptance-probe.py` 第一版在 asyncio 事件循环里用阻塞的 `queue.Queue.get()`
+等 ACK，结果把 notify 回调一起卡住，ACK 全部「慢一拍」到达，表现为大量
+「等 ACK 超时」假失败。现在改成 `await asyncio.sleep(0.005)` 轮询。
+**凡是 BLE notify 回调，都不要在事件循环里做阻塞等待。**
+
 ---
 
 ## 4. 关键文档索引
@@ -105,6 +145,7 @@ python scripts/capture-serial.py COM6 10 --reset  # 先复位再抓启动日志
 | 想知道什么 | 去哪 |
 |---|---|
 | 七条验收怎么跑、记录表 | [`docs/end-to-end-acceptance.md`](../end-to-end-acceptance.md) |
+| PC 当 central 跑协议验收 | `scripts/acceptance-probe.py` |
 | 字节级协议（唯一真相） | [`docs/protocol.md`](../protocol.md) + `protocol-testvectors.json` |
 | 固件分层、并发、各票增量 | [`docs/firmware-architecture.md`](../firmware-architecture.md) |
 | 灯带接线、供电、两个 bug 的记录 | [`docs/led-bringup.md`](../led-bringup.md) |
