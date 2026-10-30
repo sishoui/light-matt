@@ -1,8 +1,8 @@
 {
-  "protocol_version": 1,
+  "protocol_version": 2,
   "checksum": "~(sum of bytes from magic through last payload byte) & 0xFF",
   "frame_layout": "magic(1) version(1) command(1) seq(1) length(1) payload(length) checksum(1)",
-  "state_read_example_hex": "0180FFB4781E00FF",
+  "state_read_example_hex": "0180FFB4781E00FF0100FF000000",
   "state_read_fields": [
     "power",
     "brightness",
@@ -11,7 +11,13 @@
     "b",
     "led_count_lo",
     "led_count_hi",
-    "max_brightness"
+    "max_brightness",
+    "strip_count",
+    "seg_count",
+    "script_id",
+    "stage_index",
+    "playback_state",
+    "flags"
   ],
   "cases": [
     {
@@ -20,7 +26,7 @@
       "command": 1,
       "seq": 1,
       "payload_hex": "01",
-      "frame_hex": "A5010101010155",
+      "frame_hex": "A5020101010154",
       "command_name": "SetPower",
       "frame_valid": true,
       "result_code": 0
@@ -31,7 +37,7 @@
       "command": 1,
       "seq": 2,
       "payload_hex": "00",
-      "frame_hex": "A5010102010055",
+      "frame_hex": "A5020102010054",
       "command_name": "SetPower",
       "frame_valid": true,
       "result_code": 0
@@ -42,7 +48,7 @@
       "command": 2,
       "seq": 3,
       "payload_hex": "80",
-      "frame_hex": "A50102030180D3",
+      "frame_hex": "A50202030180D2",
       "command_name": "SetBrightness",
       "frame_valid": true,
       "result_code": 0
@@ -53,7 +59,7 @@
       "command": 2,
       "seq": 4,
       "payload_hex": "00",
-      "frame_hex": "A5010204010052",
+      "frame_hex": "A5020204010051",
       "command_name": "SetBrightness",
       "frame_valid": true,
       "result_code": 0
@@ -64,10 +70,10 @@
       "command": 3,
       "seq": 5,
       "payload_hex": "FF0000",
-      "frame_hex": "A501030503FF00004F",
-      "command_name": "SetColor",
+      "frame_hex": "A502030503FF00004E",
       "frame_valid": true,
-      "result_code": 0
+      "result_code": 2,
+      "note": "0x03 SetColor 在 v2 退役，设备回 UnknownCommand"
     },
     {
       "name": "set_color_warm_white",
@@ -75,10 +81,10 @@
       "command": 3,
       "seq": 6,
       "payload_hex": "FFB478",
-      "frame_hex": "A501030603FFB47822",
-      "command_name": "SetColor",
+      "frame_hex": "A502030603FFB47821",
       "frame_valid": true,
-      "result_code": 0
+      "result_code": 2,
+      "note": "0x03 SetColor 在 v2 退役，设备回 UnknownCommand"
     },
     {
       "name": "set_all_on",
@@ -86,10 +92,10 @@
       "command": 4,
       "seq": 7,
       "payload_hex": "0180FFB478",
-      "frame_hex": "A5010407050180FFB4789D",
-      "command_name": "SetAll",
+      "frame_hex": "A5020407050180FFB4789C",
       "frame_valid": true,
-      "result_code": 0
+      "result_code": 2,
+      "note": "0x04 SetAll 在 v2 退役，设备回 UnknownCommand"
     },
     {
       "name": "set_all_off",
@@ -97,10 +103,10 @@
       "command": 4,
       "seq": 8,
       "payload_hex": "0080FFB478",
-      "frame_hex": "A5010408050080FFB4789D",
-      "command_name": "SetAll",
+      "frame_hex": "A5020408050080FFB4789C",
       "frame_valid": true,
-      "result_code": 0
+      "result_code": 2,
+      "note": "0x04 SetAll 在 v2 退役，设备回 UnknownCommand"
     },
     {
       "name": "query_state",
@@ -108,7 +114,7 @@
       "command": 5,
       "seq": 9,
       "payload_hex": "",
-      "frame_hex": "A5010509004B",
+      "frame_hex": "A5020509004A",
       "command_name": "QueryState",
       "frame_valid": true,
       "result_code": 0
@@ -118,8 +124,8 @@
       "direction": "app_to_device",
       "command": 6,
       "seq": 10,
-      "payload_hex": "1E00",
-      "frame_hex": "A501060A021E0029",
+      "payload_hex": "001E00",
+      "frame_hex": "A502060A03001E0027",
       "command_name": "SetLedCount",
       "frame_valid": true,
       "result_code": 0
@@ -129,8 +135,8 @@
       "direction": "app_to_device",
       "command": 6,
       "seq": 11,
-      "payload_hex": "4000",
-      "frame_hex": "A501060B02400006",
+      "payload_hex": "004000",
+      "frame_hex": "A502060B0300400004",
       "command_name": "SetLedCount",
       "frame_valid": true,
       "result_code": 0
@@ -141,7 +147,7 @@
       "command": 7,
       "seq": 12,
       "payload_hex": "",
-      "frame_hex": "A501070C0046",
+      "frame_hex": "A502070C0045",
       "command_name": "SelfTest",
       "frame_valid": true,
       "result_code": 0
@@ -152,7 +158,7 @@
       "command": 1,
       "seq": 13,
       "payload_hex": "02",
-      "frame_hex": "A501010D010248",
+      "frame_hex": "A502010D010247",
       "command_name": "SetPower",
       "frame_valid": true,
       "result_code": 1
@@ -162,8 +168,8 @@
       "direction": "app_to_device",
       "command": 6,
       "seq": 14,
-      "payload_hex": "0000",
-      "frame_hex": "A501060E02000043",
+      "payload_hex": "000000",
+      "frame_hex": "A502060E0300000041",
       "command_name": "SetLedCount",
       "frame_valid": true,
       "result_code": 1
@@ -173,8 +179,8 @@
       "direction": "app_to_device",
       "command": 6,
       "seq": 15,
-      "payload_hex": "4100",
-      "frame_hex": "A501060F02410001",
+      "payload_hex": "004100",
+      "frame_hex": "A502060F03004100FF",
       "command_name": "SetLedCount",
       "frame_valid": true,
       "result_code": 1
@@ -185,7 +191,7 @@
       "command": 127,
       "seq": 16,
       "payload_hex": "",
-      "frame_hex": "A5017F1000CA",
+      "frame_hex": "A5027F1000C9",
       "frame_valid": true,
       "result_code": 2
     },
@@ -195,7 +201,7 @@
       "command": 8,
       "seq": 17,
       "payload_hex": "",
-      "frame_hex": "A50108110040",
+      "frame_hex": "A5020811003F",
       "frame_valid": true,
       "result_code": 2
     },
@@ -205,7 +211,8 @@
       "command": 128,
       "seq": 18,
       "payload_hex": "0100",
-      "frame_hex": "A5018012020100C4",
+      "frame_hex": "A5028012020100C3",
+      "command_name": "ACK",
       "frame_valid": true,
       "result_code": 2
     },
@@ -215,7 +222,7 @@
       "command": 1,
       "seq": 19,
       "payload_hex": "0100",
-      "frame_hex": "A501011302010042",
+      "frame_hex": "A502011302010041",
       "command_name": "SetPower",
       "frame_valid": true,
       "result_code": 4
@@ -226,8 +233,7 @@
       "command": 128,
       "seq": 1,
       "payload_hex": "0100",
-      "frame_hex": "A5018001020100D5",
-      "command_name": "Ack",
+      "frame_hex": "A5028001020100D4",
       "frame_valid": true,
       "result_code": 0
     },
@@ -237,8 +243,7 @@
       "command": 128,
       "seq": 13,
       "payload_hex": "0101",
-      "frame_hex": "A501800D020101C8",
-      "command_name": "Ack",
+      "frame_hex": "A502800D020101C7",
       "frame_valid": true,
       "result_code": 1
     },
@@ -248,8 +253,7 @@
       "command": 128,
       "seq": 16,
       "payload_hex": "7F02",
-      "frame_hex": "A5018010027F0246",
-      "command_name": "Ack",
+      "frame_hex": "A5028010027F0245",
       "frame_valid": true,
       "result_code": 2
     },
@@ -259,8 +263,7 @@
       "command": 128,
       "seq": 18,
       "payload_hex": "0103",
-      "frame_hex": "A5018012020103C1",
-      "command_name": "Ack",
+      "frame_hex": "A5028012020103C0",
       "frame_valid": true,
       "result_code": 3
     },
@@ -270,8 +273,7 @@
       "command": 128,
       "seq": 19,
       "payload_hex": "0104",
-      "frame_hex": "A5018013020104BF",
-      "command_name": "Ack",
+      "frame_hex": "A5028013020104BE",
       "frame_valid": true,
       "result_code": 4
     },
@@ -281,8 +283,7 @@
       "command": 128,
       "seq": 20,
       "payload_hex": "0605",
-      "frame_hex": "A5018014020605B8",
-      "command_name": "Ack",
+      "frame_hex": "A5028014020605B7",
       "frame_valid": true,
       "result_code": 5
     },
@@ -292,8 +293,7 @@
       "command": 128,
       "seq": 7,
       "payload_hex": "0406",
-      "frame_hex": "A5018007020406C6",
-      "command_name": "Ack",
+      "frame_hex": "A5028007020406C5",
       "frame_valid": true,
       "result_code": 6
     },
@@ -303,8 +303,7 @@
       "command": 128,
       "seq": 21,
       "payload_hex": "0107",
-      "frame_hex": "A5018015020107BA",
-      "command_name": "Ack",
+      "frame_hex": "A5028015020107B9",
       "frame_valid": true,
       "result_code": 7
     },
@@ -314,8 +313,7 @@
       "command": 128,
       "seq": 22,
       "payload_hex": "0108",
-      "frame_hex": "A5018016020108B8",
-      "command_name": "Ack",
+      "frame_hex": "A5028016020108B7",
       "frame_valid": true,
       "result_code": 8
     },
@@ -325,8 +323,7 @@
       "command": 128,
       "seq": 23,
       "payload_hex": "0609",
-      "frame_hex": "A5018017020609B1",
-      "command_name": "Ack",
+      "frame_hex": "A5028017020609B0",
       "frame_valid": true,
       "result_code": 9
     },
@@ -336,8 +333,7 @@
       "command": 128,
       "seq": 9,
       "payload_hex": "0500",
-      "frame_hex": "A5018009020500C9",
-      "command_name": "Ack",
+      "frame_hex": "A5028009020500C8",
       "frame_valid": true,
       "result_code": 0
     },
@@ -346,10 +342,11 @@
       "direction": "device_to_app",
       "command": 130,
       "seq": 9,
-      "payload_hex": "0180FFB4781E00FF",
-      "frame_hex": "A5018209080180FFB4781E00FFFD",
+      "payload_hex": "0180FFB4781E00FF0100FF000000",
+      "frame_hex": "A50282090E0180FFB4781E00FF0100FF000000F6",
       "command_name": "StateReport",
-      "frame_valid": true
+      "frame_valid": true,
+      "note": "14 字节 State：开灯、30 灯、单灯带、无激活剧本"
     },
     {
       "name": "event_storage_failed",
@@ -357,36 +354,39 @@
       "command": 129,
       "seq": 0,
       "payload_hex": "0104",
-      "frame_hex": "A5018100020104D1",
-      "command_name": "Event",
+      "frame_hex": "A5028100020104D0",
       "frame_valid": true
     },
     {
       "name": "bad_checksum_power_on",
       "direction": "app_to_device",
-      "frame_hex": "A5010101010156",
+      "payload_hex": "",
+      "frame_hex": "A5020101010155",
       "frame_valid": false,
       "result_code": 3
     },
     {
       "name": "bad_magic_power_on",
       "direction": "app_to_device",
-      "frame_hex": "A4010101010156",
+      "payload_hex": "",
+      "frame_hex": "A4020101010155",
       "frame_valid": false,
       "result_code": 8
     },
     {
       "name": "short_frame",
       "direction": "app_to_device",
-      "frame_hex": "A501010101",
+      "payload_hex": "",
+      "frame_hex": "A502010101",
       "frame_valid": false,
-      "note": "dropped silently",
-      "result_code": null
+      "result_code": null,
+      "note": "dropped silently"
     },
     {
       "name": "length_mismatch",
       "direction": "app_to_device",
-      "frame_hex": "A50101010F00",
+      "payload_hex": "",
+      "frame_hex": "A50201010F00",
       "frame_valid": false,
       "result_code": 4,
       "note": "declared payload 15, actual 1"
@@ -394,10 +394,233 @@
     {
       "name": "overlong_frame",
       "direction": "app_to_device",
-      "frame_hex": "A50101180F00000000000000000000000000000031",
+      "payload_hex": "",
+      "frame_hex": "A50201180F00000000000000000000000000000030",
       "frame_valid": false,
       "result_code": 4,
       "note": "payload 15 > 14, total 21 > 20"
+    },
+    {
+      "name": "set_segment_static",
+      "direction": "app_to_device",
+      "command": 16,
+      "seq": 24,
+      "payload_hex": "0000001D000000FF",
+      "frame_hex": "A5021018080000001D000000FF0C",
+      "command_name": "SetSegment",
+      "frame_valid": true,
+      "result_code": 2,
+      "note": "布局固定；实现票落地后改为 0"
+    },
+    {
+      "name": "set_segment_breathing",
+      "direction": "app_to_device",
+      "command": 16,
+      "seq": 25,
+      "payload_hex": "0001000901100EFFF4016000",
+      "frame_hex": "A50210190C0001000901100EFFF4016000A6",
+      "command_name": "SetSegment",
+      "frame_valid": true,
+      "result_code": 2,
+      "note": "布局固定；实现票落地后改为 0"
+    },
+    {
+      "name": "script_segment_static",
+      "direction": "app_to_device",
+      "command": 22,
+      "seq": 26,
+      "payload_hex": "00000000001D000000FF",
+      "frame_hex": "A502161A0A00000000001D000000FF02",
+      "command_name": "ScriptSegment",
+      "frame_valid": true,
+      "result_code": 2,
+      "note": "布局固定；实现票落地后改为 0（10B 载荷，整帧 16B）"
+    },
+    {
+      "name": "script_segment_animation",
+      "direction": "app_to_device",
+      "command": 22,
+      "seq": 27,
+      "payload_hex": "000100000009030040FF2C01C000",
+      "frame_hex": "A502161B0E000100000009030040FF2C01C000E0",
+      "command_name": "ScriptSegment",
+      "frame_valid": true,
+      "result_code": 2,
+      "note": "布局固定；实现票落地后改为 0（14B 载荷，整帧 20B，协议上限）"
+    },
+    {
+      "name": "clear_segment",
+      "direction": "app_to_device",
+      "command": 17,
+      "seq": 28,
+      "payload_hex": "0001",
+      "frame_hex": "A502111C02000128",
+      "command_name": "ClearSegment",
+      "frame_valid": true,
+      "result_code": 2,
+      "note": "布局固定；实现票落地后改为 0"
+    },
+    {
+      "name": "query_strip",
+      "direction": "app_to_device",
+      "command": 18,
+      "seq": 29,
+      "payload_hex": "00",
+      "frame_hex": "A502121D010028",
+      "command_name": "QueryStrip",
+      "frame_valid": true,
+      "result_code": 2,
+      "note": "布局固定；实现票落地后改为 0"
+    },
+    {
+      "name": "set_playback",
+      "direction": "app_to_device",
+      "command": 19,
+      "seq": 30,
+      "payload_hex": "0101",
+      "frame_hex": "A502131E02010123",
+      "command_name": "SetPlayback",
+      "frame_valid": true,
+      "result_code": 2,
+      "note": "布局固定；实现票落地后改为 0"
+    },
+    {
+      "name": "script_begin",
+      "direction": "app_to_device",
+      "command": 20,
+      "seq": 31,
+      "payload_hex": "000401",
+      "frame_hex": "A502141F030004011D",
+      "command_name": "ScriptBegin",
+      "frame_valid": true,
+      "result_code": 2,
+      "note": "布局固定；实现票落地后改为 0"
+    },
+    {
+      "name": "script_stage",
+      "direction": "app_to_device",
+      "command": 21,
+      "seq": 32,
+      "payload_hex": "0002E803",
+      "frame_hex": "A5021520040002E80332",
+      "command_name": "ScriptStage",
+      "frame_valid": true,
+      "result_code": 2,
+      "note": "布局固定；实现票落地后改为 0"
+    },
+    {
+      "name": "script_commit",
+      "direction": "app_to_device",
+      "command": 23,
+      "seq": 33,
+      "payload_hex": "00",
+      "frame_hex": "A502172101001F",
+      "command_name": "ScriptCommit",
+      "frame_valid": true,
+      "result_code": 2,
+      "note": "布局固定；实现票落地后改为 0"
+    },
+    {
+      "name": "script_abort",
+      "direction": "app_to_device",
+      "command": 24,
+      "seq": 34,
+      "payload_hex": "00",
+      "frame_hex": "A502182201001D",
+      "command_name": "ScriptAbort",
+      "frame_valid": true,
+      "result_code": 2,
+      "note": "布局固定；实现票落地后改为 0"
+    },
+    {
+      "name": "activate_script",
+      "direction": "app_to_device",
+      "command": 25,
+      "seq": 35,
+      "payload_hex": "0001",
+      "frame_hex": "A502192302000119",
+      "command_name": "ActivateScript",
+      "frame_valid": true,
+      "result_code": 2,
+      "note": "布局固定；实现票落地后改为 0"
+    },
+    {
+      "name": "query_script",
+      "direction": "app_to_device",
+      "command": 26,
+      "seq": 36,
+      "payload_hex": "00",
+      "frame_hex": "A5021A24010019",
+      "command_name": "QueryScript",
+      "frame_valid": true,
+      "result_code": 2,
+      "note": "布局固定；实现票落地后改为 0"
+    },
+    {
+      "name": "segment_report_static",
+      "direction": "device_to_app",
+      "command": 131,
+      "seq": 29,
+      "payload_hex": "0000001D000000FF",
+      "frame_hex": "A502831D080000001D000000FF94",
+      "command_name": "SegmentReport",
+      "frame_valid": true,
+      "note": "与 SetSegment 静态载荷同构"
+    },
+    {
+      "name": "segment_report_breathing",
+      "direction": "device_to_app",
+      "command": 131,
+      "seq": 29,
+      "payload_hex": "0001000901100EFFF4016000",
+      "frame_hex": "A502831D0C0001000901100EFFF40160002F",
+      "command_name": "SegmentReport",
+      "frame_valid": true,
+      "note": "与 SetSegment 呼吸载荷同构"
+    },
+    {
+      "name": "segment_list_end",
+      "direction": "device_to_app",
+      "command": 132,
+      "seq": 29,
+      "payload_hex": "0007",
+      "frame_hex": "A502841D020007AE",
+      "command_name": "SegmentListEnd",
+      "frame_valid": true,
+      "note": "strip 0 有 3 个活动段（seg_mask bit0-2）"
+    },
+    {
+      "name": "script_summary",
+      "direction": "device_to_app",
+      "command": 133,
+      "seq": 36,
+      "payload_hex": "00040101",
+      "frame_hex": "A50285240400040101A5",
+      "command_name": "ScriptSummary",
+      "frame_valid": true,
+      "note": "script 0：4 阶段、loop、已激活"
+    },
+    {
+      "name": "script_progress",
+      "direction": "device_to_app",
+      "command": 134,
+      "seq": 26,
+      "payload_hex": "002003",
+      "frame_hex": "A502861A0300200392",
+      "command_name": "ScriptProgress",
+      "frame_valid": true,
+      "note": "已写入 800 帧（小端 0x0320）"
+    },
+    {
+      "name": "state_report_script_active",
+      "direction": "device_to_app",
+      "command": 130,
+      "seq": 36,
+      "payload_hex": "01C800FF003C00C8010200030103",
+      "frame_hex": "A50282240E01C800FF003C00C8010200030103CE",
+      "command_name": "StateReport",
+      "frame_valid": true,
+      "note": "14B：剧本 0 阶段 3 播放中，flags=loop|script_active"
     }
   ]
 }

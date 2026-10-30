@@ -3,8 +3,12 @@
  * + #12 灯珠数量 + #13 隐藏日志面板与自检）。
  *
  * 页面只做 view model 与事件转发，所有 BLE 细节经 ControlSession。
- * 亮度滑块与色环都进 session 里**同一个** 20Hz latest-wins 节流实例；
- * 预设用一条 SetAll（开关 + 亮度 + RGB）原子下发。
+ * 亮度滑块进 session 的 20Hz latest-wins 节流实例。
+ *
+ * v2（#21）退役了 SetColor / SetAll：颜色与预设的下发路径暂时禁用，
+ * 只在本地渲染一个可见的「该功能在 v2 分段界面中提供（#25）」提示。
+ * 控件保留、页面照常编译渲染——**不静默删掉用户可见的功能**，
+ * 只是明确告诉用户它还没接上。TODO(#25)：围绕分段重建这一区域。
  *
  * #11：连接状态以设备为准。断线立即清空控件（不显示过期状态）；自动回连由
  * session 的 1s/2s/4s 退避负责；onShow 时静默回连（不打断扫描/手动连接）；
@@ -33,6 +37,7 @@ import {
   ControlSession,
   detectDevMode,
   detectPlatform,
+  SEGMENTS_UI_NOTICE,
   type CommandResult,
 } from "../../utils/control/session";
 import { statusView } from "../../utils/control/status-view";
@@ -64,6 +69,17 @@ let unsubscribers: Array<() => void> = [];
 
 /** 页面取色读数的刷新间隔：与 BLE 20Hz 对齐，避免每个 touchmove 都 setData。 */
 const COLOR_UI_INTERVAL_MS = 50;
+
+/**
+ * v2（#21）：颜色 / 预设的下发路径暂时禁用。
+ *
+ * SetColor 0x03 / SetAll 0x04 已退役，单色概念改由段配置承担。这里保留控件
+ * （不静默删功能），但**不修改任何本地状态**：设备没收到命令，界面就不能
+ * 显示已经变色，否则用户会以为生效了。
+ *
+ * TODO(#25)：`#25` 围绕分段重建这一区域后删掉这个开关。
+ */
+const COLOR_CONTROLS_ENABLED = false;
 
 /** 日志面板的刷新合并间隔：帧可能以 20Hz 到达，不能每帧都 setData。 */
 const LOG_PANEL_REFRESH_MS = 200;
@@ -143,8 +159,6 @@ Page({
   lastColorUiAt: 0,
   /** 亮度读数的上次 setData 时间（与取色共用 50ms 闸门）。 */
   lastBrightnessUiAt: 0,
-  /** 预设请求序号：只让最新一次预设的结果回写 UI，避免旧色回跳。 */
-  presetToken: 0,
   /** 隐藏日志面板模型（页面实例持有；数据源是 session 的 FrameLog）。 */
   logPanel: null as LogPanelModel | null,
   /** 日志 setData 的合并计时器（20Hz 帧不能每帧都 setData）。 */
@@ -695,6 +709,13 @@ Page({
     if (this.wheel === null || !this.data.ready) {
       return;
     }
+    if (!COLOR_CONTROLS_ENABLED) {
+      // 每次手势只提示一次（touchstart），避免 touchmove 高频弹 toast。
+      if (e.type === "touchstart") {
+        this.showSegmentsNotice();
+      }
+      return;
+    }
     // 多指触摸容易误判，只处理单指。
     if (Array.isArray(e.touches) && e.touches.length > 1) {
       return;
@@ -719,9 +740,12 @@ Page({
     this.handleWheelTouch(e);
   },
 
-  /** 松手：把当前颜色再推一次并 flush，保证最终颜色落地。 */
+  /**
+   * 松手。v2 里 commitColor 是占位实现——不发帧、不改本地状态，
+   * 只在手势结束时提示功能位置（#25）。
+   */
   onWheelTouchEnd() {
-    if (!this.data.ready) {
+    if (!this.data.ready || !COLOR_CONTROLS_ENABLED) {
       return;
     }
     session?.commitColor(this.wheelRgb());
@@ -729,6 +753,9 @@ Page({
 
   /** 色相变化：marker 立即重画；读数 setData 与 BLE 都按 20Hz 节流。 */
   applyHue(hue: number) {
+    if (!COLOR_CONTROLS_ENABLED) {
+      return;
+    }
     const previousHue = this.wheelHue;
     this.wheelHue = normalizeHue(hue);
     const rgb = this.wheelRgb();
@@ -743,6 +770,8 @@ Page({
         previousHue,
       );
     }
+    /* v2：queueColor 是占位实现（不发帧）；这里保留本地 marker 跟手，
+     * 用户能立刻看到界面反馈，真正的下发在 #25。 */
     session?.queueColor(rgb);
 
     const now = Date.now();
@@ -771,6 +800,13 @@ Page({
     if (!Number.isFinite(value)) {
       return;
     }
+    if (!COLOR_CONTROLS_ENABLED) {
+      // 松手时提示一次；拖动过程中静默忽略（避免每帧弹 toast）。
+      if (commit) {
+        this.showSegmentsNotice();
+      }
+      return;
+    }
     this.wheelSaturation = Math.min(100, Math.max(0, Math.round(value))) / 100;
     const rgb = this.wheelRgb();
     const hex = rgbToHex(rgb);
@@ -793,47 +829,45 @@ Page({
     });
     if (commit) {
       session?.commitColor(rgb);
+      this.showSegmentsNotice();
     } else {
       session?.queueColor(rgb);
     }
   },
 
   /**
-   * 预设点击：一次 SetAll（开关=1、亮度=当前、RGB=预设）原子下发。
+   * 预设点击——v2 占位：不再下发 SetAll（0x04 已退役）。
    *
-   * 快速连点不同预设时，只有最后一次请求的结果回写 UI（presetToken），
-   * 避免先发出的请求晚返回把颜色改回旧的。SetAll 是绝对值命令，FIFO 顺序
-   * 保证设备最终状态 = 最后一次点击。
+   * **不改任何本地状态**：设备没有收到命令，界面就不能显示「已切换」。
+   * 只弹「该功能在 v2 分段界面中提供（#25）」的提示——宁可明确说没接上，
+   * 也不能假装成功（#21 的取舍）。
+   *
+   * TODO(#25)：预设改为「写入 strip 0 / seg 0 的静态段」。
    */
   async onPresetTap(e: WechatMiniprogram.TouchEvent) {
     if (session === null || !this.data.ready) {
       return;
     }
     const index = Number(e.currentTarget.dataset.index ?? -1);
-    const preset = PRESETS[index];
-    if (preset === undefined) {
+    if (PRESETS[index] === undefined) {
       return;
     }
-
-    const token = ++this.presetToken;
-    // 先本地切换 UI：预设是离散动作，期望「点下即变」；ACK 回来后再按设备语义校准。
-    this.setData({
-      power: 1,
-      powerLabel: "已开",
-      colorHex: preset.hex,
-      selectedPreset: preset.name,
-      colorHintText: this.colorHintText(true),
-    });
-    this.syncWheelToRgb(preset.rgb);
-
-    const result = await session.applyPreset(preset.rgb);
-    if (token !== this.presetToken) {
-      return; // 已有更新的一次预设请求，丢弃这次结果
-    }
-    this.applyCommandResult(result);
+    // 只提示，不动 UI 的颜色/开关：设备状态没变，界面也不能变。
+    this.showSegmentsNotice();
   },
 
-  /** 把设备/预设颜色反推回色环位置与饱和度（灰阶时保留当前色相）。 */
+  /** 统一的 v2 占位提示（颜色 / 预设区域）。TODO(#25) */
+  showSegmentsNotice() {
+    wx.showToast({ title: SEGMENTS_UI_NOTICE, icon: "none" });
+  },
+
+  /**
+   * 把设备/预设颜色反推回色环位置与饱和度（灰阶时保留当前色相）。
+   *
+   * v2 起预设下发路径禁用，本方法暂时没有生产调用方；保留给 #25 的分段界面
+   * （选中段 → 色环定位）复用，单测里的 hsvForWheel 覆盖同一逻辑。
+   * TODO(#25)
+   */
   syncWheelToRgb(rgb: RGB) {
     const hsv = hsvForWheel(rgb, this.wheelHue);
     this.wheelHue = hsv.h;
@@ -845,11 +879,15 @@ Page({
     this.redrawWheel();
   },
 
+  /**
+   * 颜色区提示。v2 起颜色由段配置承担，这里始终说明功能位置，
+   * 避免用户拖动后以为没生效而反复尝试。TODO(#25)
+   */
   colorHintText(ready: boolean): string {
     if (!ready) {
-      return "连接后可选色";
+      return `连接后可操作；${SEGMENTS_UI_NOTICE}`;
     }
-    return "拖动色环实时跟随；预设一次原子切换";
+    return SEGMENTS_UI_NOTICE;
   },
 
   // ---------------- 内部 ----------------

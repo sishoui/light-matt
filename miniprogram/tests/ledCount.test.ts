@@ -118,6 +118,12 @@ function stateWith(ledCount: number): DeviceState {
     b: 120,
     ledCount,
     maxBrightness: 255,
+    stripCount: 1,
+    segCount: 0,
+    scriptId: 0xff,
+    stageIndex: 0,
+    playbackState: 0,
+    flags: 0,
   };
 }
 
@@ -207,8 +213,8 @@ describe("ControlSession.setLedCount", () => {
 
     expect(transport.writes).toHaveLength(1);
     expect(transport.writes[0].command).toBe(0x06);
-    // 2 字节小端：60 = 0x3C
-    expect(Array.from(transport.writes[0].payload)).toEqual([0x3c, 0x00]);
+    // v2 载荷：strip_id(0) + 2 字节小端 60 = 0x3C
+    expect(Array.from(transport.writes[0].payload)).toEqual([0x00, 0x3c, 0x00]);
     expect(transport.sendOptions[0]).toEqual({ timeoutMs: 3000 });
     expect(result.kind).toBe("ok");
     if (result.kind === "ok") {

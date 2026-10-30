@@ -348,8 +348,8 @@ static const stress_color_t k_stress_colors[] = {
  *   → state_changed 时 lumen_led_engine_commit
  *
  * 返回 true 表示命令改变了共享状态，调用方应使用 *out 作为渲染数据；
- * false 表示该命令当前未被 reducer 实现或不改变状态（例如 #10 之前的
- * SetColor），调用方退回实验调色板。
+ * false 表示该命令当前未被 reducer 实现或不改变状态（例如 v2 退役的
+ * SetColor 0x03），调用方退回实验调色板。
  */
 static bool stress_dispatch(uint8_t command, const uint8_t *payload, uint8_t payload_len,
                             lumen_state_t *out)
@@ -478,7 +478,7 @@ static void run_stress_phase(void)
          *
          * CYCLE ：每周期都发真实协议帧走 reducer，同时切换颜色与亮度：
          *           - SetBrightness（#9 已实现）→ 每帧都改变共享状态；
-         *           - SetColor（#10 之后才实现）→ 未实现时退回内置调色板。
+         *           - SetColor 0x03 在 v2 退役 → 永远退回内置调色板。
          *         RMT 负载与 STEADY 完全一样（每周期都完整发送 30x24 bit），
          *         只是像素与共享状态在动，对应票里的「20Hz 循环切换颜色/亮度」。
          */
@@ -731,7 +731,7 @@ esp_err_t lumen_led_engine_init(void)
     return ESP_OK;
 }
 
-void lumen_led_engine_state_bytes(uint8_t out[8])
+void lumen_led_engine_state_bytes(uint8_t out[LUMEN_STATE_BYTES])
 {
     if (out == NULL) {
         return;

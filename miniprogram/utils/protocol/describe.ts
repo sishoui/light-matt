@@ -26,21 +26,12 @@ export function describeCommand(command: number, payload: Uint8Array): string {
       return payload.length === 1
         ? `${name} brightness=${payload[0]}`
         : `${name} ${bytesToHex(payload)}`;
-    case CMD.SET_COLOR:
-      return payload.length === 3
-        ? `${name} rgb=${payload[0]},${payload[1]},${payload[2]}`
-        : `${name} ${bytesToHex(payload)}`;
-    case CMD.SET_ALL:
-      return payload.length === 5
-        ? `${name} power=${payload[0]} brightness=${payload[1]} ` +
-            `rgb=${payload[2]},${payload[3]},${payload[4]}`
-        : `${name} ${bytesToHex(payload)}`;
     case CMD.QUERY_STATE:
     case CMD.SELF_TEST:
       return name;
     case CMD.SET_LED_COUNT:
-      return payload.length === 2
-        ? `${name} count=${payload[0] | (payload[1] << 8)}`
+      return payload.length === 3
+        ? `${name} strip=${payload[0]} count=${payload[1] | (payload[2] << 8)}`
         : `${name} ${bytesToHex(payload)}`;
     default:
       return payload.length === 0 ? name : `${name} ${bytesToHex(payload)}`;
@@ -57,27 +48,34 @@ export function describeAck(ack: AckResult): string {
 
 /** State（State read 与 StateReport 共用），字段顺序见 protocol §7。 */
 export function describeState(state: DeviceState): string {
+  const script =
+    state.scriptId === 0xff ? "none" : `${state.scriptId}/${state.stageIndex}`;
   return (
     `State power=${state.power} brightness=${state.brightness} ` +
-    `rgb=${state.r},${state.g},${state.b} leds=${state.ledCount} max=${state.maxBrightness}`
+    `rgb=${state.r},${state.g},${state.b} leds=${state.ledCount} max=${state.maxBrightness} ` +
+    `strips=${state.stripCount} segs=${state.segCount} script=${script} ` +
+    `play=${state.playbackState} flags=${hex2(state.flags)}`
   );
 }
 
 /**
- * State read 是裸 8 字节、没有命令信封：日志里要能和 StateReport 区分开。
- * 其余字段与 describeState 完全一致（同一份 8 字节布局）。
+ * State read 是裸 14 字节、没有命令信封：日志里要能和 StateReport 区分开。
+ * 其余字段与 describeState 完全一致（同一份 14 字节布局）。
  */
 export function describeStateRead(state: DeviceState): string {
   return describeState(state).replace(/^State /, "State read ");
 }
 
-/** Event 0x81。code 0x01 = 存储失败，detail 是失败的原命令字。 */
+/** Event 0x81。code 0x01 = 存储失败，detail 是失败的原命令字；0x02 = 剧本提交失败。 */
 export function describeEvent(code: number, detail: number): string {
   if (code === 0x01) {
     return (
       `Event storage_failed(0x01) cmd=${commandName(detail)}(${hex2(detail)}) ` +
       `detail=${hex2(detail)}`
     );
+  }
+  if (code === 0x02) {
+    return `Event script_commit_failed(0x02) script=${detail}`;
   }
   return `Event 0x${code.toString(16).padStart(2, "0").toUpperCase()} detail=${hex2(detail)}`;
 }
