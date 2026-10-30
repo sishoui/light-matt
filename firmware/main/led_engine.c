@@ -1,6 +1,5 @@
 #include "led_engine.h"
 
-#include <inttypes.h>
 #include <stdbool.h>
 #include <string.h>
 
@@ -9,32 +8,19 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "led_strip.h"
 #include "sdkconfig.h"
 
 #include "gamma.h"
 #include "led_count_job.h"
+#include "led_render.h"
+#include "led_stress.h"
+#include "led_strip_owner.h"
 #include "protocol.h"
 #include "selftest.h"
 #include "state_store.h"
 #include "stress_metrics.h"
 
-#if CONFIG_LUMEN_RMT_STRESS_MODE
-/* 压力模式复用 command.c 的唯一命令语义入口（纯 reducer）与协议编解码。
- * 只在实验编译单元里引入，产品路径的依赖方向不变。 */
-#include "command.h"
-#endif
-
 static const char *TAG = "lumen_engine";
-
-#define LUMEN_RMT_RESOLUTION_HZ (10 * 1000 * 1000)
-
-/* WS2812B 通常是 GRB；若实测红绿互换，改 Kconfig 的 LUMEN_LED_COLOR_ORDER。 */
-#if CONFIG_LUMEN_LED_COLOR_ORDER_RGB
-#define LUMEN_COLOR_FORMAT LED_STRIP_COLOR_COMPONENT_FMT_RGB
-#else
-#define LUMEN_COLOR_FORMAT LED_STRIP_COLOR_COMPONENT_FMT_GRB
-#endif
 
 /*
  * 共享状态由 s_state_lock 保护。s_state 是权威状态；s_mailbox 是最新待渲染
@@ -53,10 +39,6 @@ static bool s_mailbox_dirty;
  */
 static lumen_selftest_t s_selftest;
 
-/* 灯带句柄的唯一所有者是渲染任务：init 创建后立刻交给渲染任务，之后只有
- * 渲染任务调用 set_pixel / refresh / del / new_rmt_device（重建）。 */
-static led_strip_handle_t s_strip;
-
 /*
  * SetLedCount 异步重建状态机（§11.3）。请求在 BLE 回调里只登记，
  * 真正的 create_strip / del 与 ACK 都在渲染任务里。
@@ -65,14 +47,6 @@ static led_strip_handle_t s_strip;
 static lumen_led_count_job_t s_led_count_job;
 static lumen_led_engine_response_cb s_response_cb;
 
-/* 上一次真正写进灯带的像素。状态未变时跳过 set_pixel + refresh。 */
-static bool s_rendered_valid;
-static uint8_t s_rendered_r;
-static uint8_t s_rendered_g;
-static uint8_t s_rendered_b;
-static uint8_t s_rendered_brightness;
-static uint16_t s_rendered_count;
-
 static uint8_t max_brightness(void)
 {
     /* 0 表示不限制，按 255 处理。 */
@@ -80,99 +54,14 @@ static uint8_t max_brightness(void)
     return configured == 0 ? 255 : configured;
 }
 
-static esp_err_t create_strip(uint16_t count, led_strip_handle_t *out)
-{
-    led_strip_config_t strip_config = {
-        .strip_gpio_num = CONFIG_LUMEN_LED_GPIO,
-        .max_leds = count,
-        .led_model = LED_MODEL_WS2812,
-        .color_component_format = LUMEN_COLOR_FORMAT,
-        .flags.invert_out = false,
-    };
-    led_strip_rmt_config_t rmt_config = {
-        .clk_src = RMT_CLK_SRC_DEFAULT,
-        .resolution_hz = LUMEN_RMT_RESOLUTION_HZ,
-        .mem_block_symbols = CONFIG_LUMEN_RMT_MEM_BLOCK_SYMBOLS,
-        .flags.with_dma = false, /* C3 的 RMT 没有 DMA */
-    };
-    return led_strip_new_rmt_device(&strip_config, &rmt_config, out);
-}
-
-/*
- * 把一帧像素写进驱动并阻塞等待 RMT 发完。
- * 只有渲染任务调用（灯带句柄唯一所有者）。
- * 压力模式开启时顺带记录返回码与阻塞耗时；关闭时两次 esp_timer 调用
- * 都被编译掉，产品路径与 #6 骨架一致。
- */
-static esp_err_t push_frame(uint8_t r, uint8_t g, uint8_t b, uint16_t count)
-{
-    for (uint16_t i = 0; i < count; ++i) {
-        led_strip_set_pixel(s_strip, i, r, g, b);
-    }
-
+/* 压力模式通过函数指针取快照 / 提交 / 亮度上限，不需要反向包含 led_engine.h。 */
 #if CONFIG_LUMEN_RMT_STRESS_MODE
-    int64_t t0 = esp_timer_get_time();
+static const lumen_led_stress_engine_t k_stress_engine = {
+    .snapshot = lumen_led_engine_snapshot,
+    .commit = lumen_led_engine_commit,
+    .max_brightness = lumen_led_engine_max_brightness,
+};
 #endif
-    esp_err_t err = led_strip_refresh(s_strip);
-#if CONFIG_LUMEN_RMT_STRESS_MODE
-    lumen_stress_note_refresh(err, esp_timer_get_time() - t0);
-#endif
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "refresh failed: %s", esp_err_to_name(err));
-    }
-    return err;
-}
-
-/*
- * 渲染一份快照。调用者是渲染任务，且持有灯带句柄的唯一所有权。
- * 同步 refresh() 而不是 refresh_async()：只有一个渲染任务、没有并发刷新，
- * 引入 async 就必须自建双缓冲，而本票没有任何收益。RMT × BLE 的调优在 #7。
- *
- * selftest 是渲染任务在锁内拷出的一份自检快照（不能直接读 s_selftest：
- * BLE 回调可能并发取消/重启）。「自检覆盖 vs 存储状态」的规则集中在
- * lumen_selftest_compose()，本函数只负责 gamma、去重与刷灯。
- */
-static void render_snapshot(const lumen_state_t *snapshot, const lumen_selftest_t *selftest)
-{
-    uint8_t stored_rgb[3] = {snapshot->r, snapshot->g, snapshot->b};
-    uint8_t brightness;
-    uint8_t rgb[3];
-
-    /* 关灯把亮度乘 0，但保留状态里的亮度值；Color 仍参与 gamma 计算。 */
-    uint8_t clamped =
-        lumen_state_clamp_brightness(snapshot->brightness, max_brightness());
-    lumen_selftest_compose(selftest, snapshot->power, clamped, stored_rgb, max_brightness(),
-                           rgb, &brightness);
-
-    uint8_t r = lumen_gamma_apply(rgb[0], brightness);
-    uint8_t g = lumen_gamma_apply(rgb[1], brightness);
-    uint8_t b = lumen_gamma_apply(rgb[2], brightness);
-    uint16_t count = snapshot->led_count;
-
-    if (s_rendered_valid && r == s_rendered_r && g == s_rendered_g && b == s_rendered_b &&
-        brightness == s_rendered_brightness && count == s_rendered_count) {
-        ESP_LOGD(TAG, "render skip: 像素未变 (%u,%u,%u) b=%u n=%u", r, g, b, brightness, count);
-        return; /* 状态没变，不碰灯带 */
-    }
-
-    /* 渲染是灯带「有没有反应」唯一可观测的固件侧证据：开 INFO 是为了
-     * 真机排障时能看到每一次真正写进灯带的像素（只在状态变化时触发，
-     * 20Hz 拖动下最多 20 行/秒，且不影响未变化时的静默）。 */
-    ESP_LOGI(TAG, "render: (%u,%u,%u) x %u brightness=%u power=%u", r, g, b, count,
-             brightness, snapshot->power);
-
-    if (push_frame(r, g, b, count) != ESP_OK) {
-        ESP_LOGW(TAG, "render: push_frame 失败，灯带未更新");
-        return;
-    }
-
-    s_rendered_r = r;
-    s_rendered_g = g;
-    s_rendered_b = b;
-    s_rendered_brightness = brightness;
-    s_rendered_count = count;
-    s_rendered_valid = true;
-}
 
 /*
  * SetLedCount 的句柄重建（协议 §11.3）。只在渲染任务里执行。
@@ -219,34 +108,34 @@ static void rebuild_led_count_if_pending(void)
     led_strip_handle_t old;
     uint16_t old_count;
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    old = s_strip;
+    old = lumen_led_strip_owner_get();
     /* 旧数量要在 complete() 覆盖 s_state.led_count 之前取出来。 */
     old_count = s_state.led_count;
     xSemaphoreGive(s_state_lock);
 
     if (old != NULL) {
         /* 旧句柄按旧数量清黑（led_strip_clear 用句柄自己的 max_leds）。 */
-        esp_err_t clear_err = led_strip_clear(old);
+        esp_err_t clear_err = lumen_led_strip_owner_clear(old);
         if (clear_err != ESP_OK) {
             ESP_LOGW(TAG, "led count rebuild: 清黑旧灯带失败 %s（多余灯珠可能保持旧色）",
                      esp_err_to_name(clear_err));
         }
         /* 释放旧句柄，让出 RMT 通道与 GPIO 预留，新句柄才能正确接管输出。 */
-        led_strip_del(old);
+        lumen_led_strip_owner_destroy(old);
     }
 
     led_strip_handle_t fresh = NULL;
-    esp_err_t err = create_strip(target, &fresh);
+    esp_err_t err = lumen_led_strip_owner_create(target, &fresh);
     if (err != ESP_OK || fresh == NULL) {
         ESP_LOGE(TAG, "led count rebuild failed: %u leds err=%s（回滚：按旧数量重建）", target,
                  esp_err_to_name(err));
         /* 旧句柄已经删了，必须把旧数量恢复出来，否则灯带彻底失去驱动。 */
         led_strip_handle_t restored = NULL;
-        if (create_strip(old_count, &restored) == ESP_OK && restored != NULL) {
+        if (lumen_led_strip_owner_create(old_count, &restored) == ESP_OK && restored != NULL) {
             xSemaphoreTake(s_state_lock, portMAX_DELAY);
-            s_strip = restored;
+            lumen_led_strip_owner_set(restored);
             xSemaphoreGive(s_state_lock);
-            s_rendered_valid = false;
+            lumen_led_render_invalidate();
             ESP_LOGW(TAG, "led count rebuild: 已回滚到 %u leds", old_count);
         } else {
             ESP_LOGE(TAG, "led count rebuild: 回滚也失败，灯带已失去驱动");
@@ -262,7 +151,7 @@ static void rebuild_led_count_if_pending(void)
 
     lumen_state_t snapshot;
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    s_strip = fresh;
+    lumen_led_strip_owner_set(fresh);
     /* 只改数量：重建期间其它命令可能已改过开关/亮度/颜色，那些值原样保留。 */
     bool committed = lumen_led_count_job_complete(&s_led_count_job, true, &s_state);
     snapshot = s_state;
@@ -270,7 +159,7 @@ static void rebuild_led_count_if_pending(void)
 
     /* 新句柄的像素缓冲是空的：清掉「已渲染」标记，强制按最新状态重绘。
      * 放在 committed 判定之前，任何返回路径都不会留下「以为已渲染」的状态。 */
-    s_rendered_valid = false;
+    lumen_led_render_invalidate();
 
     if (!committed) {
         /* 状态机异常（不该发生）：新句柄已经接管，但状态没更新，按失败回。 */
@@ -295,7 +184,8 @@ static void rebuild_led_count_if_pending(void)
          */
         selftest = s_selftest;
         xSemaphoreGive(s_state_lock);
-        render_snapshot(&latest, &selftest);
+        lumen_led_render_snapshot(lumen_led_strip_owner_get(), &latest, &selftest,
+                                  max_brightness());
     }
 
     /* 成功后才持久化（§11.3 第 2 条）；触发命令是 SetLedCount。 */
@@ -306,262 +196,6 @@ static void rebuild_led_count_if_pending(void)
         s_response_cb(seq, LUMEN_CMD_SET_LED_COUNT, LUMEN_RESULT_OK);
     }
 }
-
-#if CONFIG_LUMEN_RMT_STRESS_MODE
-/*
- * ===== issue #7 专用：RMT × BLE 共存压力阶段 =====
- *
- * 与产品路径的区别只有三点：
- *   1. 不等 latest-wins 信号量，而是按固定周期强制刷新（制造持续 RMT 负载）；
- *   2. 每帧的返回码/耗时、循环间隔抖动、heap、BLE 计数打到串口；
- *   3. 颜色刺激通过「真实协议帧 → lumen_command_dispatch（command.c 的纯
- *      reducer）→ lumen_led_engine_commit」产生，不在压力模式里另写一套
- *      命令语义。state_changed 为 false（该命令尚未由 #10 实现）时，
- *      才退回内置调色板作为实验刺激，并在串口明确标注。
- *
- * 压力模式的所有代码都在 CONFIG_LUMEN_RMT_STRESS_MODE 内，产品固件不编译；
- * led_engine 依赖 command.h 也只在这段里出现，产品路径的分层不变。
- */
-
-typedef struct {
-    uint8_t r;
-    uint8_t g;
-    uint8_t b;
-} stress_color_t;
-
-/*
- * 内置调色板（实验刺激的兜底，以及 STEADY 的固定色）。
- * 亮度统一由 CONFIG_LUMEN_STRESS_BRIGHTNESS 缩放（默认 64），避免全白高亮
- * 把开发板 USB 5V 拉垮、把「错色」和「掉压」混在一起。
- */
-static const stress_color_t k_stress_colors[] = {
-    {255, 0, 0},  {0, 255, 0},   {0, 0, 255}, {255, 180, 120},
-    {255, 255, 0}, {0, 255, 255}, {255, 0, 255}, {0, 0, 0},
-};
-#define STRESS_COLOR_COUNT (sizeof(k_stress_colors) / sizeof(k_stress_colors[0]))
-
-/*
- * 构造一条真实协议帧并跑完整链路：
- *   lumen_protocol_encode（含 checksum）
- *   → lumen_protocol_decode（信封校验）
- *   → lumen_command_dispatch（command.c 的唯一命令语义入口）
- *   → state_changed 时 lumen_led_engine_commit
- *
- * 返回 true 表示命令改变了共享状态，调用方应使用 *out 作为渲染数据；
- * false 表示该命令当前未被 reducer 实现或不改变状态（例如 #10 之前的
- * SetColor），调用方退回实验调色板。
- */
-static bool stress_dispatch(uint8_t command, const uint8_t *payload, uint8_t payload_len,
-                            lumen_state_t *out)
-{
-    /* 压力帧不经过 BLE，但仍按协议的 seq 语义递增（0x01 → 0xFF → 0x00）。 */
-    static uint8_t s_stress_seq;
-    s_stress_seq++;
-
-    uint8_t bytes[LUMEN_MAX_FRAME];
-    size_t len = lumen_protocol_encode(command, s_stress_seq, payload, payload_len, bytes,
-                                       sizeof(bytes));
-    if (len == 0) {
-        return false;
-    }
-
-    lumen_frame_t frame;
-    uint8_t result_code = 0xFF;
-    if (lumen_protocol_decode(bytes, len, &frame, &result_code) != LUMEN_DECODE_OK) {
-        return false;
-    }
-
-    lumen_state_t current;
-    lumen_led_engine_snapshot(&current);
-
-    lumen_command_outcome_t outcome;
-    lumen_command_dispatch(&frame, &current, max_brightness(), &outcome);
-
-    if (!outcome.state_changed) {
-        /* 命令未被 reducer 实现（或与当前状态相同）。不 commit，不改灯带状态。 */
-        return false;
-    }
-    lumen_led_engine_commit(&outcome.next, command);
-    *out = outcome.next;
-    return true;
-}
-
-/* 运行压力阶段；到时（CONFIG_LUMEN_STRESS_DURATION_MIN）返回后走普通渲染循环。 */
-static void run_stress_phase(void)
-{
-    const int64_t duration_us = (int64_t)CONFIG_LUMEN_STRESS_DURATION_MIN * 60 * 1000000;
-
-    /* 灯珠数量当前不会在压力阶段变化（SetLedCount 在 #9/#12），启动时读一次。 */
-    uint16_t count;
-    xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    count = s_state.led_count;
-    xSemaphoreGive(s_state_lock);
-
-    ESP_LOGI(TAG, "压力循环开始：%dms/帧（约 %dHz），亮度覆盖=%d，灯数=%u，"
-                  "时长=%d 分钟（0=无限），async=%s",
-             CONFIG_LUMEN_STRESS_PERIOD_MS, 1000 / CONFIG_LUMEN_STRESS_PERIOD_MS,
-             CONFIG_LUMEN_STRESS_BRIGHTNESS, count, CONFIG_LUMEN_STRESS_DURATION_MIN,
-#if CONFIG_LUMEN_STRESS_REFRESH_ASYNC
-             "on"
-#else
-             "off"
-#endif
-    );
-#if CONFIG_LUMEN_STRESS_PATTERN_STEADY
-    ESP_LOGW(TAG, "注意：STEADY 期间灯带固定暗红，不受协议状态控制。"
-                  "手机写入仍会走完整链路（解帧/reducer/commit/ACK），只是画面不变——"
-                  "这是为了让颜色恒定、便于肉眼数错色。");
-#else
-    ESP_LOGW(TAG, "注意：CYCLE 期间颜色来自压力循环，不是协议状态；"
-                  "手机写入仍会走完整链路（解帧/reducer/commit/ACK）。");
-#endif
-
-    /* 先把灯打开，否则默认状态是 power=0，压力阶段全黑、肉眼无从判定。 */
-    {
-        uint8_t power_on = 1;
-        lumen_state_t ignored;
-        bool changed = stress_dispatch(LUMEN_CMD_SET_POWER, &power_on, 1, &ignored);
-        ESP_LOGI(TAG, "启动命令 SetPower(1)：%s", changed ? "已生效" : "未生效（reducer 未实现）");
-    }
-
-#if CONFIG_LUMEN_STRESS_START_DELAY_S > 0
-    /* 给手机留出连接并开始写入的时间：组 2/3 的 BLE 活动必须与刷新重叠。 */
-    ESP_LOGI(TAG, "等待 %d 秒后开始压力循环（这段时间灯带静止，便于手机连接）",
-             CONFIG_LUMEN_STRESS_START_DELAY_S);
-    vTaskDelay(pdMS_TO_TICKS(CONFIG_LUMEN_STRESS_START_DELAY_S * 1000));
-#endif
-
-    TickType_t last_wake = xTaskGetTickCount();
-    const int64_t started = esp_timer_get_time();
-    int64_t last_loop_us = 0;
-    uint32_t frame_no = 0;
-    uint32_t command_changed_count = 0;
-#if CONFIG_LUMEN_STRESS_REFRESH_ASYNC
-    bool async_inflight = false;
-#endif
-
-    for (;;) {
-        /* 固定节拍唤醒；间隔测量放在唤醒后，量到的是真实周期。 */
-        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(CONFIG_LUMEN_STRESS_PERIOD_MS));
-
-        int64_t now = esp_timer_get_time();
-        if (duration_us > 0 && now - started >= duration_us) {
-            break;
-        }
-        if (last_loop_us != 0) {
-            lumen_stress_note_loop_interval(now - last_loop_us);
-        }
-        last_loop_us = now;
-
-#if CONFIG_LUMEN_STRESS_REFRESH_ASYNC
-        /*
-         * 组 5：把上一帧的完成等待推迟到下一次改像素之前。
-         * led_strip 3.1.1 无双缓冲，发送期间像素缓冲属于在途事务，
-         * 所以必须先 wait 再 set_pixel——这是 async 的唯一合法用法。
-         */
-        if (async_inflight) {
-            int64_t wait_t0 = esp_timer_get_time();
-            esp_err_t werr = led_strip_refresh_async_done(s_strip);
-            lumen_stress_note_async_wait(werr, esp_timer_get_time() - wait_t0);
-            async_inflight = false;
-            if (werr != ESP_OK) {
-                ESP_LOGW(TAG, "refresh_async_done failed: %s", esp_err_to_name(werr));
-            }
-        }
-#endif
-
-        /*
-         * 决定本帧的像素。
-         *
-         * STEADY：不产生状态变化，固定用调色板第 0 帧（暗红）+ 配置亮度。
-         *         这是「肉眼数错色帧」必须的模式——颜色恒定，任何一闪即错。
-         *
-         * CYCLE ：每周期都发真实协议帧走 reducer，同时切换颜色与亮度：
-         *           - SetBrightness（#9 已实现）→ 每帧都改变共享状态；
-         *           - SetColor（#10 之后才实现）→ 未实现时退回内置调色板。
-         *         RMT 负载与 STEADY 完全一样（每周期都完整发送 30x24 bit），
-         *         只是像素与共享状态在动，对应票里的「20Hz 循环切换颜色/亮度」。
-         */
-        stress_color_t color;
-        uint8_t brightness = CONFIG_LUMEN_STRESS_BRIGHTNESS;
-#if CONFIG_LUMEN_STRESS_PATTERN_STEADY
-        color = k_stress_colors[0];
-        (void)command_changed_count;
-#else
-        {
-            /*
-             * 亮度档位刻意压低：最高 128，配合暖白/饱和色远低于全白电流，
-             * 避免开发板 USB 5V 掉压混进「错色」统计。
-             */
-            static const uint8_t k_brightness_levels[] = {32, 64, 96, 128};
-            uint8_t level = k_brightness_levels[frame_no %
-                                                (sizeof(k_brightness_levels) /
-                                                 sizeof(k_brightness_levels[0]))];
-            lumen_state_t accepted;
-            if (stress_dispatch(LUMEN_CMD_SET_BRIGHTNESS, &level, 1, &accepted)) {
-                /* #9 之后这条分支生效：亮度来自 reducer 生效后的状态。 */
-                brightness = accepted.brightness;
-                command_changed_count++;
-            }
-
-            const stress_color_t *palette = &k_stress_colors[frame_no % STRESS_COLOR_COUNT];
-            uint8_t payload[3] = {palette->r, palette->g, palette->b};
-            if (stress_dispatch(LUMEN_CMD_SET_COLOR, payload, sizeof(payload), &accepted)) {
-                /* #10 之后这条分支生效：颜色来自共享状态。 */
-                color.r = accepted.r;
-                color.g = accepted.g;
-                color.b = accepted.b;
-            } else {
-                color = *palette;
-            }
-        }
-#endif
-
-        uint8_t r = lumen_gamma_apply(color.r, brightness);
-        uint8_t g = lumen_gamma_apply(color.g, brightness);
-        uint8_t b = lumen_gamma_apply(color.b, brightness);
-
-        for (uint16_t i = 0; i < count; ++i) {
-            led_strip_set_pixel(s_strip, i, r, g, b);
-        }
-
-#if CONFIG_LUMEN_STRESS_REFRESH_ASYNC
-        int64_t t0 = esp_timer_get_time();
-        esp_err_t err = led_strip_refresh_async(s_strip);
-        lumen_stress_note_refresh(err, esp_timer_get_time() - t0);
-        if (err == ESP_OK) {
-            async_inflight = true;
-        } else {
-            ESP_LOGW(TAG, "refresh_async failed: %s", esp_err_to_name(err));
-        }
-#else
-        int64_t t0 = esp_timer_get_time();
-        esp_err_t err = led_strip_refresh(s_strip);
-        lumen_stress_note_refresh(err, esp_timer_get_time() - t0);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "refresh failed: %s", esp_err_to_name(err));
-        }
-#endif
-
-        frame_no++;
-    }
-
-#if CONFIG_LUMEN_STRESS_REFRESH_ASYNC
-    /* 退出前必须把在途事务收干净，之后普通渲染路径才能安全改像素。 */
-    if (async_inflight) {
-        int64_t wait_t0 = esp_timer_get_time();
-        esp_err_t werr = led_strip_refresh_async_done(s_strip);
-        lumen_stress_note_async_wait(werr, esp_timer_get_time() - wait_t0);
-    }
-#endif
-#if !CONFIG_LUMEN_STRESS_PATTERN_STEADY
-    ESP_LOGI(TAG, "CYCLE：%" PRIu32 " 帧中 %" PRIu32 " 帧由 reducer 改变了状态"
-                  "（其余来自内置调色板）",
-             frame_no, command_changed_count);
-#endif
-    lumen_stress_final_report();
-}
-#endif /* CONFIG_LUMEN_RMT_STRESS_MODE */
 
 /*
  * 上电后补发帧的次数与间隔。
@@ -583,7 +217,7 @@ static void render_task(void *arg)
 
 #if CONFIG_LUMEN_RMT_STRESS_MODE
     /* 压力阶段结束后自动回到普通 latest-wins 渲染路径。 */
-    run_stress_phase();
+    lumen_led_stress_run(&k_stress_engine);
 #endif
 
     /*
@@ -622,7 +256,7 @@ static void render_task(void *arg)
          * 也能收到像素（否则首帧被丢后要等用户碰一次开关才亮）。
          */
         if (boot_reassert_left > 0) {
-            s_rendered_valid = false;
+            lumen_led_render_invalidate();
             --boot_reassert_left;
         }
 
@@ -673,7 +307,8 @@ static void render_task(void *arg)
         }
 
         /* 渲染耗时（set_pixel + 阻塞 refresh）不持锁，State read 不会被拖住。 */
-        render_snapshot(&snapshot, &selftest);
+        lumen_led_render_snapshot(lumen_led_strip_owner_get(), &snapshot, &selftest,
+                                  max_brightness());
     }
 }
 
@@ -698,7 +333,7 @@ esp_err_t lumen_led_engine_init(void)
              restored ? "restored" : "default", s_state.power, s_state.brightness, s_state.r,
              s_state.g, s_state.b, s_state.led_count, max_brightness());
 
-    esp_err_t err = create_strip(s_state.led_count, &s_strip);
+    esp_err_t err = lumen_led_strip_owner_init(s_state.led_count);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "strip init failed: %s (mem_block_symbols=%d, leds=%u)",
                  esp_err_to_name(err), CONFIG_LUMEN_RMT_MEM_BLOCK_SYMBOLS, s_state.led_count);
