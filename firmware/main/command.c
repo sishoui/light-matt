@@ -198,6 +198,7 @@ void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *cur
     outcome->state_changed = false;
     outcome->start_selftest = false;
     outcome->cancels_selftest = false;
+    outcome->state_report = false;
     outcome->led_count_rebuild = false;
     outcome->led_count = current->led_count;
     outcome->next = *current;
@@ -242,9 +243,10 @@ void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *cur
         break;
 
     case LUMEN_CMD_QUERY_STATE:
-        /* 语义属于 #11，当前明确回「未实现」而不是假装成功。
-         * QueryState 不取消自检（§11.2 第 6 条）。 */
-        outcome->result_code = LUMEN_RESULT_UNKNOWN_COMMAND;
+        /* §6.1：回 ACK 0x00，随后由调用方补一条 StateReport。
+         * 查询不取消自检（§11.2 第 6 条），也不改共享状态。 */
+        outcome->result_code = LUMEN_RESULT_OK;
+        outcome->state_report = true;
         break;
 
     case LUMEN_CMD_SELF_TEST:

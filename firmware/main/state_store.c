@@ -23,8 +23,13 @@ static SemaphoreHandle_t s_wake;
 static lumen_save_scheduler_t s_sched;
 static lumen_store_event_cb s_event_cb;
 
-/* 32 位毫秒时钟：esp_timer 是 64 位微秒，右移 10 位得到约 2048 秒回绕的毫秒。
- * save_scheduler 全用有符号差值比较，回绕不会卡死（见 save_scheduler.h）。 */
+/*
+ * 近似毫秒时钟：esp_timer 是 64 位微秒，右移 10 位 ≈ 除以 1024，即每单位
+ * 0.9766ms（debounce 实际约 512ms 而非 500ms，误差 2.3%，无关紧要）。
+ *
+ * 32 位回绕周期是 2^32 × 1024µs ≈ 50.9 天。save_scheduler 全用有符号差值
+ * 比较，回绕不会卡死（见 save_scheduler.h）。
+ */
 static uint32_t now_ms(void)
 {
     return (uint32_t)(esp_timer_get_time() >> 10);

@@ -87,7 +87,10 @@ RX 回调（`rx_access`）运行在 NimBLE 主机任务上。它**只**做以下
 禁止：
 1. **刷灯。** 不调用任何 `led_strip_*`。灯带句柄只有渲染任务持有。
 2. **写 NVS / flash。** 不调用 `nvs_*`。持久化只通过 `state_store` 的 debounce 任务。
-3. **大段日志 / hex dump 长帧。** 日志只允许一行级别；本票只在帧 ≤ 20 字节时打一次 hex。
+3. **大段日志 / hex dump 长帧。** RX 回调每帧只打**一行**汇总（cmd / seq / len /
+   result / power / brightness / rgb）。原始 hex 与「RX 收到 N 字节」降到 DEBUG
+   级别：20Hz 拖动时每帧 4 行串口输出在 115200 下约占主机任务一半时间，直接
+   表现为拖动卡顿与 `10008`。`send_ack` 成功路径不打日志（同一行汇总已含结果码）。
 4. **阻塞等待。** 不 `vTaskDelay`、不等渲染完成、不持锁做 IO。
 5. **改变共享状态。** 本票 RX 回调不提交新状态；命令分发在 #8 落地后也只允许 `lumen_led_engine_commit()` 这种 O(1) 的邮箱操作。
 
@@ -153,13 +156,13 @@ TX notify 的所有权：`lumen_ble_link_notify()` 创建 mbuf 后交给 `ble_ga
 - ✅ RX 解信封并打印帧日志（#6 只解信封；#8 起执行命令并回 ACK）。
 - ✅ 共享状态 + latest-wins + 渲染任务 + gamma + 亮度乘算。
 - ✅ NVS 加载与 500ms debounce 保存骨架。
-- ✅ 命令分发、payload 校验、ACK 发送（#8；QueryState 的解码与 StateReport 留给 #13）。
+- ✅ 命令分发、payload 校验、ACK 发送（#8）。
 - ✅ SetPower 语义与 state 写入（#8）。
 - ✅ SetBrightness 语义与按 `max_brightness` 钳位（#9）。
 - ✅ SelfTest 语义：ACK `0x00` + 红→绿→蓝→白各 500ms 临时覆盖（#13）。
-- ⏳ `SetLedCount` 句柄重建与异步 ACK → #12。
-- ⏳ QueryState 的 StateReport 回应 → #11。
-- ⏳ RMT × BLE 共存调优 → #7。
+- ✅ `SetLedCount` 句柄重建与异步 ACK（#12）。
+- ✅ QueryState：ACK `0x00` + 紧跟 StateReport（#12 后补齐，见 §9.3）。
+- ⏳ RMT × BLE 共存调优 → #7（实验固件与方案已就绪，实测待用户）。
 
 `protocol.c` 只保留信封与设备→小程序编码；命令表与载荷语义在 `command.c`（#8 起）。
 
@@ -236,13 +239,13 @@ rx_access → handle_frame
 | `0x02` SetBrightness | **#9 已实现**：0-255 全合法，按 `max_brightness` 钳位后提交，回 `0x00` |
 | `0x03` SetColor | **#10 已实现**：3 字节 RGB 全合法，只写颜色，回 `0x00` |
 | `0x04` SetAll | **#10 已实现**：5 字段原子生效；power 非 0/1 → `0x01` 且整帧不写；亮度按 §11.4 钳位 |
-| `0x05`-`0x06` | 载荷长度先按命令表校验（错 → `0x04`），合法长度统一回 `0x02`（明确未实现，#11/#12 替换） |
+| `0x05` QueryState | **已实现**：回 `0x00` 并置 `state_report`，由 `ble_link` 在 ACK 后紧跟一条 StateReport `0x82`（§6.1）；不改共享状态、不取消自检 |
+| `0x06` SetLedCount | **#12 已实现**：2 字节小端 1-64，越界 → `0x01`；合法只标记 `led_count_rebuild`，真正的句柄重建在渲染任务，ACK 等重建结果（§11.3） |
 | `0x07` SelfTest | **#13 已实现**：立即回 `0x00` 并启动自检覆盖，不改共享状态（见 §13） |
 | `0x08`-`0xFF`（含小程序写 0x80） | `0x02` |
 
-**仍是暂时的协议偏差**：协议 §6 已定义 0x05-0x06 的语义，后续票（#11 状态同步、
-#12 灯珠数量）会把它们替换成真实实现；替换前设备会对这些命令回 `0x02`，
-小程序据此显示「设备不支持该命令」。
+**协议 §6 的 7 条命令现已全部实现**，设备不再对任何已知命令回「未实现」。
+未知/保留命令字仍回 `0x02`。
 
 ### 9.4 Host 测试
 

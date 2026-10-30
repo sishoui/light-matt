@@ -410,11 +410,31 @@ static void run_app_case(const vector_case_t *c)
                 CHECK(outcome.led_count == before.led_count);
                 CHECK(!outcome.cancels_selftest);
             }
+        } else if (frame.command == LUMEN_CMD_QUERY_STATE) {
+            /* #6.1：QueryState 回 0x00 + 请求 StateReport，不改共享状态、
+             * 不取消自检。结果码直接对向量断言——这里以前硬编码 0x02，
+             * 导致向量里 query_state 的 result_code 从未被真正校验。 */
+            CHECK(c->result_code >= 0);
+            CHECK(outcome.result_code == (uint8_t)c->result_code);
+            CHECK(outcome.result_code == LUMEN_RESULT_OK);
+            CHECK(outcome.state_report);
+            CHECK(!outcome.state_changed);
+            CHECK(!outcome.cancels_selftest);
+            CHECK(!outcome.led_count_rebuild);
+            CHECK(outcome.next.power == before.power);
+            CHECK(outcome.next.brightness == before.brightness);
+            CHECK(outcome.next.r == before.r);
+            CHECK(outcome.next.g == before.g);
+            CHECK(outcome.next.b == before.b);
+            CHECK(outcome.next.led_count == before.led_count);
         } else {
-            /* 0x05 QueryState 属于 #11，统一回 0x02；保留命令/未知命令同理。 */
+            /* 已知命令的兜底：结果码必须与向量一致，状态一律不变。
+             * 保留命令 / 未知命令同理。 */
+            CHECK(outcome.result_code == (uint8_t)c->result_code);
             CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
             CHECK(!outcome.state_changed);
             CHECK(!outcome.led_count_rebuild);
+            CHECK(!outcome.state_report);
             CHECK(outcome.next.power == before.power);
             CHECK(outcome.next.brightness == before.brightness);
             CHECK(outcome.next.r == before.r);
@@ -545,21 +565,21 @@ static void test_set_power_reducer(void)
     CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
     CHECK(!outcome.state_changed);
 
-    /* 0x05 仍属 #11：0x02（载荷长度正确时也不能改状态）。
+    /* QueryState（§6.1）：回 0x00 + 请求 StateReport，不改状态、不取消自检。
      * 0x06 自 #12 起已实现，单独覆盖在 test_set_led_count_reducer()；
      * 0x07 自 #13 起已实现，见下面的 selftest 断言。 */
-    const uint8_t unimplemented[] = {LUMEN_CMD_QUERY_STATE};
-    for (size_t i = 0; i < sizeof(unimplemented); ++i) {
+    {
         lumen_frame_t known = {0};
-        known.command = unimplemented[i];
-        known.payload_len = lumen_command_payload_len(unimplemented[i]);
+        known.command = LUMEN_CMD_QUERY_STATE;
+        known.payload_len = lumen_command_payload_len(LUMEN_CMD_QUERY_STATE);
         lumen_command_dispatch(&known, &state, 255, &outcome);
-        CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
+        CHECK(outcome.result_code == LUMEN_RESULT_OK);
+        CHECK(outcome.state_report);
         CHECK(!outcome.state_changed);
         CHECK(!outcome.start_selftest);
         CHECK(!outcome.cancels_selftest);
         CHECK(!outcome.led_count_rebuild);
-        CHECK(lumen_command_is_known(unimplemented[i]));
+        CHECK(lumen_command_is_known(LUMEN_CMD_QUERY_STATE));
     }
 
     /* 0x07 SelfTest（#13）：立即回 0x00、不改状态、启动自检 */

@@ -17,8 +17,8 @@
  * #8 实现 SetPower 0x01；#9 实现 SetBrightness 0x02；#10 实现 SetColor 0x03
  * 与 SetAll 0x04；#12 实现 SetLedCount 0x06 的取值校验与「需要重建句柄」
  * 标记（真正的重建在 led_engine 的渲染任务里）；#13 实现 SelfTest 0x07 的
- * 命令语义（ACK 0x00 + 启动自检）。0x05 QueryState 的语义属于 #11，仍回
- * 0x02（UnknownCommand）——这是「明确未实现」路径，不是协议最终行为。
+ * 命令语义（ACK 0x00 + 启动自检）；QueryState 0x05 置 state_report，
+ * 由 ble_link 在 ACK 之后补一条 StateReport（§6.1）。
  */
 
 typedef struct {
@@ -35,6 +35,9 @@ typedef struct {
      */
     bool start_selftest;
     bool cancels_selftest;
+    /* QueryState 专用（§6.1）：ACK 之后要补一条 StateReport 0x82。
+     * 状态同步的主路径是 State 特征值 read，这条只是次要/调试通道。 */
+    bool state_report;
     /* SetLedCount 专用（§11.3）：合法取值时置 true。数量要等渲染任务重建
      * led_strip 句柄成功后才写入共享状态，ACK 也必须等重建结果。 */
     bool led_count_rebuild;

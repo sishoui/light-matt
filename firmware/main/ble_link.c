@@ -83,6 +83,10 @@ static void on_store_failed(uint8_t command)
  * 回一条 ACK：载荷 [原命令字, 结果码]，seq 回显请求。
  * 在 NimBLE 主机任务的 RX 回调里调用；notify 内部只做 mbuf 拷贝与入队，
  * 不等待射频发送完成，也不刷灯 / 写 NVS。
+ *
+ * 成功路径不打日志：调用方（handle_frame / 渲染任务）已经在同一条 RX 汇总里
+ * 带了 cmd / seq / result，重复一行会成倍放大 20Hz 拖动时的串口占空比。
+ * 只有发送失败才告警——那才是需要人看的信息。
  */
 static void send_ack(uint8_t seq, uint8_t command, uint8_t result)
 {
@@ -97,9 +101,7 @@ static void send_ack(uint8_t seq, uint8_t command, uint8_t result)
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "ACK notify 失败 cmd=0x%02X seq=0x%02X result=0x%02X err=%s", command,
                  seq, result, esp_err_to_name(err));
-        return;
     }
-    ESP_LOGI(TAG, "ACK cmd=0x%02X seq=0x%02X result=0x%02X", command, seq, result);
 }
 
 /*
@@ -182,9 +184,13 @@ static void handle_frame(const uint8_t *data, size_t len)
      *  - SelfTest 只启动覆盖，不改状态（state_changed 恒为 false）。
      * 记录「是否真的取消了」，否则每条 SetXxx 都会打出 selftest=cancel，
      * 排查时会误以为自检被打断过。
+     *
+     * SetLedCount 例外：reducer 只标记「需要重建」，真正的成败在引擎里
+     * （重建中再请求会回 Busy）。Busy 意味着新命令**没有**被应用，按 §11.2
+     * 第 5 条的语义不该取消自检——所以它的取消延后到 set_led_count 的结果。
      */
     bool cancelled_selftest = false;
-    if (outcome.cancels_selftest) {
+    if (outcome.cancels_selftest && !outcome.led_count_rebuild) {
         cancelled_selftest = lumen_led_engine_cancel_selftest();
     }
     if (outcome.start_selftest) {
@@ -215,6 +221,7 @@ static void handle_frame(const uint8_t *data, size_t len)
     } else if (lumen_led_engine_selftest_active()) {
         selftest_note = " selftest=on";
     }
+    /* 每帧只打一行：命令字 / seq / 结果码 / 关键状态。 */
     ESP_LOGI(TAG,
              "RX cmd=0x%02X seq=0x%02X len=%u result=0x%02X power=%u brightness=%u "
              "rgb=%u,%u,%u%s%s",
@@ -227,18 +234,40 @@ static void handle_frame(const uint8_t *data, size_t len)
          * SetLedCount（协议 §10.1 例外 / §11.3）：ACK 必须等句柄重建结果。
          * 这里只登记请求 —— 引擎判忙 / 判相同值，真正的 create/del 在渲染任务，
          * 结果由引擎经 response 回调发 ACK。
+         *
+         * 上面那行的 result 是 reducer 的判定（0x00 = 取值合法），不是最终结果：
+         * 真正的 ACK 可能是 0x09（重建失败）或 0x05（忙），由 send_ack 再打一行。
          */
         uint8_t status = lumen_led_engine_set_led_count(outcome.led_count, frame.seq);
         if (status == LUMEN_LED_ENGINE_DEFERRED) {
+            /* 已被接受（或数量未变）：现在才取消自检，与「新命令生效」同时。
+             * 取消要在登记之后，否则重建期间的渲染会先闪回存储色。 */
+            if (outcome.cancels_selftest) {
+                lumen_led_engine_cancel_selftest();
+            }
             return; /* ACK 由渲染任务在重建完成后发 */
         }
-        /* OK（数量未变）或 Busy：可以立即回。 */
+        if (status == LUMEN_RESULT_OK && outcome.cancels_selftest) {
+            lumen_led_engine_cancel_selftest();
+        }
+        /* OK（数量未变）或 Busy：可以立即回。Busy 不取消自检。 */
         send_ack(frame.seq, frame.command, status);
         return;
     }
 
     /* ACK 在写入 RAM 之后立刻发；不等待渲染完成。 */
     send_ack(frame.seq, frame.command, outcome.result_code);
+
+    /* §6.1：查询状态在 ACK 之后紧跟一条 StateReport，载荷布局与 State read 相同。 */
+    if (outcome.state_report) {
+        uint8_t state[8];
+        lumen_led_engine_state_bytes(state);
+        uint8_t buf[LUMEN_MAX_FRAME];
+        size_t len = lumen_protocol_encode_state_report(frame.seq, state, buf, sizeof(buf));
+        if (len == 0 || lumen_ble_link_notify(buf, len) != ESP_OK) {
+            ESP_LOGW(TAG, "StateReport 发送失败 seq=0x%02X", frame.seq);
+        }
+    }
 }
 
 static int rx_access(uint16_t conn_handle, uint16_t attr_handle,
@@ -269,10 +298,17 @@ static int rx_access(uint16_t conn_handle, uint16_t attr_handle,
     /* 压力模式：#7 要求每次写入都带时间戳，用于和高频刷新做时间对齐。 */
     lumen_stress_note_ble_write(len);
 
-    /* 验收要求的一行：收到 N 字节。20 字节以内的帧顺带打 hex，日志仍是一行。 */
-    ESP_LOGI(TAG, "RX 收到 %u 字节", len);
-    if (len > 0 && len <= LUMEN_MAX_FRAME) {
-        ESP_LOG_BUFFER_HEX_LEVEL(TAG, buf, len, ESP_LOG_INFO);
+    /*
+     * 帧内容日志级别是 DEBUG：20Hz 拖动时每帧 4 行串口输出会占掉主机任务
+     * 近一半时间（115200 下约 220 字节 / 19-23ms），直接表现为拖动卡顿与 10008。
+     * 产品路径只在 handle_frame 里打一行 RX 汇总；需要看原始字节时把日志级别
+     * 调到 DEBUG（idf.py menuconfig → Log output → Default log verbosity）。
+     */
+    if (esp_log_level_get(TAG) >= ESP_LOG_DEBUG) {
+        ESP_LOGD(TAG, "RX 收到 %u 字节", len);
+        if (len > 0 && len <= LUMEN_MAX_FRAME) {
+            ESP_LOG_BUFFER_HEX_LEVEL(TAG, buf, len, ESP_LOG_DEBUG);
+        }
     }
 
     handle_frame(buf, len);

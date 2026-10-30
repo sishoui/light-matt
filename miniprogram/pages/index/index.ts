@@ -27,6 +27,7 @@ import {
 import {
   brightnessPercent as percentOf,
   clampBrightness,
+  effectiveMaxBrightness,
 } from "../../utils/control/brightness";
 import {
   ControlSession,
@@ -140,6 +141,8 @@ Page({
   wheelSaturation: INITIAL_HSV.s,
   /** 取色读数的上次 setData 时间。 */
   lastColorUiAt: 0,
+  /** 亮度读数的上次 setData 时间（与取色共用 50ms 闸门）。 */
+  lastBrightnessUiAt: 0,
   /** 预设请求序号：只让最新一次预设的结果回写 UI，避免旧色回跳。 */
   presetToken: 0,
   /** 隐藏日志面板模型（页面实例持有；数据源是 session 的 FrameLog）。 */
@@ -608,7 +611,14 @@ Page({
     }
     // 拖动中只刷新读数，不回写 slider.value：原生滑块自己的拇指已经跟手，
     // 这时改 value 反而可能造成回跳。控制值走 session 的 20Hz 节流。
-    this.setBrightnessView(value, false);
+    //
+    // 读数本身也按 50ms 闸门节流：原生滑块 bindchanging 可到 60Hz，
+    // 每帧 setData 三个字段在真机上比颜色拖动更容易卡（颜色拖动已有同一闸门）。
+    const now = Date.now();
+    if (now - this.lastBrightnessUiAt >= COLOR_UI_INTERVAL_MS) {
+      this.lastBrightnessUiAt = now;
+      this.setBrightnessView(value, false);
+    }
     session?.queueBrightness(value);
   },
 
@@ -899,6 +909,8 @@ Page({
           brightnessHintText: "连接后可调节",
           colorHintText: "连接后可选色",
           selectedPreset: "",
+          // 设备级值不能跨连接沿用：下一台设备的 max_brightness 可能不同。
+          maxBrightness: effectiveMaxBrightness(undefined),
           ledCount: 0,
           ledCountInput: "",
           ledCountHintText: "",
@@ -908,7 +920,9 @@ Page({
   },
 
   applyDeviceState(state: DeviceState) {
-    const max = state.maxBrightness > 0 ? state.maxBrightness : 255;
+    // 用与 session / brightness.ts 同一份「max_brightness 为 0 时按 255」规则，
+    // 不要在这内联一份。设备是权威：State read / StateReport 覆盖本地值。
+    const max = effectiveMaxBrightness(state.maxBrightness);
     const brightness = clampBrightness(state.brightness, max);
     const rgb: RGB = { r: state.r, g: state.g, b: state.b };
     const hsv = hsvForWheel(rgb, this.wheelHue);
