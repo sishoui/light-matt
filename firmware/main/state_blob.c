@@ -13,7 +13,7 @@ static const uint8_t s_blob_magic[4] = {'L', 'M', 'E', 'N'};
 #define BLOB_OFF_LED_COUNT 11
 #define BLOB_OFF_STRIP_COUNT 13
 #define BLOB_OFF_SEG_COUNT 14
-#define BLOB_OFF_SEGMENTS 15
+/* 每条灯带的灯珠数表与段表偏移统一取自 state_blob.h，避免两处各写一份。 */
 
 static void encode_segment(const lumen_segment_t *seg, uint8_t *out)
 {
@@ -68,7 +68,14 @@ size_t lumen_state_blob_encode(const lumen_persist_t *state,
     out[BLOB_OFF_STRIP_COUNT] = s->strip_count;
     out[BLOB_OFF_SEG_COUNT] = s->seg_count;
 
-    uint8_t *p = &out[BLOB_OFF_SEGMENTS];
+    /* 每条灯带的灯珠数（#29）：strip 0 用 State 的权威值，其余用快照里的表。 */
+    for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
+        uint16_t n = i == 0 ? s->led_count : state->strip_counts[i];
+        out[LUMEN_STRIP_COUNTS_OFFSET + i * 2] = (uint8_t)(n & 0xFF);
+        out[LUMEN_STRIP_COUNTS_OFFSET + i * 2 + 1] = (uint8_t)(n >> 8);
+    }
+
+    uint8_t *p = &out[LUMEN_SEGMENTS_OFFSET];
     for (uint8_t strip = 0; strip < LUMEN_MAX_STRIPS; ++strip) {
         for (uint8_t slot = 0; slot < LUMEN_MAX_SEGMENTS; ++slot) {
             encode_segment(&state->segments.slot[strip][slot], p);
@@ -137,7 +144,21 @@ bool lumen_state_blob_decode(const uint8_t *blob, size_t len, lumen_persist_t *o
     decoded.state.playback_state = 0;
     decoded.state.flags = 0;
 
-    const uint8_t *p = &blob[BLOB_OFF_SEGMENTS];
+    /* 每条灯带的灯珠数（#29）。越界视为损坏，不「尽量解析」。 */
+    for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
+        uint16_t n = (uint16_t)blob[LUMEN_STRIP_COUNTS_OFFSET + i * 2] |
+                     ((uint16_t)blob[LUMEN_STRIP_COUNTS_OFFSET + i * 2 + 1] << 8);
+        if (i < strip_count && (n < 1 || n > LUMEN_MAX_LEDS)) {
+            return false;
+        }
+        decoded.strip_counts[i] = n;
+    }
+    /* strip 0 必须与 State 的 led_count 一致，否则是自相矛盾的 blob。 */
+    if (decoded.strip_counts[0] != led_count) {
+        return false;
+    }
+
+    const uint8_t *p = &blob[LUMEN_SEGMENTS_OFFSET];
     uint8_t active_counts[LUMEN_MAX_STRIPS] = {0};
     for (uint8_t strip = 0; strip < LUMEN_MAX_STRIPS; ++strip) {
         for (uint8_t slot = 0; slot < LUMEN_MAX_SEGMENTS; ++slot) {

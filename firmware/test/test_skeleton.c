@@ -30,6 +30,7 @@
 #include "selftest.h"
 #include "state.h"
 #include "state_blob.h"
+#include "strip_planar.h"
 
 static int g_checks;
 static int g_failures;
@@ -1769,7 +1770,7 @@ static void test_state_blob(void)
     CHECK(blob[0] == 'L' && blob[1] == 'M' && blob[2] == 'E' && blob[3] == 'N');
     CHECK(blob[4] == (LUMEN_STATE_BLOB_VERSION & 0xFF));
     CHECK(blob[5] == (LUMEN_STATE_BLOB_VERSION >> 8));
-    CHECK(LUMEN_STATE_BLOB_VERSION == 2); /* v1 → v2：加了段表 */
+    CHECK(LUMEN_STATE_BLOB_VERSION == 3); /* v2 → v3：加了每条灯带的灯珠数 */
     CHECK(blob[6] == 1);
     CHECK(blob[7] == 200);
     CHECK(blob[8] == 1 && blob[9] == 2 && blob[10] == 3);
@@ -1820,7 +1821,7 @@ static void test_state_blob(void)
     bad[5] = 0x00;
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
     memcpy(bad, blob, sizeof(bad));
-    bad[4] = 0x03;
+    bad[4] = 0x04; /* 比当前版本更高：同样必须拒绝 */
     bad[5] = 0x00;
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
     /* 只有高字节错位的伪版本也拒绝。 */
@@ -1861,7 +1862,7 @@ static void test_state_blob(void)
      *    b) seg_count 与段表不一致；
      *    c) 未知 type；
      *    d) 同灯带内重叠。 */
-    const uint8_t seg_off = 15; /* BLOB_OFF_SEGMENTS */
+    const uint8_t seg_off = LUMEN_SEGMENTS_OFFSET; /* 段表偏移随布局走，不硬编码 */
     /* a) 把 seg 0 的 end 改成 64（led_count=64 → 越界）。 */
     memcpy(bad, blob, sizeof(bad));
     bad[seg_off + 2] = 64;
@@ -2887,6 +2888,225 @@ static void test_encode_segment_reports(void)
     CHECK(lumen_protocol_encode_segment_list_end(1, 0, 0x07, out, 7) == 0);
 }
 
+
+/* ---------------- #29 八引脚 TDM ---------------- */
+
+static void test_planar_parse_list(void)
+{
+    uint16_t out[LUMEN_MAX_STRIPS];
+
+    CHECK(lumen_planar_parse_list("3", out, LUMEN_MAX_STRIPS) == 1);
+    CHECK(out[0] == 3);
+
+    CHECK(lumen_planar_parse_list("3,4,5,6", out, LUMEN_MAX_STRIPS) == 4);
+    CHECK(out[0] == 3 && out[1] == 4 && out[2] == 5 && out[3] == 6);
+
+    /* 空白与逗号都当分隔符。 */
+    CHECK(lumen_planar_parse_list(" 1 , 2 ,3 ", out, LUMEN_MAX_STRIPS) == 3);
+    CHECK(out[0] == 1 && out[1] == 2 && out[2] == 3);
+
+    /* 空串 / 纯分隔符 → 0 项。 */
+    CHECK(lumen_planar_parse_list("", out, LUMEN_MAX_STRIPS) == 0);
+    CHECK(lumen_planar_parse_list(" , , ", out, LUMEN_MAX_STRIPS) == 0);
+
+    /* 非法：整串作废，不静默截断或跳过。 */
+    CHECK(lumen_planar_parse_list("3,x,5", out, LUMEN_MAX_STRIPS) == 0);
+    CHECK(lumen_planar_parse_list("3,,", out, LUMEN_MAX_STRIPS) != 0); /* 尾随分隔符可接受 */
+    CHECK(lumen_planar_parse_list("1,2,3", out, 2) == 0);             /* 超容量 */
+    CHECK(lumen_planar_parse_list(NULL, out, LUMEN_MAX_STRIPS) == 0);
+    CHECK(lumen_planar_parse_list("3", NULL, LUMEN_MAX_STRIPS) == 0);
+}
+
+static void test_planar_init_validation(void)
+{
+    lumen_planar_t planar;
+    uint8_t pins[LUMEN_MAX_STRIPS] = {3, 4, 5, 6, 7, 10, 20, 21};
+    uint16_t counts[LUMEN_MAX_STRIPS] = {64, 30, 30, 30, 30, 30, 30, 30};
+
+    CHECK(lumen_planar_init(&planar, pins, counts, 8));
+    CHECK(planar.strip_count == 8);
+    CHECK(planar.max_count == 64);
+    CHECK(lumen_planar_active_count(&planar) == 8);
+
+    /* 灯珠数越界：整份拒绝，planar 保持上一次的合法内容。 */
+    lumen_planar_t before = planar;
+    counts[3] = 0;
+    CHECK(!lumen_planar_init(&planar, pins, counts, 8));
+    CHECK(memcmp(&planar, &before, sizeof(planar)) == 0);
+
+    counts[3] = LUMEN_MAX_LEDS + 1;
+    CHECK(!lumen_planar_init(&planar, pins, counts, 8));
+
+    /* 引脚重复：TDM 下无法区分两条，必须拒绝。 */
+    counts[3] = 30;
+    uint8_t dup[2] = {3, 3};
+    uint16_t dup_counts[2] = {30, 30};
+    CHECK(!lumen_planar_init(&planar, dup, dup_counts, 2));
+
+    /* 条数越界。 */
+    CHECK(!lumen_planar_init(&planar, pins, counts, 0));
+    CHECK(!lumen_planar_init(&planar, pins, counts, LUMEN_MAX_STRIPS + 1));
+
+    /* 单条合法（走单灯带路径）。 */
+    CHECK(lumen_planar_init(&planar, pins, counts, 1));
+    CHECK(planar.strip_count == 1);
+}
+
+static void test_planar_round_robin(void)
+{
+    lumen_planar_t planar;
+    uint8_t pins[4] = {3, 4, 5, 6};
+    uint16_t counts[4] = {10, 20, 30, 40};
+    CHECK(lumen_planar_init(&planar, pins, counts, 4));
+
+    /* 严格轮询顺序 0,1,2,3,0,1,... */
+    for (int round = 0; round < 3; ++round) {
+        for (uint8_t i = 0; i < 4; ++i) {
+            CHECK(lumen_planar_next(&planar) == i);
+        }
+    }
+
+    /* 降级 1 号：轮询跳过它，顺序变成 0,2,3。 */
+    CHECK(lumen_planar_mark_degraded(&planar, 1));
+    CHECK(!lumen_planar_mark_degraded(&planar, 1)); /* 第二次不再算「首次」 */
+    CHECK(lumen_planar_active_count(&planar) == 3);
+    CHECK(lumen_planar_next(&planar) == 0);
+    CHECK(lumen_planar_next(&planar) == 2);
+    CHECK(lumen_planar_next(&planar) == 3);
+
+    /* 恢复后重新参与。 */
+    CHECK(lumen_planar_revive(&planar, 1));
+    CHECK(!lumen_planar_revive(&planar, 1)); /* 本来就没降级 */
+    CHECK(lumen_planar_active_count(&planar) == 4);
+    for (uint8_t i = 0; i < 4; ++i) {
+        CHECK(lumen_planar_next(&planar) == i);
+    }
+
+    /* 全部降级 → NONE，且不死循环（每次调用都立刻返回）。 */
+    for (uint8_t i = 0; i < 4; ++i) {
+        lumen_planar_mark_degraded(&planar, i);
+    }
+    CHECK(lumen_planar_active_count(&planar) == 0);
+    for (int i = 0; i < 10; ++i) {
+        CHECK(lumen_planar_next(&planar) == LUMEN_PLANAR_NONE);
+    }
+
+    /* 一条降级、其余正常：这是票面「一条不接不影响其它 7 条」。 */
+    CHECK(lumen_planar_revive_all(&planar) == 4);
+    CHECK(lumen_planar_active_count(&planar) == 4);
+    lumen_planar_mark_degraded(&planar, 2);
+    int seen = 0;
+    for (uint8_t i = 0; i < 6; ++i) {
+        uint8_t id = lumen_planar_next(&planar);
+        CHECK(id != 2);
+        CHECK(id != LUMEN_PLANAR_NONE);
+        ++seen;
+    }
+    CHECK(seen == 6);
+}
+
+static void test_planar_set_count(void)
+{
+    lumen_planar_t planar;
+    uint8_t pins[2] = {3, 4};
+    uint16_t counts[2] = {64, 30};
+    CHECK(lumen_planar_init(&planar, pins, counts, 2));
+    CHECK(planar.max_count == 64);
+
+    /* 把最大的那条调小：max_count 必须重算，否则句柄白白按 64 建。 */
+    CHECK(lumen_planar_set_count(&planar, 0, 20));
+    CHECK(planar.max_count == 30);
+    CHECK(lumen_planar_get(&planar, 0)->count == 20);
+
+    /* 越界一律拒绝，且不改值。 */
+    CHECK(!lumen_planar_set_count(&planar, 0, 0));
+    CHECK(!lumen_planar_set_count(&planar, 0, LUMEN_MAX_LEDS + 1));
+    CHECK(!lumen_planar_set_count(&planar, 2, 10)); /* 不存在的条 */
+    CHECK(lumen_planar_get(&planar, 0)->count == 20);
+
+    /* 取不存在的条返回 NULL。 */
+    CHECK(lumen_planar_get(&planar, 2) == NULL);
+}
+
+static void test_planar_stats(void)
+{
+    lumen_planar_stats_t st;
+    lumen_planar_stats_reset(&st);
+    CHECK(st.rounds == 0);
+    CHECK(lumen_planar_stats_avg_us(&st) == 0);
+
+    lumen_planar_note_round(&st, 17600, 8);
+    lumen_planar_note_round(&st, 18000, 7);
+    CHECK(st.rounds == 2);
+    CHECK(st.strips_pushed == 15);
+    CHECK(st.round_us_last == 18000);
+    CHECK(st.round_us_max == 18000);
+    CHECK(lumen_planar_stats_avg_us(&st) == 17800);
+
+    /* 最大值只升不降。 */
+    lumen_planar_note_round(&st, 1000, 8);
+    CHECK(st.round_us_max == 18000);
+    CHECK(st.round_us_last == 1000);
+
+    /* 全 NULL 安全。 */
+    lumen_planar_stats_reset(NULL);
+    lumen_planar_note_round(NULL, 1, 1);
+    CHECK(lumen_planar_stats_avg_us(NULL) == 0);
+}
+
+static void test_planar_null_safety(void)
+{
+    CHECK(lumen_planar_next(NULL) == LUMEN_PLANAR_NONE);
+    CHECK(lumen_planar_active_count(NULL) == 0);
+    CHECK(!lumen_planar_mark_degraded(NULL, 0));
+    CHECK(!lumen_planar_revive(NULL, 0));
+    CHECK(lumen_planar_revive_all(NULL) == 0);
+    CHECK(!lumen_planar_set_count(NULL, 0, 10));
+    CHECK(lumen_planar_get(NULL, 0) == NULL);
+}
+
+
+/* #29：每条灯带的灯珠数必须持久化（票面「断电重启后 8 条灯带的配置全部恢复」）。 */
+static void test_blob_strip_counts(void)
+{
+    lumen_persist_t in;
+    lumen_state_defaults(&in.state, 64);
+    lumen_segment_store_init(&in.segments);
+    in.state.strip_count = 8;
+    in.state.led_count = 64;
+    /* strip 0 由 state.led_count 决定（64），1..7 取各自的值。 */
+    for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
+        in.strip_counts[i] = i == 0 ? 64 : (uint16_t)(10 + i);
+    }
+
+    uint8_t blob[LUMEN_STATE_BLOB_SIZE];
+    CHECK(lumen_state_blob_encode(&in, blob) == LUMEN_STATE_BLOB_SIZE);
+
+    lumen_persist_t out;
+    memset(&out, 0, sizeof(out));
+    CHECK(lumen_state_blob_decode(blob, sizeof(blob), &out));
+    CHECK(out.state.strip_count == 8);
+    CHECK(out.strip_counts[0] == 64); /* 编码器强制 = state.led_count */
+    for (uint8_t i = 1; i < LUMEN_MAX_STRIPS; ++i) {
+        CHECK(out.strip_counts[i] == (uint16_t)(10 + i));
+    }
+    /* strip 0 的灯珠数与 State 的 led_count 必须一致（编码器强制）。 */
+    CHECK(out.strip_counts[0] == out.state.led_count);
+
+    /* 某条灯珠数越界 → 整份视为损坏。 */
+    uint8_t bad[LUMEN_STATE_BLOB_SIZE];
+    memcpy(bad, blob, sizeof(bad));
+    bad[LUMEN_STRIP_COUNTS_OFFSET + 3 * 2] = 0; /* strip 3 的 count = 0 → 非法 */
+    bad[LUMEN_STRIP_COUNTS_OFFSET + 3 * 2 + 1] = 0;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+
+    /* strip 0 与 led_count 矛盾 → 拒绝。 */
+    memcpy(bad, blob, sizeof(bad));
+    bad[11] = 30; /* led_count 改成 30，但 strip_counts[0] 仍是 64 */
+    bad[12] = 0;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+}
+
 int main(int argc, char **argv)
 {
     const char *vectors = argc > 1 ? argv[1] : "docs/protocol-testvectors.json";
@@ -2932,6 +3152,13 @@ int main(int argc, char **argv)
     test_effects_breathing_phase();
     test_effects_breathing_envelope();
     test_effects_breathing_gain_and_pixel();
+    test_blob_strip_counts();
+    test_planar_parse_list();
+    test_planar_init_validation();
+    test_planar_round_robin();
+    test_planar_set_count();
+    test_planar_stats();
+    test_planar_null_safety();
 
     if (g_failures != 0) {
         fprintf(stderr, "\n%d/%d checks failed\n", g_failures, g_checks);

@@ -40,28 +40,36 @@ void lumen_led_render_counters(uint32_t *drawn, uint32_t *skipped)
     }
 }
 
-/*
- * 渲染一份快照。调用者是渲染任务，且持有灯带句柄的唯一所有权。
- *
- * 合成两步（docs/v2-effects-engine.md §4.2）：
- *   ① 未覆盖区清零 —— 由 lumen_segment_store_compose 的 memset 完成；
- *   ② 每颗灯统一过 gamma + 亮度 —— 在下面的循环里，**不在** effects 里。
- *
- * 没有活动段时走 v1 单色路径：整条填充 state->r/g/b。这不是两套渲染循环，
- * 只是「同一个像素缓冲的两种填充方式」，去重、gamma、刷灯完全共用。
- *
- * selftest 是渲染任务在锁内拷出的一份自检快照（不能直接读 s_selftest：
- * BLE 回调可能并发取消/重启）。「自检覆盖 vs 存储状态」的规则集中在
- * lumen_selftest_compose()。自检期间必须走单色路径——自检的语义是让用户
- * 确认硬件没坏，此时不该显示分段颜色（§7.1）。
- */
-void lumen_led_render_snapshot(led_strip_handle_t strip, const lumen_state_t *snapshot,
-                               const lumen_segment_store_t *segments,
-                               const lumen_selftest_t *selftest, uint8_t max_brightness,
-                               uint32_t now_ms)
+void lumen_led_render_note_drawn(void)
 {
-    if (snapshot == NULL) {
-        return;
+    ++s_frames_drawn;
+}
+
+void lumen_led_render_note_skipped(void)
+{
+    ++s_frames_skipped;
+}
+
+/*
+ * 合成一条灯带的像素（用户空间 RGB，已过 gamma + 亮度），不刷灯。
+ *
+ * 这是 #29 TDM 的基础：每条灯带各自调用一次，得到自己那一帧。
+ * lumen_led_render_snapshot 也用本函数，保证单灯带与多灯带只有一套合成规则。
+ *
+ * 规则（docs/v2-effects-engine.md §4.2）：
+ *   ① 未覆盖区清零 —— 由 lumen_segment_store_compose 的 memset 完成；
+ *   ② 逐颗统一过 gamma + 亮度 —— **不在** effects 里做。
+ *
+ * 没有活动段时走 v1 单色路径（整条 state->r/g/b）。自检期间强制走单色（§7.1）。
+ */
+static uint16_t compose_frame(const lumen_state_t *snapshot,
+                              const lumen_segment_store_t *segments,
+                              const lumen_selftest_t *selftest, uint8_t max_brightness,
+                              uint32_t now_ms, uint8_t strip_id, uint16_t strip_count_hint,
+                              uint8_t *frame, uint16_t cap)
+{
+    if (snapshot == NULL || frame == NULL) {
+        return 0;
     }
 
     uint8_t stored_rgb[3] = {snapshot->r, snapshot->g, snapshot->b};
@@ -73,26 +81,29 @@ void lumen_led_render_snapshot(led_strip_handle_t strip, const lumen_state_t *sn
     lumen_selftest_compose(selftest, snapshot->power, clamped, stored_rgb, max_brightness, rgb,
                            &brightness);
 
-    uint16_t count = snapshot->led_count;
+    /*
+     * 灯珠数：strip 0 沿用 State 里的权威值；其它条用调用方给的 hint
+     * （#29 每条独立，State 只有 strip 0 的 led_count 字段）。
+     */
+    uint16_t count = strip_id == 0 ? snapshot->led_count : strip_count_hint;
     if (count == 0) {
         count = 1; /* 防御：句柄至少 1 颗，避免 0 长度缓冲比较 */
     }
     if (count > LUMEN_MAX_LEDS) {
         count = LUMEN_MAX_LEDS;
     }
+    if (count > cap) {
+        count = cap;
+    }
 
-    /* 是否走分段合成：自检期间一律单色（§7.1「自检是渲染层的最高优先级覆盖」）。 */
-    bool segmented = selftest == NULL || !lumen_selftest_active(selftest);
-    segmented = segmented && segments != NULL &&
-                lumen_segment_store_any_active(segments, 0) && snapshot->power != 0;
+    bool selftest_on = selftest != NULL && lumen_selftest_active(selftest);
+    bool segmented = !selftest_on && segments != NULL &&
+                     lumen_segment_store_any_active(segments, strip_id) && snapshot->power != 0;
 
-    uint8_t frame[LUMEN_MAX_LEDS * 3];
     if (segmented) {
-        /* ① compose 内部先 memset(buf, 0, count*3)：未覆盖的灯珠必须是 0。
-         *    返回的是用户空间 RGB（不含 gamma / 亮度）。 */
-        (void)lumen_segment_store_compose(segments, 0, frame, count, now_ms);
+        /* ① compose 内部先 memset(buf, 0, count*3)：未覆盖的灯珠必须是 0。 */
+        (void)lumen_segment_store_compose(segments, strip_id, frame, count, now_ms);
     } else {
-        /* v1 路径：整条同一个用户空间颜色。 */
         for (uint16_t i = 0; i < count; ++i) {
             frame[i * 3u + 0] = rgb[0];
             frame[i * 3u + 1] = rgb[1];
@@ -106,6 +117,62 @@ void lumen_led_render_snapshot(led_strip_handle_t strip, const lumen_state_t *sn
         frame[i * 3u + 1] = lumen_gamma_apply(frame[i * 3u + 1], brightness);
         frame[i * 3u + 2] = lumen_gamma_apply(frame[i * 3u + 2], brightness);
     }
+    return count;
+}
+
+uint16_t lumen_led_render_compose_strip(const lumen_state_t *snapshot,
+                                        const lumen_segment_store_t *segments,
+                                        const lumen_selftest_t *selftest,
+                                        uint8_t max_brightness, uint32_t now_ms,
+                                        uint8_t strip_id, uint16_t strip_count,
+                                        uint8_t *out_frame, uint16_t out_cap)
+{
+    if (strip_id >= LUMEN_MAX_STRIPS) {
+        return 0;
+    }
+    return compose_frame(snapshot, segments, selftest, max_brightness, now_ms, strip_id,
+                         strip_count, out_frame, (uint16_t)(out_cap / 3u));
+}
+
+bool lumen_led_render_strip_is_animated(const lumen_segment_store_t *segments, uint8_t strip_id)
+{
+    if (segments == NULL || strip_id >= LUMEN_MAX_STRIPS) {
+        return false;
+    }
+    /* 逐段问效果层「是否动画」：判据只有一处，不在渲染层另写一份类型表。 */
+    for (uint8_t i = 0; i < LUMEN_MAX_SEGMENTS; ++i) {
+        const lumen_segment_t *seg = lumen_segment_store_get(segments, strip_id, i);
+        if (seg != NULL && seg->active && lumen_effect_is_animated(seg->type)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * 渲染一份快照（单灯带路径）。调用者是渲染任务，且持有句柄唯一所有权。
+ *
+ * 多灯带（#29）由渲染任务按 TDM 逐条调用 lumen_led_render_compose_strip 再刷，
+ * 那条路径的去重由 led_engine 负责（每条灯带各自比较自己的上一帧）。
+ */
+void lumen_led_render_snapshot(led_strip_handle_t strip, const lumen_state_t *snapshot,
+                               const lumen_segment_store_t *segments,
+                               const lumen_selftest_t *selftest, uint8_t max_brightness,
+                               uint32_t now_ms)
+{
+    if (snapshot == NULL) {
+        return;
+    }
+
+    uint8_t frame[LUMEN_MAX_LEDS * 3];
+    uint16_t count = compose_frame(snapshot, segments, selftest, max_brightness, now_ms, 0,
+                                  snapshot->led_count, frame, LUMEN_MAX_LEDS);
+    if (count == 0) {
+        return;
+    }
+
+    bool segmented = (selftest == NULL || !lumen_selftest_active(selftest)) && segments != NULL &&
+                     lumen_segment_store_any_active(segments, 0) && snapshot->power != 0;
 
     if (s_rendered_valid && count == s_rendered_count &&
         memcmp(frame, s_rendered_frame, (size_t)count * 3u) == 0) {
@@ -136,13 +203,13 @@ void lumen_led_render_snapshot(led_strip_handle_t strip, const lumen_state_t *sn
         ESP_LOGI(TAG,
                  "render seg: n=%u b=%u p=%u frame=%u [0]=%u,%u,%u [%u]=%u,%u,%u "
                  "[%u]=%u,%u,%u",
-                 count, brightness, snapshot->power, (unsigned)s_frames_drawn, frame[0],
+                 count, snapshot->brightness, snapshot->power, (unsigned)s_frames_drawn, frame[0],
                  frame[1], frame[2], mid, frame[mid * 3u], frame[mid * 3u + 1],
                  frame[mid * 3u + 2], (unsigned)(count - 1), frame[(count - 1u) * 3u],
                  frame[(count - 1u) * 3u + 1], frame[(count - 1u) * 3u + 2]);
     } else {
-        ESP_LOGI(TAG, "render: (%u,%u,%u) x %u brightness=%u power=%u", rgb[0], rgb[1], rgb[2],
-                 count, brightness, snapshot->power);
+        ESP_LOGI(TAG, "render: n=%u brightness=%u power=%u", count, snapshot->brightness,
+                 snapshot->power);
     }
 
     if (lumen_led_strip_owner_push_pixels(strip, frame, count) != ESP_OK) {

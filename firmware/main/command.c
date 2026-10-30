@@ -144,16 +144,17 @@ bool lumen_command_changes_state(uint8_t command)
  *  - 这里只校验并标记「需要重建」。数量必须在渲染任务重建 led_strip 成功后
  *    才写入共享状态，ACK 也要等重建结果——所以本 reducer 不改 next、
  *    state_changed 保持 false，由 led_engine 在重建完成时提交 / 回滚。
- *  - strip_id 目前只接受 0：多灯带（#29）尚未实现，其它值回 0x01。
- *    先校验 strip_id 再校验数量，保证「这条命令到底改哪条灯带」先被确认。
+ *  - strip_id 必须先落在 0 ≤ strip_id < strip_count 内（#29 之后多条灯带各自
+ *    独立设置灯珠数）。先校验 strip_id 再校验数量，保证「这条命令到底改
+ *    哪条灯带」先被确认。
  *  - 越界（0、>64、小端读出的 65535 等）→ 0x01，不请求重建、不改状态。
  */
-static void dispatch_set_led_count(const lumen_frame_t *frame,
+static void dispatch_set_led_count(const lumen_frame_t *frame, const lumen_state_t *current,
                                    lumen_command_outcome_t *outcome)
 {
     uint8_t strip_id = frame->payload[0];
-    if (strip_id != 0) {
-        /* 多灯带 #29 落地；现在设备只有一条灯带，拒绝而不是静默忽略。 */
+    if (strip_id >= current->strip_count || strip_id >= LUMEN_MAX_STRIPS) {
+        /* 不存在的灯带：拒绝而不是静默忽略，否则用户以为设成功但没反应。 */
         outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
         return;
     }
@@ -165,6 +166,7 @@ static void dispatch_set_led_count(const lumen_frame_t *frame,
     outcome->result_code = LUMEN_RESULT_OK;
     outcome->led_count_rebuild = true;
     outcome->led_count = count;
+    outcome->led_count_strip = strip_id;
 }
 
 /*
@@ -327,6 +329,7 @@ void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *cur
     outcome->state_report = false;
     outcome->led_count_rebuild = false;
     outcome->led_count = current->led_count;
+    outcome->led_count_strip = 0;
     outcome->segment_op = false;
     outcome->segment_clear = false;
     outcome->segment_strip = 0;
@@ -364,7 +367,7 @@ void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *cur
          * 否则 SetLedCount 不会置 cancels_selftest（§11.2 第 5 条要求灯珠
          * 数量变更同样立即取消自检）。
          */
-        dispatch_set_led_count(frame, outcome);
+        dispatch_set_led_count(frame, current, outcome);
         break;
 
     case LUMEN_CMD_SET_SEGMENT:

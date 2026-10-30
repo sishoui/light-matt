@@ -10,6 +10,23 @@ menu "Lumen"
             GPIO18/19（USB Serial/JTAG）、GPIO20/21（UART0）、
             GPIO4-7（JTAG）、GPIO2/8/9（strapping）。
 
+    config LUMEN_STRIP_PINS
+        string "多灯带引脚列表（逗号分隔，1-8 个）"
+        default "3"
+        help
+            第 0 条灯带的数据脚在第一项；后续项是第 1..7 条。
+
+            只给一个引脚（默认 "3"）时走单灯带路径，行为与 v1 逐字节一致。
+            给 2-8 个引脚时进入 TDM 轮询（#29）：C3 只有 2 个 RMT TX 通道，
+            8 条灯带共用一个通道，运行时用 led_strip_switch_gpio 切换输出引脚，
+            靠 WS2812B 锁存保持各条画面。
+
+            引脚不能重复（否则两条灯带无法区分，初始化会拒绝并退回单灯带）。
+            禁用/慎用引脚见 LUMEN_LED_GPIO 的说明。
+
+            注意：这里只决定「有几条、在哪几个引脚」。每条灯珠数由小程序的
+            SetLedCount 分别设置，初始都取 LUMEN_LED_COUNT。
+
     config LUMEN_LED_COUNT
         int "灯珠数量"
         default 30
