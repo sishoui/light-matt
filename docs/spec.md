@@ -1,6 +1,6 @@
 # lumen MVP · 实现规格
 
-**状态**：`已实现并验收通过`（2026-10-30：#14 七条通过）。仍未验证的两项：#7 RMT × BLE 共存（用户决定跳过）与 iOS 全链路（下阶段用 iPad 补测），见 [handoff.md](./handoff.md) §1 与 [end-to-end-acceptance.md](./end-to-end-acceptance.md) §3。
+**状态**：`已实现并验收通过`（2026-10-30：#14 七条通过；Android 与 iOS/iPad 均验）。唯一未验证项是 #7 RMT × BLE 共存（用户决定跳过），见 [handoff.md](./handoff.md) §1 与 [end-to-end-acceptance.md](./end-to-end-acceptance.md) §3。
 
 **GitHub issue**：[#1](https://github.com/sishoui/light-matt/issues/1)（父 issue，已关闭；13 张实现票是它的 sub-issues）
 

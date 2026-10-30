@@ -64,7 +64,7 @@ GitHub 实现票（13 张）与本地 wayfinder 票的对应关系：本地 06/0
 
 - **BLE × 固件 × WS2812 事实核查**（调研，[研究笔记](./research/ble-and-firmware-facts.md)）：确认 20 字节是硬约束且 iOS 超长写会静默失败；C3 的 RMT 无 DMA 且单核，与 BLE 共存存在波形损坏风险；3.3V 驱动 5V WS2812B 在规格上不达标（VIH=3.5V）。详见研究笔记，已并入架构基线。
 - **开发环境就绪**（[GitHub #3](https://github.com/sishoui/light-matt/issues/3)，[环境文档](../dev-environment.md)）：ESP-IDF v5.4 工具链装好；hello_world 烧录 COM6 并输出；led_strip 依赖编译通过；微信开发者工具真机预览通过。芯片实际 4MB flash，正式固件按 4MB 配置。
-- **小程序 BLE 探测**（[GitHub #5](https://github.com/sishoui/light-matt/issues/5)，[实测笔记](../ble-notes.md)）：Android 16 真机验证扫描/连接/MTU/notify/写/回显；deviceId 是 MAC，`setBLEMTU(185)` 实际回包 256；连接间隔 30ms；20/50/100ms 各 20 帧全部回显；重连成功。iOS 未测（无设备），按官方文档记录，留到端到端验收。
+- **小程序 BLE 探测**（[GitHub #5](https://github.com/sishoui/light-matt/issues/5)，[实测笔记](../ble-notes.md)）：Android 16 真机验证扫描/连接/MTU/notify/写/回显；deviceId 是 MAC，`setBLEMTU(185)` 实际回包 256；连接间隔 30ms；20/50/100ms 各 20 帧全部回显；重连成功。iOS 当时无设备未测，后于 2026-10-30 用 iPad 补测通过（见本图 Decisions 里「iOS 与 Android 的 BLE 行为差异」）。
 - **协议规格定稿**（[GitHub #2](https://github.com/sishoui/light-matt/issues/2)，规格见 [protocol.md](../protocol.md)）：帧 ≤20 字节、小端、校验和覆盖 magic..payload 后取反；7 条命令 + ACK/Event/StateReport；State 固定 8 字节；结果码 0x00-0x09；ACK 在写入 RAM 后回，NVS 失败用 Event 0x81；自检与灯珠数量重建语义已定。测试向量在 `docs/protocol-testvectors.json`。
 - **led_strip 点灯验证**（[GitHub #4](https://github.com/sishoui/light-matt/issues/4)，接线与验收步骤见 [led-bringup.md](../led-bringup.md)）：GPIO3 + RMT 10MHz + `mem_block_symbols=48` + 无 DMA。**64 灯 WS2812B 已点亮**，自检 红→绿→蓝→白 四色正确，因此**通道顺序就是 GRB**，`LUMEN_LED_COLOR_ORDER` 保持默认。5 分钟 soak 中 10/10 心跳准点、`refresh_errors=0`、无重启。
 
@@ -104,8 +104,11 @@ GitHub 实现票（13 张）与本地 wayfinder 票的对应关系：本地 06/0
   可复现判据：纯白在低/中/高亮度下是否发紫/发黄；200 上限下高亮度应明显好于 255。
 - **iOS 与 Android 的 BLE 行为差异**。已知形态：`setBLEMTU` 仅 Android；iOS 超长写静默失败；Android 上 notify 后立即写报 10008；Android 6.0+ 扫描需定位权限。这些已写进基线。但**具体机型**的差异（尤其国产 Android 的权限弹窗与蓝牙开关行为）要等【小程序 BLE 探测】真机摸过才知道要不要再票。
 
-  **iOS 全链路仍未测（2026-10-30）**：MVP 验收时手上无 iOS 设备，iOS 分支按官方文档实现（跳过 `setBLEMTU`、超长写静默失败、`state` 0-4 映射文案）。
-  **用户现有 iPad，下阶段用它补测**，届时确认 deviceId 形态、权限弹窗、超长写行为与文案映射。
+  **iOS 已于 2026-10-30 用 iPad 补测通过**：完整七条走过，并确认 deviceId 为 UUID、
+  `setBLEMTU` 被正确跳过、`scope.bluetooth` 授权正常、无超长写相关异常、设备名
+  `Lumen-XXXX` 显示正常（说明扫描响应包在 iOS 前台可见）。详见
+  [`ble-notes.md`](../ble-notes.md) §iOS。**iOS 后台扫描仍未测**——后台只认广播包
+  里的 UUID，做后台常驻时需重新确认。
 - **灯效引擎的架构**。呼吸、彩虹、流光这类动画需要帧率驱动，和现在的 latest-wins 单帧模型不是一回事。明确是 MVP 之后的事，但现在放置顶决定（比如状态机字段怎么留）会影响后续成本。注意：固定帧率驱动会加重上面那条 RMT 风险。
 - **多设备管理**。广播名后缀已留好扩展位，但「一台手机管三条灯带」需要设备列表、分组、并发连接策略。微信 BLE 的同时连接上限**官方无数字**，只能实测。等单设备跑通再说。
 

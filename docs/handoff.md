@@ -25,9 +25,12 @@
 > [GitHub #7 的最新评论](https://github.com/sishoui/light-matt/issues/7#issuecomment-6524474831)，
 > 照着做即可（含跑完烧回产品固件）。
 >
-> **另外三项也没验**：iOS 全链路（无 iOS 设备，用户现有 iPad，下阶段补测）、
-> 小程序切后台回前台的静默回连、改灯珠数量时的毫秒级黑屏。逐条见
-> [`end-to-end-acceptance.md`](../end-to-end-acceptance.md) §3。不要因为 §4 七条全绿就以为只剩 #7。
+> **另外两项也没验**：小程序切后台回前台的静默回连、改灯珠数量时的毫秒级黑屏。
+> 逐条见 [`end-to-end-acceptance.md`](../end-to-end-acceptance.md) §3。不要因为 §4 七条全绿就以为只剩 #7。
+>
+> **iOS 已于 2026-10-30 用 iPad 补测通过**（完整七条 + deviceId 为 UUID、
+> 跳过 `setBLEMTU`、授权正常、无超长写异常、设备名显示正常）。详见
+> [`ble-notes.md`](../ble-notes.md) §iOS。iOS 后台扫描仍未测。
 
 验证基线（改代码后应保持）：
 
@@ -232,8 +235,9 @@ python scripts/capture-serial.py COM6 10 --reset  # 先复位再抓启动日志
 
 验收时**不要**把这些当 bug：
 
-- **iOS 全链路未测**（MVP 验收时无设备）。iOS 分支按官方文档实现：跳过 `setBLEMTU`、
-  超长写静默失败、`state` 0-4 映射文案。**用户现有 iPad，下阶段补测。**
+- **iOS 后台扫描未测**（前台七条已用 iPad 验完，2026-10-30）。iOS 后台只认广播包
+  里的 UUID，而固件把名字放在扫描响应包；若将来做后台常驻 / 快速回连，需重新确认
+  发现率与设备名是否可见。详见 [`ble-notes.md`](../ble-notes.md) §iOS。
 - **全白 255 的长期供电**没专门测，且已不成问题：亮度上限已定为
   `max_brightness=200`，不会输出 255。按亮度折算 64 灯全白约 **3.0A**（255 时实测
   3.8A，线性折算，未单独实测）。
