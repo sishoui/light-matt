@@ -66,18 +66,32 @@ import { MAX_LEDS, MIN_LEDS } from "../protocol/constants";
 import type { UsageLogSink } from "../usage/logger";
 import {
   breathingSegment,
+  cmdActivateScript,
   cmdClearSegment,
   cmdQueryState,
+  cmdScriptAbort,
   cmdSelfTest,
   cmdSetBrightness,
   cmdSetLedCount,
+  cmdSetPlayback,
   cmdSetPower,
   cmdSetSegment,
   cometSegment,
   rainbowSegment,
   staticSegment,
+  type ScriptSummary,
 } from "../protocol/commands";
 import { rgbToHsv } from "../color/hsv";
+import {
+  buildAbort,
+  buildScriptPlan,
+  scriptProgressView,
+  validateScript,
+  type ScriptConfig,
+  type ScriptPlanOptions,
+  type ScriptProgressView,
+  type ScriptValidation,
+} from "./script-plan";
 import type {
   AckResult,
   CommandRequest,
@@ -165,6 +179,28 @@ export type CommandResult =
 
 /** #9 起沿用的名字；与 CommandResult 完全等价。 */
 export type PowerResult = CommandResult;
+
+/** SetPlayback 的 action（docs/protocol.md §10.5）。 */
+export type PlaybackAction = 0 | 1 | 2;
+
+/**
+ * 剧本命令的结果（#32）。
+ *
+ * 与 CommandResult 的区别：多了 `invalid`（本端预检就没过，一帧都没发），
+ * 以及成功时不强求 DeviceState（读回失败也不该让下发看起来失败）。
+ */
+export type ScriptResult =
+  | { kind: "ok"; plan?: unknown; state?: DeviceState | null }
+  | { kind: "invalid"; message: string }
+  | { kind: "ack-error"; ack: AckResult }
+  | { kind: "stale" }
+  | { kind: "error"; message: string };
+
+/** QueryScript 的结果（ScriptSummary 是设备权威）。 */
+export type ScriptSummaryResult =
+  | { kind: "ok"; summary: ScriptSummary }
+  | { kind: "stale" }
+  | { kind: "error"; message: string };
 
 const DEFAULT_RETRY_AFTER_GAP_MS = 500;
 
@@ -602,6 +638,180 @@ export class ControlSession {
   /** 调试兜底：QueryState（次要路径，主路径是 State read）。 */
   async queryState(): Promise<AckResult> {
     return this.sendCommand(cmdQueryState());
+  }
+
+  /* ---------------- #32 剧本 ---------------- */
+
+  /**
+   * 下发一套剧本并（默认）激活它。
+   *
+   * 帧序由 script-plan 的纯函数决定（Begin → Stage/Segment… → Commit →
+   * Activate）。这里只负责逐帧发送与失败处理：
+   *
+   *  - 任何一帧 ACK 非零 → 立即 ScriptAbort 丢弃设备暂存，**旧剧本保持可用**
+   *    （设备侧 commit 才替换，这是协议保证的，也是本函数的前提）；
+   *  - 传输异常 → 同样尝试 Abort（尽力而为，链路已断时它会失败，无所谓：
+   *    设备上没 commit 的暂存不会被激活）。
+   *
+   * `onProgress` 以**每帧 ACK** 为权威（§10.4）；设备侧的 0x86 只是旁证，
+   * 由 transport 的 onScriptProgress 单独广播，不参与这里的计数。
+   */
+  async downloadScript(
+    script: ScriptConfig,
+    opts: ScriptPlanOptions = {},
+    onProgress?: (view: ScriptProgressView) => void,
+  ): Promise<ScriptResult> {
+    if (this.transport.linkState !== "ready") {
+      return { kind: "error", message: "设备未连接" };
+    }
+
+    const validation = this.validateScriptForDevice(script);
+    if (!validation.ok) {
+      return { kind: "invalid", message: validation.message };
+    }
+
+    const plan = buildScriptPlan(script, opts);
+    const requests = plan.steps.map((step) => step.request);
+    const epoch = this.reconnect.epoch;
+    onProgress?.(scriptProgressView(plan, 0));
+
+    try {
+      await this.transport.sendSequence(requests, (done) => {
+        onProgress?.(scriptProgressView(plan, done));
+      });
+    } catch (err) {
+      /* 尽力丢弃暂存：绝不让设备停在半套状态（它本来也不会，但暂存会占着）。 */
+      try {
+        await this.transport.sendAndWaitAck(buildAbort(script.scriptId));
+      } catch {
+        /* 链路已断：暂存不 commit 就不会生效，可以忽略。 */
+      }
+      if (this.reconnect.isStale(epoch)) {
+        return { kind: "stale" };
+      }
+      return { kind: "error", message: errorText(err) };
+    }
+
+    if (this.reconnect.isStale(epoch)) {
+      return { kind: "stale" };
+    }
+    onProgress?.(scriptProgressView(plan, plan.frameCount));
+    /* 激活成功：把设备权威的 State 读回来（script_id / flags 已经变了）。 */
+    const state = await this.refreshState().catch(() => this.latestState);
+    return { kind: "ok", plan, state: state ?? this.latestState };
+  }
+
+  /** 用设备侧灯珠数校验剧本（本端预检，让用户在发第一帧前就看到原因）。 */
+  validateScriptForDevice(script: ScriptConfig): ScriptValidation {
+    const ledCounts = this.currentLedCounts();
+    return validateScript(script, ledCounts);
+  }
+
+  /**
+   * 各条灯带的灯珠数。
+   *
+   * 设备 State 只报 strip 0 的 led_count；多条灯带的 per-strip 数字要靠
+   * QueryStrip 之外的路径拿，v2 目前没有专门命令，所以其余条沿用 strip 0
+   * 的值（与固件 lumen_command_strip_count 的回落规则一致）。
+   */
+  private currentLedCounts(): number[] {
+    const count = this.latestState?.ledCount ?? 0;
+    const strips = this.latestState?.stripCount ?? 1;
+    const out: number[] = [];
+    for (let i = 0; i < strips; i += 1) {
+      out.push(count);
+    }
+    return out;
+  }
+
+  /**
+   * 播放控制（SetPlayback 0x13）。
+   *
+   *  - stop：播放头回 stage 0，画面回静态配置；
+   *  - play：从**当前播放头**继续（暂停后即继续，不从头）；
+   *  - pause：冻结播放头与画面。
+   *
+   * `loop` 三种 action 下都会写入（设备侧持久化，§10.5）。
+   */
+  async setPlayback(action: PlaybackAction, loop: boolean): Promise<ScriptResult> {
+    const epoch = this.reconnect.epoch;
+    try {
+      const ack = await this.sendCommand(cmdSetPlayback(action, loop));
+      if (this.reconnect.isStale(epoch)) {
+        return { kind: "stale" };
+      }
+      if (!ack.ok) {
+        return { kind: "ack-error", ack };
+      }
+      /* 播放状态在 State 字节 12，读回来让 UI 以设备为准。 */
+      const state = await this.refreshState().catch(() => this.latestState);
+      return { kind: "ok", state: state ?? this.latestState };
+    } catch (err) {
+      return { kind: "error", message: errorText(err) };
+    }
+  }
+
+  /** 切换到另一套已提交剧本（ActivateScript 0x19）；不自动播放。 */
+  async activateScript(scriptId: number, loop: boolean): Promise<ScriptResult> {
+    const epoch = this.reconnect.epoch;
+    try {
+      const ack = await this.sendCommand(cmdActivateScript(scriptId, loop));
+      if (this.reconnect.isStale(epoch)) {
+        return { kind: "stale" };
+      }
+      if (!ack.ok) {
+        return { kind: "ack-error", ack };
+      }
+      const state = await this.refreshState().catch(() => this.latestState);
+      return { kind: "ok", state: state ?? this.latestState };
+    } catch (err) {
+      return { kind: "error", message: errorText(err) };
+    }
+  }
+
+  /** 丢弃设备侧的暂存（ScriptAbort 0x18）。 */
+  async abortScript(scriptId: number): Promise<ScriptResult> {
+    return this.sendScriptOnly(cmdScriptAbort(scriptId));
+  }
+
+  /**
+   * 查一套剧本的摘要（QueryScript 0x1A → ScriptSummary 0x85）。
+   * 重连重建 UI 的权威路径第 3 步（§10.1）。
+   */
+  async queryScript(scriptId: number): Promise<ScriptSummaryResult> {
+    if (this.transport.linkState !== "ready") {
+      return { kind: "error", message: "设备未连接" };
+    }
+    const epoch = this.reconnect.epoch;
+    try {
+      const summary = await this.transport.queryScript(scriptId);
+      if (this.reconnect.isStale(epoch)) {
+        return { kind: "stale" };
+      }
+      return { kind: "ok", summary };
+    } catch (err) {
+      if (this.reconnect.isStale(epoch)) {
+        return { kind: "stale" };
+      }
+      return { kind: "error", message: errorText(err) };
+    }
+  }
+
+  /** 只有 ACK 没有后续帧的剧本命令的公共路径。 */
+  private async sendScriptOnly(request: CommandRequest): Promise<ScriptResult> {
+    const epoch = this.reconnect.epoch;
+    try {
+      const ack = await this.sendCommand(request);
+      if (this.reconnect.isStale(epoch)) {
+        return { kind: "stale" };
+      }
+      if (!ack.ok) {
+        return { kind: "ack-error", ack };
+      }
+      return { kind: "ok" };
+    } catch (err) {
+      return { kind: "error", message: errorText(err) };
+    }
   }
 
   /**

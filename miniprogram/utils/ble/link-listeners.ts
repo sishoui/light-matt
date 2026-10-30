@@ -23,6 +23,8 @@ export class TransportListeners {
   private readonly stateListeners: Array<(state: DeviceState) => void> = [];
   private readonly eventListeners: Array<(code: number, detail: number) => void> = [];
   private readonly scanHintListeners: Array<(hint: string | null) => void> = [];
+  /** #32：设备侧的 ScriptProgress(0x86) 旁证（每接受 8 帧一条）。 */
+  private readonly scriptProgressListeners: Array<(scriptId: number, frames: number) => void> = [];
 
   onLink(fn: (state: LinkState, detail?: LinkDetail) => void): () => void {
     return subscribe(this.linkListeners, fn);
@@ -42,6 +44,11 @@ export class TransportListeners {
 
   onScanHint(fn: (hint: string | null) => void): () => void {
     return subscribe(this.scanHintListeners, fn);
+  }
+
+  /** #32：ScriptProgress 0x86 的旁证（scriptId + 设备侧累计帧数）。 */
+  onScriptProgress(fn: (scriptId: number, frames: number) => void): () => void {
+    return subscribe(this.scriptProgressListeners, fn);
   }
 
   emitLink(state: LinkState, detail?: LinkDetail): void {
@@ -94,12 +101,23 @@ export class TransportListeners {
     }
   }
 
+  emitScriptProgress(scriptId: number, frames: number): void {
+    for (const fn of this.scriptProgressListeners.slice()) {
+      try {
+        fn(scriptId, frames);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   clear(): void {
     this.linkListeners.length = 0;
     this.deviceListeners.length = 0;
     this.stateListeners.length = 0;
     this.eventListeners.length = 0;
     this.scanHintListeners.length = 0;
+    this.scriptProgressListeners.length = 0;
   }
 }
 

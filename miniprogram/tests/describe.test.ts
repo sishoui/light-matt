@@ -81,7 +81,7 @@ describe("describeCommand", () => {
       "ClearSegment strip=0 seg=3",
     );
     expect(describeCommand(CMD.QUERY_STRIP, new Uint8Array([0]))).toBe("QueryStrip strip=0");
-    expect(describeCommand(CMD.QUERY_SCRIPT, new Uint8Array([0]))).toBe("QueryScript 00");
+    expect(describeCommand(CMD.QUERY_SCRIPT, new Uint8Array([0]))).toBe("QueryScript script=0");
   });
 
   it("#31 彩虹 / 流光的 p5 按类型解释为 span / tail，flags 只余 reverse", () => {

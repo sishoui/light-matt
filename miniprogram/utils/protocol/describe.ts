@@ -16,6 +16,10 @@ import {
   commandName,
 } from "./constants";
 import { breathingWaveform, segmentParamLength, segmentReverse } from "./commands";
+import type {
+  ScriptProgress,
+  ScriptSummary,
+} from "./commands";
 import { bytesToHex } from "./hex";
 import type { AckResult, DeviceState, SegmentListEnd, SegmentReport } from "./types";
 
@@ -100,9 +104,68 @@ export function describeCommand(command: number, payload: Uint8Array): string {
         : `${name} ${bytesToHex(payload)}`;
     case CMD.QUERY_STRIP:
       return payload.length === 1 ? `${name} strip=${payload[0]}` : `${name} ${bytesToHex(payload)}`;
+    case CMD.SET_PLAYBACK:
+      /* action 0 stop / 1 play / 2 pause；loop 是持久化字段（§10.5）。 */
+      return payload.length === 2
+        ? `${name} action=${playbackName(payload[0])} loop=${payload[1]}`
+        : `${name} ${bytesToHex(payload)}`;
+    case CMD.SCRIPT_BEGIN:
+      return payload.length === 3
+        ? `${name} script=${payload[0]} stages=${payload[1]} strips=${payload[2]}`
+        : `${name} ${bytesToHex(payload)}`;
+    case CMD.SCRIPT_STAGE:
+      return payload.length === 4
+        ? `${name} script=${payload[0]} stage=${payload[1]} ` +
+            `duration=${payload[2] | (payload[3] << 8)}ms`
+        : `${name} ${bytesToHex(payload)}`;
+    case CMD.SCRIPT_SEGMENT: {
+      /* 载荷 script, stage, strip, seg, start, end, type, params。 */
+      if (payload.length < 7) {
+        return payload.length === 0 ? name : `${name} ${bytesToHex(payload)}`;
+      }
+      const type = payload[6];
+      const paramLen = segmentParamLength(type);
+      if (paramLen === 0 || payload.length !== 7 + paramLen) {
+        return `${name} ${bytesToHex(payload)}`;
+      }
+      const anim = paramLen > 3;
+      return (
+        `${name} script=${payload[0]} stage=${payload[1]} strip=${payload[2]} seg=${payload[3]} ` +
+        `range=${payload[4]}-${payload[5]} type=${hex2(type)} ` +
+        `hue=${payload[7] | (payload[8] << 8)} sat=${payload[9]}` +
+        describeSegmentParams(
+          type,
+          anim ? payload[10] | (payload[11] << 8) : 0,
+          anim ? payload[12] : 0,
+          anim ? payload[13] : 0,
+        )
+      );
+    }
+    case CMD.SCRIPT_COMMIT:
+    case CMD.SCRIPT_ABORT:
+    case CMD.QUERY_SCRIPT:
+      return payload.length === 1 ? `${name} script=${payload[0]}` : `${name} ${bytesToHex(payload)}`;
+    case CMD.ACTIVATE_SCRIPT:
+      return payload.length === 2
+        ? `${name} script=${payload[0]} loop=${payload[1]}`
+        : `${name} ${bytesToHex(payload)}`;
     default:
       return payload.length === 0 ? name : `${name} ${bytesToHex(payload)}`;
   }
+}
+
+/** SetPlayback 的 action 名（日志可读性，不参与协议）。 */
+export function playbackName(action: number): string {
+  if (action === 0) {
+    return "stop";
+  }
+  if (action === 1) {
+    return "play";
+  }
+  if (action === 2) {
+    return "pause";
+  }
+  return String(action);
 }
 
 /** ACK：回执的命令字 + 结果码，字段顺序与固件串口一致。 */
@@ -188,4 +251,17 @@ export function describeSegmentListEnd(end: SegmentListEnd): string {
     `SegmentListEnd strip=${end.stripId} mask=${hex2(end.segMask)} ` +
     `slots=[${slots.join(",")}]`
   );
+}
+
+/** ScriptSummary 0x85：剧本摘要（QueryScript 的响应，§10.1 第 3 步）。 */
+export function describeScriptSummary(summary: ScriptSummary): string {
+  return (
+    `ScriptSummary script=${summary.scriptId} stages=${summary.stageCount} ` +
+    `loop=${(summary.flags & 0x01) !== 0 ? 1 : 0} active=${summary.active ? 1 : 0}`
+  );
+}
+
+/** ScriptProgress 0x86：设备侧已接受的帧数（下发进度的补充证据）。 */
+export function describeScriptProgress(progress: ScriptProgress): string {
+  return `ScriptProgress script=${progress.scriptId} frames=${progress.framesWritten}`;
 }
