@@ -462,12 +462,28 @@ static void rebuild_led_count_if_pending(void)
         if (pruned > 0) {
             ESP_LOGW(TAG, "led count -> %u：%u 个段越界已失效", s_state.led_count, pruned);
         }
-        refresh_state_summary_locked();
+        /*
+         * #32：当前阶段的段配置也要裁剪，否则数量变小后剧本画面会引用
+         * 越界区间（渲染层会钳住，但 State 摘要与下一次 commit 的校验会不一致）。
+         * 裁剪后强制重建一次阶段缓存。
+         */
+        if (lumen_segment_store_prune(&s_stage_segments, 0, s_state.led_count) > 0) {
+            ESP_LOGW(TAG, "led count -> %u：当前阶段有越界段已失效", s_state.led_count);
+            s_stage_valid = false;
+        }
+        refresh_state_summary_from_active_locked();
         /* 重建期间 commit 过的快照已经被这一帧覆盖，邮箱不再需要。 */
         s_mailbox_dirty = false;
     }
     latest = s_state;
-    render_segments = s_segments;
+    /* 剧本播放中按当前阶段重绘，避免改完数量后闪一帧静态配置。 */
+    render_segments = *(active_segments_locked());
+    /*
+     * #32：剧本播放中相位基准是剧本时间轴（暂停时冻结），不是墙上时钟——
+     * 否则「改灯珠数量」会让暂停的画面跳一下相位。在锁内取值，出锁后只用副本。
+     */
+    bool script_phase = script_rendering_locked();
+    uint32_t phase_now = lumen_script_playback_time(&s_playback, now_ms());
     selftest = s_selftest;
     snapshot = persist_snapshot_locked();
     xSemaphoreGive(s_state_lock);
@@ -486,8 +502,9 @@ static void rebuild_led_count_if_pending(void)
     }
 
     /* 自检激活时新句柄也该显示自检色（§11.2 第 4 条）。 */
+    uint32_t redraw_now = script_phase ? phase_now : now_ms();
     lumen_led_render_snapshot(lumen_led_strip_owner_get(), &latest, &render_segments, &selftest,
-                              max_brightness(), now_ms());
+                              max_brightness(), redraw_now);
 
     /* 成功后才持久化（§11.3 第 2 条）；触发命令是 SetLedCount。 */
     lumen_state_store_request_save(&snapshot, LUMEN_CMD_SET_LED_COUNT);
@@ -1017,6 +1034,11 @@ void lumen_led_engine_commit(const lumen_state_t *next, uint8_t command)
     s_state = accepted;
     /* State 摘要永远由段配置决定，不信任调用方传进来的 seg_count / rgb。 */
     refresh_state_summary_locked();
+    /*
+     * 剧本摘要字段（字节 10-13）**不**信任命令层快照：播放头可能刚被渲染任务
+     * 推进，用旧快照会把 stage_index / playback_state 回退。以播放时间轴为准。
+     */
+    sync_script_state_locked();
     s_mailbox = s_state;
     s_mailbox_dirty = true;
     snapshot = persist_snapshot_locked();
@@ -1050,7 +1072,11 @@ uint8_t lumen_led_engine_set_segment(uint8_t strip_id, uint8_t seg_id,
     result = lumen_segment_store_set(&s_segments, strip_id, s_state.strip_count, seg_id,
                                      (uint8_t)s_state.led_count, &applied);
     if (result == LUMEN_RESULT_OK) {
-        refresh_state_summary_locked();
+        /*
+         * 摘要按**当前生效**的段配置算：剧本播放中 State 应报当前阶段，
+         * 而不是用户正在编辑的静态配置（否则 State 会与画面不一致）。
+         */
+        refresh_state_summary_from_active_locked();
         s_mailbox = s_state;
         s_mailbox_dirty = true;
         snapshot = persist_snapshot_locked();
@@ -1088,7 +1114,7 @@ uint8_t lumen_led_engine_clear_segment(uint8_t strip_id, uint8_t seg_id, uint8_t
 
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
     was_active = lumen_segment_store_clear(&s_segments, strip_id, seg_id);
-    refresh_state_summary_locked();
+    refresh_state_summary_from_active_locked();
     s_mailbox = s_state;
     s_mailbox_dirty = true;
     snapshot = persist_snapshot_locked();

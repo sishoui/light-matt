@@ -153,9 +153,16 @@ bool lumen_script_blob_decode(const uint8_t *blob, size_t len,
 
     reader_t r = {.data = blob, .len = len, .pos = 8};
 
-    /* 在一份临时 store 上解码，全部成功才交给调用方（整份原子）。 */
-    lumen_script_store_t decoded;
-    lumen_script_store_init(&decoded);
+    /*
+     * **就地解码**到调用方的 store，不建临时副本：一套剧本表 4 × 8 × 8 × 16
+     * 约 41KB，放栈上会直接撑爆调用者（固件里是 app_main 的任务栈）。
+     *
+     * 因此失败时 *store 的内容未定义（可能是半套），调用方必须重新
+     * lumen_script_store_init()。这条契约写进头文件；当前唯一调用方
+     * （led_engine 上电加载）在失败分支里就是重新 init。
+     */
+    lumen_script_store_t *decoded = store;
+    lumen_script_store_init(decoded);
 
     for (uint8_t id = 0; id < LUMEN_MAX_SCRIPTS; ++id) {
         uint8_t committed = 0;
@@ -179,7 +186,7 @@ bool lumen_script_blob_decode(const uint8_t *blob, size_t len,
         if (strip_count < 1 || strip_count > LUMEN_MAX_STRIPS) {
             return false;
         }
-        if (!lumen_script_begin(&decoded, id, stage_count, strip_count)) {
+        if (!lumen_script_begin(decoded, id, stage_count, strip_count)) {
             return false;
         }
         for (uint8_t st = 0; st < stage_count; ++st) {
@@ -187,7 +194,7 @@ bool lumen_script_blob_decode(const uint8_t *blob, size_t len,
             if (!read_u16(&r, &duration)) {
                 return false;
             }
-            if (!lumen_script_stage(&decoded, id, st, duration)) {
+            if (!lumen_script_stage(decoded, id, st, duration)) {
                 return false;
             }
             for (uint8_t strip = 0; strip < strip_count; ++strip) {
@@ -205,25 +212,24 @@ bool lumen_script_blob_decode(const uint8_t *blob, size_t len,
                     lumen_segment_t segment;
                     decode_segment(&r.data[r.pos], &segment);
                     r.pos += LUMEN_SCRIPT_SEGMENT_SIZE;
-                    if (!lumen_script_segment(&decoded, id, st, strip, seg, &segment, NULL)) {
+                    if (!lumen_script_segment(decoded, id, st, strip, seg, &segment, NULL)) {
                         return false;
                     }
                 }
             }
         }
         /* 整份校验复用 commit：越界 / 重叠 / flags / 周期都在这里一次判掉。 */
-        if (!lumen_script_commit(&decoded, id, strip_counts)) {
+        if (!lumen_script_commit(decoded, id, strip_counts)) {
             return false;
         }
     }
 
     /* 激活 id 必须指向已提交剧本，否则视为损坏（不「尽量解析」）。 */
     if (stored_active != LUMEN_NO_SCRIPT &&
-        !lumen_script_is_committed(&decoded, stored_active)) {
+        !lumen_script_is_committed(decoded, stored_active)) {
         return false;
     }
 
-    *store = decoded;
     if (active_script_id != NULL) {
         *active_script_id = stored_active;
     }

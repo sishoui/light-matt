@@ -57,7 +57,10 @@ size_t lumen_script_blob_encode(const lumen_script_store_t *store, uint8_t activ
 
 /*
  * 解码并整份校验。strip_counts 是每条灯带自己的灯珠数（与 commit 同一份规则）。
- * 失败时 store 保持调用方传入的初值（调用方先 init）。
+ *
+ * **就地解码**：结果直接写进 store（一套剧本表约 41KB，不做临时副本，否则
+ * 会撑爆调用者栈）。因此**失败时 store 内容未定义**（可能是半套），调用方
+ * 必须重新 `lumen_script_store_init(store)`。成功时才算整份可信。
  */
 bool lumen_script_blob_decode(const uint8_t *blob, size_t len,
                               const uint16_t strip_counts[LUMEN_MAX_STRIPS],

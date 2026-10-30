@@ -152,8 +152,15 @@ v1 已稳定语义的命令字保持不变；`0x03` / `0x04` **退役**；新命
 （`CONFIG_LUMEN_ANIM_FPS`，默认 10，区间 5-30）。
 **#31 交付后新增实现**：`0x10 SetSegment` 支持彩虹 `type 0x02` 与流光 `type 0x03`
 （同为 12 字节载荷；`period_ms ≥ 200` 即 5Hz；flags 保留位是 **bit1-7**，bit0 为 `reverse`）。
+**#32 交付后新增实现**：`0x13 SetPlayback`（播放控制）、`0x14`–`0x1A`
+（剧本下发 / 激活 / 查询），以及设备回报 `0x85 ScriptSummary` / `0x86 ScriptProgress`
+与 `Event 0x02 ScriptCommitFailed`。剧本暂存区与已提交剧本表在固件 RAM 中
+（`script_store.c`），已提交剧本 + 激活 id + loop 持久化到独立的 NVS key
+（`scripts`，稀疏编码，见 `script_blob.c`）；**播放位置不持久化**（§10.4）。
 `0x03` / `0x04` 退役 → 回 `0x02`。
-`0x13`–`0x1A`（播放控制与剧本）由 #32 加入；在它落地前，这些命令字**已分配但未实现**，设备回 `0x02`。
+
+> 至此 v2 命令表**全部实现**：`0x01` `0x02` `0x05` `0x06` `0x07` `0x10`–`0x1A`。
+> 未实现 / 保留 / 退役命令字仍回 `0x02`，「需要升级固件」的语义不变。
 
 > **动画类型的现状**：四种灯效全部已实现——静态 `0x00`、呼吸 `0x01`、彩虹 `0x02`、流光 `0x03`。
 > 未知类型仍回 `InvalidParam`（§11.3 第 4 步，D7 不静默降级）。`lumen_effect_type_implemented()`
@@ -434,7 +441,7 @@ magic (0x08) → version (0x07) → length (0x04) → checksum (0x03)
 - `frame_layout`：帧布局说明
 - `state_read_example_hex`：14 字节 State 示例
 - `state_read_fields`：14 个字段的顺序
-- `cases`：用例数组（60 条；#25 新增 4 条段校验用例）
+- `cases`：用例数组（**120 条**；#25 段校验 / #30 呼吸 / #31 彩虹·流光 / #32 剧本下发）
 
 每个用例：
 
@@ -450,6 +457,11 @@ magic (0x08) → version (0x07) → length (0x04) → checksum (0x03)
 | `frame_valid` | 信封是否有效 |
 | `result_code` | 设备应回的结果码；`null` 表示静默丢弃；设备→小程序帧可缺省 |
 | `note` | 可选说明 |
+| `prior_segments` | 可选：段命令的设备侧前置段表，如 `"0:0-15"`（仅 host 测试用） |
+| `prior_script` | 可选：#32 剧本命令的设备侧前置状态，形如 `"20:000401;21:0000E803;…"`（`命令字:载荷hex`，按序重放；仅 host 测试用） |
+| `device_ack` | 可选：引擎整份校验后的最终结果码（`ScriptCommit` 的越界 / 重叠 / 缺阶段只有设备能判） |
+| `keep_script` | 可选：`"id:stage_count"`，断言本帧处理完后该剧本仍完好（失败回滚的向量级证据） |
+| `generated` | 可选：由 `scripts/gen-script-vectors.py` 生成，重跑该脚本会先删再补（幂等） |
 
 覆盖范围：
 
@@ -458,9 +470,11 @@ magic (0x08) → version (0x07) → length (0x04) → checksum (0x03)
 - **布局钉死用例**（`note` 写明「布局固定；实现票落地后改为 0」）：
   `ScriptSegment`（静态 10B / 动画 14B）、
   `SetPlayback`、`ScriptBegin`、`ScriptStage`、
+  `ScriptSegment`（静态 10B / 动画 14B）、`SetPlayback`、`ScriptBegin`、`ScriptStage`、
   `ScriptCommit`、`ScriptAbort`、`ActivateScript`、`QueryScript`；
   **#25 已把 `SetSegment`（静态 8B）/ `ClearSegment` / `QueryStrip` 的结果码从 2 改为 0**，
-  **#30 已把 `set_segment_breathing` 改为 0**（呼吸像素已实现）；
+  **#30 已把 `set_segment_breathing` 改为 0**（呼吸像素已实现），
+  **#32 已把 `0x13`–`0x1A` 全部改为 0**；
 - **#25 新增的段校验用例**：`set_segment_overlap`（带 `prior_segments: "0:0-15"` 前置段表，回 1）、
   `set_segment_out_of_range`（回 1）、`set_segment_bad_length`（7 字节静态载荷，回 4）、
   `set_segment_unknown_type`（type 0x07，回 1）；
@@ -471,14 +485,35 @@ magic (0x08) → version (0x07) → length (0x04) → checksum (0x03)
   `prior_segments: "0:20-29"`，回 0）、
   `set_segment_breathing_period_zero`（period 0 = 静止，回 0）、
   `set_segment_breathing_period_max`（period 65535 = 相位天花板，回 0）；
+- **#32 新增的剧本用例**：
+  - 完整 4 阶段下发帧序列：`script_download_begin_4_stages` → 4 条
+    `script_download_stage_N` → 8 条 `script_download_segment_sXgY`（静态 / 呼吸 /
+    彩虹 / 流光各至少一次）→ `script_download_commit` → `script_download_activate_loop`
+    → `script_download_play` / `_pause` / `_resume` / `_stop` → `script_download_query`。
+    每一条都带 `prior_script`（此前所有下发帧），所以向量钉住的不只是单帧字节，
+    还有「整条序列在设备侧真的能走通」；
+  - 失败路径：`script_commit_fail_zero_duration`（命令层回 1）、
+    `script_commit_fail_missing_stage` / `_out_of_range` / `_overlap`
+    （命令层放行、`device_ack: 1`，并带 `keep_script: "0:4"` 证明旧剧本完好）、
+    `script_abort_then_commit_fails`、`script_begin_bad_stage_count` /
+    `_bad_strip_count` / `_bad_id`、`script_stage_bad_index`、
+    `script_segment_unknown_type` / `_bad_length` / `_bad_strip`、
+    `script_segment_without_begin` / `script_stage_without_begin`
+    （形状合法但引擎侧没有 Begin → `device_ack: 1`）、
+    `script_activate_uncommitted`、`set_playback_bad_action` / `_bad_loop`；
+  - 设备回报：`script_summary_uncommitted`（0x85）、`script_progress_eight_frames`
+    （0x86，每 8 帧一条）、`event_script_commit_failed`（Event 0x02）；
 - **设备回报**：ACK 各结果码、Event、14 字节 StateReport、`SegmentReport`、
   `SegmentListEnd`、`ScriptSummary`、`ScriptProgress`；
 - **信封失败**：坏校验、坏 magic、短帧、长度不符、超长。
 
-> **布局钉死用例的 `result_code: 2` 只是当下事实**：#21 时 `0x10`–`0x1A` 尚未实现，设备回 UnknownCommand。
+> **布局钉死用例的 `result_code: 2` 只是当时事实**：#21 时 `0x10`–`0x1A` 尚未实现，设备回 UnknownCommand。
 > 向量把**字节布局**固定下来（`frame_hex` 是权威），实现票落地后只需把 `result_code` 改成 `0`。
-> #25 已把 `SetSegment`（静态）/ `ClearSegment` / `QueryStrip` 翻成 `0`；#30 把
-> `set_segment_breathing` 翻成 `0`；剧本类命令字（`0x13`–`0x1A`）仍为 `2`，等 #32。
+> #25 / #30 / #31 / #32 已把对应命令字全部翻成 `0`——现在所有用例的结果码都是「实现后的事实」。
+>
+> `docs/protocol-testvectors.json` 里 #32 的用例由 `scripts/gen-script-vectors.py` 生成
+> （带 `generated` 标记，重跑幂等）。checksum 由该脚本按协议算法算出并写进 `frame_hex`，
+> 不手抄。
 
 ## 14. 变更规则
 
