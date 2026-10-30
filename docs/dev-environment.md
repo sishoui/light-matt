@@ -2,17 +2,55 @@
 
 目标：在这台 Windows 机器上能 `idf.py build/flash` ESP-IDF v5.4 工程，并能用微信开发者工具真机预览小程序。
 
+> **当前 IDF 版本：v5.4.4**（2026-10-30 从 v5.4.0 升级，见 `docs/agents/issue-tracker.md` 与 GitHub #26）。
+> 升级原因：多引脚 TDM 方案依赖 `rmt_tx_switch_gpio()`，它**只在 v5.4.2 及以后存在**。
+> 升级后已验证 `rmt_tx_switch_gpio` 链接进 `lumen.elf`（符号 `T`，地址 `0x420412c8`）。
+
 ## 组件位置
 
 | 组件 | 位置 / 版本 |
 |---|---|
-| ESP-IDF | `C:\Users\13092\esp\v5.4\esp-idf` |
+| ESP-IDF | `C:\Users\13092\esp\v5.4\esp-idf`（**v5.4.4**，detached HEAD 在 tag 上） |
 | IDF 工具 | `C:\Espressif\tools`（`IDF_TOOLS_PATH=C:\Espressif`） |
 | IDF Python | `C:\Espressif\tools\idf-python\3.11.2` |
 | IDF Git | `C:\Espressif\tools\idf-git\2.44.0` |
+| riscv32-esp-elf | `esp-14.2.0_20260121`（v5.4.4 要求，旧的 `20241119` 不够） |
+| riscv32-esp-elf-gdb | `16.3_20250913` |
+| ccache / openocd | `4.12.1` / `v0.12.0-esp32-20260304` |
 | 系统 Python | 3.12.10 |
 | Node / npm | v24.14.0 / 11.11.0 |
 | 微信开发者工具 | `C:\Program Files (x86)\Tencent\微信web开发者工具` |
+
+## v5.4.0 → v5.4.4 升级记录（2026-10-30）
+
+实际踩到的两个坑，重装环境时会重现：
+
+**坑 1：Python 新增依赖 `tree_sitter` / `tree_sitter_c`。** v5.4.4 的构建工具新引入这两个包，缺了会让 `export.bat` 报
+`Error while checking requirement 'tree_sitter'` 后直接退出。补装：
+
+```bat
+C:\Espressif\python_env\idf5.4_py3.11_env\Scripts\python.exe -m pip install ^
+  "tree-sitter" "tree-sitter-c>=0.21.4" --only-binary tree-sitter-c ^
+  -c C:\Espressif\espidf.constraints.v5.4.txt
+```
+
+**坑 2：工具链版本整体换代。** v5.4.4 要求 riscv32-esp-elf `esp-14.2.0_20260121`（原 `20241119`）、
+gdb `16.3_20250913`、ccache `4.12.1`、openocd `v0.12.0-esp32-20260304`。旧版会让 `export.bat` 报
+`tool riscv32-esp-elf has no installed versions`。补装：
+
+```bat
+cd /d C:\Users\13092\esp\v5.4\esp-idf
+set "MSYSTEM="
+set "IDF_TOOLS_PATH=C:\Espressif"
+C:\Espressif\python_env\idf5.4_py3.11_env\Scripts\python.exe tools\idf_tools.py install ^
+  riscv32-esp-elf riscv32-esp-elf-gdb ccache openocd-esp32
+```
+
+**升级后的回归结果（全部通过）**：固件 host 测试 1426 项、小程序 vitest 159 个用例、`tsc --noEmit` 干净、
+`build-firmware.cmd` 构建成功且分区余量 **66%**（升级前 62%，变小是因为新 GCC 的代码生成差异，不是退步）。
+
+**回滚方式**：`git -C C:\Users\13092\esp\v5.4\esp-idf checkout v5.4`（原 HEAD 为 `67c1de1eeb`），
+然后重跑 `idf_tools.py install` 装回旧工具链。子模块需 `git submodule update --init --recursive`。
 
 ## 首次安装（可复现）
 
