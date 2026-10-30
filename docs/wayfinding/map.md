@@ -61,7 +61,11 @@ GitHub 实现票（13 张）与本地 wayfinder 票的对应关系：本地 06/0
 - **开发环境就绪**（[GitHub #3](https://github.com/sishoui/light-matt/issues/3)，[环境文档](../dev-environment.md)）：ESP-IDF v5.4 工具链装好；hello_world 烧录 COM6 并输出；led_strip 依赖编译通过；微信开发者工具真机预览通过。芯片实际 4MB flash，正式固件按 4MB 配置。
 - **小程序 BLE 探测**（[GitHub #5](https://github.com/sishoui/light-matt/issues/5)，[实测笔记](../ble-notes.md)）：Android 16 真机验证扫描/连接/MTU/notify/写/回显；deviceId 是 MAC，`setBLEMTU(185)` 实际回包 256；连接间隔 30ms；20/50/100ms 各 20 帧全部回显；重连成功。iOS 未测（无设备），按官方文档记录，留到端到端验收。
 - **协议规格定稿**（[GitHub #2](https://github.com/sishoui/light-matt/issues/2)，规格见 [protocol.md](../protocol.md)）：帧 ≤20 字节、小端、校验和覆盖 magic..payload 后取反；7 条命令 + ACK/Event/StateReport；State 固定 8 字节；结果码 0x00-0x09；ACK 在写入 RAM 后回，NVS 失败用 Event 0x81；自检与灯珠数量重建语义已定。测试向量在 `docs/protocol-testvectors.json`。
-- **led_strip 点灯验证**（[GitHub #4](https://github.com/sishoui/light-matt/issues/4)，接线与验收步骤见 [led-bringup.md](../led-bringup.md)）：GPIO3 + RMT 10MHz + `mem_block_symbols=48` + 无 DMA，30 灯序列跑通；连续 5 分钟 soak 中 10/10 心跳准点、`refresh_errors=0`、heap 稳定、无重启。**人眼已确认：颜色通道顺序就是 GRB（红/绿/蓝与命令一致）、30 灯均匀、5 分钟无闪烁、全白 255 未见掉压重启**，因此 `LUMEN_LED_COLOR_ORDER` 保持默认、`LUMEN_MAX_BRIGHTNESS` 保持 255。亮度 1/255 时 `(255,180,120)` 量化成 `(1,1,0)` 属整数取整。
+- **led_strip 点灯验证**（[GitHub #4](https://github.com/sishoui/light-matt/issues/4)，接线与验收步骤见 [led-bringup.md](../led-bringup.md)）：GPIO3 + RMT 10MHz + `mem_block_symbols=48` + 无 DMA。**64 灯 WS2812B 已点亮**，自检 红→绿→蓝→白 四色正确，因此**通道顺序就是 GRB**，`LUMEN_LED_COLOR_ORDER` 保持默认。5 分钟 soak 中 10/10 心跳准点、`refresh_errors=0`、无重启。
+
+  **供电是最大的坑**：首次接线时开发板 5V 引脚只量到 **0.3V**，灯带完全不亮。64 灯全白约 3.8A，远超开发板 USB 的 500mA–1A 限流——**灯带必须独立供电、只与开发板共地**。
+
+  调试中还发现并修复了两个只有真机才暴露的固件缺陷（详见 led-bringup.md §9.3）：数量减少后多余灯珠不灭（WS2812B 像素锁存）、改数量后整条不响应（重建顺序导致新旧句柄争抢 GPIO3，`refresh` 仍返回 OK 但波形没出去）。
 - **固件 BLE 服务与分层骨架**（[GitHub #6](https://github.com/sishoui/light-matt/issues/6)，见 [firmware-architecture.md](../firmware-architecture.md)）：`ble_link → led_engine → state_store` 单向依赖；RX 回调只解信封打日志，不刷灯/不写 NVS；latest-wins 邮箱（互斥锁 + dirty + 二值信号量）；单连接、断开重新广播；渲染任务 4096B/优先级 4，存储任务 3072B/优先级 2；host 单测 341 项通过。
 - **开关端到端**（[GitHub #8](https://github.com/sishoui/light-matt/issues/8)）：命令层抽成纯 reducer（`command.c`），RX 回调只做「解码 → 分发 → 写 RAM → 回 ACK」；小程序建 transport / codec / throttle / log / session 分层；20Hz latest-wins 与写入串行化就位；两端共用 37 条测试向量。
 - **亮度端到端**（[GitHub #9](https://github.com/sishoui/light-matt/issues/9)）：20Hz 节流接真，`bindchanging` 拖动实时跟随；亮度按 State 的 `max_brightness` 钳位；亮度 0 保留 power 位，开灯时用最近非 0 亮度恢复。
