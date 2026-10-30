@@ -108,6 +108,20 @@ uint8_t lumen_segment_store_validate(const lumen_segment_store_t *store, uint8_t
         if (candidate->period_ms != 0 && candidate->period_ms < LUMEN_BREATHING_MIN_PERIOD_MS) {
             return LUMEN_RESULT_INVALID_PARAM;
         }
+    } else {
+        /*
+         * 彩虹 / 流光（effects-spec §2.3-§2.4 / §11.3 第 8-9 步）：
+         *   bit0 reverse（有实际意义）、**bit1-7 必须为 0**——
+         *   注意比呼吸更严：呼吸把 bit1-2 用作 waveform，这里没有位可借；
+         *   period_ms != 0 时必须 ≥ 200（5Hz）。这两类是空间移动不是亮度闪烁，
+         *   所以下限比呼吸宽松（D5）。
+         */
+        if ((candidate->flags & 0xFEu) != 0) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        if (candidate->period_ms != 0 && candidate->period_ms < LUMEN_RAINBOW_MIN_PERIOD_MS) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
     }
 
     return LUMEN_RESULT_OK;

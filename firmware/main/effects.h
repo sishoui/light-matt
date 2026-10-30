@@ -39,6 +39,13 @@ typedef enum {
 #define LUMEN_BREATHING_MIN_PERIOD_MS 334u
 
 /*
+ * 彩虹 / 流光周期下限（effects-spec §5）：200ms = 5Hz。
+ * 这两类是**空间移动**而不是亮度闪烁，所以比呼吸宽松（D5）。
+ * period_ms == 0 同样是「静止」。
+ */
+#define LUMEN_RAINBOW_MIN_PERIOD_MS 200u
+
+/*
  * 建正弦查表的初始化（#30）。
  *
  * 沿用 gamma.c 的先例：**只在初始化时**用 math.h 建表，运行时只查表，
@@ -139,3 +146,40 @@ uint32_t lumen_effect_breathing_gain_q16(uint16_t period_ms, uint8_t min_level,
 
 /* 用 Q16 增益缩放一个用户空间通道（四舍五入），0..255 输入输出。 */
 uint8_t lumen_effect_apply_gain_q16(uint8_t value, uint32_t gain_q16);
+
+/* ---------------- #31 彩虹 / 流光 ---------------- */
+
+/*
+ * 彩虹：段内某颗灯的色相（0-65535），effects-spec §3.3：
+ *
+ *   hue_i = hue + phase × 65536 + (i/N) × (span/255) × 65536 × dir   (mod 65536)
+ *
+ *  - span = 0   → 整条同色，色相随时间循环；
+ *  - span = 255 → 沿灯带铺满一整圈，随时间平移；
+ *  - dir = reverse ? -1 : +1（flags bit0）。
+ *
+ * 单独暴露是为了让 host 测试能直接断言色相算术本身：像素颜色只有 6 个
+ * 扇区，分辨率不足以发现 32 位溢出导致的错位。
+ *
+ * **溢出**：`(i/N) × (span/255) × 65536` 写成 `i × span × 65536` 时
+ * i ≤ 63、span ≤ 255 → 上界 1.05e9，看似还在 uint32 内，但任何先生成
+ * 「(span/255)×65536 ≈ 65536」中间量再乘 i 的写法都会在 i 较大、N 较小时
+ * 越界。这里统一用 uint64_t 算乘积再除，最后才取模——零成本，不要优化掉。
+ * 段无效或下标越界返回 0。
+ */
+uint16_t lumen_effect_rainbow_hue(const lumen_segment_t *seg, uint16_t index_in_strip,
+                                  uint32_t now_ms);
+
+/*
+ * 流光：段内某颗灯的亮度权重，Q16（0..65535），effects-spec §3.4：
+ *
+ *   tail_n = 1 + (tail/255) × (N-1)
+ *   p_i    = ((i/N) - phase) mod 1
+ *   w_i    = p_i < tail_n/N ? exp(-(p_i × N / tail_n) × 3) : 0
+ *
+ * 指数用初始化时建的 65 点表 + 线性插值（沿用 gamma.c / 正弦表的先例），
+ * 运行时零浮点。reverse 通过镜像段内下标实现（把方向反过来）。
+ * 段无效或下标越界返回 0。
+ */
+uint32_t lumen_effect_comet_gain_q16(const lumen_segment_t *seg, uint16_t index_in_strip,
+                                     uint32_t now_ms);

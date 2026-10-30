@@ -28,9 +28,11 @@ bool lumen_effect_type_known(uint8_t type)
 
 bool lumen_effect_type_implemented(uint8_t type)
 {
-    /* #25 交付静态、#30 交付呼吸；彩虹 / 流光由 #31 实现。未实现的类型必须
-     * 在命令层就被拒绝（UnknownCommand），绝不静默变黑——所以这里如实返回。 */
-    return type == LUMEN_EFFECT_STATIC || type == LUMEN_EFFECT_BREATHING;
+    /* 四种类型全部有像素实现（#25 静态 / #30 呼吸 / #31 彩虹+流光）。
+     * 未知类型仍由 lumen_effect_type_known 在命令层拒绝（InvalidParam），
+     * 这里不负责区分「已知但未实现」——那个中间态已经不存在了。 */
+    return type == LUMEN_EFFECT_STATIC || type == LUMEN_EFFECT_BREATHING ||
+           type == LUMEN_EFFECT_RAINBOW || type == LUMEN_EFFECT_COMET;
 }
 
 uint8_t lumen_effect_param_len(uint8_t type)
@@ -158,6 +160,18 @@ void lumen_effect_static_rgb(uint16_t hue, uint8_t sat, uint8_t out_rgb[3])
 static uint16_t s_sine_sq[LUMEN_SINE_TABLE_SIZE + 1u];
 static int s_sine_ready;
 
+/*
+ * 流光尾部的指数衰减表（#31）：exp(-3 × k/64)，Q16，k = 0..64。
+ *
+ * effects-spec §3.4 的权重是 exp(-(p×N/tail_n)×3)，自变量落在 [0,1]；
+ * 存 65 个点覆盖整段并线性插值。与正弦表同一套做法：初始化时用 math.h，
+ * 运行时只查表——**绝不调 expf**（C3 无 FPU，且渲染在每帧每灯的热路径上）。
+ */
+#define LUMEN_EXP_TABLE_SIZE 64u
+#define LUMEN_EXP_STEP_Q16 1024u /* 65536 / 64 */
+
+static uint16_t s_comet_exp[LUMEN_EXP_TABLE_SIZE + 1u];
+
 void lumen_effects_init(void)
 {
     if (s_sine_ready) {
@@ -172,6 +186,15 @@ void lumen_effects_init(void)
             value = 65535u;
         }
         s_sine_sq[k] = (uint16_t)value;
+    }
+    for (uint32_t k = 0; k <= LUMEN_EXP_TABLE_SIZE; ++k) {
+        /* exp(-3 × k/64)：k=0 → 1（头部满亮），k=64 → exp(-3) ≈ 0.0498。 */
+        float x = 3.0f * (float)k / (float)LUMEN_EXP_TABLE_SIZE;
+        uint32_t value = (uint32_t)(expf(-x) * 65535.0f + 0.5f);
+        if (value > 65535u) {
+            value = 65535u;
+        }
+        s_comet_exp[k] = (uint16_t)value;
     }
     s_sine_ready = 1;
 }
@@ -324,6 +347,152 @@ static void breathing_pixel(const lumen_segment_t *seg, uint32_t now_ms, uint8_t
     out_rgb[2] = lumen_effect_apply_gain_q16(base[2], gain);
 }
 
+/* 把基础色按 Q16 增益缩放（四舍五入）；流光复用。 */
+static void scale_pixel(uint8_t base[3], uint32_t gain_q16, uint8_t out_rgb[3])
+{
+    out_rgb[0] = lumen_effect_apply_gain_q16(base[0], gain_q16);
+    out_rgb[1] = lumen_effect_apply_gain_q16(base[1], gain_q16);
+    out_rgb[2] = lumen_effect_apply_gain_q16(base[2], gain_q16);
+}
+
+/* ---------------- #31 彩虹 / 流光 ---------------- */
+
+uint16_t lumen_effect_rainbow_hue(const lumen_segment_t *seg, uint16_t index_in_strip,
+                                  uint32_t now_ms)
+{
+    if (seg == NULL || !seg->active || seg->end < seg->start) {
+        return 0;
+    }
+    if (index_in_strip < seg->start || index_in_strip > seg->end) {
+        return 0;
+    }
+    uint16_t n = lumen_effect_segment_length(seg);
+    if (n == 0) {
+        return 0;
+    }
+    uint16_t i = lumen_effect_index_in_segment(seg, index_in_strip);
+
+    /* 相位与呼吸共用同一个 helper（同一条 §6 的 uint64 公式）。 */
+    uint32_t phase_q16 = lumen_effect_breathing_phase_q16(seg->period_ms, seg->t0_ms, now_ms);
+
+    /*
+     * 空间项 = (i/N) × (span/255) × 65536，Q16。
+     *
+     * **这一步就是 ticket 点名的溢出点。** 把两个比例都写成 Q16 再相乘是
+     * 最自然的写法：
+     *   pos_q16  = (i << 16) / N        → 最大 65535（i = N-1）
+     *   span_q16 = span × 65536 / 255   → span = 255 时正好 65536
+     * 两者的 32 位乘积最大是 (N-1)/N × 2^32，N = 64 时 4,228,792,320，
+     * **距 uint32 上限只剩 1.5%**：任何一个四舍五入项（+半个除数）、
+     * 换一种先乘后除的顺序、或再多乘一个 65536（把 Q16 当成比例再乘一次）
+     * 都会越界并静默回绕成错色。
+     *
+     * 这里改成一次性 uint64 乘除：i ≤ 63、span ≤ 255、65536 → 上界 1.05e9，
+     * 在 64 位下留出 4 个数量级的余量，且只做一次除法、取整误差最小。
+     */
+    uint64_t spatial_q16 =
+        ((uint64_t)i * (uint64_t)seg->p5 * 65536u) / ((uint64_t)n * 255u);
+
+    /*
+     * hue(≤65535) + phase_q16(≤65535) + spatial(≤65536) 用 int64_t 累加，
+     * 最后一次性对 65536 取模。相位本身已经是「一整圈 = 65536」的刻度，
+     * 所以这里**不能再乘 65536**——那是把 Q16 相位当成 [0,1) 的比例再换算
+     * 一次的典型 bug，会造出 4.29e9 级的中间量并回绕。取模放在最后，
+     * 满周期跑完不会出现颜色突然跳回，也不会因为溢出变成错色。
+     */
+    int64_t total = (int64_t)seg->hue + (int64_t)phase_q16;
+    if ((seg->flags & 0x01u) != 0u) {
+        total -= (int64_t)spatial_q16; /* reverse：色相沿灯带递减 */
+    } else {
+        total += (int64_t)spatial_q16;
+    }
+    total %= 65536;
+    if (total < 0) {
+        total += 65536;
+    }
+    return (uint16_t)total;
+}
+
+/* 查 exp(-3 × k/64) 表（Q16），k 由 0..65536 的 Q16 参数给出。 */
+static uint32_t comet_exp_q16(uint32_t ratio_q16)
+{
+    if (!s_sine_ready) {
+        lumen_effects_init();
+    }
+    uint32_t p = ratio_q16 & 0xFFFFu;
+    uint32_t index = p / LUMEN_EXP_STEP_Q16;
+    uint32_t frac = p - index * LUMEN_EXP_STEP_Q16; /* 0..1023 */
+    if (index >= LUMEN_EXP_TABLE_SIZE) {
+        return s_comet_exp[LUMEN_EXP_TABLE_SIZE];
+    }
+    /* 表单调递减（hi ≤ lo），差值必须走有符号，否则下溢成巨正数。 */
+    int32_t lo = (int32_t)s_comet_exp[index];
+    int32_t hi = (int32_t)s_comet_exp[index + 1u];
+    int32_t interpolated = lo + ((hi - lo) * (int32_t)frac + 512) / 1024;
+    if (interpolated < 0) {
+        interpolated = 0;
+    } else if (interpolated > 65535) {
+        interpolated = 65535;
+    }
+    return (uint32_t)interpolated;
+}
+
+uint32_t lumen_effect_comet_gain_q16(const lumen_segment_t *seg, uint16_t index_in_strip,
+                                     uint32_t now_ms)
+{
+    if (seg == NULL || !seg->active || seg->end < seg->start) {
+        return 0;
+    }
+    if (index_in_strip < seg->start || index_in_strip > seg->end) {
+        return 0;
+    }
+    uint16_t n = lumen_effect_segment_length(seg);
+    if (n == 0) {
+        return 0;
+    }
+    uint16_t i = lumen_effect_index_in_segment(seg, index_in_strip);
+
+    /*
+     * reverse（flags bit0）用镜像段内下标实现：头部从高索引走向低索引，
+     * 与整条图案反向等价，不需要在公式里改符号。
+     */
+    if ((seg->flags & 0x01u) != 0u) {
+        i = (uint16_t)(n - 1u - i);
+    }
+
+    /* p_i = ((i/N) - phase) mod 1，Q16。 */
+    uint32_t phase_q16 = lumen_effect_breathing_phase_q16(seg->period_ms, seg->t0_ms, now_ms);
+    uint32_t pos_q16 = (uint32_t)(((uint64_t)i << 16) / n); /* i/N ∈ [0,1) */
+    uint32_t p_q16 = (pos_q16 + 65536u - phase_q16) & 0xFFFFu;
+
+    /*
+     * tail_n = 1 + (tail/255) × (N-1)，用 Q16 表示（65536 = 1 颗灯）：
+     *   tail = 0   → tail_n_q16 = 65536          → 只有头部一颗灯
+     *   tail = 255 → tail_n_q16 = N × 65536      → 整条都是尾巴
+     * (tail/255)×(N-1) 的最大值 63×65536 = 4.13e6，uint32 够，但乘 tail
+     * 时先到 255×63×65536 ≈ 1.05e9，仍安全；保险起见用 uint64 相乘。
+     */
+    uint32_t tail_n_q16 =
+        65536u + (uint32_t)(((uint64_t)seg->p5 * (uint64_t)(n - 1u) * 65536u) / 255u);
+
+    /*
+     * 尾部判定 p_i < tail_n/N ⇔ p_i × N < tail_n（两边同乘 N 消掉除法）。
+     * p_i 与 tail_n/N 都是 Q16，乘法后 p ≤ 65535、N ≤ 64 → 4.19e6，uint64 下
+     * 更不会溢出，且保持严格小于（p == tail_n/N 的灯不亮，硬边界）。
+     */
+    if ((uint64_t)p_q16 * (uint64_t)n >= (uint64_t)tail_n_q16) {
+        return 0;
+    }
+
+    /*
+     * r = p_i / (tail_n/N) = p_i × N / tail_n ∈ [0,1)，Q16。
+     * 指数参数是 3r，而表以 k/64 为步长（k = 64r），所以 r 的 Q16 值
+     * **直接**就是表的输入（65536 ↔ k=64）——不需要再乘 3 或除 64。
+     */
+    uint32_t r_q16 = (uint32_t)(((uint64_t)p_q16 * (uint64_t)n * 65536u) / (uint64_t)tail_n_q16);
+    return comet_exp_q16(r_q16);
+}
+
 void lumen_effect_pixel(const lumen_segment_t *seg, uint16_t index_in_strip, uint32_t now_ms,
                         uint8_t out_rgb[3])
 {
@@ -356,14 +525,29 @@ void lumen_effect_pixel(const lumen_segment_t *seg, uint16_t index_in_strip, uin
         breathing_pixel(seg, now_ms, out_rgb);
         return;
 
-    case LUMEN_EFFECT_RAINBOW:
-    case LUMEN_EFFECT_COMET:
+    case LUMEN_EFFECT_RAINBOW: {
         /*
-         * 空间动画分支由 #31 实现。命令层目前不接受这两类
-         * （lumen_effect_type_implemented == false），所以正常路径走不到这里。
-         * 返回黑色是防御，不是降级路径：让误配置在真机上表现为熄灭而不是乱色。
+         * 彩虹（§3.3）：色相随段内位置与时间变化，sat 恒定。
+         * span = 0 → 整条同色、色相随时间循环；span = 255 → 铺满一整圈、
+         * 随时间平移。中间值连续可调（spatial 项是线性的）。
          */
+        uint16_t hue = lumen_effect_rainbow_hue(seg, index_in_strip, now_ms);
+        lumen_effect_static_rgb(hue, seg->sat, out_rgb);
         return;
+    }
+
+    case LUMEN_EFFECT_COMET: {
+        /*
+         * 流光（§3.4）：基色恒定，亮度权重随「离亮点的距离」指数衰减。
+         * tail = 0 → 硬边（只有头部那一颗灯）；tail = 255 → 整条都是尾。
+         * reverse 通过镜像段内下标实现，见 lumen_effect_comet_gain_q16。
+         */
+        uint8_t base[3];
+        lumen_effect_static_rgb(seg->hue, seg->sat, base);
+        uint32_t gain = lumen_effect_comet_gain_q16(seg, index_in_strip, now_ms);
+        scale_pixel(base, gain, out_rgb);
+        return;
+    }
 
     default:
         /* 未知类型：命令层已按 D7 拒绝（InvalidParam），这里同样只返回黑色。 */
