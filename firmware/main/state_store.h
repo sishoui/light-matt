@@ -1,10 +1,12 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
 
+#include "script_store.h"
 #include "state.h"
 
 /*
@@ -40,3 +42,25 @@ bool lumen_state_store_load(lumen_persist_t *out);
 /* 线程安全：记录最新快照、触发它的命令字，并重置 debounce 计时。
  * 不在调用者上下文写 NVS。命令字用于 Event 0x81 的 detail。 */
 void lumen_state_store_request_save(const lumen_persist_t *snapshot, uint8_t command);
+
+/*
+ * #32：剧本单独存一个 NVS key（"scripts"）。
+ *
+ * 不并进 lumen_persist_t 的原因：一套剧本约 1KB，4 套 + 暂存放不进取快照的
+ * 那条路径（它按值拷贝），且写 blob 的缓冲在存储任务栈上。
+ *
+ * 只存**已提交**剧本、激活 id 与 loop；**播放位置不持久化**
+ * （docs/protocol.md §12 / 21-design §6：上电从第一阶段 + 停止态）。
+ */
+bool lumen_state_store_load_scripts(const uint16_t strip_counts[LUMEN_MAX_STRIPS],
+                                    lumen_script_store_t *store, uint8_t *active_script_id,
+                                    bool *loop);
+
+/*
+ * 记录最新剧本 blob 并重置 500ms debounce。回调在存储任务里写 NVS。
+ *
+ * 传**已编码的 blob** 而不是整个 store：一套剧本表 4 套 × 8 阶段 × 8 段
+ * 约 41KB，引擎已经持有一份；存储侧再存一份会白吃 41KB DRAM。
+ * 编码在持引擎锁的调用者那边做，存储侧只拷 4KB。
+ */
+void lumen_state_store_request_script_save(const uint8_t *blob, size_t len);

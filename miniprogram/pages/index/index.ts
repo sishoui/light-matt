@@ -65,6 +65,7 @@ import type {
   DiscoveredDevice,
   LinkState,
   RGB,
+  SegmentConfig,
   SegmentReport,
   SegmentTarget,
 } from "../../utils/protocol/types";
@@ -72,12 +73,18 @@ import {
   ANIMATION_MIN_PERIOD_MS,
   BREATHING_MIN_PERIOD_MS,
   MAX_PERIOD_MS,
+  MAX_SCRIPTS,
   MAX_SEGMENTS,
+  MAX_STAGES,
   SEGMENT_TYPE,
   WAVEFORM,
   WAVEFORM_NAMES,
 } from "../../utils/protocol/constants";
-import { segmentReverse } from "../../utils/protocol/commands";
+import {
+  breathingFlags,
+  directionFlags,
+  segmentReverse,
+} from "../../utils/protocol/commands";
 import { LogPanelView } from "./log-panel-view";
 import {
   activeCount,
@@ -94,9 +101,33 @@ import {
   type SegmentRow,
 } from "./segment-view";
 import { COLOR_UI_INTERVAL_MS, WheelView } from "./wheel-view";
+import {
+  addStage,
+  buildScriptStageRows,
+  createScriptDraft,
+  draftInvalidStageCount,
+  draftToScriptConfig,
+  downloadProgressText,
+  playbackView,
+  removeStage,
+  removeStageSegment,
+  setStageDuration,
+  setStageSegments,
+  upsertStageSegment,
+  type ScriptDraft,
+  type ScriptStageRow,
+} from "./script-view";
 
 /** 灯效模式：新段 / 当前编辑段用哪一类（#30 / #31 扩展）。 */
 type SegmentMode = "static" | "breathing" | "rainbow" | "comet";
+
+/** 模式的中文名（剧本编辑提示用；与选项表同源含义）。 */
+const MODE_LABELS: Record<SegmentMode, string> = {
+  static: "静态",
+  breathing: "呼吸",
+  rainbow: "彩虹",
+  comet: "流光",
+};
 
 /** 模式切换后的提示文案（只影响下一次新建区间 / 参数区提示）。 */
 const MODE_HINTS: Record<SegmentMode, string> = {
@@ -228,6 +259,32 @@ Page({
     ledCountHintText: "",
     ledCountBusy: false,
 
+    /*
+     * 剧本（#32）。草稿在本地（用户正在编，设备不知道），下发后设备是权威：
+     * 播放状态、阶段号、loop 全部取自 State 字节 10-13。
+     */
+    scriptIdOptions: [0, 1, 2, 3],
+    scriptId: 0,
+    scriptStageRows: [] as ScriptStageRow[],
+    scriptActiveStage: 0,
+    scriptMaxStages: MAX_STAGES,
+    scriptBusy: false,
+    scriptHintText: "",
+    /** 下发进度：0-100；-1 = 未在下发。 */
+    scriptProgressPercent: -1,
+    scriptProgressText: "",
+    /** 设备侧旁证（ScriptProgress 0x86）：-1 = 还没收到。 */
+    scriptDeviceFrames: -1,
+    // 播放控制（#32）：以设备 State 为准。
+    playbackText: "停止",
+    playbackStageText: "无激活剧本",
+    playbackState: 0,
+    playbackLoop: true,
+    playbackActive: false,
+    playbackBusy: false,
+    // 设备配置的灯带数（State 字节 8）；剧本下发按它声明 strip_count。
+    stripCountValue: 1,
+
     version: "0.1.0",
   },
 
@@ -241,6 +298,8 @@ Page({
   logView: null as LogPanelView | null,
   /** 设备权威的段列表原始数据（渲染用 data.segmentRows，这里是真值）。 */
   segmentReports: [] as SegmentReport[],
+  /** 剧本草稿（#32）：页面实例持有，data.scriptStageRows 是它的派生视图。 */
+  scriptDraft: null as ScriptDraft | null,
 
   onLoad() {
     const platform = detectPlatform();
@@ -258,6 +317,11 @@ Page({
     this.logView = new LogPanelView(session.log, {
       setData: (patch) => this.setData(patch),
     });
+
+    // #32：剧本草稿（4 个空阶段）。设备上已提交的剧本要 QueryScript 才看得到，
+    // 但草稿是「用户正在编的一套」，两者不是同一件事，所以这里不预填。
+    this.scriptDraft = createScriptDraft();
+    this.syncScriptRows();
 
     this.wheelView = new WheelView(
       {
@@ -305,6 +369,17 @@ Page({
       }),
       // 新帧到达：只在面板可见且未暂停时合并刷新（暂停时冻结视图）。
       session.log.onAppend(() => this.logView?.onAppend()),
+      /*
+       * #32：设备侧 ScriptProgress(0x86) 是下发进度的**旁证**（每 8 帧一条），
+       * 不进进度条（权威是小程序自己数的逐帧 ACK），只作为「设备确实收到了」
+       * 的额外证据显示在提示里。
+       */
+      session.transport.onScriptProgress((scriptId, frames) => {
+        if (scriptId !== this.scriptDraft?.scriptId) {
+          return;
+        }
+        this.setData({ scriptDeviceFrames: frames });
+      }),
     ];
 
     void session.boot();
@@ -1552,6 +1627,363 @@ Page({
     });
   },
 
+  // ---------------- 剧本（#32） ----------------
+
+  /** 草稿变化后统一刷新派生视图（阶段行、按钮可用性）。 */
+  syncScriptRows(patch: Record<string, unknown> = {}) {
+    const draft = this.scriptDraft;
+    if (draft === null) {
+      return;
+    }
+    this.setData({
+      scriptStageRows: buildScriptStageRows(draft, this.data.scriptActiveStage),
+      scriptId: draft.scriptId,
+      ...patch,
+    });
+  },
+
+  /** 切换正在编辑的剧本编号（草稿里的 id，不影响设备）。 */
+  onScriptIdTap(e: WechatMiniprogram.TouchEvent) {
+    if (this.scriptDraft === null) {
+      return;
+    }
+    const scriptId = Number(e.currentTarget.dataset.scriptId ?? -1);
+    if (!Number.isInteger(scriptId) || scriptId < 0 || scriptId >= MAX_SCRIPTS) {
+      return;
+    }
+    this.scriptDraft = { ...this.scriptDraft, scriptId };
+    this.syncScriptRows({ scriptHintText: "" });
+  },
+
+  /** 点选某阶段：后续「把当前段加进剧本」就加到这里。 */
+  onScriptStageTap(e: WechatMiniprogram.TouchEvent) {
+    const index = Number(e.currentTarget.dataset.stage ?? -1);
+    if (this.scriptDraft === null || index < 0 || index >= this.scriptDraft.stages.length) {
+      return;
+    }
+    this.setData({ scriptActiveStage: index });
+    this.syncScriptRows();
+  },
+
+  /** 改某阶段的时长输入（只记文本，应用时校验）。 */
+  onScriptStageDurationInput(e: WechatMiniprogram.Input) {
+    if (this.scriptDraft === null) {
+      return;
+    }
+    const index = Number(e.currentTarget.dataset.stage ?? -1);
+    this.scriptDraft = setStageDuration(
+      this.scriptDraft,
+      index,
+      String(e.detail.value ?? ""),
+    );
+    this.syncScriptRows({ scriptHintText: "" });
+  },
+
+  /** 加一个阶段（上限 8）。 */
+  onScriptAddStage() {
+    if (this.scriptDraft === null) {
+      return;
+    }
+    const next = addStage(this.scriptDraft);
+    if (next === this.scriptDraft) {
+      wx.showToast({ title: `最多 ${MAX_STAGES} 个阶段`, icon: "none" });
+      return;
+    }
+    this.scriptDraft = next;
+    this.syncScriptRows({ scriptHintText: "" });
+  },
+
+  /** 删掉某阶段（至少保留 1 个）。 */
+  onScriptRemoveStage(e: WechatMiniprogram.TouchEvent) {
+    if (this.scriptDraft === null) {
+      return;
+    }
+    const index = Number(e.currentTarget.dataset.stage ?? -1);
+    const next = removeStage(this.scriptDraft, index);
+    if (next === this.scriptDraft) {
+      wx.showToast({ title: "至少保留 1 个阶段", icon: "none" });
+      return;
+    }
+    this.scriptDraft = next;
+    const active = Math.min(this.data.scriptActiveStage, next.stages.length - 1);
+    this.setData({ scriptActiveStage: active });
+    this.syncScriptRows({ scriptHintText: "" });
+  },
+
+  /**
+   * 把「当前分段」按当前灯效模式加进正在编辑的阶段（#32 的核心编辑动作）。
+   *
+   * 用当前选中的段（区间 + 色环颜色 + 模式参数），占该阶段里同一个 seg_id
+   * ——同一阶段同一槽位是替换，所以重复点只是更新参数，不会堆出重复段。
+   */
+  onScriptAddSegment() {
+    const draft = this.scriptDraft;
+    if (session === null || draft === null || !this.data.ready) {
+      return;
+    }
+    const target = this.activeTarget();
+    if (target === null) {
+      this.showSelectSegmentNotice();
+      return;
+    }
+
+    const stageIndex = this.data.scriptActiveStage;
+    const stage = draft.stages[stageIndex];
+    if (stage === undefined) {
+      return;
+    }
+
+    const rgb = this.wheelView?.rgb() ?? PRESETS[0].rgb;
+    const [hue, sat] = this.segmentHueSat(rgb);
+    let segment: SegmentConfig;
+    try {
+      segment = this.buildModeSegment(target, hue, sat, this.data.segmentMode);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.setData({ scriptHintText: message });
+      wx.showToast({ title: message, icon: "none" });
+      return;
+    }
+
+    /* 同阶段同槽位是替换；提示已占用时也不静默覆盖别的槽位——这里用同一
+     * segId，所以「重复点」= 更新该槽位的参数，符合用户预期。 */
+    const segments = upsertStageSegment(stage.segments, segment);
+    this.scriptDraft = setStageSegments(draft, stageIndex, segments);
+    this.syncScriptRows({
+      scriptHintText: `阶段 ${stageIndex + 1} 段 ${segment.segId} 已设为「${MODE_LABELS[this.data.segmentMode]}」`,
+    });
+  },
+
+  /** 从当前阶段删掉一个段（按 seg_id）。 */
+  onScriptRemoveSegment(e: WechatMiniprogram.TouchEvent) {
+    if (this.scriptDraft === null) {
+      return;
+    }
+    const segId = Number(e.currentTarget.dataset.segId ?? -1);
+    const stageIndex = this.data.scriptActiveStage;
+    const stage = this.scriptDraft.stages[stageIndex];
+    if (stage === undefined) {
+      return;
+    }
+    const segments = removeStageSegment(stage.segments, segId);
+    if (segments === stage.segments) {
+      return;
+    }
+    this.scriptDraft = setStageSegments(this.scriptDraft, stageIndex, segments);
+    this.syncScriptRows({ scriptHintText: `已从阶段 ${stageIndex + 1} 删除段 ${segId}` });
+  },
+
+  /** 简单包装：把 activeTarget 的区间与 hue/sat 变成该模式的段配置。 */
+  buildModeSegment(
+    target: SegmentTarget,
+    hue: number,
+    sat: number,
+    mode: SegmentMode,
+  ): SegmentConfig {
+    const base = { stripId: target.stripId, segId: target.segId, start: target.start, end: target.end, hue, sat };
+    if (mode === "breathing") {
+      return {
+        ...base,
+        type: SEGMENT_TYPE.BREATHING,
+        periodMs: this.data.breathingPeriod,
+        p5: this.data.breathingMinLevel,
+        flags: breathingFlags(this.data.breathingWaveform),
+      };
+    }
+    if (mode === "rainbow") {
+      return {
+        ...base,
+        type: SEGMENT_TYPE.RAINBOW,
+        periodMs: this.data.animPeriod,
+        p5: this.data.animSpan,
+        flags: directionFlags(this.data.animReverse),
+      };
+    }
+    if (mode === "comet") {
+      return {
+        ...base,
+        type: SEGMENT_TYPE.COMET,
+        periodMs: this.data.animPeriod,
+        p5: this.data.animTail,
+        flags: directionFlags(this.data.animReverse),
+      };
+    }
+    return { ...base, type: SEGMENT_TYPE.STATIC, periodMs: 0, p5: 0, flags: 0 };
+  },
+
+  /** 用户空间 RGB → (hue, sat)，与 session 的换算同一份（不另写一份）。 */
+  segmentHueSat(rgb: RGB): [number, number] {
+    const hsv = rgbToHsv(rgb);
+    return [
+      Math.round((hsv.h / 360) * 0x10000) & 0xffff,
+      Math.round(hsv.s * 255),
+    ];
+  },
+
+  /**
+   * 下发草稿（Begin → Stage/Segment… → Commit → Activate）。
+   *
+   * 进度以**每帧 ACK** 为权威（protocol §10.4）：session 每确认一帧回一次，
+   * 这里换算成百分比与当前步文案。失败时 session 会尽力 Abort，设备保留
+   * 上一套可用配置（协议保证，不靠小程序兜底）。
+   */
+  async onScriptDownload() {
+    const draft = this.scriptDraft;
+    if (session === null || this.data.scriptBusy || !this.data.ready || draft === null) {
+      return;
+    }
+
+    const invalidStages = draftInvalidStageCount(draft);
+    if (invalidStages > 0) {
+      const message = `有 ${invalidStages} 个阶段的时长非法（必须是 1-65535 的整数）`;
+      this.setData({ scriptHintText: message });
+      wx.showToast({ title: message, icon: "none" });
+      return;
+    }
+
+    const script = draftToScriptConfig(draft, this.stripCountForScripts());
+    const precheck = session.validateScriptForDevice(script);
+    if (!precheck.ok) {
+      this.setData({ scriptHintText: precheck.message });
+      wx.showToast({ title: precheck.message, icon: "none" });
+      return;
+    }
+
+    this.setData({
+      scriptBusy: true,
+      scriptProgressPercent: 0,
+      scriptProgressText: downloadProgressText("准备下发", 0, 0),
+      scriptDeviceFrames: -1,
+      scriptHintText: "正在下发…",
+    });
+
+    try {
+      const result = await session.downloadScript(
+        script,
+        { activate: true, loop: this.data.playbackLoop },
+        (view) => {
+          this.setData({
+            scriptProgressPercent: view.percent,
+            scriptProgressText: downloadProgressText(view.label, view.done, view.total),
+          });
+        },
+      );
+
+      if (result.kind === "ok") {
+        this.setData({
+          scriptProgressPercent: 100,
+          scriptProgressText: "下发完成",
+          scriptHintText: `剧本 ${script.scriptId} 已下发并激活`,
+        });
+        if (result.state !== undefined && result.state !== null) {
+          this.applyDeviceState(result.state);
+        } else {
+          void this.refreshAfterScript();
+        }
+        return;
+      }
+      if (result.kind === "stale") {
+        this.setData({ scriptHintText: "连接已切换，下发结果已丢弃" });
+        return;
+      }
+      /* 失败：设备保留上一套配置；进度条留在失败处，用户能看到停在哪一帧。 */
+      const message =
+        result.kind === "ack-error"
+          ? `下发被设备拒绝（${resultText(result.ack.resultCode)}），上一套剧本仍可用`
+          : result.kind === "invalid"
+            ? result.message
+            : result.message;
+      this.setData({ scriptHintText: message });
+      wx.showToast({ title: message, icon: "none" });
+    } finally {
+      this.setData({ scriptBusy: false });
+    }
+  },
+
+  /** 下发后补读一次 State（script_id / flags 已变，设备是权威）。 */
+  async refreshAfterScript() {
+    if (session === null) {
+      return;
+    }
+    try {
+      const state = await session.refreshState();
+      this.applyDeviceState(state);
+    } catch {
+      /* 读失败不改变已成功的下发结果，等下一次 State read 纠正。 */
+    }
+  },
+
+  /** play / pause / stop（#32）：暂停后继续从暂停点，不从头。 */
+  async onPlaybackTap(e: WechatMiniprogram.TouchEvent) {
+    if (session === null || this.data.playbackBusy || !this.data.ready) {
+      return;
+    }
+    const action = Number(e.currentTarget.dataset.action ?? -1);
+    if (action !== 0 && action !== 1 && action !== 2) {
+      return;
+    }
+    this.setData({ playbackBusy: true });
+    try {
+      const result = await session.setPlayback(action as 0 | 1 | 2, this.data.playbackLoop);
+      if (result.kind === "ok" && result.state !== undefined && result.state !== null) {
+        this.applyDeviceState(result.state);
+        return;
+      }
+      if (result.kind === "ack-error") {
+        wx.showToast({ title: resultText(result.ack.resultCode), icon: "none" });
+        return;
+      }
+      if (result.kind === "stale") {
+        return;
+      }
+      if (result.kind === "error") {
+        wx.showToast({ title: result.message, icon: "none" });
+      }
+    } finally {
+      this.setData({ playbackBusy: false });
+    }
+  },
+
+  /** loop 开关：三种 action 下都会写入；这里只改本地值，下一次操作生效。 */
+  onPlaybackLoopChange(e: WechatMiniprogram.SwitchChange) {
+    this.setData({ playbackLoop: Boolean(e.detail.value) });
+  },
+
+  /** 把设备上的另一套剧本设为激活（不自动播放）。 */
+  async onScriptActivate() {
+    if (session === null || this.data.scriptBusy || !this.data.ready) {
+      return;
+    }
+    this.setData({ scriptBusy: true });
+    try {
+      const result = await session.activateScript(this.data.scriptId, this.data.playbackLoop);
+      if (result.kind === "ok" && result.state !== undefined && result.state !== null) {
+        this.applyDeviceState(result.state);
+        this.setData({ scriptHintText: `已激活剧本 ${this.data.scriptId}` });
+        return;
+      }
+      if (result.kind === "ack-error") {
+        /* 设备未提交该 id → InvalidParam：明确告诉用户先下发。 */
+        this.setData({ scriptHintText: `剧本 ${this.data.scriptId} 尚未在设备上提交，请先下发` });
+        wx.showToast({ title: "该剧本需要先下发", icon: "none" });
+        return;
+      }
+      if (result.kind === "stale") {
+        return;
+      }
+      if (result.kind === "error") {
+        wx.showToast({ title: result.message, icon: "none" });
+      }
+    } finally {
+      this.setData({ scriptBusy: false });
+    }
+  },
+
+  /** 各条灯带数的回落（State 只报 strip 0 的值）。 */
+  stripCountForScripts(): number {
+    return Math.max(1, this.data.stripCountValue);
+  },
+
   applyDeviceState(state: DeviceState) {
     // 用与 session / brightness.ts 同一份「max_brightness 为 0 时按 255」规则，
     // 不要在这内联一份。设备是权威：State read / StateReport 覆盖本地值。
@@ -1560,6 +1992,16 @@ Page({
     const rgb: RGB = { r: state.r, g: state.g, b: state.b };
     // 色环状态先对齐（不单独 setData/重绘），下面的 setData 一次带全。
     const hsv = this.wheelView?.assign(rgb) ?? hsvForWheel(rgb, INITIAL_HSV.h);
+    // #32：播放状态是设备权威（State 字节 10-13）。阶段总数取草稿的阶段数——
+    // 设备只报当前阶段号，不报总数；用草稿是唯一能给出「3 / 4」的来源。
+    const stageTotal = this.scriptDraft?.stages.length ?? 0;
+    const playback = playbackView(
+      state.playbackState,
+      state.stageIndex,
+      state.flags,
+      state.scriptId,
+      stageTotal,
+    );
     this.setData({
       power: state.power,
       powerLabel: powerLabelText(state.power, brightness),
@@ -1576,6 +2018,13 @@ Page({
       colorHintText: colorHintText(this.data.ready, this.activeTarget()),
       // 设备权威：State read / StateReport 里的数量总是覆盖本地值。
       ledCount: state.ledCount,
+      stripCountValue: state.stripCount,
+      // #32：播放控制面板以设备 State 为准。
+      playbackText: playback.text,
+      playbackStageText: playback.stageText,
+      playbackState: playback.state,
+      playbackLoop: playback.loop,
+      playbackActive: playback.active,
     });
     this.redrawWheel();
   },

@@ -10,14 +10,20 @@ import { DEVICE_CMD } from "../protocol/constants";
 import { decodeFrame, encodeFrame } from "../protocol/frame";
 import {
   parseAck,
+  parseScriptProgress,
+  parseScriptSummary,
   parseSegmentListEnd,
   parseSegmentReport,
   parseState,
+  type ScriptProgress,
+  type ScriptSummary,
 } from "../protocol/commands";
 import {
   describeAck,
   describeCommand,
   describeEvent,
+  describeScriptProgress,
+  describeScriptSummary,
   describeSegmentListEnd,
   describeSegmentReport,
   describeState,
@@ -40,7 +46,10 @@ export type InboundAction =
   | { kind: "event"; code: number; detail: number }
   /* #25：QueryStrip 的多帧回包。小程序按命令字区分类型、按 SegmentListEnd 收尾。 */
   | { kind: "segment-report"; report: SegmentReport }
-  | { kind: "segment-list-end"; end: SegmentListEnd };
+  | { kind: "segment-list-end"; end: SegmentListEnd }
+  /* #32：QueryScript 的响应（ScriptSummary）与下发进度（ScriptProgress）。 */
+  | { kind: "script-summary"; summary: ScriptSummary }
+  | { kind: "script-progress"; progress: ScriptProgress };
 
 /** 一条入站帧的日志字段 + 动作。日志字段与拆分前逐字一致。 */
 export interface InboundFrame {
@@ -154,6 +163,38 @@ export function routeInboundFrame(bytes: Uint8Array): InboundFrame {
         text: describeSegmentListEnd(end),
         ok: true,
         action: { kind: "segment-list-end", end },
+      };
+    } catch (err) {
+      return { command, seq, text: errorText(err), ok: false, action: { kind: "none" } };
+    }
+  }
+
+  /* #32：QueryScript 的响应与下发进度。两者都带 seq，但语义不同——
+   * ScriptSummary 收尾一次查询，ScriptProgress 只是进度旁证。 */
+  if (command === DEVICE_CMD.SCRIPT_SUMMARY) {
+    try {
+      const summary = parseScriptSummary(payload);
+      return {
+        command,
+        seq,
+        text: describeScriptSummary(summary),
+        ok: true,
+        action: { kind: "script-summary", summary },
+      };
+    } catch (err) {
+      return { command, seq, text: errorText(err), ok: false, action: { kind: "none" } };
+    }
+  }
+
+  if (command === DEVICE_CMD.SCRIPT_PROGRESS) {
+    try {
+      const progress = parseScriptProgress(payload);
+      return {
+        command,
+        seq,
+        text: describeScriptProgress(progress),
+        ok: true,
+        action: { kind: "script-progress", progress },
       };
     } catch (err) {
       return { command, seq, text: errorText(err), ok: false, action: { kind: "none" } };

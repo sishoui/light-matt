@@ -50,6 +50,51 @@ static bool overlaps_others(const lumen_segment_store_t *store, uint8_t strip_id
     return false;
 }
 
+uint8_t lumen_segment_store_validate_single(uint8_t strip_id, uint8_t strip_count,
+                                            uint8_t led_count, const lumen_segment_t *candidate)
+{
+    if (candidate == NULL) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+
+    /* 5 strip_id 范围。 */
+    if (strip_count == 0 || strip_count > LUMEN_MAX_STRIPS || strip_id >= strip_count) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+
+    /* 6 段区间。 */
+    if (led_count == 0 || led_count > LUMEN_MAX_LEDS) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    if (candidate->start > candidate->end || candidate->end >= led_count) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+
+    /* 8 flags 保留位 / 9 周期下限（与整表版本共用同一段规则）。 */
+    if (candidate->type == LUMEN_EFFECT_STATIC) {
+        if (candidate->flags != 0) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+    } else if (!lumen_effect_type_implemented(candidate->type)) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    } else if (candidate->type == LUMEN_EFFECT_BREATHING) {
+        if ((candidate->flags & 0xF8u) != 0) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        if (candidate->period_ms != 0 && candidate->period_ms < LUMEN_BREATHING_MIN_PERIOD_MS) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+    } else {
+        if ((candidate->flags & 0xFEu) != 0) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        if (candidate->period_ms != 0 && candidate->period_ms < LUMEN_RAINBOW_MIN_PERIOD_MS) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+    }
+    return LUMEN_RESULT_OK;
+}
+
 uint8_t lumen_segment_store_validate(const lumen_segment_store_t *store, uint8_t strip_id,
                                      uint8_t strip_count, uint8_t seg_id, uint8_t led_count,
                                      const lumen_segment_t *candidate)

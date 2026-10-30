@@ -16,7 +16,10 @@ import {
   BREATHING_MIN_PERIOD_MS,
   MAX_LEDS,
   MAX_PERIOD_MS,
+  MAX_SCRIPTS,
   MAX_SEGMENTS,
+  MAX_STAGES,
+  MAX_STAGE_MS,
   MAX_STRIPS,
   MIN_LEDS,
   NO_SCRIPT,
@@ -341,7 +344,18 @@ export function cometSegment(
   };
 }
 
-/** ClearSegment 0x11：载荷 `strip_id, seg_id`。 */export function cmdClearSegment(stripId: number, segId: number): CommandRequest {
+/**
+ * 段参数块（静态 3 字节 / 动画 7 字节），SetSegment 与 ScriptSegment 共用。
+ *
+ * 实现成一个薄封装而不是第二份校验：直接复用 cmdSetSegment 的载荷尾部，
+ * 保证「直接设段能过、剧本下发被拒」这类两端漂移不可能发生。
+ */
+export function segmentParams(segment: SegmentConfig): Uint8Array {
+  return cmdSetSegment(segment).payload.slice(5);
+}
+
+/** ClearSegment 0x11：载荷 `strip_id, seg_id`。 */
+export function cmdClearSegment(stripId: number, segId: number): CommandRequest {
   const strip = assertStripId(stripId);
   if (!Number.isInteger(segId) || segId < 0 || segId >= MAX_SEGMENTS) {
     throw new RangeError(`seg_id 必须是 0-${MAX_SEGMENTS - 1} 的整数，收到 ${segId}`);
@@ -352,6 +366,183 @@ export function cometSegment(
 /** QueryStrip 0x12：载荷 `strip_id`。 */
 export function cmdQueryStrip(stripId: number): CommandRequest {
   return { command: 0x12, payload: new Uint8Array([assertStripId(stripId)]) };
+}
+
+/* ---------------- #32 剧本 ---------------- */
+
+/** script_id 必须是 0-3（MAX_SCRIPTS = 4）。 */
+function assertScriptId(scriptId: number): number {
+  if (!Number.isInteger(scriptId) || scriptId < 0 || scriptId >= MAX_SCRIPTS) {
+    throw new RangeError(`script_id 必须是 0-${MAX_SCRIPTS - 1} 的整数，收到 ${scriptId}`);
+  }
+  return scriptId;
+}
+
+/** 阶段下标 0-7（MAX_STAGES = 8）。 */
+function assertStageIndex(stageIndex: number): number {
+  if (!Number.isInteger(stageIndex) || stageIndex < 0 || stageIndex >= MAX_STAGES) {
+    throw new RangeError(`stage_index 必须是 0-${MAX_STAGES - 1} 的整数，收到 ${stageIndex}`);
+  }
+  return stageIndex;
+}
+
+/** 阶段时长 1-65535（0 非法：设备会拒）。 */
+function assertDuration(durationMs: number): number {
+  if (!Number.isInteger(durationMs) || durationMs < 1 || durationMs > MAX_STAGE_MS) {
+    throw new RangeError(`阶段时长必须是 1-${MAX_STAGE_MS} 的整数，收到 ${durationMs}`);
+  }
+  return durationMs;
+}
+
+/**
+ * SetPlayback 0x13：载荷 `action, loop`。
+ *
+ * action：0 stop（播放头回 stage 0）/ 1 play（从当前播放头，暂停后即继续）/
+ * 2 pause（冻结播放头与画面）。loop 在三种 action 下都写入。
+ */
+export function cmdSetPlayback(action: number, loop: boolean): CommandRequest {
+  if (!Number.isInteger(action) || action < 0 || action > 2) {
+    throw new RangeError(`action 必须是 0(stop) / 1(play) / 2(pause)，收到 ${action}`);
+  }
+  return { command: 0x13, payload: new Uint8Array([action, loop ? 1 : 0]) };
+}
+
+/** ScriptBegin 0x14：载荷 `script_id, stage_count, strip_count`。 */
+export function cmdScriptBegin(
+  scriptId: number,
+  stageCount: number,
+  stripCount: number,
+): CommandRequest {
+  const id = assertScriptId(scriptId);
+  if (!Number.isInteger(stageCount) || stageCount < 1 || stageCount > MAX_STAGES) {
+    throw new RangeError(`stage_count 必须是 1-${MAX_STAGES} 的整数，收到 ${stageCount}`);
+  }
+  const strips = assertStripId(stripCount);
+  if (strips === 0) {
+    throw new RangeError("strip_count 必须 ≥ 1");
+  }
+  return { command: 0x14, payload: new Uint8Array([id, stageCount, strips]) };
+}
+
+/** ScriptStage 0x15：载荷 `script_id, stage_index, duration_lo, duration_hi`。 */
+export function cmdScriptStage(
+  scriptId: number,
+  stageIndex: number,
+  durationMs: number,
+): CommandRequest {
+  const id = assertScriptId(scriptId);
+  const stage = assertStageIndex(stageIndex);
+  const duration = assertDuration(durationMs);
+  return {
+    command: 0x15,
+    payload: new Uint8Array([id, stage, duration & 0xff, (duration >> 8) & 0xff]),
+  };
+}
+
+/**
+ * ScriptSegment 0x16：载荷
+ *   `script_id, stage_index, strip_id, seg_id, start, end, type, params(3|7)`。
+ *
+ * 参数块与 SetSegment 完全同构（segmentParams 复用同一份校验），所以四种
+ * 灯效都能直接进剧本。动画类载荷 14 字节，整帧正好 20 字节（协议上限）。
+ */
+export function cmdScriptSegment(
+  scriptId: number,
+  stageIndex: number,
+  segment: SegmentConfig,
+): CommandRequest {
+  const id = assertScriptId(scriptId);
+  const stage = assertStageIndex(stageIndex);
+  const stripId = assertStripId(segment.stripId);
+  if (!Number.isInteger(segment.segId) || segment.segId < 0 || segment.segId >= MAX_SEGMENTS) {
+    throw new RangeError(`seg_id 必须是 0-${MAX_SEGMENTS - 1} 的整数，收到 ${segment.segId}`);
+  }
+  const start = assertLedIndex(segment.start, "start");
+  const end = assertLedIndex(segment.end, "end");
+  if (start > end) {
+    throw new RangeError(`start 不能大于 end，收到 ${start} > ${end}`);
+  }
+  const params = segmentParams(segment);
+  const payload = new Uint8Array(7 + params.length);
+  payload[0] = id;
+  payload[1] = stage;
+  payload[2] = stripId;
+  payload[3] = segment.segId;
+  payload[4] = start;
+  payload[5] = end;
+  payload[6] = segment.type;
+  payload.set(params, 7);
+  return { command: 0x16, payload };
+}
+
+/** ScriptCommit 0x17：载荷 `script_id`。 */
+export function cmdScriptCommit(scriptId: number): CommandRequest {
+  return { command: 0x17, payload: new Uint8Array([assertScriptId(scriptId)]) };
+}
+
+/** ScriptAbort 0x18：载荷 `script_id`。 */
+export function cmdScriptAbort(scriptId: number): CommandRequest {
+  return { command: 0x18, payload: new Uint8Array([assertScriptId(scriptId)]) };
+}
+
+/** ActivateScript 0x19：载荷 `script_id, loop`。 */
+export function cmdActivateScript(scriptId: number, loop: boolean): CommandRequest {
+  return {
+    command: 0x19,
+    payload: new Uint8Array([assertScriptId(scriptId), loop ? 1 : 0]),
+  };
+}
+
+/** QueryScript 0x1A：载荷 `script_id`。 */
+export function cmdQueryScript(scriptId: number): CommandRequest {
+  return { command: 0x1a, payload: new Uint8Array([assertScriptId(scriptId)]) };
+}
+
+/** 一条 ScriptSummary 0x85（QueryScript 的响应）。 */
+export interface ScriptSummary {
+  scriptId: number;
+  stageCount: number;
+  /** bit0 loop（对激活剧本有意义）。 */
+  flags: number;
+  /** 1 = 就是当前激活的剧本。 */
+  active: boolean;
+}
+
+/** 解析 ScriptSummary 0x85：载荷 `script_id, stage_count, flags, active`。 */
+export function parseScriptSummary(payload: Uint8Array): ScriptSummary {
+  if (payload.length !== 4) {
+    throw new RangeError(`ScriptSummary 载荷必须是 4 字节，收到 ${payload.length}`);
+  }
+  const active = payload[3];
+  if (active > 1) {
+    throw new RangeError(`ScriptSummary.active 必须是 0/1，收到 ${active}`);
+  }
+  if (payload[1] > MAX_STAGES) {
+    throw new RangeError(`ScriptSummary.stage_count 不能超过 ${MAX_STAGES}，收到 ${payload[1]}`);
+  }
+  return {
+    scriptId: payload[0],
+    stageCount: payload[1],
+    flags: payload[2],
+    active: active === 1,
+  };
+}
+
+/** 一条 ScriptProgress 0x86：设备侧已接受的帧数（下发进度的补充证据）。 */
+export interface ScriptProgress {
+  scriptId: number;
+  framesWritten: number;
+}
+
+/** 解析 ScriptProgress 0x86：载荷 `script_id, frames_lo, frames_hi`。 */
+export function parseScriptProgress(payload: Uint8Array): ScriptProgress {
+  if (payload.length !== 3) {
+    throw new RangeError(`ScriptProgress 载荷必须是 3 字节，收到 ${payload.length}`);
+  }
+  return {
+    scriptId: payload[0],
+    framesWritten: payload[1] | (payload[2] << 8),
+  };
 }
 
 /**

@@ -328,7 +328,125 @@
     </view>
   </view>
 
-  <!-- 7. 页脚：版本 + 提示；版本号连点 5 次开启隐藏日志面板 -->
+  <!-- 7. 剧本（#32）：多阶段序列，设备自己跑时间轴（手机断开后继续演）。
+       草稿在本地；点「下发」才展开成 Begin → Stage/Segment… → Commit → Activate。
+       进度以每帧 ACK 为权威；失败时设备保留上一套可用配置（协议保证）。 -->
+  <view class="section script-section {{ready ? '' : 'disabled'}}">
+    <view class="section-head">
+      <text class="section-title">剧本</text>
+      <text class="section-value">{{playbackStageText}} · {{playbackText}}</text>
+    </view>
+
+    <!-- 剧本编号：4 套槽位；切换只是切换草稿的 id，不动设备 -->
+    <view class="script-id-row">
+      <text class="script-id-label">剧本</text>
+      <view
+        wx:for="{{scriptIdOptions}}"
+        wx:key="*this"
+        class="script-id {{scriptId === item ? 'selected' : ''}}"
+        data-script-id="{{item}}"
+        bindtap="onScriptIdTap"
+      >{{item + 1}}</view>
+      <text class="script-id-hint">{{scriptStageRows.length}} / {{scriptMaxStages}} 阶段</text>
+    </view>
+
+    <!-- 阶段列表：点选成为「当前编辑阶段」 -->
+    <view class="script-stage-list">
+      <view
+        wx:for="{{scriptStageRows}}"
+        wx:key="index"
+        class="script-stage {{item.active ? 'selected' : ''}}"
+        data-stage="{{item.index}}"
+        bindtap="onScriptStageTap"
+      >
+        <view class="script-stage-main">
+          <text class="script-stage-title">{{item.title}}</text>
+          <text class="script-stage-segments">{{item.segmentText}}</text>
+        </view>
+        <view class="script-stage-side">
+          <input
+            class="script-duration {{item.invalid ? 'invalid' : ''}}"
+            type="number"
+            value="{{item.duration}}"
+            maxlength="5"
+            data-stage="{{item.index}}"
+            disabled="{{!ready || scriptBusy}}"
+            bindinput="onScriptStageDurationInput"
+          />
+          <text class="script-duration-unit">ms</text>
+          <text
+            class="script-stage-delete"
+            data-stage="{{item.index}}"
+            catchtap="onScriptRemoveStage"
+          >删</text>
+        </view>
+      </view>
+    </view>
+
+    <view class="script-tool-row">
+      <button class="script-btn" disabled="{{!ready || scriptBusy}}" bindtap="onScriptAddStage">
+        加阶段
+      </button>
+      <button class="script-btn" disabled="{{!ready || scriptBusy}}" bindtap="onScriptAddSegment">
+        当前段加入阶段
+      </button>
+    </view>
+
+    <!-- 下发进度：百分比来自每帧 ACK（0x86 只是旁证，括号里另给） -->
+    <view class="script-progress" wx:if="{{scriptProgressPercent >= 0}}">
+      <view class="script-progress-bar">
+        <view class="script-progress-fill" style="width: {{scriptProgressPercent}}%"></view>
+      </view>
+      <text class="script-progress-text">
+        {{scriptProgressText}}（{{scriptProgressPercent}}%<block wx:if="{{scriptDeviceFrames >= 0}}"> · 设备确认 {{scriptDeviceFrames}} 帧</block>）
+      </text>
+    </view>
+
+    <view class="script-tool-row">
+      <button
+        class="script-btn primary"
+        disabled="{{!ready || scriptBusy}}"
+        bindtap="onScriptDownload"
+      >
+        {{scriptBusy ? '下发中…' : '下发剧本'}}
+      </button>
+      <button class="script-btn" disabled="{{!ready || scriptBusy}}" bindtap="onScriptActivate">
+        激活剧本 {{scriptId + 1}}
+      </button>
+    </view>
+
+    <!-- 播放控制：暂停后「播放」从暂停点继续，不从头 -->
+    <view class="playback-row">
+      <button
+        class="playback-btn {{playbackState === 1 ? 'active' : ''}}"
+        data-action="1"
+        disabled="{{!ready || playbackBusy}}"
+        bindtap="onPlaybackTap"
+      >播放</button>
+      <button
+        class="playback-btn {{playbackState === 2 ? 'active' : ''}}"
+        data-action="2"
+        disabled="{{!ready || playbackBusy}}"
+        bindtap="onPlaybackTap"
+      >暂停</button>
+      <button class="playback-btn" data-action="0" disabled="{{!ready || playbackBusy}}" bindtap="onPlaybackTap">
+        停止
+      </button>
+      <view class="playback-loop">
+        <text class="playback-loop-label">循环</text>
+        <switch
+          checked="{{playbackLoop}}"
+          color="#ffb478"
+          disabled="{{!ready}}"
+          bindchange="onPlaybackLoopChange"
+        />
+      </view>
+    </view>
+
+    <text class="section-hint">{{scriptHintText || '每个阶段 = 时长 + 各段灯效；设备按时间轴自动切换。暂停后「播放」从暂停处继续。'}}</text>
+  </view>
+
+  <!-- 8. 页脚：版本 + 提示；版本号连点 5 次开启隐藏日志面板 -->
   <view class="footer">
     <text class="version" bindtap="onVersionTap">v{{version}}</text>
     <text class="footer-hint">开关与设备状态以设备为准</text>

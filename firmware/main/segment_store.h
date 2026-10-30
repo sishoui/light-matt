@@ -45,6 +45,16 @@ uint8_t lumen_segment_store_validate(const lumen_segment_store_t *store, uint8_t
                                      const lumen_segment_t *candidate);
 
 /*
+ * 只做「单段」规则（§11.3 第 5/6/8/9 步，**不含重叠**），供剧本 commit 使用：
+ * 剧本的段在 8 阶段 × 8 灯带的表里，构造一个 1KB 的临时段表去复用上面的函数
+ * 会把 NimBLE 主机任务的 4KB 栈吃掉四分之一。剧本层的重叠判定由
+ * script_store 自己按阶段表做。
+ */
+uint8_t lumen_segment_store_validate_single(uint8_t strip_id, uint8_t strip_count,
+                                            uint8_t led_count,
+                                            const lumen_segment_t *candidate);
+
+/*
  * 校验并写入。校验失败时不修改任何槽位（旧配置保持不变）。
  * success 时 *out_stored 为写入后的段（t0_ms 已由调用方设置）。
  */

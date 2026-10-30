@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "protocol.h"
+#include "script_store.h"
 #include "segment_store.h"
 #include "state.h"
 
@@ -64,8 +65,40 @@ typedef struct {
     bool strip_query;
     uint8_t query_strip_id;
 
+    /*
+     * #32 剧本（0x13–0x1A）。命令层只做形状校验；真正的暂存 / 提交 /
+     * 激活由 led_engine 在锁内执行（它持剧本表），这里只交出意图。
+     *
+     * script_op 取值见 lumen_script_op_t；script_stage_index / script_strip /
+     * script_seg / script_segment / script_loop 按 op 解释。
+     */
+    uint8_t script_op;
+    uint8_t script_id;
+    uint8_t script_action;   /* SetPlayback 的 action：0 stop / 1 play / 2 pause */
+    uint8_t script_stage_count;
+    uint8_t script_strip_count;
+    uint8_t script_stage_index;
+    uint16_t script_duration_ms;
+    uint8_t script_strip;
+    uint8_t script_seg;
+    lumen_segment_t script_segment;
+    bool script_loop;
+
     lumen_state_t next;    /* 命令生效后的完整状态（未生效时等于 current） */
 } lumen_command_outcome_t;
+
+/* #32 剧本命令的操作意图（outcome->script_op）。 */
+typedef enum {
+    LUMEN_SCRIPT_OP_NONE = 0,
+    LUMEN_SCRIPT_OP_BEGIN,    /* 0x14 ScriptBegin */
+    LUMEN_SCRIPT_OP_STAGE,    /* 0x15 ScriptStage */
+    LUMEN_SCRIPT_OP_SEGMENT,  /* 0x16 ScriptSegment */
+    LUMEN_SCRIPT_OP_COMMIT,   /* 0x17 ScriptCommit */
+    LUMEN_SCRIPT_OP_ABORT,    /* 0x18 ScriptAbort */
+    LUMEN_SCRIPT_OP_ACTIVATE, /* 0x19 ActivateScript */
+    LUMEN_SCRIPT_OP_QUERY,    /* 0x1A QueryScript */
+    LUMEN_SCRIPT_OP_PLAYBACK, /* 0x13 SetPlayback */
+} lumen_script_op_t;
 
 /*
  * 分发一条已通过信封校验的帧。

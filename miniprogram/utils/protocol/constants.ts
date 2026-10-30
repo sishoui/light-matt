@@ -26,6 +26,8 @@ export const MIN_LEDS = 1;
 export const MAX_STRIPS = 8;
 export const MAX_SEGMENTS = 8; // 每条灯带
 export const MAX_STAGES = 8; // 每套剧本
+/** 单阶段时长上限（2 字节字段）。0 非法（设备回 InvalidParam）。 */
+export const MAX_STAGE_MS = 0xffff;
 export const MAX_SCRIPTS = 4;
 /** script_id 用 0xFF 表示「无激活剧本」。 */
 export const NO_SCRIPT = 0xff;

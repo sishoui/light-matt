@@ -21,7 +21,7 @@
 
 import { RX_UUID, SERVICE_UUID, STATE_UUID, TX_UUID, commandName } from "../protocol/constants";
 import { bytesToHex } from "../protocol/hex";
-import { parseState } from "../protocol/commands";
+import { parseState, type ScriptSummary } from "../protocol/commands";
 import type {
   AckResult,
   CommandRequest,
@@ -116,6 +116,16 @@ export class BleTransport {
   private readonly stateRead = new StateReadSlot();
   /** #25：QueryStrip 的多帧收集（seg_count 条 SegmentReport + 1 条 ListEnd）。 */
   private readonly stripQueries = new StripQueryCollector();
+  /**
+   * #32：QueryScript 的响应（一条 ScriptSummary 0x85，回显请求 seq）。
+   * 同一时刻只允许一个查询：下发流程与 UI 不会并发查剧本。
+   */
+  private pendingScriptQuery: {
+    seq: number;
+    resolve: (summary: ScriptSummary) => void;
+    reject: (err: unknown) => void;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
 
   private destroyed = false;
 
@@ -169,6 +179,11 @@ export class BleTransport {
 
   onScanHint(fn: (hint: string | null) => void): () => void {
     return this.listeners.onScanHint(fn);
+  }
+
+  /** #32：设备侧 ScriptProgress(0x86) 的旁证（scriptId + 设备侧累计帧数）。 */
+  onScriptProgress(fn: (scriptId: number, frames: number) => void): () => void {
+    return this.listeners.onScriptProgress(fn);
   }
 
   // ------------------------------------------------------------------
@@ -575,6 +590,72 @@ export class BleTransport {
     return { reports: result.reports, end: result.end };
   }
 
+  /**
+   * #32：QueryScript 0x1A + ScriptSummary 0x85。
+   *
+   * 响应是一条**单独**的 0x85（不是 ACK 的多帧续），同样回显请求 seq。
+   * 流程与 queryStrip 一致：先等 ACK；ACK 非零时设备不会发 0x85。
+   */
+  async queryScript(
+    scriptId: number,
+    opts: { timeoutMs?: number } = {},
+  ): Promise<ScriptSummary> {
+    this.ensureWritable();
+    const seq = this.allocateSeq();
+    const req = { command: 0x1a, payload: new Uint8Array([scriptId & 0xff]) };
+    const frame = encodeTxFrame(req.command, seq, req.payload);
+    const timeoutMs = opts.timeoutMs ?? this.ackTimeoutMs;
+
+    const ackPromise = this.ackWaiters.register(seq, req.command, timeoutMs);
+    const summaryPromise = new Promise<ScriptSummary>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingScriptQuery = null;
+        reject(new WxCallTimeoutError("QueryScript", timeoutMs));
+      }, timeoutMs);
+      this.pendingScriptQuery = { seq, resolve, reject, timer };
+    });
+    summaryPromise.catch(() => undefined);
+
+    this.logFrame("tx", frame, req.command, seq, describeTx(req));
+    try {
+      await this.writer.enqueue(frame);
+    } catch (err) {
+      this.logFailure(frame, req.command, seq, errorText(err));
+      this.ackWaiters.fail(seq, err);
+      this.failPendingScriptQuery(err instanceof Error ? err : new Error(String(err)));
+      this.noteWriteFailure(err);
+      throw err;
+    }
+
+    const ack = await ackPromise;
+    if (!ack.ok) {
+      this.failPendingScriptQuery(
+        new Error(`QueryScript 被拒（${resultText(ack.resultCode)}）`),
+      );
+      throw new Error(`QueryScript 失败：${resultText(ack.resultCode)}`);
+    }
+    return summaryPromise;
+  }
+
+  /**
+   * #32：按顺序下发一串命令，每帧等 ACK。
+   *
+   * 剧本下发是「一帧一条命令」的批量流程，用 sendAndWaitAck 逐帧串行即可：
+   * 顺序是协议要求（Begin → Stage/Segment → Commit），不能并发。
+   * 回调在每帧确认后报告进度（done 是**已确认**的帧数）。
+   */
+  async sendSequence(
+    requests: CommandRequest[],
+    onProgress?: (done: number, total: number) => void,
+    opts: SendOptions = {},
+  ): Promise<void> {
+    const total = requests.length;
+    for (let i = 0; i < total; i += 1) {
+      await this.sendAndWaitAck(requests[i], opts);
+      onProgress?.(i + 1, total);
+    }
+  }
+
   // ------------------------------------------------------------------
   // 读 State
   // ------------------------------------------------------------------
@@ -767,9 +848,36 @@ export class BleTransport {
       case "segment-list-end":
         this.stripQueries.listEnd(frame.seq as number, frame.action.end);
         return;
+      case "script-summary": {
+        const pending = this.pendingScriptQuery;
+        if (pending !== null && pending.seq === frame.seq) {
+          clearTimeout(pending.timer);
+          this.pendingScriptQuery = null;
+          pending.resolve(frame.action.summary);
+        }
+        return;
+      }
+      case "script-progress":
+        /* 设备侧旁证，不进 ACK 等待表；只广播给关心进度的 UI。 */
+        this.listeners.emitScriptProgress(
+          frame.action.progress.scriptId,
+          frame.action.progress.framesWritten,
+        );
+        return;
       default:
         return;
     }
+  }
+
+  /** 丢掉 in-flight 的 QueryScript（写失败 / 被拒 / 断线）。 */
+  private failPendingScriptQuery(err: Error): void {
+    const pending = this.pendingScriptQuery;
+    if (pending === null) {
+      return;
+    }
+    clearTimeout(pending.timer);
+    this.pendingScriptQuery = null;
+    pending.reject(err);
   }
 
   /**
@@ -853,6 +961,7 @@ export class BleTransport {
     this.ackWaiters.reset(reason);
     this.stateRead.reset(reason);
     this.stripQueries.reset(reason);
+    this.failPendingScriptQuery(reason);
   }
 
   private setLink(state: LinkState, detail?: LinkDetail): void {

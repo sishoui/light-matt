@@ -1,6 +1,7 @@
 #include "command.h"
 
 #include <stddef.h>
+#include <string.h>
 
 #include "effects.h"
 
@@ -8,8 +9,8 @@ bool lumen_command_is_known(uint8_t command)
 {
     /*
      * 只包含「已实现」的命令（docs/protocol.md §6.1）。0x03 / 0x04 在 v2 退役，
-     * 0x13-0x1A 由 #32 加入；两者现在都落到 default → 0x02 未知命令，
-     * 小程序能明确看到「该命令需要升级固件」。
+     * 落到 default → 0x02 未知命令，小程序能明确看到「该命令需要升级固件」。
+     * #32 加入 0x13–0x1A（播放控制与剧本）。
      */
     switch (command) {
     case LUMEN_CMD_SET_POWER:
@@ -20,6 +21,14 @@ bool lumen_command_is_known(uint8_t command)
     case LUMEN_CMD_SET_SEGMENT:
     case LUMEN_CMD_CLEAR_SEGMENT:
     case LUMEN_CMD_QUERY_STRIP:
+    case LUMEN_CMD_SET_PLAYBACK:
+    case LUMEN_CMD_SCRIPT_BEGIN:
+    case LUMEN_CMD_SCRIPT_STAGE:
+    case LUMEN_CMD_SCRIPT_SEGMENT:
+    case LUMEN_CMD_SCRIPT_COMMIT:
+    case LUMEN_CMD_SCRIPT_ABORT:
+    case LUMEN_CMD_ACTIVATE_SCRIPT:
+    case LUMEN_CMD_QUERY_SCRIPT:
         return true;
     default:
         return false;
@@ -42,6 +51,26 @@ uint8_t lumen_command_payload_len(uint8_t command)
         return 2;
     case LUMEN_CMD_QUERY_STRIP:
         return 1;
+    case LUMEN_CMD_SET_PLAYBACK:
+        /* action, loop（docs/protocol.md §6）。 */
+        return 2;
+    case LUMEN_CMD_SCRIPT_BEGIN:
+        /* script_id, stage_count, strip_count。 */
+        return 3;
+    case LUMEN_CMD_SCRIPT_STAGE:
+        /* script_id, stage_index, duration_lo, duration_hi。 */
+        return 4;
+    case LUMEN_CMD_SCRIPT_SEGMENT:
+        /* 变长（10 或 14）：与 SetSegment 同理，由 payload_len_ok 判定。 */
+        return 0;
+    case LUMEN_CMD_SCRIPT_COMMIT:
+    case LUMEN_CMD_SCRIPT_ABORT:
+    case LUMEN_CMD_QUERY_SCRIPT:
+        /* script_id。 */
+        return 1;
+    case LUMEN_CMD_ACTIVATE_SCRIPT:
+        /* script_id, loop。 */
+        return 2;
     case LUMEN_CMD_SET_SEGMENT:
         /* 变长（8 或 12）：期望长度取决于 type，用 lumen_command_payload_len_ok 判定。
          * 这里返回 0 表示「不是固定长度」，调用方不能拿它做等值比较。 */
@@ -71,6 +100,22 @@ bool lumen_command_payload_len_ok(const lumen_frame_t *frame)
             return true;
         }
         return frame->payload_len == (uint8_t)(5 + param_len);
+    }
+    if (frame->command == LUMEN_CMD_SCRIPT_SEGMENT) {
+        /*
+         * 载荷 layout（docs/protocol.md §6）：
+         *   script_id, stage_index, strip_id, seg_id, start, end, type, params
+         * 前缀 7 字节，参数块 3|7 → 总长 10|14（动画类整帧正好 20 字节）。
+         * 同样先读 type 再定长：type 未知时长度无从判定，放行给第 4 步。
+         */
+        if (frame->payload_len < 7) {
+            return false;
+        }
+        uint8_t param_len = lumen_effect_param_len(frame->payload[6]);
+        if (param_len == 0) {
+            return true;
+        }
+        return frame->payload_len == (uint8_t)(7 + param_len);
     }
     return frame->payload_len == lumen_command_payload_len(frame->command);
 }
@@ -131,6 +176,13 @@ bool lumen_command_changes_state(uint8_t command)
     case LUMEN_CMD_SET_LED_COUNT:
     case LUMEN_CMD_SET_SEGMENT:
     case LUMEN_CMD_CLEAR_SEGMENT:
+    case LUMEN_CMD_SET_PLAYBACK:
+    case LUMEN_CMD_SCRIPT_BEGIN:
+    case LUMEN_CMD_SCRIPT_STAGE:
+    case LUMEN_CMD_SCRIPT_SEGMENT:
+    case LUMEN_CMD_SCRIPT_COMMIT:
+    case LUMEN_CMD_SCRIPT_ABORT:
+    case LUMEN_CMD_ACTIVATE_SCRIPT:
         return true;
     default:
         return false;
@@ -200,6 +252,190 @@ static void parse_segment_payload(const lumen_frame_t *frame, lumen_segment_t *s
         seg->p5 = frame->payload[10];
         seg->flags = frame->payload[11];
     }
+}
+
+/*
+ * #32 剧本命令的形状校验（docs/protocol.md §6 / §11.3）。
+ *
+ * 这里只做「命令层能判定」的部分：id / 下标 / 类型 / 长度 / 时长非 0。
+ * 区间越界与重叠是**整份**校验，必须等 ScriptCommit（协议 §10.4 明确：
+ * 失败回滚发生在 commit，逐帧下发的中间态允许不完整）。
+ *
+ * 真正的暂存 / 提交 / 激活在 led_engine 里执行——它持剧本表与锁。
+ */
+
+/* SetPlayback 0x13：action ∈ {0,1,2}，loop ∈ {0,1}。 */
+static void dispatch_set_playback(const lumen_frame_t *frame, const lumen_state_t *current,
+                                  lumen_command_outcome_t *outcome)
+{
+    uint8_t action = frame->payload[0];
+    uint8_t loop = frame->payload[1];
+    if (action > 2) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    if (loop > 1) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    /* 没有激活剧本时 stop / pause 仍合法（幂等），play 也无副作用。 */
+    (void)current;
+    outcome->result_code = LUMEN_RESULT_OK;
+    outcome->script_op = LUMEN_SCRIPT_OP_PLAYBACK;
+    outcome->script_action = action;
+    outcome->script_loop = loop != 0;
+}
+
+/* ScriptBegin 0x14：script_id < MAX_SCRIPTS，stage_count 1-8，strip_count 1-8。 */
+static void dispatch_script_begin(const lumen_frame_t *frame, const lumen_state_t *current,
+                                  lumen_command_outcome_t *outcome)
+{
+    uint8_t script_id = frame->payload[0];
+    uint8_t stage_count = frame->payload[1];
+    uint8_t strip_count = frame->payload[2];
+
+    if (script_id >= LUMEN_MAX_SCRIPTS) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    if (stage_count < 1 || stage_count > LUMEN_MAX_STAGES) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    /*
+     * strip_count 不能超过设备实际配置的灯带数：声明 8 条但设备只有 1 条时，
+     * 后续 ScriptSegment 会永远被拒，用户看到的是一套下发不完的剧本。
+     * 提前在 Begin 就明确拒绝。
+     */
+    if (strip_count < 1 || strip_count > LUMEN_MAX_STRIPS ||
+        strip_count > current->strip_count) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    outcome->result_code = LUMEN_RESULT_OK;
+    outcome->script_op = LUMEN_SCRIPT_OP_BEGIN;
+    outcome->script_id = script_id;
+    outcome->script_stage_count = stage_count;
+    outcome->script_strip_count = strip_count;
+}
+
+/* ScriptStage 0x15：duration 非 0（stage_index 的上界由引擎按本次 Begin 校验）。 */
+static void dispatch_script_stage(const lumen_frame_t *frame, lumen_command_outcome_t *outcome)
+{
+    uint8_t script_id = frame->payload[0];
+    uint8_t stage_index = frame->payload[1];
+    uint16_t duration =
+        (uint16_t)(frame->payload[2] | ((uint16_t)frame->payload[3] << 8));
+
+    if (script_id >= LUMEN_MAX_SCRIPTS || stage_index >= LUMEN_MAX_STAGES) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    if (duration == 0) {
+        /* 协议 §11.3：脚本类命令额外校验 duration_ms != 0。 */
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    outcome->result_code = LUMEN_RESULT_OK;
+    outcome->script_op = LUMEN_SCRIPT_OP_STAGE;
+    outcome->script_id = script_id;
+    outcome->script_stage_index = stage_index;
+    outcome->script_duration_ms = duration;
+}
+
+/*
+ * ScriptSegment 0x16：载荷
+ *   script_id, stage_index, strip_id, seg_id, start, end, type, params(3|7)。
+ *
+ * 第 4 步（type 已知）与第 3 步（长度）已在上面做完。第 5 步 strip 范围用
+ * **本次下发的 strip_count** 判断不了（命令层没有暂存区），所以下界只到
+ * LUMEN_MAX_STRIPS；引擎在写入时按暂存的 strip_count 再拒一次。
+ * 区间与重叠留给 ScriptCommit（协议 §10.4）。
+ */
+static void dispatch_script_segment(const lumen_frame_t *frame,
+                                    lumen_command_outcome_t *outcome)
+{
+    uint8_t script_id = frame->payload[0];
+    uint8_t stage_index = frame->payload[1];
+    uint8_t strip_id = frame->payload[2];
+    uint8_t seg_id = frame->payload[3];
+    uint8_t type = frame->payload[6];
+
+    if (script_id >= LUMEN_MAX_SCRIPTS || stage_index >= LUMEN_MAX_STAGES ||
+        strip_id >= LUMEN_MAX_STRIPS || seg_id >= LUMEN_MAX_SEGMENTS) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    if (!lumen_effect_type_known(type)) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    if (!lumen_effect_type_implemented(type)) {
+        outcome->result_code = LUMEN_RESULT_UNKNOWN_COMMAND;
+        return;
+    }
+    if (frame->payload_len != (uint8_t)(7 + lumen_effect_param_len(type))) {
+        outcome->result_code = LUMEN_RESULT_BAD_LENGTH;
+        return;
+    }
+
+    lumen_segment_t candidate;
+    memset(&candidate, 0, sizeof(candidate));
+    candidate.active = true;
+    candidate.start = frame->payload[4];
+    candidate.end = frame->payload[5];
+    candidate.type = type;
+    candidate.hue = (uint16_t)(frame->payload[7] | ((uint16_t)frame->payload[8] << 8));
+    candidate.sat = frame->payload[9];
+    if (lumen_effect_param_len(type) > 3u) {
+        candidate.period_ms =
+            (uint16_t)(frame->payload[10] | ((uint16_t)frame->payload[11] << 8));
+        candidate.p5 = frame->payload[12];
+        candidate.flags = frame->payload[13];
+    }
+    if (candidate.start > candidate.end) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+
+    outcome->result_code = LUMEN_RESULT_OK;
+    outcome->script_op = LUMEN_SCRIPT_OP_SEGMENT;
+    outcome->script_id = script_id;
+    outcome->script_stage_index = stage_index;
+    outcome->script_strip = strip_id;
+    outcome->script_seg = seg_id;
+    outcome->script_segment = candidate;
+}
+
+/* ScriptCommit / ScriptAbort / QueryScript 共用 1 字节 script_id。 */
+static void dispatch_script_single_id(const lumen_frame_t *frame, uint8_t op,
+                                      lumen_command_outcome_t *outcome)
+{
+    uint8_t script_id = frame->payload[0];
+    /* QueryScript 允许查 0xFF（表示「问当前激活的是谁以外」没有意义，仍拒）。 */
+    if (script_id >= LUMEN_MAX_SCRIPTS) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    outcome->result_code = LUMEN_RESULT_OK;
+    outcome->script_op = op;
+    outcome->script_id = script_id;
+}
+
+/* ActivateScript 0x19：script_id, loop。 */
+static void dispatch_activate_script(const lumen_frame_t *frame,
+                                     lumen_command_outcome_t *outcome)
+{
+    uint8_t script_id = frame->payload[0];
+    uint8_t loop = frame->payload[1];
+    if (script_id >= LUMEN_MAX_SCRIPTS || loop > 1) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    outcome->result_code = LUMEN_RESULT_OK;
+    outcome->script_op = LUMEN_SCRIPT_OP_ACTIVATE;
+    outcome->script_id = script_id;
+    outcome->script_loop = loop != 0;
 }
 
 /*
@@ -368,6 +604,17 @@ void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *cur
     outcome->segment = (lumen_segment_t){0};
     outcome->strip_query = false;
     outcome->query_strip_id = 0;
+    outcome->script_op = LUMEN_SCRIPT_OP_NONE;
+    outcome->script_id = LUMEN_NO_SCRIPT;
+    outcome->script_action = 0;
+    outcome->script_stage_count = 0;
+    outcome->script_strip_count = 0;
+    outcome->script_stage_index = 0;
+    outcome->script_duration_ms = 0;
+    outcome->script_strip = 0;
+    outcome->script_seg = 0;
+    outcome->script_segment.active = false;
+    outcome->script_loop = false;
     outcome->next = *current;
 
     /*
@@ -411,6 +658,38 @@ void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *cur
 
     case LUMEN_CMD_QUERY_STRIP:
         dispatch_query_strip(frame, current, outcome);
+        break;
+
+    case LUMEN_CMD_SET_PLAYBACK:
+        dispatch_set_playback(frame, current, outcome);
+        break;
+
+    case LUMEN_CMD_SCRIPT_BEGIN:
+        dispatch_script_begin(frame, current, outcome);
+        break;
+
+    case LUMEN_CMD_SCRIPT_STAGE:
+        dispatch_script_stage(frame, outcome);
+        break;
+
+    case LUMEN_CMD_SCRIPT_SEGMENT:
+        dispatch_script_segment(frame, outcome);
+        break;
+
+    case LUMEN_CMD_SCRIPT_COMMIT:
+        dispatch_script_single_id(frame, LUMEN_SCRIPT_OP_COMMIT, outcome);
+        break;
+
+    case LUMEN_CMD_SCRIPT_ABORT:
+        dispatch_script_single_id(frame, LUMEN_SCRIPT_OP_ABORT, outcome);
+        break;
+
+    case LUMEN_CMD_ACTIVATE_SCRIPT:
+        dispatch_activate_script(frame, outcome);
+        break;
+
+    case LUMEN_CMD_QUERY_SCRIPT:
+        dispatch_script_single_id(frame, LUMEN_SCRIPT_OP_QUERY, outcome);
         break;
 
     case LUMEN_CMD_QUERY_STATE:
