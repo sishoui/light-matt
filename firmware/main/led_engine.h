@@ -34,8 +34,9 @@ esp_err_t lumen_led_engine_init(void);
 /* BLE 层注册：引擎用它在渲染任务里回 SetLedCount 的异步 ACK。 */
 void lumen_led_engine_set_response_cb(lumen_led_engine_response_cb cb);
 
-/* 把共享状态编码成 8 字节 State（docs/protocol.md §7），供 State read 使用。 */
-void lumen_led_engine_state_bytes(uint8_t out[8]);
+/* 把共享状态编码成 LUMEN_STATE_BYTES(14) 字节 State（docs/protocol.md §7），
+ * 供 State read 使用。 */
+void lumen_led_engine_state_bytes(uint8_t out[LUMEN_STATE_BYTES]);
 
 /* 拷贝一份共享状态快照。 */
 void lumen_led_engine_snapshot(lumen_state_t *out);

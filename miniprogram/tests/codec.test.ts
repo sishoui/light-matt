@@ -40,9 +40,9 @@ function payloadOf(c: VectorCase): Uint8Array {
 }
 
 describe("协议测试向量", () => {
-  it("向量文件本身是 v1 且包含 37 个用例", () => {
-    expect(vectors.protocol_version).toBe(1);
-    expect(vectors.cases.length).toBe(37);
+  it("向量文件本身是 v2 且包含 56 个用例", () => {
+    expect(vectors.protocol_version).toBe(2);
+    expect(vectors.cases.length).toBe(56);
   });
 
   it("app_to_device 有效帧：encode 逐字节复现 frame_hex", () => {
@@ -109,7 +109,7 @@ describe("协议测试向量", () => {
     }
   });
 
-  it("37 条向量逐条被覆盖（每条都属于下面三类之一）", () => {
+  it("56 条向量逐条被覆盖（每条都属于下面三类之一）", () => {
     const appValid = vectors.cases.filter(
       (c) => c.direction === "app_to_device" && c.frame_valid,
     ).length;
@@ -118,7 +118,7 @@ describe("协议测试向量", () => {
     ).length;
     const device = vectors.cases.filter((c) => c.direction === "device_to_app").length;
     expect(appValid + appInvalid + device).toBe(vectors.cases.length);
-    expect(vectors.cases.length).toBe(37);
+    expect(vectors.cases.length).toBe(56);
 
     // 直接逐条 decode：任何一条的 ok 与 frame_valid 不符都视为失败。
     for (const c of vectors.cases) {
@@ -140,9 +140,9 @@ describe("协议测试向量", () => {
 });
 
 describe("checksum", () => {
-  it("协议文档例子：A5 01 01 01 01 01 → 0x55", () => {
-    const frame = hexToBytes("A5 01 01 01 01 01") as Uint8Array;
-    expect(checksumOf(frame, 6)).toBe(0x55);
+  it("协议文档例子：A5 02 01 01 01 01 → 0x54", () => {
+    const frame = hexToBytes("A5 02 01 01 01 01") as Uint8Array;
+    expect(checksumOf(frame, 6)).toBe(0x54);
   });
 
   it("one's complement 而不是取负：覆盖长度 0 时返回 0xFF", () => {

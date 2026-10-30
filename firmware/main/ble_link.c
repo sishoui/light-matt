@@ -175,7 +175,7 @@ static void handle_frame(const uint8_t *data, size_t len)
     lumen_led_engine_snapshot(&current);
 
     lumen_command_outcome_t outcome;
-    /* max_brightness 取构建期常量：SetBrightness / SetAll 在这里被钳位，而不是拒绝。 */
+    /* max_brightness 取构建期常量：SetBrightness 在这里被钳位，而不是拒绝。 */
     lumen_command_dispatch(&frame, &current, lumen_led_engine_max_brightness(), &outcome);
 
     /*
@@ -260,7 +260,7 @@ static void handle_frame(const uint8_t *data, size_t len)
 
     /* §6.1：查询状态在 ACK 之后紧跟一条 StateReport，载荷布局与 State read 相同。 */
     if (outcome.state_report) {
-        uint8_t state[8];
+        uint8_t state[LUMEN_STATE_BYTES];
         lumen_led_engine_state_bytes(state);
         uint8_t buf[LUMEN_MAX_FRAME];
         size_t len = lumen_protocol_encode_state_report(frame.seq, state, buf, sizeof(buf));
@@ -337,8 +337,8 @@ static int state_access(uint16_t conn_handle, uint16_t attr_handle,
         return BLE_ATT_ERR_UNLIKELY;
     }
 
-    /* 只是拷贝一份 8 字节 RAM 快照，短时间持锁，不触发渲染。 */
-    uint8_t state[8];
+    /* 只是拷贝一份 14 字节 RAM 快照，短时间持锁，不触发渲染。 */
+    uint8_t state[LUMEN_STATE_BYTES];
     lumen_led_engine_state_bytes(state);
     int rc = os_mbuf_append(ctxt->om, state, sizeof(state));
     return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;

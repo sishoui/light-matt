@@ -175,6 +175,12 @@ function baseState(overrides: Partial<DeviceState> = {}): DeviceState {
     b: 120,
     ledCount: 30,
     maxBrightness: 255,
+    stripCount: 1,
+    segCount: 0,
+    scriptId: 0xff,
+    stageIndex: 0,
+    playbackState: 0,
+    flags: 0,
     ...overrides,
   };
 }

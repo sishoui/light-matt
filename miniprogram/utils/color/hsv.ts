@@ -181,7 +181,7 @@ function preset(name: string, hex: string): ColorPreset {
  *
  * 暖白取协议默认值 255/180/120（同时是测试向量 set_color_warm_white 的载荷），
  * 红/绿/蓝/青用纯通道，方便真机核对通道顺序与色相；橙/紫为中间色。
- * 预设只是 SetAll 的快捷入口，不引入新协议命令。
+ * 预设不是协议命令：v1 是 SetAll 的快捷入口，v2 改由 #25 的静态段承担。
  */
 export const PRESETS: readonly ColorPreset[] = [
   preset("暖白", "#FFB478"),

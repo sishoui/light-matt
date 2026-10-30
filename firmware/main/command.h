@@ -14,11 +14,13 @@
  * FreeRTOS 或 NVS，因此可以在 host 上直接单测。命令层负责 §10.2 后半段：
  * command → payload 长度 → payload 取值。
  *
- * #8 实现 SetPower 0x01；#9 实现 SetBrightness 0x02；#10 实现 SetColor 0x03
- * 与 SetAll 0x04；#12 实现 SetLedCount 0x06 的取值校验与「需要重建句柄」
- * 标记（真正的重建在 led_engine 的渲染任务里）；#13 实现 SelfTest 0x07 的
- * 命令语义（ACK 0x00 + 启动自检）；QueryState 0x05 置 state_report，
- * 由 ble_link 在 ACK 之后补一条 StateReport（§6.1）。
+ * #8 实现 SetPower 0x01；#9 实现 SetBrightness 0x02；#12 实现 SetLedCount 0x06
+ * 的取值校验与「需要重建句柄」标记（真正的重建在 led_engine 的渲染任务里）；
+ * #13 实现 SelfTest 0x07 的命令语义（ACK 0x00 + 启动自检）；QueryState 0x05
+ * 置 state_report，由 ble_link 在 ACK 之后补一条 StateReport（§6.1）。
+ *
+ * v2（#21）退役了 0x03 SetColor / 0x04 SetAll：命令层不再认识它们，落到
+ * UnknownCommand；段配置由 0x10 SetSegment 承担（#25）。
  */
 
 typedef struct {
@@ -55,8 +57,8 @@ typedef struct {
  * true 时才应请求重建句柄，而 cancels_selftest 为 true 时必须在写入共享状态
  * **之前**结束自检（SetLedCount 的 state_changed 恒为 false，但仍要取消自检）。
  *
- * max_brightness 是构建期亮度上限（协议 §11.4）：SetBrightness 与 SetAll
- * 载荷里的 brightness 会被钳位到这个值而不是拒绝。调用方传
+ * max_brightness 是构建期亮度上限（协议 §11.4）：SetBrightness 载荷里的
+ * brightness 会被钳位到这个值而不是拒绝。调用方传
  * lumen_led_engine_max_brightness()；host 单测直接传测试值。
  *
  * 错误路径（0x01 / 0x02 / 0x04）一律不修改状态。
@@ -64,13 +66,13 @@ typedef struct {
 void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *current,
                             uint8_t max_brightness, lumen_command_outcome_t *outcome);
 
-/* 协议 §6 定义的已知命令字（0x01-0x07）。保留字与设备→小程序方向不算。 */
+/* 协议 §6 定义的已知（已实现）命令字。保留字、退役字与设备→小程序方向不算。 */
 bool lumen_command_is_known(uint8_t command);
 
 /*
  * 协议 §11.2 第 5 条：该命令是否属于「改变状态」的类别
- * （SetPower / SetBrightness / SetColor / SetAll / SetLedCount）。
- * QueryState 与 SelfTest 不算。
+ * （SetPower / SetBrightness / SetLedCount）。
+ * QueryState 与 SelfTest 不算；v2 退役的 0x03 / 0x04 也不算。
  *
  * 取消规则在 dispatch 的统一收尾里执行，因此任何新增的「改变状态」命令只要
  * 加进本函数就会自动取消自检——不需要再去改 ble_link 或 led_engine。

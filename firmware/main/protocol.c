@@ -125,11 +125,13 @@ size_t lumen_protocol_encode_event(uint8_t event, uint8_t detail, uint8_t *out,
     return lumen_protocol_encode(LUMEN_CMD_EVENT, 0x00, payload, sizeof(payload), out, out_cap);
 }
 
-size_t lumen_protocol_encode_state_report(uint8_t seq, const uint8_t state[8],
+size_t lumen_protocol_encode_state_report(uint8_t seq,
+                                          const uint8_t state[LUMEN_STATE_BYTES],
                                           uint8_t *out, size_t out_cap)
 {
     if (state == NULL) {
         return 0;
     }
-    return lumen_protocol_encode(LUMEN_CMD_STATE_REPORT, seq, state, 8, out, out_cap);
+    return lumen_protocol_encode(LUMEN_CMD_STATE_REPORT, seq, state, LUMEN_STATE_BYTES, out,
+                                 out_cap);
 }

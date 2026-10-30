@@ -62,8 +62,8 @@ static const stress_color_t k_stress_colors[] = {
  *   → state_changed 时 lumen_led_engine_commit
  *
  * 返回 true 表示命令改变了共享状态，调用方应使用 *out 作为渲染数据；
- * false 表示该命令当前未被 reducer 实现或不改变状态（例如 #10 之前的
- * SetColor），调用方退回实验调色板。
+ * false 表示该命令当前未被 reducer 实现或不改变状态（例如 v2 退役的
+ * SetColor 0x03），调用方退回实验调色板。
  */
 static bool stress_dispatch(const lumen_led_stress_engine_t *engine, uint8_t command,
                             const uint8_t *payload, uint8_t payload_len, lumen_state_t *out)
@@ -190,7 +190,7 @@ void lumen_led_stress_run(const lumen_led_stress_engine_t *engine)
          *
          * CYCLE ：每周期都发真实协议帧走 reducer，同时切换颜色与亮度：
          *           - SetBrightness（#9 已实现）→ 每帧都改变共享状态；
-         *           - SetColor（#10 之后才实现）→ 未实现时退回内置调色板。
+         *           - SetColor 0x03 在 v2 退役 → 永远退回内置调色板。
          *         RMT 负载与 STEADY 完全一样（每周期都完整发送 30x24 bit），
          *         只是像素与共享状态在动，对应票里的「20Hz 循环切换颜色/亮度」。
          */
@@ -219,7 +219,9 @@ void lumen_led_stress_run(const lumen_led_stress_engine_t *engine)
             const stress_color_t *palette = &k_stress_colors[frame_no % STRESS_COLOR_COUNT];
             uint8_t payload[3] = {palette->r, palette->g, palette->b};
             if (stress_dispatch(engine, LUMEN_CMD_SET_COLOR, payload, sizeof(payload), &accepted)) {
-                /* #10 之后这条分支生效：颜色来自共享状态。 */
+                /* v2 退役了 0x03 SetColor，这条分支现在永远不成立（reducer 回
+                 * UnknownCommand）；保留是为了压力模式在回滚到 v1 协议时仍能跑
+                 * 同一套刺激。 */
                 color.r = accepted.r;
                 color.g = accepted.g;
                 color.b = accepted.b;

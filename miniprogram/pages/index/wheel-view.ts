@@ -26,6 +26,17 @@ import {
 import type { RGB } from "../../utils/protocol/types";
 import { colorHintText } from "./view-model";
 
+/**
+ * v2（#21）：颜色下发路径暂时禁用。
+ *
+ * SetColor 0x03 / SetAll 0x04 已退役，单色概念改由段配置承担。这里保留控件
+ * （不静默删功能），但**不修改任何状态**：设备没收到命令，界面就不能显示
+ * 已经变色。手势只弹一次提示。
+ *
+ * TODO(#25)：分段界面落地后删掉这个开关。
+ */
+const COLOR_CONTROLS_ENABLED = false;
+
 interface WheelCtx {
   ctx: WheelContext2D;
   geometry: WheelGeometry;
@@ -40,6 +51,11 @@ export interface WheelHost {
   /** 当前 ready 位的展示用快照（hint 文案据此切换）。 */
   queueColor(rgb: RGB): void;
   commitColor(rgb: RGB): void;
+  /**
+   * v2（#21）：颜色下发禁用期间，手势结束时由宿主弹一次「该功能在 v2 分段
+   * 界面中提供（#25）」。可选，缺省时静默。TODO(#25)
+   */
+  notifySegmentsNotice?(): void;
 }
 
 /** 取色读数的刷新间隔：与 BLE 20Hz 对齐，避免每个 touchmove 都 setData。 */
@@ -110,6 +126,13 @@ export class WheelView {
    * 多指 / 环外点击都忽略（避免手指划过中心时颜色乱跳）。
    */
   handleTouch(e: WechatMiniprogram.TouchCanvas): void {
+    if (!COLOR_CONTROLS_ENABLED) {
+      // 每次手势只提示一次（touchstart），避免 touchmove 高频弹 toast。
+      if (e.type === "touchstart") {
+        this.host.notifySegmentsNotice?.();
+      }
+      return;
+    }
     if (this.ctx === null || !this.host.isReady()) {
       return;
     }
@@ -129,6 +152,9 @@ export class WheelView {
 
   /** 色相变化：marker 立即重画；读数 setData 与 BLE 都按 20Hz 节流。 */
   applyHue(hue: number): void {
+    if (!COLOR_CONTROLS_ENABLED) {
+      return;
+    }
     const previousHue = this.hue;
     this.hue = normalizeHue(hue);
     const rgb = this.rgb();
@@ -160,6 +186,13 @@ export class WheelView {
 
   /** 饱和度（0-100）→ S=0..1；V 恒为 1（亮度独立，不折进 RGB）。 */
   applySaturation(value: number, commit: boolean): void {
+    if (!COLOR_CONTROLS_ENABLED) {
+      // 松手时提示一次；拖动过程中静默忽略（避免每帧弹 toast）。
+      if (commit) {
+        this.host.notifySegmentsNotice?.();
+      }
+      return;
+    }
     if (!Number.isFinite(value)) {
       return;
     }

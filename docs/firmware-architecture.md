@@ -26,7 +26,7 @@ ble_link  ──调用──▶  led_engine  ──调用──▶  state_store
 | `led_engine` | 共享状态的唯一所有者、latest-wins 邮箱、渲染任务、灯带句柄 | `lumen_led_engine_init` / `lumen_led_engine_commit` / `lumen_led_engine_state_bytes` / `lumen_led_engine_snapshot` / `lumen_led_engine_max_brightness` |
 | `state_store` | NVS 加载与 500ms debounce 保存 | `lumen_state_store_init` / `lumen_state_store_load` / `lumen_state_store_request_save` |
 | `protocol` | 帧信封解码、checksum、ACK/Event/StateReport 编码（纯函数） | 见 `protocol.h` |
-| `state` | 状态默认值、亮度钳位、8 字节 State 编码（纯函数） | 见 `state.h` |
+| `state` | 状态默认值、亮度钳位、14 字节 State 编码（纯函数） | 见 `state.h` |
 | `gamma` | gamma 表 + 亮度乘算（纯函数） | `lumen_gamma_init` / `lumen_gamma_apply` |
 | `selftest` | §11.2 自检序列状态机 + 自检/存储的颜色亮度合成（纯函数，#13） | 见 `selftest.h` |
 

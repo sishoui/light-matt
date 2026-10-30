@@ -10,6 +10,7 @@ import {
   clampBrightness,
 } from "../../utils/control/brightness";
 import { PRESETS } from "../../utils/color/hsv";
+import { SEGMENTS_UI_NOTICE } from "../../utils/control/session";
 import type { RGB } from "../../utils/protocol/types";
 
 /** 亮度提示文案：未连接 / 亮度 0 的语义都要如实说明（§7）。 */
@@ -23,12 +24,17 @@ export function brightnessHintText(value: number, ready: boolean): string {
   return "拖动实时跟随，松手确认";
 }
 
-/** 颜色区提示文案。 */
+/**
+ * 颜色区提示文案。
+ *
+ * v2（#21）退役了 SetColor / SetAll，颜色由段配置承担。这里始终说明功能
+ * 位置，避免用户拖动后以为没生效而反复尝试。TODO(#25)
+ */
 export function colorHintText(ready: boolean): string {
   if (!ready) {
-    return "连接后可选色";
+    return `连接后可操作；${SEGMENTS_UI_NOTICE}`;
   }
-  return "拖动色环实时跟随；预设一次原子切换";
+  return SEGMENTS_UI_NOTICE;
 }
 
 /** 亮度 0 且 power=1：灯是灭的但开关位仍为开，文案要如实说明（§7）。 */
