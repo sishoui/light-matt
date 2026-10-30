@@ -13,7 +13,7 @@
 
 | 组件 | 位置 / 版本 |
 |---|---|
-| ESP-IDF | `C:\Users\13092\esp\v5.4\esp-idf`（**v6.1**，detached HEAD 在 tag 上） |
+| ESP-IDF | `C:\Users\13092\esp\esp-idf\esp-idf`（**v6.1**，detached HEAD 在 tag 上） |
 | IDF 工具 | `C:\Espressif\tools`（`IDF_TOOLS_PATH=C:\Espressif`） |
 | IDF Python 环境 | `C:\Espressif\python_env\idf6.1_py3.11_env` |
 | Python 基础解释器 | `C:\Espressif\tools\idf-python\3.11.2` |
@@ -27,14 +27,24 @@
 | Node / npm | v24.14.0 / 11.11.0 |
 | 微信开发者工具 | `C:\Program Files (x86)\Tencent\微信web开发者工具` |
 
-> **目录名是历史遗留**：路径仍叫 `esp\v5.4`，但里面 checkout 的是 v6.1。
-> `export.bat` 从脚本自身位置推断 `IDF_PATH`，所以改名不影响使用；
-> 若要改名，把 `scripts\idf.cmd` 里的路径一并改掉即可。
+> **目录名与版本无关**：路径是 `C:\Users\13092\esp\esp-idf\esp-idf`，不随版本变化。
+> 升级 IDF 只需在同一个目录里 `git checkout <新 tag>`，`scripts\idf.cmd` 无需改动。
+> `export.bat` 从脚本自身位置推断 `IDF_PATH`，所以这个路径对 IDF 本身也不敏感。
+>
+> **改名记录（2026-10-31）**：原路径是 `C:\Users\13092\esp\v5.4\esp-idf`，目录名带着版本号，
+> 升级后名实不符。已改名为 `esp\esp-idf`，一次性根治。踩到两个坑：
+>
+> 1. **`C:\Espressif\idf-env.json` 里也记着旧路径**（`idfInstalled` 的键与 `path` 字段）。
+>    不改会导致 export 报「工具未安装」。备份在 `C:\Espressif\idf-env.json.bak`。
+> 2. **改名后 export 开始严格检查全部工具链**（xtensa-esp-elf / xtensa-gdb / esp32ulp-elf / dfu-util），
+>    之前只装了 riscv 那套。用不带 `--targets` 的 `idf_tools.py install` 一次性补齐。
+>
+> 同时受影响的三个同级项目（`lumen-app`、`lumen-fw`）的 `scripts\idf.cmd` 已一并改路径。
 
 ## 验证安装是否完整
 
 ```bat
-C:\Users\13092\esp\v5.4\esp-idf\export.bat
+C:\Users\13092\esp\esp-idf\esp-idf\export.bat
 idf.py --version
 ```
 
@@ -62,7 +72,7 @@ C:\Espressif\tools\riscv32-esp-elf\esp-15.2.0_20251204\riscv32-esp-elf\bin\riscv
 set "MSYSTEM="
 set "PATH=C:\Espressif\tools\idf-python\3.11.2;C:\Espressif\tools\idf-git\2.44.0\cmd;%PATH%"
 set "IDF_TOOLS_PATH=C:\Espressif"
-cd /d C:\Users\13092\esp\v5.4\esp-idf
+cd /d C:\Users\13092\esp\esp-idf\esp-idf
 
 call install.bat esp32c3
 ```
@@ -103,7 +113,7 @@ Deprecation notice: hex literal '0' without '0x' prefix detected
 `export.bat` 只对 cmd.exe 生效。**建议 IDF 命令都在 cmd.exe 里跑**：
 
 ```bat
-C:\Users\13092\esp\v5.4\esp-idf\export.bat
+C:\Users\13092\esp\esp-idf\esp-idf\export.bat
 idf.py --version
 ```
 
