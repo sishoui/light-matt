@@ -37,14 +37,18 @@ typedef struct {
 } lumen_state_t;
 
 /*
- * 持久化快照：状态 + 段配置。
+ * 持久化快照：状态 + 段配置 + 每条灯带的灯珠数。
  *
  * 段配置不属于 State（State 只报摘要），但断电恢复必须带上它，
  * 所以 NVS debounce 的载荷是这个组合而不是单独的 lumen_state_t。
+ *
+ * #29 起每条灯带的灯珠数各自独立（State 只有 strip 0 的那一个），
+ * 所以单独存一张表；strip_counts[0] 恒等于 state.led_count。
  */
 typedef struct {
     lumen_state_t state;
     lumen_segment_store_t segments;
+    uint16_t strip_counts[LUMEN_MAX_STRIPS];
 } lumen_persist_t;
 
 /* 协议默认值：关灯、亮度 128、暖白 255/180/120。

@@ -19,6 +19,23 @@
 /* 按 count 建句柄（不安装）；失败时 *out 未定义。 */
 esp_err_t lumen_led_strip_owner_create(uint16_t count, led_strip_handle_t *out);
 
+/*
+ * 按 gpio + max_count 建句柄（#29 TDM）。失败时 *out 未定义。
+ *
+ * 8 条灯带只用一个 RMT 通道（C3 只有 2 个），靠
+ * lumen_led_strip_owner_switch_gpio 在运行时改输出引脚。所以句柄按
+ * 「所有条里最大的灯珠数」建一次，之后只切引脚、复用同一个句柄。
+ */
+esp_err_t lumen_led_strip_owner_create_on(uint8_t gpio, uint16_t max_count,
+                                          led_strip_handle_t *out);
+
+/* 运行时把句柄的输出引脚切到 gpio（led_strip_switch_gpio 的薄封装）。 */
+esp_err_t lumen_led_strip_owner_switch_gpio(led_strip_handle_t strip, uint8_t gpio);
+
+/* 按灯珠数 n（<= 句柄 max_leds）把像素推出去，阻塞等发完。TDM 用。 */
+esp_err_t lumen_led_strip_owner_push_pixels_n(led_strip_handle_t strip, const uint8_t *frame,
+                                              uint16_t handle_max, uint16_t n);
+
 /* 建句柄并安装为当前句柄。 */
 esp_err_t lumen_led_strip_owner_init(uint16_t count);
 

@@ -46,6 +46,7 @@ typedef struct {
      * led_strip 句柄成功后才写入共享状态，ACK 也必须等重建结果。 */
     bool led_count_rebuild;
     uint16_t led_count;    /* 目标灯珠数量；仅在 led_count_rebuild 为 true 时有效 */
+    uint8_t led_count_strip; /* 哪条灯带要改数量（#29 多条独立） */
 
     /*
      * 段配置（#25）。0x10 / 0x11 置 segment_op：命令层已完成 §11.3 第 4-9 步

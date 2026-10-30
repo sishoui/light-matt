@@ -326,7 +326,8 @@ static void handle_frame(const uint8_t *data, size_t len)
          * 上面那行的 result 是 reducer 的判定（0x00 = 取值合法），不是最终结果：
          * 真正的 ACK 可能是 0x09（重建失败）或 0x05（忙），由 send_ack 再打一行。
          */
-        uint8_t status = lumen_led_engine_set_led_count(outcome.led_count, frame.seq);
+        uint8_t status = lumen_led_engine_set_led_count_for_strip(outcome.led_count_strip,
+                                                                outcome.led_count, frame.seq);
         if (status == LUMEN_LED_ENGINE_DEFERRED) {
             /* 已被接受（或数量未变）：现在才取消自检，与「新命令生效」同时。
              * 取消要在登记之后，否则重建期间的渲染会先闪回存储色。 */

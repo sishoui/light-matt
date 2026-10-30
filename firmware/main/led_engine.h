@@ -98,6 +98,13 @@ void lumen_led_engine_set_store_event_cb(lumen_store_event_cb cb);
  */
 uint8_t lumen_led_engine_set_led_count(uint16_t count, uint8_t seq);
 
+/*
+ * #29：按灯带设置灯珠数。strip 0 与上面的单参数版本等价（走句柄重建）；
+ * strip 1..7 只改该条的 count（TDM 共用一个按 max_count 建的句柄），
+ * 同步完成并直接回 ACK 0x00 / 0x01（越界或灯带不存在）。
+ */
+uint8_t lumen_led_engine_set_led_count_for_strip(uint8_t strip_id, uint16_t count, uint8_t seq);
+
 /* 当前生效的亮度上限（构建期常量）。 */
 uint8_t lumen_led_engine_max_brightness(void);
 

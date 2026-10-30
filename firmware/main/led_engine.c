@@ -20,6 +20,7 @@
 #include "segment_store.h"
 #include "selftest.h"
 #include "state_store.h"
+#include "strip_planar.h"
 #include "stress_metrics.h"
 
 static const char *TAG = "lumen_engine";
@@ -54,6 +55,23 @@ static lumen_selftest_t s_selftest;
  */
 static lumen_led_count_job_t s_led_count_job;
 static lumen_led_engine_response_cb s_response_cb;
+
+/*
+ * #29 多灯带 TDM 状态。s_planar 是引脚/灯珠数/降级的唯一权威，
+ * s_planar_stats 是给串口看的轮询实测数据（票面要求「每轮耗时 / 每条刷新间隔」）。
+ *
+ * 只有渲染任务读写 s_planar 的 cursor / degraded / stats（它独占灯带句柄）；
+ * BLE 回调只通过 lumen_led_engine_set_strip_count 改灯珠数，那条路径持
+ * s_state_lock 并只动 count 字段。二者的交集用 s_state_lock 保护。
+ */
+static lumen_planar_t s_planar;
+static lumen_planar_stats_t s_planar_stats;
+static led_strip_handle_t s_tdm_strip;
+
+/* 每条灯带的上一帧，用于 TDM 下逐条去重（跳过没变化的条）。 */
+static bool s_tdm_rendered_valid[LUMEN_MAX_STRIPS];
+static uint16_t s_tdm_rendered_count[LUMEN_MAX_STRIPS];
+static uint8_t s_tdm_rendered_frame[LUMEN_MAX_STRIPS][LUMEN_MAX_LEDS * 3];
 
 static uint8_t max_brightness(void)
 {
@@ -103,6 +121,11 @@ static lumen_persist_t persist_snapshot_locked(void)
     lumen_persist_t snapshot;
     snapshot.state = s_state;
     snapshot.segments = s_segments;
+    /* #29：每条灯带的灯珠数一起存，断电重启后 8 条都要恢复。 */
+    for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
+        const lumen_planar_strip_t *cfg = lumen_planar_get(&s_planar, i);
+        snapshot.strip_counts[i] = cfg != NULL ? cfg->count : 0;
+    }
     return snapshot;
 }
 
@@ -256,6 +279,103 @@ static void rebuild_led_count_if_pending(void)
 }
 
 /*
+ * TDM 轮询一条灯带（#29）。只有渲染任务调用。
+ *
+ * 一次调用 = 切 GPIO → 合成该条像素 → 推一帧。返回 true 表示真的推了帧
+ * （像素有变化或强制重绘）；false 表示该条跳过（无变化 / 降级）。
+ *
+ * 为什么一条一条刷而不是同步刷全部 8 条：C3 只有一个 RMT 通道（TDM 复用），
+ * 一轮里逐条切换引脚。WS2812B 锁存住自己最后收到的画面，所以切走之后
+ * 那条灯带保持不动——这是 TDM 可行的物理前提。
+ *
+ * 去重按条独立：一段动画只让那一段所在的灯带每帧都刷，其余灯带不变就跳过，
+ * 这样「静态段不因动画帧循环而空转刷帧」在多灯带下依然成立（#30 验收点）。
+ */
+static bool tdm_push_strip(uint8_t strip_id, const lumen_state_t *snapshot,
+                           const lumen_segment_store_t *segments,
+                           const lumen_selftest_t *selftest, bool force)
+{
+    const lumen_planar_strip_t *cfg = lumen_planar_get(&s_planar, strip_id);
+    if (cfg == NULL || !cfg->enabled || cfg->degraded) {
+        return false;
+    }
+    if (s_tdm_strip == NULL) {
+        return false;
+    }
+
+    uint8_t frame[LUMEN_MAX_LEDS * 3];
+    uint16_t n = lumen_led_render_compose_strip(snapshot, segments, selftest, max_brightness(),
+                                               now_ms(), strip_id, cfg->count, frame,
+                                               sizeof(frame));
+    if (n == 0) {
+        return false;
+    }
+
+    if (!force && s_tdm_rendered_valid[strip_id] && s_tdm_rendered_count[strip_id] == n &&
+        memcmp(frame, s_tdm_rendered_frame[strip_id], (size_t)n * 3u) == 0) {
+        return false; /* 该条画面没变：不切引脚、不刷，省一整帧的 RMT 时间 */
+    }
+
+    esp_err_t err = lumen_led_strip_owner_switch_gpio(s_tdm_strip, cfg->gpio);
+    if (err != ESP_OK) {
+        /* 切引脚失败：该条判降级，其余 7 条继续（票面「一条不接不影响其它」）。 */
+        if (lumen_planar_mark_degraded(&s_planar, strip_id)) {
+            ESP_LOGW(TAG, "strip %u (GPIO%u) 切换引脚失败 %s，已降级；其余灯带继续",
+                     strip_id, cfg->gpio, esp_err_to_name(err));
+        }
+        return false;
+    }
+
+    err = lumen_led_strip_owner_push_pixels_n(s_tdm_strip, frame, s_planar.max_count, n);
+    if (err != ESP_OK) {
+        /* refresh 失败同样按「这条不接」处理，不让它拖住整轮。 */
+        if (lumen_planar_mark_degraded(&s_planar, strip_id)) {
+            ESP_LOGW(TAG, "strip %u (GPIO%u) 刷新失败 %s，已降级；其余灯带继续", strip_id,
+                     cfg->gpio, esp_err_to_name(err));
+        }
+        return false;
+    }
+
+    memcpy(s_tdm_rendered_frame[strip_id], frame, (size_t)n * 3u);
+    s_tdm_rendered_count[strip_id] = n;
+    s_tdm_rendered_valid[strip_id] = true;
+    return true;
+}
+
+/*
+ * 跑一轮 TDM：把每条可用灯带刷一遍，并记录本轮耗时（票面要求的实测数字）。
+ * 单灯带（strip_count == 1）时不走这里，仍用 lumen_led_render_snapshot，
+ * 保证 v1 单灯带行为逐字节不变。
+ */
+static void tdm_run_round(const lumen_state_t *snapshot, const lumen_segment_store_t *segments,
+                          const lumen_selftest_t *selftest, bool force)
+{
+    int64_t t0 = esp_timer_get_time();
+    uint8_t pushed = 0;
+    for (uint8_t i = 0; i < s_planar.strip_count; ++i) {
+        if (tdm_push_strip(i, snapshot, segments, selftest, force)) {
+            ++pushed;
+        }
+    }
+    uint32_t round_us = (uint32_t)(esp_timer_get_time() - t0);
+    lumen_planar_note_round(&s_planar_stats, round_us, pushed);
+
+    /*
+     * 每 60 轮打一行：这是「8 路轮询实测周期」的唯一固件侧证据（#20 要求
+     * 由 #29 补上这个数字）。逐轮打会把串口淹掉，且串口本身会干扰测量。
+     */
+    if (s_planar_stats.rounds % 60u == 0u) {
+        uint32_t avg = lumen_planar_stats_avg_us(&s_planar_stats);
+        ESP_LOGI(TAG,
+                 "tdm: strips=%u active=%u round=%uus avg=%uus max=%uus pushed=%lu "
+                 "(每条间隔≈%uus)",
+                 s_planar.strip_count, lumen_planar_active_count(&s_planar), round_us, avg,
+                 s_planar_stats.round_us_max, (unsigned long)s_planar_stats.strips_pushed,
+                 (unsigned)avg);
+    }
+}
+
+/*
  * 上电后补发帧的次数与间隔。
  *
  * 灯带用独立 5V 供电（见 docs/led-bringup.md），它的电源建立可能晚于 MCU
@@ -315,9 +435,16 @@ static void render_task(void *arg)
         /*
          * 启动补发：上电后头几帧不走去重，确保灯带电源晚于 MCU 建立时
          * 也能收到像素（否则首帧被丢后要等用户碰一次开关才亮）。
+         * TDM 路径下同样要逐条强制刷一遍，否则降级标记与供电建立的窗口
+         * 会让某条灯带一直黑着。
          */
+        bool force_round = false;
         if (boot_reassert_left > 0) {
             lumen_led_render_invalidate();
+            for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
+                s_tdm_rendered_valid[i] = false;
+            }
+            force_round = true;
             --boot_reassert_left;
         }
 
@@ -370,9 +497,17 @@ static void render_task(void *arg)
                      selftest_rgb[1], selftest_rgb[2]);
         }
 
-        /* 渲染耗时（set_pixel + 阻塞 refresh）不持锁，State read 不会被拖住。 */
-        lumen_led_render_snapshot(lumen_led_strip_owner_get(), &snapshot, &segments, &selftest,
-                                  max_brightness(), now_ms());
+        /* 渲染耗时（set_pixel + 阻塞 refresh）不持锁，State read 不会被拖住。
+         *
+         * 单灯带：走 v1 路径（逐字节行为不变）。
+         * 多灯带（#29）：一轮 TDM 把所有可用条刷一遍；某条画面没变就跳过，
+         * 所以静态条不会因为别人的动画而空转刷帧。 */
+        if (s_planar.strip_count > 1) {
+            tdm_run_round(&snapshot, &segments, &selftest, force_round);
+        } else {
+            lumen_led_render_snapshot(lumen_led_strip_owner_get(), &snapshot, &segments,
+                                      &selftest, max_brightness(), now_ms());
+        }
     }
 }
 
@@ -420,7 +555,57 @@ esp_err_t lumen_led_engine_init(void)
              have_saved ? "restored" : "default", s_state.power, s_state.brightness, s_state.r,
              s_state.g, s_state.b, s_state.led_count, max_brightness(), s_state.seg_count);
 
-    esp_err_t err = lumen_led_strip_owner_init(s_state.led_count);
+    /*
+     * #29 多灯带初始化。引脚来自 Kconfig 的逗号分隔列表；少于 2 条时直接走
+     * 单灯带路径（v1 行为逐字节不变，验收点「现有单灯带功能不退化」）。
+     *
+     * 注意：TDM 只占 1 个 RMT 通道，所以句柄按「所有条里最大的灯珠数」建
+     * 一次，运行时用 led_strip_switch_gpio 切引脚复用（C3 只有 2 个 TX 通道）。
+     */
+    uint16_t pins_buf[LUMEN_MAX_STRIPS];
+    uint8_t pin_count = lumen_planar_parse_list(CONFIG_LUMEN_STRIP_PINS, pins_buf,
+                                                LUMEN_MAX_STRIPS);
+    uint16_t counts[LUMEN_MAX_STRIPS];
+    uint8_t strip_n = pin_count;
+    if (strip_n > 1) {
+        uint8_t pins8[LUMEN_MAX_STRIPS];
+        for (uint8_t i = 0; i < strip_n; ++i) {
+            if (pins_buf[i] > 0xFF) {
+                ESP_LOGE(TAG, "strip pin %u 超出 GPIO 范围", (unsigned)pins_buf[i]);
+                strip_n = 1;
+                break;
+            }
+            pins8[i] = (uint8_t)pins_buf[i];
+            /*
+             * 灯珠数：有恢复的持久化值就用它（断电重启后 8 条各自恢复），
+             * 否则用 State 的默认值（首次上电）。
+             */
+            uint16_t restored_count = have_saved ? restored.strip_counts[i] : 0;
+            counts[i] = (restored_count >= 1 && restored_count <= LUMEN_MAX_LEDS)
+                            ? restored_count
+                            : s_state.led_count;
+        }
+        if (strip_n > 1 &&
+            !lumen_planar_init(&s_planar, pins8, counts, strip_n)) {
+            ESP_LOGE(TAG, "TDM 配置非法（引脚重复 / 灯珠数越界），退回单灯带");
+            strip_n = 1;
+        }
+    }
+
+    esp_err_t err;
+    if (strip_n > 1) {
+        err = lumen_led_strip_owner_create_on(s_planar.strips[0].gpio, s_planar.max_count,
+                                              &s_tdm_strip);
+        if (err == ESP_OK) {
+            lumen_led_strip_owner_set(s_tdm_strip);
+        }
+        ESP_LOGI(TAG, "TDM: %u 条灯带, pins=%s, max_leds=%u, mem_block_symbols=%d",
+                 strip_n, CONFIG_LUMEN_STRIP_PINS, s_planar.max_count,
+                 CONFIG_LUMEN_RMT_MEM_BLOCK_SYMBOLS);
+    } else {
+        lumen_planar_stats_reset(&s_planar_stats);
+        err = lumen_led_strip_owner_init(s_state.led_count);
+    }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "strip init failed: %s (mem_block_symbols=%d, leds=%u)",
                  esp_err_to_name(err), CONFIG_LUMEN_RMT_MEM_BLOCK_SYMBOLS, s_state.led_count);
@@ -432,6 +617,9 @@ esp_err_t lumen_led_engine_init(void)
 #endif
         return err;
     }
+
+    /* State 字节 8 报实际配置的灯带数（小程序据此知道要查几条）。 */
+    s_state.strip_count = strip_n > 1 ? strip_n : 1;
 
     BaseType_t created =
         xTaskCreate(render_task, "lumen_render", CONFIG_LUMEN_RENDER_TASK_STACK_SIZE, NULL,
@@ -625,9 +813,51 @@ void lumen_led_engine_set_response_cb(lumen_led_engine_response_cb cb)
 
 uint8_t lumen_led_engine_set_led_count(uint16_t count, uint8_t seq)
 {
+    return lumen_led_engine_set_led_count_for_strip(0, count, seq);
+}
+
+/*
+ * #29：按灯带独立设数量。
+ *
+ * strip 0 走原来的重建路径（会重建整个句柄）。
+ * strip 1..7 不改句柄——TDM 下所有条共用一个句柄，句柄按 max_count 建，
+ * 所以只需改 s_planar 里那条的 count 并把该条的「已渲染」标记清掉，
+ * 下一次轮询自然按新数量推送。这里同步完成，可以直接回 ACK 0x00。
+ */
+uint8_t lumen_led_engine_set_led_count_for_strip(uint8_t strip_id, uint16_t count, uint8_t seq)
+{
     if (count < 1 || count > LUMEN_MAX_LEDS) {
         /* 命令层已拦下越界值；这里防御性拒绝，不改状态机。 */
         return LUMEN_RESULT_INVALID_PARAM;
+    }
+    if (strip_id >= LUMEN_MAX_STRIPS) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+
+    if (strip_id != 0) {
+        /*
+         * 非 0 号灯带：只改该条的灯珠数。单灯带路径下 s_planar.strip_count == 0，
+         * 此时拒绝（命令层已按 strip_count 挡过，这里防绕过）。
+         */
+        xSemaphoreTake(s_state_lock, portMAX_DELAY);
+        bool valid = strip_id < s_planar.strip_count;
+        if (valid) {
+            if (s_planar.strips[strip_id].count == count) {
+                xSemaphoreGive(s_state_lock);
+                return LUMEN_RESULT_OK;
+            }
+            (void)lumen_planar_set_count(&s_planar, strip_id, count);
+            /* 数量变了：该条上一帧的尺寸不再有效，强制重刷一次。 */
+            s_tdm_rendered_valid[strip_id] = false;
+        }
+        xSemaphoreGive(s_state_lock);
+        if (!valid) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        xSemaphoreGive(s_render_signal);
+        ESP_LOGI(TAG, "SetLedCount strip %u -> %u（seq=0x%02X），无需重建句柄", strip_id, count,
+                 seq);
+        return LUMEN_RESULT_OK;
     }
 
     lumen_led_count_request_t status;
