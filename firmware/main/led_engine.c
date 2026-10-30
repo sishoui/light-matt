@@ -170,6 +170,80 @@ static void rebuild_led_count_if_pending(void)
     ESP_LOGI(TAG, "led count rebuild begin: %u leds (seq=0x%02X)", target, seq);
 
     /*
+     * #29：TDM 模式下所有条共用**一个**按 max_count 建的句柄，绝不能在改
+     * strip 0 的数量时把它删掉重建——那会连带中断其余 7 条的输出，而且
+     * s_tdm_strip 会变成悬空指针（它指向已被 del 的句柄）。
+     *
+     * 所以 TDM 下这里只更新数量与配置：只要新数量不超过句柄的 max_leds 就
+     * 无需重建；超出时按 max_count 重建一次同一个句柄，并把 s_tdm_strip 换成
+     * 新句柄。两条路径都必须让 s_tdm_strip 与 owner 的当前句柄保持一致。
+     */
+    bool tdm_mode = s_planar.strip_count > 1;
+
+    if (tdm_mode) {
+        uint16_t prev_max = s_planar.max_count;
+        lumen_persist_t persist;
+        xSemaphoreTake(s_state_lock, portMAX_DELAY);
+        bool committed = lumen_led_count_job_complete(&s_led_count_job, true, &s_state);
+        s_state.led_count = target;
+        (void)lumen_planar_set_count(&s_planar, 0, target);
+        persist = persist_snapshot_locked();
+        xSemaphoreGive(s_state_lock);
+
+        if (!committed) {
+            if (s_response_cb != NULL) {
+                s_response_cb(seq, LUMEN_CMD_SET_LED_COUNT, LUMEN_RESULT_INTERNAL_ERROR);
+            }
+            return;
+        }
+
+        /*
+         * 句柄的 max_leds 必须覆盖最长的那条。target 变大且超过现有
+         * max_count 时重建同一个句柄（先删后建，理由见下方 v1 路径注释）。
+         */
+        if (target > prev_max) {
+            led_strip_handle_t old = s_tdm_strip;
+            if (old != NULL) {
+                (void)lumen_led_strip_owner_clear(old);
+                lumen_led_strip_owner_destroy(old);
+                s_tdm_strip = NULL;
+            }
+            led_strip_handle_t fresh = NULL;
+            esp_err_t err =
+                lumen_led_strip_owner_create_on(s_planar.strips[0].gpio, target, &fresh);
+            if (err != ESP_OK || fresh == NULL) {
+                /* 重建失败：尽力按旧上限恢复，避免整块板失去驱动。 */
+                ESP_LOGE(TAG, "TDM 句柄扩容失败 %s，按 %u 重建", esp_err_to_name(err), prev_max);
+                if (lumen_led_strip_owner_create_on(s_planar.strips[0].gpio, prev_max, &fresh) ==
+                        ESP_OK &&
+                    fresh != NULL) {
+                    s_tdm_strip = fresh;
+                    lumen_led_strip_owner_set(fresh);
+                }
+                if (s_response_cb != NULL) {
+                    s_response_cb(seq, LUMEN_CMD_SET_LED_COUNT, LUMEN_RESULT_INTERNAL_ERROR);
+                }
+                return;
+            }
+            s_tdm_strip = fresh;
+            lumen_led_strip_owner_set(fresh);
+            ESP_LOGI(TAG, "TDM 句柄扩容到 max_leds=%u", target);
+        }
+
+        /* 数量变了：所有条的上一帧尺寸都按 max_count 推过，强制重刷一遍。 */
+        for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
+            s_tdm_rendered_valid[i] = false;
+        }
+        lumen_led_render_invalidate();
+        lumen_state_store_request_save(&persist, LUMEN_CMD_SET_LED_COUNT);
+        ESP_LOGI(TAG, "led count strip0 -> %u（TDM 模式）", target);
+        if (s_response_cb != NULL) {
+            s_response_cb(seq, LUMEN_CMD_SET_LED_COUNT, LUMEN_RESULT_OK);
+        }
+        return;
+    }
+
+    /*
      * 顺序很关键：先清黑旧灯带 → 删旧句柄 → 再建新句柄。
      *
      * 不能先建后删：RMT TX 在创建时用 esp_gpio_reserve() 占住 GPIO，若旧句柄
