@@ -203,6 +203,29 @@ static void parse_segment_payload(const lumen_frame_t *frame, lumen_segment_t *s
 }
 
 /*
+ * 取某条灯带的灯珠数：优先用 #29 的 per-strip 表，没有表（单灯带 / host 单测）
+ * 时退回 State 的 strip 0 值。越界/未初始化时按协议上限处理。
+ */
+uint16_t lumen_command_strip_count(const lumen_state_t *current, const uint16_t *strip_counts,
+                                   uint8_t strip_id)
+{
+    if (current == NULL) {
+        return 0;
+    }
+    uint16_t count = 0;
+    if (strip_counts != NULL && strip_id < LUMEN_MAX_STRIPS) {
+        count = strip_counts[strip_id];
+    }
+    if (count == 0) {
+        count = current->led_count; /* 单灯带 / 未提供表：退回 strip 0 值 */
+    }
+    if (count == 0 || count > LUMEN_MAX_LEDS) {
+        count = LUMEN_MAX_LEDS; /* 防御：状态未初始化时按协议上限 */
+    }
+    return count;
+}
+
+/*
  * SetSegment 0x10（#25 / #30 / #31）。
  *
  * 校验顺序严格按 docs/protocol.md §11.3：
@@ -220,6 +243,7 @@ static void parse_segment_payload(const lumen_frame_t *frame, lumen_segment_t *s
  */
 static void dispatch_set_segment(const lumen_frame_t *frame, const lumen_state_t *current,
                                  const lumen_segment_store_t *segments,
+                                 const uint16_t *strip_counts,
                                  lumen_command_outcome_t *outcome)
 {
     if (frame->payload_len < 5) {
@@ -256,10 +280,12 @@ static void dispatch_set_segment(const lumen_frame_t *frame, const lumen_state_t
         outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
         return;
     }
-    uint16_t led_count = current->led_count;
-    if (led_count == 0 || led_count > LUMEN_MAX_LEDS) {
-        led_count = LUMEN_MAX_LEDS; /* 防御：状态未初始化时按协议上限 */
-    }
+    /*
+     * 灯珠数必须按「这条灯带自己」的数字校验（#29）。current->led_count 只是
+     * strip 0 的；拿它校验 strip 3 会放行真实越界（设成功但后半段不亮），
+     * 或误拒合法段。
+     */
+    uint16_t led_count = lumen_command_strip_count(current, strip_counts, strip_id);
 
     uint8_t result = lumen_segment_store_validate(store, strip_id, current->strip_count, seg_id,
                                                   (uint8_t)led_count, &candidate);
@@ -318,7 +344,8 @@ static void dispatch_query_strip(const lumen_frame_t *frame, const lumen_state_t
 }
 
 void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *current,
-                            const lumen_segment_store_t *segments, uint8_t max_brightness,
+                            const lumen_segment_store_t *segments,
+                            const uint16_t *strip_counts, uint8_t max_brightness,
                             lumen_command_outcome_t *outcome)
 {
     if (frame == NULL || current == NULL || outcome == NULL) {
@@ -375,7 +402,7 @@ void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *cur
         break;
 
     case LUMEN_CMD_SET_SEGMENT:
-        dispatch_set_segment(frame, current, segments, outcome);
+        dispatch_set_segment(frame, current, segments, strip_counts, outcome);
         break;
 
     case LUMEN_CMD_CLEAR_SEGMENT:

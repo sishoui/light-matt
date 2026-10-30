@@ -11,9 +11,9 @@
  *  - **不做 gamma、不乘亮度**——那是渲染层（led_render）的职责；
  *  - 未知类型不得静默降级：命令层已经拒绝（D7），这里的 default 只是防御。
  *
- * #25 交付静态单色（type 0x00），#30 加入呼吸（type 0x01）。彩虹 / 流光的像素
- * 分支由 #31 加入，在那之前命令层把这两个类型当作「尚未实现」，回 UnknownCommand
- * （不静默变黑）。
+ * #25 交付静态单色（type 0x00），#30 加入呼吸（type 0x01），#31 加入彩虹（0x02）
+ * 与流光（0x03）两个空间动画分支。四种类型现在都有像素实现；
+ * 未知类型的护栏留给 lumen_effect_type_known 与命令层（D7）。
  */
 
 /* 段类型（docs/effects-spec.md §2）。 */
@@ -79,7 +79,7 @@ typedef struct {
 /* type 是否属于协议定义的四种之一（docs/effects-spec.md §2）。 */
 bool lumen_effect_type_known(uint8_t type);
 
-/* type 是否已经有像素实现。当前是静态 + 呼吸；彩虹 / 流光由 #31 打开。 */
+/* type 是否已经有像素实现。四种类型全部为真（静态 / 呼吸 / 彩虹 / 流光）。 */
 bool lumen_effect_type_implemented(uint8_t type);
 
 /* 该类型的参数块长度：静态 3，动画 7，未知 0（docs/effects-spec.md §2.5）。 */
