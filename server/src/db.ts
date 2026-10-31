@@ -236,3 +236,247 @@ export function isPlatform(value: unknown): value is Platform {
     value === "android" || value === "ios" || value === "devtools" || value === "unknown"
   );
 }
+
+// ------------------------------------------------------- 会话与设备登记（v3）
+//
+// 这套接口只处理「谁登记过哪台设备」与一份明确非权威的缓存。
+// **任何灯光配置都不在这里，也不该在这里** —— 设备 NVS 是唯一真相。
+//
+// display_name 的双层设计（见 schema.ts v2 注释）：
+//   user_devices.display_name 是本人备注名（权威），devices.display_name 是全局默认值。
+//   读路径统一 COALESCE(user_devices.display_name, devices.display_name)。
+
+export interface DeviceListRow {
+  readonly id: number;
+  readonly hardware_id: string;
+  readonly display_name: string | null;
+  readonly last_seen_at: number;
+  readonly added_at: number;
+  readonly led_counts: string | null;
+  readonly firmware_ver: number | null;
+}
+
+export interface RegisteredDeviceRow {
+  readonly id: number;
+  readonly hardware_id: string;
+  readonly display_name: string | null;
+  readonly last_seen_at: number;
+  readonly led_counts: string | null;
+  readonly firmware_ver: number | null;
+  readonly created_at: number;
+  readonly user_count: number;
+}
+
+export interface DeviceCacheRow {
+  readonly id: number;
+  readonly hardware_id: string;
+  readonly display_name: string | null;
+  readonly last_seen_at: number;
+  readonly led_counts: string | null;
+  readonly firmware_ver: number | null;
+  readonly created_at: number;
+}
+
+export interface RegisterDeviceInput {
+  readonly userId: number;
+  readonly hardwareId: string;
+  readonly displayName: string | null;
+  readonly now: number;
+}
+
+export interface RegisterDeviceResult {
+  readonly deviceId: number;
+  /** false = 设备早已存在（同一 MAC 重复登记）。决定 201 / 200。 */
+  readonly created: boolean;
+  readonly displayName: string | null;
+}
+
+export interface TouchDeviceInput {
+  readonly userId: number;
+  readonly deviceId: number;
+  readonly ledCounts: number[] | null;
+  readonly firmwareVer: number | null;
+  readonly now: number;
+}
+
+/** 会话换取身份时用：没有就建，有就只推进 last_seen_at。 */
+export function upsertUserForKey(db: Db, userKey: string, now: number): number {
+  stmt(
+    db,
+    `INSERT INTO users (user_key, first_seen_at, last_seen_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(user_key) DO UPDATE SET
+       last_seen_at = MAX(users.last_seen_at, excluded.last_seen_at)`,
+  ).run(userKey, now, now);
+
+  const row = stmt(db, "SELECT id FROM users WHERE user_key = ?").get(userKey) as
+    | { id: number }
+    | undefined;
+  if (row === undefined) throw new Error("users 行刚写入却读不到");
+  return Number(row.id);
+}
+
+/** 设备路由用：只认已存在的用户，不给自称身份顺手建行。 */
+export function findUserIdByKey(db: Db, userKey: string): number | null {
+  const row = stmt(db, "SELECT id FROM users WHERE user_key = ?").get(userKey) as
+    | { id: number }
+    | undefined;
+  return row === undefined ? null : Number(row.id);
+}
+
+export function registerDevice(db: Db, input: RegisterDeviceInput): RegisterDeviceResult {
+  // 设备与关联必须一起成功：外键要求 devices 行先存在，分开写会在中间状态留下
+  // 一个「没有关联的设备」，而 register 的幂等语义依赖两者成对。
+  return inTransaction(db, () => {
+    const info = stmt(
+      db,
+      `INSERT INTO devices (hardware_id, last_seen_at, created_at)
+       VALUES (@hardwareId, @now, @now)
+       ON CONFLICT(hardware_id) DO NOTHING`,
+    ).run({ hardwareId: input.hardwareId, now: input.now });
+    const created = Number(info.changes) > 0;
+
+    const device = stmt(db, "SELECT id FROM devices WHERE hardware_id = ?").get(
+      input.hardwareId,
+    ) as { id: number } | undefined;
+    if (device === undefined) throw new Error("devices 行刚写入却读不到");
+    const deviceId = Number(device.id);
+
+    // 重复登记不覆盖已有备注名：displayName 为 null 时保留原值。
+    stmt(
+      db,
+      `INSERT INTO user_devices (user_id, device_id, added_at, display_name)
+       VALUES (@userId, @deviceId, @now, @displayName)
+       ON CONFLICT(user_id, device_id) DO UPDATE SET
+         display_name = COALESCE(excluded.display_name, user_devices.display_name)`,
+    ).run({
+      userId: input.userId,
+      deviceId,
+      now: input.now,
+      displayName: input.displayName,
+    });
+
+    // 全局默认名只在本人显式给了名字时刷新，否则会把别人的默认值抹掉。
+    if (input.displayName !== null) {
+      stmt(db, "UPDATE devices SET display_name = ? WHERE id = ?").run(input.displayName, deviceId);
+    }
+
+    const effective = stmt(
+      db,
+      `SELECT COALESCE(ud.display_name, d.display_name) AS name
+         FROM user_devices ud
+         JOIN devices d ON d.id = ud.device_id
+        WHERE ud.user_id = ? AND ud.device_id = ?`,
+    ).get(input.userId, deviceId) as { name: string | null } | undefined;
+
+    return { deviceId, created, displayName: effective?.name ?? null };
+  });
+}
+
+export function listUserDevices(db: Db, userId: number): DeviceListRow[] {
+  return stmt(
+    db,
+    `SELECT d.id            AS id,
+            d.hardware_id   AS hardware_id,
+            COALESCE(ud.display_name, d.display_name) AS display_name,
+            d.last_seen_at  AS last_seen_at,
+            ud.added_at     AS added_at,
+            d.led_counts    AS led_counts,
+            d.firmware_ver  AS firmware_ver
+       FROM user_devices ud
+       JOIN devices d ON d.id = ud.device_id
+      WHERE ud.user_id = ?
+      ORDER BY d.last_seen_at DESC, d.id ASC`,
+  ).all(userId) as unknown as DeviceListRow[];
+}
+
+/** 改名。只改调用者自己的备注名，同时刷新 devices 上的非权威默认值。 */
+export function renameDevice(
+  db: Db,
+  userId: number,
+  deviceId: number,
+  displayName: string,
+): boolean {
+  return inTransaction(db, () => {
+    const link = stmt(db, "SELECT 1 AS ok FROM user_devices WHERE user_id = ? AND device_id = ?").get(
+      userId,
+      deviceId,
+    );
+    if (link === undefined) return false;
+    stmt(db, "UPDATE user_devices SET display_name = ? WHERE user_id = ? AND device_id = ?").run(
+      displayName,
+      userId,
+      deviceId,
+    );
+    stmt(db, "UPDATE devices SET display_name = ? WHERE id = ?").run(displayName, deviceId);
+    return true;
+  });
+}
+
+/**
+ * 解除关联，**不删设备记录**。设备记录是跨用户共享的实体，别人可能还登记着；
+ * 删掉会让重新登记拿到新的 deviceId，小程序本地的设备偏好就断了。
+ */
+export function unlinkDevice(db: Db, userId: number, deviceId: number): boolean {
+  const info = stmt(db, "DELETE FROM user_devices WHERE user_id = ? AND device_id = ?").run(
+    userId,
+    deviceId,
+  );
+  return Number(info.changes) > 0;
+}
+
+export function touchDevice(db: Db, input: TouchDeviceInput): DeviceCacheRow | null {
+  return inTransaction(db, () => {
+    const link = stmt(db, "SELECT 1 AS ok FROM user_devices WHERE user_id = ? AND device_id = ?").get(
+      input.userId,
+      input.deviceId,
+    );
+    if (link === undefined) return null;
+
+    // COALESCE 保证「这次没带缓存字段」不会把上一次的值清空。
+    stmt(
+      db,
+      `UPDATE devices
+          SET last_seen_at = @now,
+              led_counts   = COALESCE(@ledCounts, led_counts),
+              firmware_ver = COALESCE(@firmwareVer, firmware_ver)
+        WHERE id = @deviceId`,
+    ).run({
+      now: input.now,
+      ledCounts: input.ledCounts === null ? null : JSON.stringify(input.ledCounts),
+      firmwareVer: input.firmwareVer,
+      deviceId: input.deviceId,
+    });
+
+    const row = stmt(
+      db,
+      `SELECT id, hardware_id, display_name, last_seen_at, led_counts, firmware_ver, created_at
+         FROM devices WHERE id = ?`,
+    ).get(input.deviceId) as DeviceCacheRow | undefined;
+    return row ?? null;
+  });
+}
+
+export function listRegisteredDevices(db: Db): RegisteredDeviceRow[] {
+  return stmt(
+    db,
+    `SELECT d.id, d.hardware_id, d.display_name, d.last_seen_at, d.led_counts,
+            d.firmware_ver, d.created_at,
+            (SELECT COUNT(*) FROM user_devices ud WHERE ud.device_id = d.id) AS user_count
+       FROM devices d
+      ORDER BY d.last_seen_at DESC, d.id ASC`,
+  ).all() as unknown as RegisteredDeviceRow[];
+}
+
+/** 缓存列里的 JSON 数组可能被写坏（手工改库 / 旧版本），解析失败一律当 null。 */
+export function parseLedCounts(raw: string | null): number[] | null {
+  if (raw === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    if (!parsed.every((v) => typeof v === "number" && Number.isSafeInteger(v))) return null;
+    return parsed as number[];
+  } catch {
+    return null;
+  }
+}
