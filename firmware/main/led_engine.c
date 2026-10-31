@@ -150,8 +150,9 @@ static uint32_t now_ms(void)
  *
  *  - 字节 9 `seg_count`：strip 0 的**活动**段数。每次写段 / 清段都必须重算，
  *    不是只在初始化时算一次。
- *  - 字节 2-4 `R/G/B`：docs/protocol.md §7 定义为「strip 0 / seg 0 的基准色」，
- *    由 seg 0 的 hue+sat 算出（不含动画包络）；seg 0 不活动或不存在时是 0。
+ *  - 字节 2-4 `R/G/B`：docs/protocol-v3.md §7.3 定义为「strip 0 / seg 0
+ *    **层 0** 的基准色」，由 layer[0] 的 hue+sat 算出（不含动画包络、不含
+ *    layer1 与 blend）；seg 0 不活动或不存在时是 0。
  *
  * 一个活动段都没有时保留 v1 的单色值（s_state.r/g/b）：这是刻意的向后兼容——
  * 现有单灯带功能不退化，且与协议默认值（255,180,120 / seg_count 0，
@@ -1196,9 +1197,10 @@ uint8_t lumen_led_engine_set_segment(uint8_t strip_id, uint8_t seg_id,
     /* 只有配置变更才请求持久化（动画帧循环绝不写 NVS，§7.3）。 */
     lumen_state_store_request_save(&s_commit_persist, command);
 
-    ESP_LOGI(TAG, "SetSegment strip=%u seg=%u [%u-%u] type=0x%02X hue=%u sat=%u segs=%u",
-             strip_id, seg_id, applied.start, applied.end, applied.type, applied.hue,
-             applied.sat, seg_count);
+    ESP_LOGI(TAG,
+             "SetSegment strip=%u seg=%u [%u-%u] l0=0x%02X l1=0x%02X blend=%u segs=%u",
+             strip_id, seg_id, applied.start, applied.end, applied.layer[0].type,
+             applied.layer[1].type, applied.blend, seg_count);
     return LUMEN_RESULT_OK;
 }
 

@@ -6,14 +6,13 @@
 /*
  * 灯效像素计算（纯函数，无 ESP-IDF 头，可在 host 上直接单测）。
  *
- * 架构见 docs/v2-effects-engine.md §4/§5：
+ * 架构见 docs/v2-effects-engine.md §4/§5 与 docs/protocol-v3.md §7.1/§9.3：
  *  - 本模块只做「类型 + 参数 + 段内灯珠下标 + 当前时刻 → 用户空间 RGB」；
- *  - **不做 gamma、不乘亮度**——那是渲染层（led_render）的职责；
+ *  - **不做 gamma、不乘亮度**——那是渲染层（led_render）的职责，且只做一次；
  *  - 未知类型不得静默降级：命令层已经拒绝（D7），这里的 default 只是防御。
  *
- * #25 交付静态单色（type 0x00），#30 加入呼吸（type 0x01），#31 加入彩虹（0x02）
- * 与流光（0x03）两个空间动画分支。四种类型现在都有像素实现；
- * 未知类型的护栏留给 lumen_effect_type_known 与命令层（D7）。
+ * v3 起段是**两层**：layer[0] 必须有灯效，layer[1] 可以为空层（type = 0xFF）。
+ * 两层各自求值后按 blend 在**用户空间**合成（§7.2），合成结果再统一过 gamma。
  */
 
 /* 段类型（docs/effects-spec.md §2）。 */
@@ -33,6 +32,21 @@ typedef enum {
 } lumen_effect_waveform_t;
 
 /*
+ * 层 1 如何叠加到层 0（docs/protocol-v3.md §7.2）。
+ * 不支持「取最大值」：与相加视觉重合，规格已明确不做。
+ */
+typedef enum {
+    LUMEN_BLEND_OVER = 0x00,     /* out = L1 */
+    LUMEN_BLEND_MULTIPLY = 0x01, /* out = (L0 * L1 + 127) / 255 */
+    LUMEN_BLEND_ADD = 0x02,      /* out = min(255, L0 + L1) */
+} lumen_blend_mode_t;
+
+#define LUMEN_BLEND_MAX LUMEN_BLEND_ADD
+
+/* 空层标记（docs/protocol-v3.md §7.1）。合法值恰为 0xFF。 */
+#define LUMEN_LAYER_EMPTY 0xFF
+
+/*
  * 呼吸周期下限（effects-spec §5）：334ms ≈ 3Hz，光敏性癫痫安全线。
  * period_ms == 0 是「静止」，不受此限。
  */
@@ -46,7 +60,44 @@ typedef enum {
 #define LUMEN_RAINBOW_MIN_PERIOD_MS 200u
 
 /*
- * 建正弦查表的初始化（#30）。
+ * 一个灯效层：8 字节定宽（docs/protocol-v3.md §7.1）。
+ *
+ * param 的语义按 type 解释，沿用 docs/effects-spec.md §2（v3 未改）：
+ *   param[0..1] hue(小端) | param[2] sat | param[3..4] period_ms(小端) |
+ *   param[5] p5(min_level / span / tail) | param[6] flags
+ * 静态层只用前 3 字节，**param[3..6] 必须是 0**（§7.1 第 6 步的保留位）。
+ *
+ * 定宽而不是变长：任何未知 type 都能安全判定参数边界，不需要长度表兜底。
+ */
+typedef struct {
+    uint8_t type;
+    uint8_t param[7];
+} lumen_effect_layer_t;
+
+/*
+ * 段的配置快照（与 docs/protocol-v3.md §7.1 一致）。
+ *
+ * 定义在 effects.h 而不是 segment_store.h：effects 是最底层纯模块，
+ * segment_store 依赖它（合成时逐颗调用 lumen_effect_pixel），不能反过来。
+ *
+ * t0_ms 是「本段配置生效时刻」，**两层共享一个时间原点**（§9.4）；相位只由
+ * (now_ms - t0_ms) 算出，不存相位变量（§5.1）。
+ *
+ * 体积：sizeof(lumen_segment_t) == 24 字节（v2 是 16）。段表因此从 1024 涨到
+ * 1536 字节（8 条灯带 × 8 段）。脚本存储按同样比例从 ~41KB 涨到 ~61KB——
+ * 这是 #37 记录在案的 RAM 代价（见 segment_store.h 的 store 尺寸说明）。
+ */
+typedef struct {
+    bool active;
+    uint8_t start; /* 闭区间起点 */
+    uint8_t end;   /* 闭区间终点，必须 < 该灯带的 led_count */
+    uint8_t blend; /* lumen_blend_mode_t；layer[1] 为空时必须为 0 */
+    lumen_effect_layer_t layer[2];
+    uint32_t t0_ms; /* 配置生效时刻（毫秒，可回绕）；两层共享 */
+} lumen_segment_t;
+
+/*
+ * 建正弦 / 指数查表的初始化（#30）。
  *
  * 沿用 gamma.c 的先例：**只在初始化时**用 math.h 建表，运行时只查表，
  * 所以渲染路径里没有任何浮点（C3 没有 FPU）。幂等。
@@ -54,52 +105,91 @@ typedef enum {
  */
 void lumen_effects_init(void);
 
-/*
- * 段的配置快照（与 docs/v2-effects-engine.md §4.1 一致）。
- *
- * 定义在 effects.h 而不是 segment_store.h：effects 是最底层纯模块，
- * segment_store 依赖它（合成时逐颗调用 lumen_effect_pixel），不能反过来。
- *
- * t0_ms 是「本段配置生效时刻」，相位只由 (now_ms - t0_ms) 算出，不存相位变量
- * （§5.1）。静态灯效不使用它，但保留字段供 #30/#31 复用，避免改写协议/存储层。
- */
-typedef struct {
-    bool active;
-    uint8_t start;     /* 闭区间起点 */
-    uint8_t end;       /* 闭区间终点，必须 < led_count */
-    uint8_t type;      /* 0x00 静态 / 0x01 呼吸 / 0x02 彩虹 / 0x03 流光 */
-    uint16_t hue;      /* 0-65535 */
-    uint8_t sat;       /* 0-255 */
-    uint16_t period_ms;/* 0 = 静止；动画类才用 */
-    uint8_t p5;        /* min_level / span / tail，按 type 解释 */
-    uint8_t flags;     /* 动画类保留位；静态类恒 0 */
-    uint32_t t0_ms;    /* 配置生效时刻（毫秒，可回绕） */
-} lumen_segment_t;
-
 /* type 是否属于协议定义的四种之一（docs/effects-spec.md §2）。 */
 bool lumen_effect_type_known(uint8_t type);
 
 /* type 是否已经有像素实现。四种类型全部为真（静态 / 呼吸 / 彩虹 / 流光）。 */
 bool lumen_effect_type_implemented(uint8_t type);
 
-/* 该类型的参数块长度：静态 3，动画 7，未知 0（docs/effects-spec.md §2.5）。 */
+/* 该类型的参数块长度：静态 3，动画 7，未知 / 空层 0（effects-spec §2.5）。 */
 uint8_t lumen_effect_param_len(uint8_t type);
 
-/* type != 0x00。帧循环的判据（§3.1；由 segment_store_needs_frames 汇总）。 */
+/* type != 0x00（不含空层 0xFF：空层不是动画）。 */
 bool lumen_effect_is_animated(uint8_t type);
 
-/* 段内灯珠数（彩虹 / 流光需要 N）。非活动段返回 0。 */
+/* ---------------- 层编解码（与 §7.1 的 8 字节定宽编码一一对应） ---------------- */
+
+/*
+ * 层是否为空（type == 0xFF）。空层只允许出现在 layer[1]（§7.1 第 2 步）。
+ */
+bool lumen_layer_is_empty(const lumen_effect_layer_t *layer);
+
+/*
+ * 把 8 字节线格式解码成层结构（§7.1）。src 非 NULL 时总是填充 out；
+ * 返回 false 表示 type 既不是已知类型也不是空层（形状非法，值仍已复制，
+ * 便于调用方在错误日志里打出实际字节）。
+ */
+bool lumen_layer_decode(const uint8_t src[8], lumen_effect_layer_t *out);
+
+/* 把层编码回 8 字节线格式（§7.1）。未用字节由 layer->param 原样给出。 */
+void lumen_layer_encode(const lumen_effect_layer_t *layer, uint8_t out[8]);
+
+/* 层的参数访问器（param 按 type 的布局解释，见结构体注释）。 */
+uint16_t lumen_layer_hue(const lumen_effect_layer_t *layer);
+uint8_t lumen_layer_sat(const lumen_effect_layer_t *layer);
+uint16_t lumen_layer_period_ms(const lumen_effect_layer_t *layer);
+uint8_t lumen_layer_p5(const lumen_effect_layer_t *layer);
+uint8_t lumen_layer_flags(const lumen_effect_layer_t *layer);
+
+/* 静态层的 param[3..6] 是否全为 0（§7.1 第 6 步的保留位约束）。 */
+bool lumen_layer_static_reserved_zero(const lumen_effect_layer_t *layer);
+
+/* 空层的 7 字节 param 是否全为 0（防止将来语义漂移时旧固件静默接受）。 */
+bool lumen_layer_empty_params_zero(const lumen_effect_layer_t *layer);
+
+/* ---------------- 段几何 ---------------- */
+
+/* 段内灯珠数。非活动段返回 0。 */
 uint16_t lumen_effect_segment_length(const lumen_segment_t *seg);
 
-/* 段内灯珠数所需的另一种写法：给 index_in_strip 与段区间算段内偏移。 */
+/* 段内偏移；下标不在段区间内返回 0。 */
 uint16_t lumen_effect_index_in_segment(const lumen_segment_t *seg, uint16_t index_in_strip);
 
 /*
- * 计算一颗灯的用户空间 RGB（0-255，不含 gamma / 亮度）。
- * now_ms 与 seg->t0_ms 同基准。静态灯效忽略 now_ms。
+ * 段是否需要帧循环：任一层是动画类（type != 0x00 且非空层）。
+ * 静态双层（例如静态 + 静态相乘）不需要逐帧重画。
+ */
+bool lumen_segment_is_animated(const lumen_segment_t *seg);
+
+/* ---------------- 单层 / 整段求值 ---------------- */
+
+/*
+ * 计算**单个层**在某颗灯上的用户空间 RGB（0-255，不含 gamma / 亮度）。
+ *
+ * layer_index ∈ {0,1}；空层输出 (0,0,0)。段几何（start/end）与相位基准
+ * （t0_ms）取自 seg——两层共享同一个时间原点（§9.4）。
+ * now_ms 与 seg->t0_ms 同基准；静态灯效忽略 now_ms。
+ */
+void lumen_layer_pixel(const lumen_segment_t *seg, uint8_t layer_index,
+                       uint16_t index_in_strip, uint32_t now_ms, uint8_t out_rgb[3]);
+
+/*
+ * 计算一颗灯的最终用户空间 RGB：layer[0] 求值 → （如有）layer[1] 求值 →
+ * 按 seg->blend 合成（§7.2 / §9.3）。**两层都不做 gamma / 亮度。**
  */
 void lumen_effect_pixel(const lumen_segment_t *seg, uint16_t index_in_strip, uint32_t now_ms,
                         uint8_t out_rgb[3]);
+
+/*
+ * blend 合成（纯函数，§7.2）：
+ *   0 覆盖  out = L1
+ *   1 相乘  out = (L0 * L1 + 127) / 255
+ *   2 相加  out = min(255, L0 + L1)
+ * 未知 blend 按「覆盖」处理（命令层已拒绝非法值，这里只是防御）。
+ * out 可与 l0 / l1 指向同一块内存。
+ */
+void lumen_blend_pixel(uint8_t blend, const uint8_t l0[3], const uint8_t l1[3],
+                       uint8_t out_rgb[3]);
 
 /*
  * hue(0-65535) + sat(0-255) → 用户空间 RGB（V 恒为 1）。
@@ -150,7 +240,7 @@ uint8_t lumen_effect_apply_gain_q16(uint8_t value, uint32_t gain_q16);
 /* ---------------- #31 彩虹 / 流光 ---------------- */
 
 /*
- * 彩虹：段内某颗灯的色相（0-65535），effects-spec §3.3：
+ * 彩虹：段内第 i 颗（共 n 颗）的色相（0-65535），effects-spec §3.3：
  *
  *   hue_i = hue + phase × 65536 + (i/N) × (span/255) × 65536 × dir   (mod 65536)
  *
@@ -158,28 +248,30 @@ uint8_t lumen_effect_apply_gain_q16(uint8_t value, uint32_t gain_q16);
  *  - span = 255 → 沿灯带铺满一整圈，随时间平移；
  *  - dir = reverse ? -1 : +1（flags bit0）。
  *
- * 单独暴露是为了让 host 测试能直接断言色相算术本身：像素颜色只有 6 个
- * 扇区，分辨率不足以发现 32 位溢出导致的错位。
- *
- * **溢出**：`(i/N) × (span/255) × 65536` 写成 `i × span × 65536` 时
- * i ≤ 63、span ≤ 255 → 上界 1.05e9，看似还在 uint32 内，但任何先生成
- * 「(span/255)×65536 ≈ 65536」中间量再乘 i 的写法都会在 i 较大、N 较小时
- * 越界。这里统一用 uint64_t 算乘积再除，最后才取模——零成本，不要优化掉。
- * 段无效或下标越界返回 0。
+ * 用层 + 段几何（n / i / t0_ms）作参数，而不是整个段：两层各自的 layer 都能
+ * 直接求值。溢出论证见 effects.c——这里统一用 uint64 算乘积再取模。
  */
-uint16_t lumen_effect_rainbow_hue(const lumen_segment_t *seg, uint16_t index_in_strip,
-                                  uint32_t now_ms);
+uint16_t lumen_layer_rainbow_hue(const lumen_effect_layer_t *layer, uint16_t n, uint16_t i,
+                                 uint32_t t0_ms, uint32_t now_ms);
 
 /*
- * 流光：段内某颗灯的亮度权重，Q16（0..65535），effects-spec §3.4：
+ * 流光：段内第 i 颗（共 n 颗）的亮度权重，Q16（0..65535），effects-spec §3.4：
  *
  *   tail_n = 1 + (tail/255) × (N-1)
  *   p_i    = ((i/N) - phase) mod 1
  *   w_i    = p_i < tail_n/N ? exp(-(p_i × N / tail_n) × 3) : 0
  *
  * 指数用初始化时建的 65 点表 + 线性插值（沿用 gamma.c / 正弦表的先例），
- * 运行时零浮点。reverse 通过镜像段内下标实现（把方向反过来）。
+ * 运行时零浮点。reverse 由调用方在传 i 时镜像（见 lumen_layer_pixel）。
+ */
+uint32_t lumen_layer_comet_gain_q16(const lumen_effect_layer_t *layer, uint16_t n, uint16_t i,
+                                    uint32_t t0_ms, uint32_t now_ms);
+
+/*
+ * 段 layer[0] 上的便捷包装（旧签名，保留给「只关心底层」的测试与摘要）。
  * 段无效或下标越界返回 0。
  */
+uint16_t lumen_effect_rainbow_hue(const lumen_segment_t *seg, uint16_t index_in_strip,
+                                  uint32_t now_ms);
 uint32_t lumen_effect_comet_gain_q16(const lumen_segment_t *seg, uint16_t index_in_strip,
                                      uint32_t now_ms);

@@ -2,6 +2,7 @@
 
 #include <math.h>
 #include <stddef.h>
+#include <string.h>
 
 /*
  * 灯效像素计算，整数定点，无浮点（C3 无 FPU）。
@@ -11,6 +12,10 @@
  *   frac   = (hue * 6) % 65536        -> 扇区内的 Q16 位置
  * V 恒为 1，所以 C = sat（0-255 刻度），m = 255 - sat。
  * 每颗灯的结果都是用户空间 RGB（0-255），gamma 与亮度由渲染层施加。
+ *
+ * v3（#37）：段有两层。每层独立求值，然后按 blend 在用户空间合成；
+ * **两层都绝不施加 gamma / 亮度**，否则「相乘」会在 gamma 后的非线性空间里
+ * 把暗部压塌（见 effects.h 与 docs/protocol-v3.md §9.3）。
  */
 
 bool lumen_effect_type_known(uint8_t type)
@@ -47,14 +52,106 @@ uint8_t lumen_effect_param_len(uint8_t type)
         /* §2.2-§2.4：hue(2) + sat(1) + period(2) + p5(1) + flags(1)。 */
         return 7;
     default:
+        /* 未知类型与空层（0xFF）：没有参数块。 */
         return 0;
     }
 }
 
 bool lumen_effect_is_animated(uint8_t type)
 {
+    /* 空层（0xFF）不是动画；未知类型按「非静态」保守处理。 */
+    if (type == LUMEN_LAYER_EMPTY) {
+        return false;
+    }
     return type != LUMEN_EFFECT_STATIC;
 }
+
+/* ---------------- 层编解码（§7.1 的 8 字节定宽） ---------------- */
+
+bool lumen_layer_is_empty(const lumen_effect_layer_t *layer)
+{
+    return layer != NULL && layer->type == LUMEN_LAYER_EMPTY;
+}
+
+bool lumen_layer_decode(const uint8_t src[8], lumen_effect_layer_t *out)
+{
+    if (src == NULL || out == NULL) {
+        return false;
+    }
+    out->type = src[0];
+    memcpy(out->param, &src[1], sizeof(out->param));
+    /* 形状合法 = 已知类型或空层。值的合法性（保留位 / 周期下限）由命令层判。 */
+    return lumen_effect_type_known(out->type) || out->type == LUMEN_LAYER_EMPTY;
+}
+
+void lumen_layer_encode(const lumen_effect_layer_t *layer, uint8_t out[8])
+{
+    if (layer == NULL || out == NULL) {
+        return;
+    }
+    out[0] = layer->type;
+    memcpy(&out[1], layer->param, sizeof(layer->param));
+}
+
+uint16_t lumen_layer_hue(const lumen_effect_layer_t *layer)
+{
+    if (layer == NULL) {
+        return 0;
+    }
+    return (uint16_t)(layer->param[0] | ((uint16_t)layer->param[1] << 8));
+}
+
+uint8_t lumen_layer_sat(const lumen_effect_layer_t *layer)
+{
+    return layer != NULL ? layer->param[2] : 0;
+}
+
+uint16_t lumen_layer_period_ms(const lumen_effect_layer_t *layer)
+{
+    if (layer == NULL) {
+        return 0;
+    }
+    return (uint16_t)(layer->param[3] | ((uint16_t)layer->param[4] << 8));
+}
+
+uint8_t lumen_layer_p5(const lumen_effect_layer_t *layer)
+{
+    return layer != NULL ? layer->param[5] : 0;
+}
+
+uint8_t lumen_layer_flags(const lumen_effect_layer_t *layer)
+{
+    return layer != NULL ? layer->param[6] : 0;
+}
+
+bool lumen_layer_static_reserved_zero(const lumen_effect_layer_t *layer)
+{
+    if (layer == NULL) {
+        return false;
+    }
+    /* §7.1 第 6 步：静态层 param[3..6] 是保留位。 */
+    for (size_t i = 3; i < sizeof(layer->param); ++i) {
+        if (layer->param[i] != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool lumen_layer_empty_params_zero(const lumen_effect_layer_t *layer)
+{
+    if (layer == NULL) {
+        return false;
+    }
+    for (size_t i = 0; i < sizeof(layer->param); ++i) {
+        if (layer->param[i] != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* ---------------- 段几何 ---------------- */
 
 uint16_t lumen_effect_segment_length(const lumen_segment_t *seg)
 {
@@ -73,6 +170,20 @@ uint16_t lumen_effect_index_in_segment(const lumen_segment_t *seg, uint16_t inde
         return 0;
     }
     return (uint16_t)(index_in_strip - seg->start);
+}
+
+bool lumen_segment_is_animated(const lumen_segment_t *seg)
+{
+    if (seg == NULL || !seg->active) {
+        return false;
+    }
+    /* 任一层动画就需要帧循环；静态双层（覆盖 / 相乘 / 相加）是常量画面。 */
+    for (uint8_t l = 0; l < 2; ++l) {
+        if (lumen_effect_is_animated(seg->layer[l].type)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void lumen_effect_static_rgb(uint16_t hue, uint8_t sat, uint8_t out_rgb[3])
@@ -136,6 +247,44 @@ void lumen_effect_static_rgb(uint16_t hue, uint8_t sat, uint8_t out_rgb[3])
     out_rgb[0] = (uint8_t)((uint16_t)r + base);
     out_rgb[1] = (uint8_t)((uint16_t)g + base);
     out_rgb[2] = (uint8_t)((uint16_t)b + base);
+}
+
+/* ---------------- blend（§7.2，用户空间） ---------------- */
+
+void lumen_blend_pixel(uint8_t blend, const uint8_t l0[3], const uint8_t l1[3],
+                       uint8_t out_rgb[3])
+{
+    if (l0 == NULL || l1 == NULL || out_rgb == NULL) {
+        return;
+    }
+    uint8_t result[3];
+    switch (blend) {
+    case LUMEN_BLEND_MULTIPLY:
+        /*
+         * (L0 * L1 + 127) / 255：+127 是四舍五入（255*255+127 = 65152，
+         * /255 = 255——满值满值仍是满值，不会因为舍入掉到 254）。
+         */
+        for (uint8_t c = 0; c < 3; ++c) {
+            result[c] = (uint8_t)(((uint16_t)l0[c] * (uint16_t)l1[c] + 127u) / 255u);
+        }
+        break;
+    case LUMEN_BLEND_ADD:
+        /* min(255, L0 + L1)：用 uint16 相加再显式钳位，绝不靠 uint8 回绕。 */
+        for (uint8_t c = 0; c < 3; ++c) {
+            uint16_t sum = (uint16_t)l0[c] + (uint16_t)l1[c];
+            result[c] = (uint8_t)(sum > 255u ? 255u : sum);
+        }
+        break;
+    case LUMEN_BLEND_OVER:
+    default:
+        /*
+         * out = L1。未知 blend 也按覆盖处理：命令层已把 >2 判为 InvalidParam，
+         * 这里只是防御，不让一个损坏的段把整条灯带变黑。
+         */
+        memcpy(result, l1, 3);
+        break;
+    }
+    memcpy(out_rgb, result, 3);
 }
 
 /* ---------------- #30 呼吸 ---------------- */
@@ -333,22 +482,8 @@ uint8_t lumen_effect_apply_gain_q16(uint8_t value, uint32_t gain_q16)
     return (uint8_t)((scaled + 32767u) / 65535u);
 }
 
-/* 把基础色按 Q16 增益缩放（四舍五入）。 */
-static void breathing_pixel(const lumen_segment_t *seg, uint32_t now_ms, uint8_t out_rgb[3])
-{
-    uint8_t base[3];
-    lumen_effect_static_rgb(seg->hue, seg->sat, base);
-
-    uint8_t waveform = (uint8_t)((seg->flags >> 1) & 0x03u);
-    uint32_t gain = lumen_effect_breathing_gain_q16(seg->period_ms, seg->p5, waveform,
-                                                    seg->t0_ms, now_ms);
-    out_rgb[0] = lumen_effect_apply_gain_q16(base[0], gain);
-    out_rgb[1] = lumen_effect_apply_gain_q16(base[1], gain);
-    out_rgb[2] = lumen_effect_apply_gain_q16(base[2], gain);
-}
-
-/* 把基础色按 Q16 增益缩放（四舍五入）；流光复用。 */
-static void scale_pixel(uint8_t base[3], uint32_t gain_q16, uint8_t out_rgb[3])
+/* 把基础色按 Q16 增益缩放（四舍五入）；呼吸与流光共用。 */
+static void scale_pixel(const uint8_t base[3], uint32_t gain_q16, uint8_t out_rgb[3])
 {
     out_rgb[0] = lumen_effect_apply_gain_q16(base[0], gain_q16);
     out_rgb[1] = lumen_effect_apply_gain_q16(base[1], gain_q16);
@@ -357,23 +492,19 @@ static void scale_pixel(uint8_t base[3], uint32_t gain_q16, uint8_t out_rgb[3])
 
 /* ---------------- #31 彩虹 / 流光 ---------------- */
 
-uint16_t lumen_effect_rainbow_hue(const lumen_segment_t *seg, uint16_t index_in_strip,
-                                  uint32_t now_ms)
+uint16_t lumen_layer_rainbow_hue(const lumen_effect_layer_t *layer, uint16_t n, uint16_t i,
+                                 uint32_t t0_ms, uint32_t now_ms)
 {
-    if (seg == NULL || !seg->active || seg->end < seg->start) {
+    if (layer == NULL || n == 0 || i >= n) {
         return 0;
     }
-    if (index_in_strip < seg->start || index_in_strip > seg->end) {
-        return 0;
-    }
-    uint16_t n = lumen_effect_segment_length(seg);
-    if (n == 0) {
-        return 0;
-    }
-    uint16_t i = lumen_effect_index_in_segment(seg, index_in_strip);
+    uint16_t hue = lumen_layer_hue(layer);
+    uint16_t period_ms = lumen_layer_period_ms(layer);
+    uint8_t span = lumen_layer_p5(layer);
+    uint8_t flags = lumen_layer_flags(layer);
 
     /* 相位与呼吸共用同一个 helper（同一条 §6 的 uint64 公式）。 */
-    uint32_t phase_q16 = lumen_effect_breathing_phase_q16(seg->period_ms, seg->t0_ms, now_ms);
+    uint32_t phase_q16 = lumen_effect_breathing_phase_q16(period_ms, t0_ms, now_ms);
 
     /*
      * 空间项 = (i/N) × (span/255) × 65536，Q16。
@@ -390,8 +521,7 @@ uint16_t lumen_effect_rainbow_hue(const lumen_segment_t *seg, uint16_t index_in_
      * 这里改成一次性 uint64 乘除：i ≤ 63、span ≤ 255、65536 → 上界 1.05e9，
      * 在 64 位下留出 4 个数量级的余量，且只做一次除法、取整误差最小。
      */
-    uint64_t spatial_q16 =
-        ((uint64_t)i * (uint64_t)seg->p5 * 65536u) / ((uint64_t)n * 255u);
+    uint64_t spatial_q16 = ((uint64_t)i * (uint64_t)span * 65536u) / ((uint64_t)n * 255u);
 
     /*
      * hue(≤65535) + phase_q16(≤65535) + spatial(≤65536) 用 int64_t 累加，
@@ -400,8 +530,8 @@ uint16_t lumen_effect_rainbow_hue(const lumen_segment_t *seg, uint16_t index_in_
      * 一次的典型 bug，会造出 4.29e9 级的中间量并回绕。取模放在最后，
      * 满周期跑完不会出现颜色突然跳回，也不会因为溢出变成错色。
      */
-    int64_t total = (int64_t)seg->hue + (int64_t)phase_q16;
-    if ((seg->flags & 0x01u) != 0u) {
+    int64_t total = (int64_t)hue + (int64_t)phase_q16;
+    if ((flags & 0x01u) != 0u) {
         total -= (int64_t)spatial_q16; /* reverse：色相沿灯带递减 */
     } else {
         total += (int64_t)spatial_q16;
@@ -437,31 +567,26 @@ static uint32_t comet_exp_q16(uint32_t ratio_q16)
     return (uint32_t)interpolated;
 }
 
-uint32_t lumen_effect_comet_gain_q16(const lumen_segment_t *seg, uint16_t index_in_strip,
-                                     uint32_t now_ms)
+uint32_t lumen_layer_comet_gain_q16(const lumen_effect_layer_t *layer, uint16_t n, uint16_t i,
+                                    uint32_t t0_ms, uint32_t now_ms)
 {
-    if (seg == NULL || !seg->active || seg->end < seg->start) {
+    if (layer == NULL || n == 0 || i >= n) {
         return 0;
     }
-    if (index_in_strip < seg->start || index_in_strip > seg->end) {
-        return 0;
-    }
-    uint16_t n = lumen_effect_segment_length(seg);
-    if (n == 0) {
-        return 0;
-    }
-    uint16_t i = lumen_effect_index_in_segment(seg, index_in_strip);
+    uint16_t period_ms = lumen_layer_period_ms(layer);
+    uint8_t tail = lumen_layer_p5(layer);
+    uint8_t flags = lumen_layer_flags(layer);
 
     /*
      * reverse（flags bit0）用镜像段内下标实现：头部从高索引走向低索引，
      * 与整条图案反向等价，不需要在公式里改符号。
      */
-    if ((seg->flags & 0x01u) != 0u) {
+    if ((flags & 0x01u) != 0u) {
         i = (uint16_t)(n - 1u - i);
     }
 
     /* p_i = ((i/N) - phase) mod 1，Q16。 */
-    uint32_t phase_q16 = lumen_effect_breathing_phase_q16(seg->period_ms, seg->t0_ms, now_ms);
+    uint32_t phase_q16 = lumen_effect_breathing_phase_q16(period_ms, t0_ms, now_ms);
     uint32_t pos_q16 = (uint32_t)(((uint64_t)i << 16) / n); /* i/N ∈ [0,1) */
     uint32_t p_q16 = (pos_q16 + 65536u - phase_q16) & 0xFFFFu;
 
@@ -473,7 +598,7 @@ uint32_t lumen_effect_comet_gain_q16(const lumen_segment_t *seg, uint16_t index_
      * 时先到 255×63×65536 ≈ 1.05e9，仍安全；保险起见用 uint64 相乘。
      */
     uint32_t tail_n_q16 =
-        65536u + (uint32_t)(((uint64_t)seg->p5 * (uint64_t)(n - 1u) * 65536u) / 255u);
+        65536u + (uint32_t)(((uint64_t)tail * (uint64_t)(n - 1u) * 65536u) / 255u);
 
     /*
      * 尾部判定 p_i < tail_n/N ⇔ p_i × N < tail_n（两边同乘 N 消掉除法）。
@@ -493,6 +618,124 @@ uint32_t lumen_effect_comet_gain_q16(const lumen_segment_t *seg, uint16_t index_
     return comet_exp_q16(r_q16);
 }
 
+/* 段 layer[0] 上的便捷包装（旧签名）。 */
+uint16_t lumen_effect_rainbow_hue(const lumen_segment_t *seg, uint16_t index_in_strip,
+                                  uint32_t now_ms)
+{
+    if (seg == NULL || !seg->active || seg->end < seg->start) {
+        return 0;
+    }
+    if (index_in_strip < seg->start || index_in_strip > seg->end) {
+        return 0;
+    }
+    uint16_t n = lumen_effect_segment_length(seg);
+    if (n == 0) {
+        return 0;
+    }
+    return lumen_layer_rainbow_hue(&seg->layer[0], n,
+                                   lumen_effect_index_in_segment(seg, index_in_strip),
+                                   seg->t0_ms, now_ms);
+}
+
+uint32_t lumen_effect_comet_gain_q16(const lumen_segment_t *seg, uint16_t index_in_strip,
+                                     uint32_t now_ms)
+{
+    if (seg == NULL || !seg->active || seg->end < seg->start) {
+        return 0;
+    }
+    if (index_in_strip < seg->start || index_in_strip > seg->end) {
+        return 0;
+    }
+    uint16_t n = lumen_effect_segment_length(seg);
+    if (n == 0) {
+        return 0;
+    }
+    return lumen_layer_comet_gain_q16(&seg->layer[0], n,
+                                      lumen_effect_index_in_segment(seg, index_in_strip),
+                                      seg->t0_ms, now_ms);
+}
+
+/* ---------------- 单层 / 整段求值 ---------------- */
+
+void lumen_layer_pixel(const lumen_segment_t *seg, uint8_t layer_index,
+                       uint16_t index_in_strip, uint32_t now_ms, uint8_t out_rgb[3])
+{
+    if (out_rgb == NULL) {
+        return;
+    }
+    out_rgb[0] = 0;
+    out_rgb[1] = 0;
+    out_rgb[2] = 0;
+
+    if (seg == NULL || !seg->active || layer_index >= 2u) {
+        return;
+    }
+    /* 越界下标不写像素：合成层只遍历段区间，这里是防御。 */
+    if (index_in_strip < seg->start || index_in_strip > seg->end) {
+        return;
+    }
+
+    const lumen_effect_layer_t *layer = &seg->layer[layer_index];
+    if (layer->type == LUMEN_LAYER_EMPTY) {
+        return; /* 空层：透明，输出全黑（blend 的语义由调用方决定）。 */
+    }
+
+    uint16_t hue = lumen_layer_hue(layer);
+    uint8_t sat = lumen_layer_sat(layer);
+    uint16_t n = lumen_effect_segment_length(seg);
+    uint16_t i = lumen_effect_index_in_segment(seg, index_in_strip);
+
+    switch (layer->type) {
+    case LUMEN_EFFECT_STATIC:
+        /* 整段同色，与位置和时间无关（§3.1）。 */
+        lumen_effect_static_rgb(hue, sat, out_rgb);
+        return;
+
+    case LUMEN_EFFECT_BREATHING: {
+        /*
+         * 整段同色同步呼吸：包络只与时间有关，与段内位置无关（§3.2 的
+         * RGB_i 对所有 i 相同）。两层共用 seg->t0_ms，所以同步呼吸。
+         */
+        uint8_t base[3];
+        lumen_effect_static_rgb(hue, sat, base);
+        uint8_t waveform = (uint8_t)((lumen_layer_flags(layer) >> 1) & 0x03u);
+        uint32_t gain = lumen_effect_breathing_gain_q16(lumen_layer_period_ms(layer),
+                                                        lumen_layer_p5(layer), waveform,
+                                                        seg->t0_ms, now_ms);
+        scale_pixel(base, gain, out_rgb);
+        return;
+    }
+
+    case LUMEN_EFFECT_RAINBOW: {
+        /*
+         * 彩虹（§3.3）：色相随段内位置与时间变化，sat 恒定。
+         * span = 0 → 整条同色、色相随时间循环；span = 255 → 铺满一整圈、
+         * 随时间平移。中间值连续可调（spatial 项是线性的）。
+         */
+        uint16_t rainbow_hue = lumen_layer_rainbow_hue(layer, n, i, seg->t0_ms, now_ms);
+        lumen_effect_static_rgb(rainbow_hue, sat, out_rgb);
+        return;
+    }
+
+    case LUMEN_EFFECT_COMET: {
+        /*
+         * 流光（§3.4）：基色恒定，亮度权重随「离亮点的距离」指数衰减。
+         * tail = 0 → 硬边（只有头部那一颗灯）；tail = 255 → 整条都是尾。
+         * reverse 通过镜像段内下标实现，见 lumen_layer_comet_gain_q16。
+         */
+        uint8_t base[3];
+        lumen_effect_static_rgb(hue, sat, base);
+        uint32_t gain = lumen_layer_comet_gain_q16(layer, n, i, seg->t0_ms, now_ms);
+        scale_pixel(base, gain, out_rgb);
+        return;
+    }
+
+    default:
+        /* 未知类型：命令层已按 D7 拒绝（InvalidParam），这里同样只返回黑色。 */
+        return;
+    }
+}
+
 void lumen_effect_pixel(const lumen_segment_t *seg, uint16_t index_in_strip, uint32_t now_ms,
                         uint8_t out_rgb[3])
 {
@@ -506,51 +749,21 @@ void lumen_effect_pixel(const lumen_segment_t *seg, uint16_t index_in_strip, uin
     if (seg == NULL || !seg->active) {
         return;
     }
-    /* 越界下标不写像素：合成层只遍历段区间，这里是防御。 */
     if (index_in_strip < seg->start || index_in_strip > seg->end) {
         return;
     }
 
-    switch (seg->type) {
-    case LUMEN_EFFECT_STATIC:
-        /* 整段同色，与位置和时间无关（§3.1）。 */
-        lumen_effect_static_rgb(seg->hue, seg->sat, out_rgb);
-        return;
+    /* layer[0] 必须先有值（命令层保证）；这里仍按「空 = 全黑」防御。 */
+    uint8_t l0[3] = {0, 0, 0};
+    lumen_layer_pixel(seg, 0, index_in_strip, now_ms, l0);
 
-    case LUMEN_EFFECT_BREATHING:
-        /*
-         * 整段同色同步呼吸：包络只与时间有关，与段内位置无关（§3.2 的
-         * RGB_i 对所有 i 相同）。段间相位因 t0_ms 不同而独立（D4）。
-         */
-        breathing_pixel(seg, now_ms, out_rgb);
-        return;
-
-    case LUMEN_EFFECT_RAINBOW: {
-        /*
-         * 彩虹（§3.3）：色相随段内位置与时间变化，sat 恒定。
-         * span = 0 → 整条同色、色相随时间循环；span = 255 → 铺满一整圈、
-         * 随时间平移。中间值连续可调（spatial 项是线性的）。
-         */
-        uint16_t hue = lumen_effect_rainbow_hue(seg, index_in_strip, now_ms);
-        lumen_effect_static_rgb(hue, seg->sat, out_rgb);
+    /* 单层段（layer1 = 0xFF）：直接交出 layer0，与 v2 逐字节一致。 */
+    if (lumen_layer_is_empty(&seg->layer[1])) {
+        memcpy(out_rgb, l0, 3);
         return;
     }
 
-    case LUMEN_EFFECT_COMET: {
-        /*
-         * 流光（§3.4）：基色恒定，亮度权重随「离亮点的距离」指数衰减。
-         * tail = 0 → 硬边（只有头部那一颗灯）；tail = 255 → 整条都是尾。
-         * reverse 通过镜像段内下标实现，见 lumen_effect_comet_gain_q16。
-         */
-        uint8_t base[3];
-        lumen_effect_static_rgb(seg->hue, seg->sat, base);
-        uint32_t gain = lumen_effect_comet_gain_q16(seg, index_in_strip, now_ms);
-        scale_pixel(base, gain, out_rgb);
-        return;
-    }
-
-    default:
-        /* 未知类型：命令层已按 D7 拒绝（InvalidParam），这里同样只返回黑色。 */
-        return;
-    }
+    uint8_t l1[3] = {0, 0, 0};
+    lumen_layer_pixel(seg, 1, index_in_strip, now_ms, l1);
+    lumen_blend_pixel(seg->blend, l0, l1, out_rgb);
 }

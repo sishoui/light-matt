@@ -20,7 +20,8 @@ static bool segment_shape_ok(const lumen_segment_t *seg)
     if (seg == NULL) {
         return false;
     }
-    if (!lumen_effect_type_known(seg->type)) {
+    /* §7.1 第 2-7 步：两层类型 / blend / 保留位 / 各类型参数。 */
+    if (lumen_segment_validate_shape(seg) != LUMEN_RESULT_OK) {
         return false;
     }
     if (seg->start > seg->end) {

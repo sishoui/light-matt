@@ -105,6 +105,102 @@ static lumen_decode_status_t decode_hex(const char *hex, lumen_frame_t *frame,
     return lumen_protocol_decode(buf, len, frame, result_code);
 }
 
+/* ---------------- 两层段的测试辅助 ----------------
+ *
+ * 生产代码里 layer 的 param 是定宽字节数组（§7.1），测试里频繁按「hue / sat /
+ * period / p5 / flags」读写 layer0，用下面这组小访问器代替平铺字段，避免在
+ * 每个断言里手写 param 下标（下标写错会让整组测试静默测错字节）。
+ */
+
+static void layer_set(uint8_t type, uint16_t hue, uint8_t sat, uint16_t period_ms, uint8_t p5,
+                      uint8_t flags, lumen_effect_layer_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->type = type;
+    out->param[0] = (uint8_t)(hue & 0xFF);
+    out->param[1] = (uint8_t)(hue >> 8);
+    out->param[2] = sat;
+    out->param[3] = (uint8_t)(period_ms & 0xFF);
+    out->param[4] = (uint8_t)(period_ms >> 8);
+    out->param[5] = p5;
+    out->param[6] = flags;
+}
+
+static void layer_clear(lumen_effect_layer_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->type = LUMEN_LAYER_EMPTY;
+}
+
+static uint16_t layer_hue(const lumen_effect_layer_t *layer)
+{
+    return lumen_layer_hue(layer);
+}
+
+static void layer_set_hue(lumen_effect_layer_t *layer, uint16_t hue)
+{
+    layer->param[0] = (uint8_t)(hue & 0xFF);
+    layer->param[1] = (uint8_t)(hue >> 8);
+}
+
+static uint8_t layer_sat(const lumen_effect_layer_t *layer)
+{
+    return lumen_layer_sat(layer);
+}
+
+static void layer_set_sat(lumen_effect_layer_t *layer, uint8_t sat)
+{
+    layer->param[2] = sat;
+}
+
+static uint16_t layer_period(const lumen_effect_layer_t *layer)
+{
+    return lumen_layer_period_ms(layer);
+}
+
+static void layer_set_period(lumen_effect_layer_t *layer, uint16_t period_ms)
+{
+    layer->param[3] = (uint8_t)(period_ms & 0xFF);
+    layer->param[4] = (uint8_t)(period_ms >> 8);
+}
+
+static uint8_t layer_p5(const lumen_effect_layer_t *layer)
+{
+    return lumen_layer_p5(layer);
+}
+
+static void layer_set_p5(lumen_effect_layer_t *layer, uint8_t p5)
+{
+    layer->param[5] = p5;
+}
+
+static uint8_t layer_flags(const lumen_effect_layer_t *layer)
+{
+    return lumen_layer_flags(layer);
+}
+
+static void layer_set_flags(lumen_effect_layer_t *layer, uint8_t flags)
+{
+    layer->param[6] = flags;
+}
+
+/* 单层段（layer1 = 空层、blend = 0）：v2 行为的直接对应物。 */
+static lumen_segment_t seg_single(uint8_t type, uint8_t start, uint8_t end, uint16_t hue,
+                                  uint8_t sat, uint16_t period_ms, uint8_t p5, uint8_t flags,
+                                  uint32_t t0_ms)
+{
+    lumen_segment_t seg;
+    memset(&seg, 0, sizeof(seg));
+    seg.active = true;
+    seg.start = start;
+    seg.end = end;
+    seg.blend = 0;
+    layer_set(type, hue, sat, period_ms, p5, flags, &seg.layer[0]);
+    layer_clear(&seg.layer[1]);
+    seg.t0_ms = t0_ms;
+    return seg;
+}
+
 /*
  * 由向量里的 prior_segments 构造前置段表。
  *
@@ -127,18 +223,13 @@ static void apply_prior_segments(lumen_segment_store_t *store, const char *spec)
             ++g_failures;
             continue;
         }
-        lumen_segment_t seg = {
-            .active = true,
-            .start = (uint8_t)start,
-            .end = (uint8_t)end,
-            .type = LUMEN_EFFECT_STATIC,
-            .hue = 0,
-            .sat = 255,
-            .period_ms = 0,
-            .p5 = 0,
-            .flags = 0,
-            .t0_ms = 0,
-        };
+        lumen_segment_t seg;
+        memset(&seg, 0, sizeof(seg));
+        seg.active = true;
+        seg.start = (uint8_t)start;
+        seg.end = (uint8_t)end;
+        layer_set(LUMEN_EFFECT_STATIC, 0, 255, 0, 0, 0, &seg.layer[0]);
+        layer_clear(&seg.layer[1]);
         if (lumen_segment_store_set(store, 0, 1, (uint8_t)seg_id, 64, &seg) !=
             LUMEN_RESULT_OK) {
             fprintf(stderr, "[FAIL] prior_segments could not be applied: %s\n", token);
@@ -508,14 +599,14 @@ static bool apply_prior_script(lumen_script_store_t *store, const char *spec)
             seg.active = true;
             seg.start = payload[layer_off - 3];
             seg.end = payload[layer_off - 2];
-            seg.type = payload[layer_off];
-            seg.hue = (uint16_t)(payload[layer_off + 1] | ((uint16_t)payload[layer_off + 2] << 8));
-            seg.sat = payload[layer_off + 3];
-            if (lumen_effect_param_len(seg.type) > 3u) {
-                seg.period_ms =
-                    (uint16_t)(payload[layer_off + 4] | ((uint16_t)payload[layer_off + 5] << 8));
-                seg.p5 = payload[layer_off + 6];
-                seg.flags = payload[layer_off + 7];
+            if (len == 23) {
+                /* v3：blend 在 layer0 前一个字节，layer1 紧随其后 8 字节。 */
+                seg.blend = payload[layer_off - 1];
+                (void)lumen_layer_decode(&payload[layer_off], &seg.layer[0]);
+                (void)lumen_layer_decode(&payload[layer_off + 8], &seg.layer[1]);
+            } else {
+                layer_set(payload[layer_off], 0, 0, 0, 0, 0, &seg.layer[0]);
+                layer_clear(&seg.layer[1]);
             }
             if (!lumen_script_segment(store, payload[0], payload[1], payload[2], payload[3], &seg,
                                       NULL)) {
@@ -745,8 +836,10 @@ static void run_app_case(const vector_case_t *c)
             CHECK(outcome.segment_op);
             CHECK(!outcome.segment_clear);
             CHECK(outcome.segment.active);
-            /* layer0 在 v3 载荷偏移 5：type + param[7]。 */
-            CHECK(outcome.segment.type == frame.payload[5]);
+            /* layer0 在 v3 载荷偏移 5：type + param[7]；layer1 在偏移 13。 */
+            CHECK(outcome.segment.layer[0].type == frame.payload[5]);
+            CHECK(outcome.segment.layer[1].type == frame.payload[13]);
+            CHECK(outcome.segment.blend == frame.payload[4]);
             CHECK(outcome.segment.start == frame.payload[2]);
             CHECK(outcome.segment.end == frame.payload[3]);
             CHECK(outcome.cancels_selftest);
@@ -822,7 +915,9 @@ static void run_app_case(const vector_case_t *c)
                     CHECK(outcome.script_segment.active);
                     CHECK(outcome.script_segment.start == frame.payload[4]);
                     CHECK(outcome.script_segment.end == frame.payload[5]);
-                    CHECK(outcome.script_segment.type == frame.payload[7]);
+                    CHECK(outcome.script_segment.layer[0].type == frame.payload[7]);
+                    CHECK(outcome.script_segment.layer[1].type == frame.payload[15]);
+                    CHECK(outcome.script_segment.blend == frame.payload[6]);
                 }
                 break;
             case LUMEN_CMD_SCRIPT_COMMIT:
@@ -2318,30 +2413,33 @@ static void test_state_blob(void)
     in.state.strip_count = 1;
     in.state.seg_count = 2;
 
-    lumen_segment_t seg0 = {
-        .active = true, .start = 0, .end = 15, .type = LUMEN_EFFECT_STATIC,
-        .hue = 0x1234, .sat = 200, .period_ms = 0, .p5 = 0, .flags = 0, .t0_ms = 999,
-    };
-    lumen_segment_t seg1 = {
-        .active = true, .start = 40, .end = 63, .type = LUMEN_EFFECT_STATIC,
-        .hue = 0xABCD, .sat = 255, .period_ms = 0, .p5 = 0, .flags = 0, .t0_ms = 12345,
-    };
+    lumen_segment_t seg0 = seg_single(LUMEN_EFFECT_STATIC, 0, 15, 0x1234, 200, 0, 0, 0, 999);
+    lumen_segment_t seg1 = seg_single(LUMEN_EFFECT_STATIC, 40, 63, 0xABCD, 255, 0, 0, 0, 12345);
     in.segments.slot[0][0] = seg0;
     in.segments.slot[0][1] = seg1;
 
     uint8_t blob[LUMEN_STATE_BLOB_SIZE];
     CHECK(lumen_state_blob_encode(&in, blob) == LUMEN_STATE_BLOB_SIZE);
-    /* 显式布局：magic 0..3、version 4..5、power 6、brightness 7、rgb 8..10、
-     * led_count 11..12（小端）、strip_count 13、seg_count 14。 */
+    /*
+     * 显式布局（docs/protocol-v3.md §10.2）：magic 0..3、version 4..5、power 6、
+     * brightness 7、rgb 8..10、led_count 11..12（小端）、strip_count 13、
+     * strip_power_mask 14、strip_counts 15..30、seg_count 31、段表 32..。
+     */
     CHECK(blob[0] == 'L' && blob[1] == 'M' && blob[2] == 'E' && blob[3] == 'N');
     CHECK(blob[4] == (LUMEN_STATE_BLOB_VERSION & 0xFF));
     CHECK(blob[5] == (LUMEN_STATE_BLOB_VERSION >> 8));
-    CHECK(LUMEN_STATE_BLOB_VERSION == 3); /* v2 → v3：加了每条灯带的灯珠数 */
+    CHECK(LUMEN_STATE_BLOB_VERSION == 4); /* v3 → v4：两层段记录 20 字节 + pmask */
+    CHECK(LUMEN_STATE_BLOB_SIZE == 1312);
+    CHECK(LUMEN_SEGMENT_RECORD_SIZE == 20);
+    CHECK(LUMEN_STRIP_COUNTS_OFFSET == 15);
+    CHECK(LUMEN_SEG_COUNT_OFFSET == 31);
+    CHECK(LUMEN_SEGMENTS_OFFSET == 32);
     CHECK(blob[6] == 1);
     CHECK(blob[7] == 200);
     CHECK(blob[8] == 1 && blob[9] == 2 && blob[10] == 3);
     CHECK(blob[11] == 64 && blob[12] == 0);
-    CHECK(blob[13] == 1 && blob[14] == 2);
+    CHECK(blob[13] == 1);
+    CHECK(blob[LUMEN_SEG_COUNT_OFFSET] == 2);
 
     lumen_persist_t out;
     memset(&out, 0xAA, sizeof(out));
@@ -2354,11 +2452,13 @@ static void test_state_blob(void)
     CHECK(out.state.seg_count == 2);
     CHECK(out.segments.slot[0][0].active);
     CHECK(out.segments.slot[0][0].start == 0 && out.segments.slot[0][0].end == 15);
-    CHECK(out.segments.slot[0][0].hue == 0x1234);
-    CHECK(out.segments.slot[0][0].sat == 200);
+    CHECK(layer_hue(&out.segments.slot[0][0].layer[0]) == 0x1234);
+    CHECK(layer_sat(&out.segments.slot[0][0].layer[0]) == 200);
+    CHECK(out.segments.slot[0][0].layer[1].type == LUMEN_LAYER_EMPTY);
+    CHECK(out.segments.slot[0][0].blend == 0);
     CHECK(out.segments.slot[0][1].active);
     CHECK(out.segments.slot[0][1].start == 40 && out.segments.slot[0][1].end == 63);
-    CHECK(out.segments.slot[0][1].hue == 0xABCD);
+    CHECK(layer_hue(&out.segments.slot[0][1].layer[0]) == 0xABCD);
     /* t0_ms 不持久化：解码后为 0，由引擎加载时统一设为当前时刻。 */
     CHECK(out.segments.slot[0][0].t0_ms == 0);
     CHECK(out.segments.slot[0][1].t0_ms == 0);
@@ -2381,19 +2481,50 @@ static void test_state_blob(void)
     bad[3] = 0x00;
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
 
-    /* 4. 坏 version（v1 现在必须拒绝：布局不兼容）。 */
+    /*
+     * 4. 坏 version（v1 / v3 / 更高版本都必须整体拒绝：布局不兼容）。
+     *
+     * v3 → v4 的布局变化：段记录 11 → 20 字节、pmask 移入偏移 14、seg_count
+     * 从 14 挪到 31。用 v3 的字节按 v4 解析会把段表读错位，所以**只能拒绝**，
+     * 由调用方回落到协议默认值——不能出现半套加载。
+     */
     memcpy(bad, blob, sizeof(bad));
     bad[4] = 0x01;
     bad[5] = 0x00;
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
     memcpy(bad, blob, sizeof(bad));
-    bad[4] = 0x04; /* 比当前版本更高：同样必须拒绝 */
+    bad[4] = 0x03; /* 上一版 v3：记录还是 11 字节 —— 必须拒绝 */
+    bad[5] = 0x00;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+    memcpy(bad, blob, sizeof(bad));
+    bad[4] = 0x05; /* 比当前版本更高：同样必须拒绝 */
     bad[5] = 0x00;
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
     /* 只有高字节错位的伪版本也拒绝。 */
     memcpy(bad, blob, sizeof(bad));
     bad[5] = 0x01;
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+
+    /*
+     * 4b. **v3 blob → 版本不符 + 默认值原样保留**（验收点：不崩溃、不半加载）。
+     * 造一份「外表像 v3」的 blob（版本号 3、长度也按 v4 给足，模拟未来误读），
+     * 断言解码失败且 out 一个字节都没被动过。
+     */
+    memcpy(bad, blob, sizeof(bad));
+    bad[4] = 0x03;
+    bad[5] = 0x00;
+    {
+        lumen_persist_t keep;
+        memset(&keep, 0, sizeof(keep));
+        lumen_state_defaults(&keep.state, 30);
+        lumen_segment_store_init(&keep.segments);
+        lumen_persist_t before = keep;
+        CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &keep));
+        CHECK(memcmp(&keep, &before, sizeof(keep)) == 0);
+        CHECK(keep.state.power == before.state.power);
+        CHECK(keep.state.strip_power_mask == before.state.strip_power_mask);
+        CHECK(!keep.segments.slot[0][0].active);
+    }
 
     /* 5. power > 1。 */
     memcpy(bad, blob, sizeof(bad));
@@ -2427,7 +2558,8 @@ static void test_state_blob(void)
      *    a) 段区间 end >= led_count；
      *    b) seg_count 与段表不一致；
      *    c) 未知 type；
-     *    d) 同灯带内重叠。 */
+     *    d) 同灯带内重叠；
+     *    e) 单层段带非零 blend（§7.1 第 4 步）。 */
     const uint8_t seg_off = LUMEN_SEGMENTS_OFFSET; /* 段表偏移随布局走，不硬编码 */
     /* a) 把 seg 0 的 end 改成 64（led_count=64 → 越界）。 */
     memcpy(bad, blob, sizeof(bad));
@@ -2435,16 +2567,24 @@ static void test_state_blob(void)
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
     /* b) seg_count 说 3 但段表只有 2 个活动段。 */
     memcpy(bad, blob, sizeof(bad));
-    bad[14] = 3;
+    bad[LUMEN_SEG_COUNT_OFFSET] = 3;
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
-    /* c) 未知 type 0x07。 */
+    /* c) 未知 type 0x07（记录内的 layer0.type 在偏移 4）。 */
     memcpy(bad, blob, sizeof(bad));
-    bad[seg_off + 3] = 0x07;
+    bad[seg_off + 4] = 0x07;
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
     /* d) 把 seg 1 挪到 [10-20]，与 seg 0 的 [0-15] 重叠。 */
     memcpy(bad, blob, sizeof(bad));
     bad[seg_off + LUMEN_SEGMENT_RECORD_SIZE + 1] = 10;
     bad[seg_off + LUMEN_SEGMENT_RECORD_SIZE + 2] = 20;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+    /* e) 单层段（layer1 = 0xFF）却写了 blend = 1 → 形状非法。 */
+    memcpy(bad, blob, sizeof(bad));
+    bad[seg_off + 3] = 1;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+    /* f) 静态层 param[3..6] 保留位非 0（记录内 layer0.param 从偏移 5 起）。 */
+    memcpy(bad, blob, sizeof(bad));
+    bad[seg_off + 5 + 3] = 0x01;
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
 
     /* 8. 失败时不写 out（调用方保留默认值）。 */
@@ -2549,10 +2689,7 @@ static void test_effects_dispatch(void)
     CHECK(!lumen_effect_is_animated(LUMEN_EFFECT_STATIC));
     CHECK(lumen_effect_is_animated(LUMEN_EFFECT_BREATHING));
 
-    lumen_segment_t seg = {
-        .active = true, .start = 10, .end = 19, .type = LUMEN_EFFECT_STATIC,
-        .hue = 0, .sat = 255,
-    };
+    lumen_segment_t seg = seg_single(LUMEN_EFFECT_STATIC, 10, 19, 0, 255, 0, 0, 0, 0);
     CHECK(lumen_effect_segment_length(&seg) == 10);
     CHECK(lumen_effect_index_in_segment(&seg, 10) == 0);
     CHECK(lumen_effect_index_in_segment(&seg, 19) == 9);
@@ -2578,7 +2715,7 @@ static void test_effects_dispatch(void)
     /* 动画类型与未知类型：未知类型在 #25/#30/#31 都返回黑色（防御，不是降级
      * 路径）。彩虹的像素由 test_effects_rainbow_* 单独断言。 */
     lumen_segment_t unknown = seg;
-    unknown.type = 0x7F;
+    unknown.layer[0].type = 0x7F;
     memset(a, 0xEE, sizeof(a));
     lumen_effect_pixel(&unknown, 10, 0, a);
     CHECK(a[0] == 0 && a[1] == 0 && a[2] == 0);
@@ -2596,15 +2733,8 @@ static void test_effects_dispatch(void)
 
 static lumen_segment_t make_static(uint8_t start, uint8_t end, uint16_t hue, uint8_t sat)
 {
-    lumen_segment_t seg;
-    memset(&seg, 0, sizeof(seg));
-    seg.active = true;
-    seg.start = start;
-    seg.end = end;
-    seg.type = LUMEN_EFFECT_STATIC;
-    seg.hue = hue;
-    seg.sat = sat;
-    return seg;
+    /* 单层静态段：layer1 = 空层、blend = 0（= v2 里「没有第二层」的语义）。 */
+    return seg_single(LUMEN_EFFECT_STATIC, start, end, hue, sat, 0, 0, 0, 0);
 }
 
 /*
@@ -2722,7 +2852,7 @@ static void test_segment_store_validate(void)
     /* 自替换（同 seg_id）不算重叠：改颜色必须能通过。 */
     lumen_segment_t recolored = make_static(0, 9, 43690, 255);
     CHECK(lumen_segment_store_set(&store, 0, 1, 0, led_count, &recolored) == LUMEN_RESULT_OK);
-    CHECK(lumen_segment_store_get(&store, 0, 0)->hue == 43690);
+    CHECK(layer_hue(&lumen_segment_store_get(&store, 0, 0)->layer[0]) == 43690);
 
     /* 越界：end >= led_count、start > end。 */
     lumen_segment_t out_of_range = make_static(20, 30, 0, 255);
@@ -2746,7 +2876,7 @@ static void test_segment_store_validate(void)
 
     /* flags 保留位：静态段必须为 0。 */
     lumen_segment_t flagged = make_static(0, 4, 0, 255);
-    flagged.flags = 0x01;
+    layer_set_flags(&flagged.layer[0], 0x01);
     CHECK(lumen_segment_store_validate(&store, 0, 1, 5, led_count, &flagged) ==
           LUMEN_RESULT_INVALID_PARAM);
 
@@ -2760,20 +2890,20 @@ static void test_segment_store_validate(void)
     lumen_segment_store_init(&fresh);
 
     lumen_segment_t breathing = make_static(0, 4, 0, 255);
-    breathing.type = LUMEN_EFFECT_BREATHING;
-    breathing.period_ms = 1000;
+    breathing.layer[0].type = LUMEN_EFFECT_BREATHING;
+    layer_set_period(&breathing.layer[0], 1000);
     CHECK(lumen_segment_store_validate(&fresh, 0, 1, 5, led_count, &breathing) ==
           LUMEN_RESULT_OK);
 
     lumen_segment_t rainbow = make_static(0, 4, 0, 255);
-    rainbow.type = LUMEN_EFFECT_RAINBOW;
-    rainbow.period_ms = 500;
+    rainbow.layer[0].type = LUMEN_EFFECT_RAINBOW;
+    layer_set_period(&rainbow.layer[0], 500);
     CHECK(lumen_segment_store_validate(&fresh, 0, 1, 5, led_count, &rainbow) ==
           LUMEN_RESULT_OK);
 
     lumen_segment_t comet = make_static(0, 4, 0, 255);
-    comet.type = LUMEN_EFFECT_COMET;
-    comet.period_ms = 500;
+    comet.layer[0].type = LUMEN_EFFECT_COMET;
+    layer_set_period(&comet.layer[0], 500);
     CHECK(lumen_segment_store_validate(&fresh, 0, 1, 5, led_count, &comet) ==
           LUMEN_RESULT_OK);
 
@@ -3048,10 +3178,7 @@ static void test_effects_breathing_gain_and_pixel(void)
     /*
      * 整颗像素：纯红呼吸，谷底必须能到全黑（ticket 的「min_level = 0 暗到全黑」）。
      */
-    lumen_segment_t seg = {
-        .active = true, .start = 0, .end = 9, .type = LUMEN_EFFECT_BREATHING,
-        .hue = 0, .sat = 255, .period_ms = 1000, .p5 = 0, .flags = 0, .t0_ms = 0,
-    };
+    lumen_segment_t seg = seg_single(LUMEN_EFFECT_BREATHING, 0, 9, 0, 255, 1000, 0, 0, 0);
     uint8_t rgb[3];
     lumen_effect_pixel(&seg, 5, 0, rgb);
     CHECK(rgb[0] == 0 && rgb[1] == 0 && rgb[2] == 0);
@@ -3059,35 +3186,34 @@ static void test_effects_breathing_gain_and_pixel(void)
     CHECK(rgb[0] == 255 && rgb[1] == 0 && rgb[2] == 0);
 
     /* min_level 大 → 谷底仍很亮（几乎不呼吸）。 */
-    seg.p5 = 200;
+    layer_set_p5(&seg.layer[0], 200);
     lumen_effect_pixel(&seg, 5, 0, rgb);
     CHECK(rgb[0] >= 195 && rgb[0] <= 205);
 
     /* 波形切换真的改变输出（肉眼可分辨的前提）：锯齿在中点约半亮。 */
-    seg.p5 = 0;
-    seg.flags = (uint8_t)(LUMEN_WAVE_SAWTOOTH << 1);
+    layer_set_p5(&seg.layer[0], 0);
+    layer_set_flags(&seg.layer[0], (uint8_t)(LUMEN_WAVE_SAWTOOTH << 1));
     lumen_effect_pixel(&seg, 5, 250, rgb); /* 1/4 周期 */
     CHECK(rgb[0] >= 60 && rgb[0] <= 70);   /* 0.25 × 255 ≈ 64 */
 
     /* 正弦在 1/4 周期约半亮（与锯齿不同）。 */
-    seg.flags = (uint8_t)(LUMEN_WAVE_SINE << 1);
+    layer_set_flags(&seg.layer[0], (uint8_t)(LUMEN_WAVE_SINE << 1));
     lumen_effect_pixel(&seg, 5, 250, rgb);
     CHECK(rgb[0] >= 120 && rgb[0] <= 135);
 
     /* 三角在 1/4 周期约半亮；方波在 1/4 周期满亮。 */
-    seg.flags = (uint8_t)(LUMEN_WAVE_TRIANGLE << 1);
+    layer_set_flags(&seg.layer[0], (uint8_t)(LUMEN_WAVE_TRIANGLE << 1));
     lumen_effect_pixel(&seg, 5, 250, rgb);
     CHECK(rgb[0] >= 120 && rgb[0] <= 135);
-    seg.flags = (uint8_t)(LUMEN_WAVE_SQUARE << 1);
+    layer_set_flags(&seg.layer[0], (uint8_t)(LUMEN_WAVE_SQUARE << 1));
     lumen_effect_pixel(&seg, 5, 250, rgb);
     CHECK(rgb[0] == 255);
 
     /* flag bit0（reverse）不影响呼吸输出（保留位，无实际意义）。 */
-    seg.flags = (uint8_t)((LUMEN_WAVE_SINE << 1) | 0x01);
+    layer_set_flags(&seg.layer[0], (uint8_t)(LUMEN_WAVE_SINE << 1));
     uint8_t rgb_rev[3];
-    seg.flags = (uint8_t)(LUMEN_WAVE_SINE << 1);
     lumen_effect_pixel(&seg, 5, 125, rgb);
-    seg.flags = (uint8_t)((LUMEN_WAVE_SINE << 1) | 0x01);
+    layer_set_flags(&seg.layer[0], (uint8_t)((LUMEN_WAVE_SINE << 1) | 0x01));
     lumen_effect_pixel(&seg, 5, 125, rgb_rev);
     CHECK(memcmp(rgb, rgb_rev, 3) == 0);
 
@@ -3097,10 +3223,7 @@ static void test_effects_breathing_gain_and_pixel(void)
      */
     lumen_segment_store_t store;
     lumen_segment_store_init(&store);
-    lumen_segment_t b = {
-        .active = true, .start = 0, .end = 9, .type = LUMEN_EFFECT_BREATHING,
-        .hue = 0, .sat = 255, .period_ms = 1000, .p5 = 0, .flags = 0, .t0_ms = 0,
-    };
+    lumen_segment_t b = seg_single(LUMEN_EFFECT_BREATHING, 0, 9, 0, 255, 1000, 0, 0, 0);
     lumen_segment_t s = make_static(20, 29, 21845, 255); /* 纯绿 */
     CHECK(lumen_segment_store_set(&store, 0, 1, 0, 64, &b) == LUMEN_RESULT_OK);
     CHECK(lumen_segment_store_set(&store, 0, 1, 1, 64, &s) == LUMEN_RESULT_OK);
@@ -3131,19 +3254,7 @@ static lumen_segment_t make_animated(uint8_t type, uint8_t start, uint8_t end, u
                                      uint8_t sat, uint16_t period_ms, uint8_t p5, uint8_t flags,
                                      uint32_t t0_ms)
 {
-    lumen_segment_t seg;
-    memset(&seg, 0, sizeof(seg));
-    seg.active = true;
-    seg.start = start;
-    seg.end = end;
-    seg.type = type;
-    seg.hue = hue;
-    seg.sat = sat;
-    seg.period_ms = period_ms;
-    seg.p5 = p5;
-    seg.flags = flags;
-    seg.t0_ms = t0_ms;
-    return seg;
+    return seg_single(type, start, end, hue, sat, period_ms, p5, flags, t0_ms);
 }
 
 /* 段内某偏移的最大权重下标（流光头部）。tail > 0 时头部唯一性不保证，调用方自行判断。 */
@@ -3176,10 +3287,10 @@ static void test_effects_rainbow_hue(void)
     CHECK(lumen_effect_rainbow_hue(&flat, 3, 1000) == 0);
     CHECK(lumen_effect_rainbow_hue(&flat, 3, 2000) == 0);
     /* 基准 hue 平移整段：40000 + 16384 = 56384，未回绕。 */
-    flat.hue = 40000;
+    layer_set_hue(&flat.layer[0], 40000);
     CHECK(lumen_effect_rainbow_hue(&flat, 9, 250) == 56384);
     /* 基准 hue 靠近满圈时正确回绕到小值（不是负数/错色）。 */
-    flat.hue = 60000;
+    layer_set_hue(&flat.layer[0], 60000);
     CHECK(lumen_effect_rainbow_hue(&flat, 9, 500) == (uint16_t)((60000u + 32768u) % 65536u));
 
     /* span = 255：沿灯带铺满一整圈（N = 16，每颗 65536/16 = 4096）。 */
@@ -3311,14 +3422,14 @@ static void test_effects_rainbow_pixel(void)
     lumen_effect_pixel(&full, 8, 0, first);
     CHECK(first[0] < 40);
     /* sat = 0 → 全白，与位置无关（V 恒为 1）。 */
-    full.sat = 0;
+    layer_set_sat(&full.layer[0], 0);
     for (uint16_t i = 0; i < 16; ++i) {
         lumen_effect_pixel(&full, i, 0, first);
         CHECK(first[0] == 255 && first[1] == 255 && first[2] == 255);
     }
 
     /* 时间推进让同一颗灯换色（动画真的在走）。 */
-    full.sat = 255;
+    layer_set_sat(&full.layer[0], 255);
     lumen_effect_pixel(&full, 3, 0, a);
     lumen_effect_pixel(&full, 3, 250, b);
     CHECK(memcmp(a, b, 3) != 0);
@@ -3545,8 +3656,8 @@ static void test_segment_store_needs_frames(void)
 
     /* 一段静态 + 一段呼吸：需要帧循环。 */
     lumen_segment_t breath = make_static(20, 29, 0, 255);
-    breath.type = LUMEN_EFFECT_BREATHING;
-    breath.period_ms = 1000;
+    breath.layer[0].type = LUMEN_EFFECT_BREATHING;
+    layer_set_period(&breath.layer[0], 1000);
     CHECK(lumen_segment_store_set(&store, 0, 1, 1, 64, &breath) == LUMEN_RESULT_OK);
     CHECK(lumen_segment_store_needs_frames(&store, 1));
 
@@ -3659,8 +3770,9 @@ static void test_segment_commands(void)
     CHECK(outcome.cancels_selftest);
     CHECK(!outcome.state_changed); /* 段配置不在 State 里 */
     CHECK(outcome.segment.start == 0 && outcome.segment.end == 9);
-    CHECK(outcome.segment.hue == 0 && outcome.segment.sat == 255);
-    CHECK(outcome.segment.type == LUMEN_EFFECT_STATIC);
+    CHECK(layer_hue(&outcome.segment.layer[0]) == 0);
+    CHECK(layer_sat(&outcome.segment.layer[0]) == 255);
+    CHECK(outcome.segment.layer[0].type == LUMEN_EFFECT_STATIC);
 
     /* 把它真正写进段表（模拟引擎），后续重叠校验才有前置状态。 */
     CHECK(lumen_segment_store_set(&segments, 0, 1, 0, 30, &outcome.segment) == LUMEN_RESULT_OK);
@@ -3688,8 +3800,8 @@ static void test_segment_commands(void)
     fill_segment_payload(frame.payload, 0, 1, 10, 19, 0, layer, NULL);
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
-    CHECK(outcome.segment.hue == 0x5555);
-    CHECK(outcome.segment.sat == 128);
+    CHECK(layer_hue(&outcome.segment.layer[0]) == 0x5555);
+    CHECK(layer_sat(&outcome.segment.layer[0]) == 128);
 
     /*
      * §7.1 的校验顺序：
@@ -3747,7 +3859,7 @@ static void test_segment_commands(void)
         lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
         CHECK(outcome.result_code == LUMEN_RESULT_OK);
         CHECK(outcome.segment_op);
-        CHECK(outcome.segment.type == LUMEN_EFFECT_STATIC);
+        CHECK(outcome.segment.layer[0].type == LUMEN_EFFECT_STATIC);
     }
 
     /* 静态层 param[3..6] 是保留位，必须全 0（第 6 步）。 */
@@ -3765,10 +3877,10 @@ static void test_segment_commands(void)
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.segment_op);
-    CHECK(outcome.segment.type == LUMEN_EFFECT_BREATHING);
-    CHECK(outcome.segment.period_ms == 0x01F4);
-    CHECK(outcome.segment.p5 == 0x60);
-    CHECK(outcome.segment.flags == 0);
+    CHECK(outcome.segment.layer[0].type == LUMEN_EFFECT_BREATHING);
+    CHECK(layer_period(&outcome.segment.layer[0]) == 0x01F4);
+    CHECK(layer_p5(&outcome.segment.layer[0]) == 0x60);
+    CHECK(layer_flags(&outcome.segment.layer[0]) == 0);
 
     /* 周期低于 3Hz 下限（334ms）→ InvalidParam；正好 334 合法；0（静止）合法。 */
     frame.payload[9] = 0x4D; /* 333 */
@@ -3795,7 +3907,7 @@ static void test_segment_commands(void)
     frame.payload[12] = 0x07; /* reverse + waveform 3 */
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
-    CHECK(outcome.segment.flags == 0x07);
+    CHECK(layer_flags(&outcome.segment.layer[0]) == 0x07);
 
     /*
      * 彩虹 / 流光：300ms 高于 200 的 5Hz 下限、低于呼吸的 334，
@@ -3808,11 +3920,11 @@ static void test_segment_commands(void)
     frame.payload[5] = LUMEN_EFFECT_RAINBOW;
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
-    CHECK(outcome.segment.type == LUMEN_EFFECT_RAINBOW);
+    CHECK(outcome.segment.layer[0].type == LUMEN_EFFECT_RAINBOW);
     frame.payload[5] = LUMEN_EFFECT_COMET;
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
-    CHECK(outcome.segment.type == LUMEN_EFFECT_COMET);
+    CHECK(outcome.segment.layer[0].type == LUMEN_EFFECT_COMET);
 
     /* 199 < 200 → InvalidParam；正好 200 合法。 */
     frame.payload[9] = 0xC7;
@@ -3834,7 +3946,7 @@ static void test_segment_commands(void)
     frame.payload[12] = 0x01;
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
-    CHECK(outcome.segment.flags == 0x01);
+    CHECK(layer_flags(&outcome.segment.layer[0]) == 0x01);
 
     /* layer1 参数同样要校验：未知 type → InvalidParam。 */
     uint8_t bad_l1[8] = {0x07, 0, 0, 0, 0, 0, 0, 0};
@@ -4782,7 +4894,8 @@ static void test_script_store_download(void)
     CHECK(lumen_script_stage_count(&store, 0) == 4);
     CHECK(script != NULL && script->stages[0].duration_ms == 1000);
     CHECK(script != NULL && script->stages[3].duration_ms == 2500);
-    CHECK(script != NULL && script->stages[2].segments[0][0].hue == 10000);
+    CHECK(script != NULL &&
+          layer_hue(&script->stages[2].segments[0][0].layer[0]) == 10000);
     CHECK(script != NULL && script->stages[2].segments[0][0].active);
     /* 未写的段槽位保持非活动。 */
     CHECK(script != NULL && !script->stages[0].segments[0][1].active);
@@ -4801,7 +4914,7 @@ static void test_script_store_download(void)
     CHECK(!lumen_script_segment(&store, 0, 0, 1, 0, &seg, NULL)); /* strip 越界 */
     CHECK(!lumen_script_segment(&store, 0, 0, 0, LUMEN_MAX_SEGMENTS, &seg, NULL));
     lumen_segment_t bad_type = seg;
-    bad_type.type = 0x09;
+    bad_type.layer[0].type = 0x09;
     CHECK(!lumen_script_segment(&store, 0, 0, 0, 0, &bad_type, NULL));
     lumen_segment_t inverted = seg;
     inverted.start = 9;
@@ -4850,7 +4963,8 @@ static void test_script_commit_failure_keeps_previous(void)
     CHECK(lumen_script_get(&store, 0) != NULL);
     CHECK(lumen_script_stage_count(&store, 0) == 2);
     good = lumen_script_get(&store, 0);
-    CHECK(good != NULL && good->stages[0].segments[0][0].hue == before.hue);
+    CHECK(good != NULL && layer_hue(&good->stages[0].segments[0][0].layer[0]) ==
+                            layer_hue(&before.layer[0]));
     CHECK(good != NULL && good->stages[0].duration_ms == 500);
 
     /* (b) 段越界（end >= 该灯带灯珠数）→ 失败，旧剧本完整。 */
@@ -4900,16 +5014,16 @@ static void test_script_multiple_scripts(void)
     CHECK(lumen_script_stage_count(&store, 1) == 2);
 
     const lumen_script_t *s0 = lumen_script_get(&store, 0);
-    CHECK(s0 != NULL && s0->stages[0].segments[0][0].hue == 0);
+    CHECK(s0 != NULL && layer_hue(&s0->stages[0].segments[0][0].layer[0]) == 0);
     const lumen_script_t *s1 = lumen_script_get(&store, 1);
-    CHECK(s1 != NULL && s1->stages[1].segments[0][0].hue == 4096);
+    CHECK(s1 != NULL && layer_hue(&s1->stages[1].segments[0][0].layer[0]) == 4096);
 
     /* 覆盖 0 号不影响 1 号。 */
     CHECK(script_download(&store, 0, 1, 900));
     CHECK(lumen_script_stage_count(&store, 0) == 1);
     CHECK(lumen_script_stage_count(&store, 1) == 2);
     s1 = lumen_script_get(&store, 1);
-    CHECK(s1 != NULL && s1->stages[1].segments[0][0].hue == 4096);
+    CHECK(s1 != NULL && layer_hue(&s1->stages[1].segments[0][0].layer[0]) == 4096);
 }
 
 /*
@@ -5111,10 +5225,10 @@ static void test_script_blob_roundtrip(void)
         CHECK(lumen_script_stage(&store, 1, st, (uint16_t)(700 + st * 100)));
         lumen_segment_t a = make_static(0, 9, 1234, 200);
         lumen_segment_t b = make_static(0, 5, 0, 255);
-        b.type = LUMEN_EFFECT_BREATHING;
-        b.period_ms = 1000;
-        b.p5 = 0x40;
-        b.flags = 0x02;
+        b.layer[0].type = LUMEN_EFFECT_BREATHING;
+        layer_set_period(&b.layer[0], 1000);
+        layer_set_p5(&b.layer[0], 0x40);
+        layer_set_flags(&b.layer[0], 0x02);
         CHECK(lumen_script_segment(&store, 1, st, 0, 0, &a, NULL));
         CHECK(lumen_script_segment(&store, 1, st, 1, 3, &b, NULL));
     }
@@ -5140,12 +5254,12 @@ static void test_script_blob_roundtrip(void)
     if (s1 != NULL) {
         CHECK(s1->strip_count == 2);
         CHECK(s1->stages[1].duration_ms == 800);
-        CHECK(s1->stages[0].segments[0][0].hue == 1234);
-        CHECK(s1->stages[0].segments[0][0].sat == 200);
+        CHECK(layer_hue(&s1->stages[0].segments[0][0].layer[0]) == 1234);
+        CHECK(layer_sat(&s1->stages[0].segments[0][0].layer[0]) == 200);
         CHECK(s1->stages[0].segments[1][3].active);
-        CHECK(s1->stages[0].segments[1][3].type == LUMEN_EFFECT_BREATHING);
-        CHECK(s1->stages[0].segments[1][3].period_ms == 1000);
-        CHECK(s1->stages[0].segments[1][3].flags == 0x02);
+        CHECK(s1->stages[0].segments[1][3].layer[0].type == LUMEN_EFFECT_BREATHING);
+        CHECK(layer_period(&s1->stages[0].segments[1][3].layer[0]) == 1000);
+        CHECK(layer_flags(&s1->stages[0].segments[1][3].layer[0]) == 0x02);
         CHECK(!s1->stages[0].segments[1][0].active);
     }
 
@@ -5190,6 +5304,622 @@ static void test_script_blob_roundtrip(void)
     for (uint8_t id = 0; id < LUMEN_MAX_SCRIPTS; ++id) {
         CHECK(!lumen_script_is_committed(&restored, id));
     }
+}
+
+
+/* ---------------- #37：两层模型 / blend / 校验矩阵 / gamma 一次 ---------------- */
+
+/*
+ * 回归：单层段的行为必须与 v2 **逐字节相同**。
+ *
+ * 对四种灯效各取一组有代表性的参数，把「v2 的平铺字段」与「v3 的
+ * layer[0] + 空 layer1」分别写成段，合成结果必须完全一致。这不是把实现抄
+ * 两遍——v2 的期望值用独立的参考公式（就是 effects-spec §3 的公式本身）算。
+ */
+static void test_two_layer_single_layer_regression(void)
+{
+    lumen_segment_store_t store;
+    lumen_segment_store_init(&store);
+
+    /*
+     * 静态：hue = 21845（120°）sat = 255 → 纯绿。位置与时刻都无关。
+     */
+    lumen_segment_t stat = make_static(4, 11, 21845, 255);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, 64, &stat) == LUMEN_RESULT_OK);
+    uint8_t buf[64 * 3];
+    CHECK(lumen_segment_store_compose(&store, 0, buf, 64, 0) == 64);
+    for (uint16_t i = 4; i <= 11; ++i) {
+        CHECK(buf[i * 3] == 0 && buf[i * 3 + 1] == 255 && buf[i * 3 + 2] == 0);
+    }
+    for (uint16_t i = 0; i < 4; ++i) {
+        CHECK(buf[i * 3] == 0 && buf[i * 3 + 1] == 0 && buf[i * 3 + 2] == 0);
+    }
+    CHECK(buf[12 * 3] == 0 && buf[12 * 3 + 1] == 0 && buf[12 * 3 + 2] == 0);
+
+    /*
+     * 呼吸：包络按 §3.2 独立重算，逐点比对。period 1000、min_level 0、正弦。
+     */
+    lumen_segment_store_init(&store);
+    lumen_segment_t breath = make_animated(LUMEN_EFFECT_BREATHING, 0, 9, 0, 255, 1000, 0, 0, 0);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, 64, &breath) == LUMEN_RESULT_OK);
+    for (uint32_t t = 0; t <= 1000; t += 125) {
+        uint32_t phase = lumen_effect_breathing_phase_q16(1000, 0, t);
+        uint32_t env = lumen_effect_breathing_envelope_q16(phase, LUMEN_WAVE_SINE);
+        uint32_t gain = lumen_effect_breathing_gain_q16(1000, 0, LUMEN_WAVE_SINE, 0, t);
+        CHECK(gain == (uint32_t)(((uint64_t)env * 65536u) / 65536u)); /* min=0 → e'=e */
+        uint8_t expected = lumen_effect_apply_gain_q16(255, gain);
+        CHECK(lumen_segment_store_compose(&store, 0, buf, 64, t) == 64);
+        CHECK(buf[0] == expected && buf[1] == 0 && buf[2] == 0);
+        CHECK(buf[9 * 3] == expected); /* 段内同步 */
+    }
+
+    /*
+     * 彩虹：span = 255，N = 16（段 [0-15]），第 i 颗 hue = i × 4096，用独立的
+     * 扇区公式算参考色，与 lumen_effect_static_rgb 的输入对齐（同一个纯函数，
+     * 这里只验证「层求值确实用段内偏移 + 段 t0」这条路没有偏移）。
+     */
+    lumen_segment_store_init(&store);
+    lumen_segment_t rainbow =
+        make_animated(LUMEN_EFFECT_RAINBOW, 0, 15, 0, 255, 1000, 255, 0, 0);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, 64, &rainbow) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_compose(&store, 0, buf, 64, 0) == 64);
+    for (uint16_t i = 0; i < 16; ++i) {
+        uint8_t ref[3];
+        lumen_effect_static_rgb((uint16_t)(i * 4096u), 255, ref);
+        CHECK(buf[i * 3] == ref[0] && buf[i * 3 + 1] == ref[1] && buf[i * 3 + 2] == ref[2]);
+    }
+
+    /*
+     * 流光：t = 0、tail = 0 时头部在段首且只有它亮（权重表 k=0 → 65535）。
+     */
+    lumen_segment_store_init(&store);
+    lumen_segment_t comet = make_animated(LUMEN_EFFECT_COMET, 0, 15, 0, 255, 1000, 0, 0, 0);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, 64, &comet) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_compose(&store, 0, buf, 64, 0) == 64);
+    CHECK(buf[0] == 255 && buf[1] == 0 && buf[2] == 0);
+    CHECK(buf[1 * 3] == 0);
+
+    /*
+     * 关键的一句：单层段（layer1 = 0xFF）走的就是「layer0 直出」，
+     * 不经任何 blend。构建一个 blend 会被忽略的反例来证明这一点。
+     */
+    lumen_segment_t single = make_static(0, 3, 0, 255);
+    uint8_t a[3];
+    uint8_t b[3];
+    lumen_effect_pixel(&single, 0, 0, a);
+    CHECK(a[0] == 255 && a[1] == 0 && a[2] == 0);
+    /* 即使有人把 blend 写成 2（相加），单层也不应该被改变。 */
+    single.blend = LUMEN_BLEND_ADD;
+    lumen_effect_pixel(&single, 0, 0, b);
+    CHECK(memcmp(a, b, 3) == 0);
+}
+
+/* blend 数学（§7.2），含饱和与舍入边界。 */
+static void test_blend_math(void)
+{
+    /* 覆盖：out = L1，与 L0 无关。 */
+    uint8_t l0[3] = {10, 200, 255};
+    uint8_t l1[3] = {1, 2, 3};
+    uint8_t out[3];
+    lumen_blend_pixel(LUMEN_BLEND_OVER, l0, l1, out);
+    CHECK(out[0] == 1 && out[1] == 2 && out[2] == 3);
+    /* L0 全 0 也还是 L1（覆盖不是相加）。 */
+    uint8_t zero[3] = {0, 0, 0};
+    lumen_blend_pixel(LUMEN_BLEND_OVER, zero, l1, out);
+    CHECK(out[0] == 1 && out[1] == 2 && out[2] == 3);
+
+    /* 相乘：255 × 255 → 255（(65025+127)/255 = 255，不舍入掉档）。 */
+    uint8_t full[3] = {255, 255, 255};
+    lumen_blend_pixel(LUMEN_BLEND_MULTIPLY, full, full, out);
+    CHECK(out[0] == 255 && out[1] == 255 && out[2] == 255);
+
+    /* 0 × 255 → 0（任何通道，含饱和通道）。 */
+    lumen_blend_pixel(LUMEN_BLEND_MULTIPLY, zero, full, out);
+    CHECK(out[0] == 0 && out[1] == 0 && out[2] == 0);
+    lumen_blend_pixel(LUMEN_BLEND_MULTIPLY, full, zero, out);
+    CHECK(out[0] == 0 && out[1] == 0 && out[2] == 0);
+
+    /* 127 舍入：128 × 255 = 32640，(32640+127)/255 = 128.49… → 128。 */
+    uint8_t half[3] = {128, 128, 128};
+    lumen_blend_pixel(LUMEN_BLEND_MULTIPLY, half, full, out);
+    CHECK(out[0] == 128);
+    /* 1 × 128 = 128 → (128+127)/255 = 1（0.5 向上舍入）。 */
+    uint8_t one[3] = {1, 1, 1};
+    uint8_t h128[3] = {128, 128, 128};
+    lumen_blend_pixel(LUMEN_BLEND_MULTIPLY, one, h128, out);
+    CHECK(out[0] == 1);
+    /* 2 × 64 = 128 → (128+127)/255 = 1。 */
+    uint8_t two[3] = {2, 2, 2};
+    uint8_t s64[3] = {64, 64, 64};
+    lumen_blend_pixel(LUMEN_BLEND_MULTIPLY, two, s64, out);
+    CHECK(out[0] == 1);
+
+    /* 相加饱和：255 + 255 必须钳到 255（不能 uint8 回绕成 254/0）。 */
+    lumen_blend_pixel(LUMEN_BLEND_ADD, full, full, out);
+    CHECK(out[0] == 255 && out[1] == 255 && out[2] == 255);
+    /* 200 + 100 = 300 → 255。 */
+    uint8_t a200[3] = {200, 0, 128};
+    uint8_t b100[3] = {100, 0, 127};
+    lumen_blend_pixel(LUMEN_BLEND_ADD, a200, b100, out);
+    CHECK(out[0] == 255); /* 300 → 255 */
+    CHECK(out[1] == 0);
+    CHECK(out[2] == 255); /* 255 恰好不越界 */
+    /* 恰好 255 不钳位失真。 */
+    uint8_t x255[3] = {255, 0, 1};
+    lumen_blend_pixel(LUMEN_BLEND_ADD, x255, zero, out);
+    CHECK(out[0] == 255);
+
+    /* 未知 blend 按覆盖处理（防御，不把整段变黑）。 */
+    lumen_blend_pixel(0x7F, l0, l1, out);
+    CHECK(out[0] == 1 && out[1] == 2 && out[2] == 3);
+
+    /* 别名安全：out 与输入同一块内存。 */
+    uint8_t alias[3] = {100, 100, 100};
+    lumen_blend_pixel(LUMEN_BLEND_MULTIPLY, alias, alias, alias);
+    CHECK(alias[0] == 39); /* (100*100+127)/255 = 39.7 → 39 */
+}
+
+/*
+ * 校验矩阵（§7.1 第 2-7 步）。每一条都构建完整段再问
+ * lumen_segment_validate_shape——命令层 / 剧本层 / blob 解码共用它。
+ */
+static void test_two_layer_validation_matrix(void)
+{
+    /* 基线：单层静态段（合法）。 */
+    lumen_segment_t ok = make_static(0, 4, 0, 255);
+    CHECK(lumen_segment_validate_shape(&ok) == LUMEN_RESULT_OK);
+
+    /* 第 2 步：layer0 为空层 0xFF → 非法。 */
+    lumen_segment_t empty0 = ok;
+    layer_clear(&empty0.layer[0]);
+    CHECK(lumen_segment_validate_shape(&empty0) == LUMEN_RESULT_INVALID_PARAM);
+
+    /* 第 2 步：layer0 未知 type → 非法。 */
+    lumen_segment_t unknown0 = ok;
+    unknown0.layer[0].type = 0x07;
+    CHECK(lumen_segment_validate_shape(&unknown0) == LUMEN_RESULT_INVALID_PARAM);
+
+    /* 第 3 步：layer1 未知 type → 非法。 */
+    lumen_segment_t unknown1 = ok;
+    layer_set(LUMEN_EFFECT_STATIC, 0, 128, 0, 0, 0, &unknown1.layer[0]);
+    unknown1.layer[1].type = 0x07;
+    CHECK(lumen_segment_validate_shape(&unknown1) == LUMEN_RESULT_INVALID_PARAM);
+
+    /* 第 3 步：空层的 param 非 0 → 非法（防未来语义漂移）。 */
+    lumen_segment_t dirty_empty = ok;
+    layer_clear(&dirty_empty.layer[1]);
+    dirty_empty.layer[1].param[0] = 0x01;
+    CHECK(lumen_segment_validate_shape(&dirty_empty) == LUMEN_RESULT_INVALID_PARAM);
+
+    /* 第 4 步：单层（layer1 空）但 blend != 0 → 非法。 */
+    for (uint8_t blend = 0; blend <= 2; ++blend) {
+        lumen_segment_t single = ok;
+        single.blend = blend;
+        CHECK(lumen_segment_validate_shape(&single) ==
+              (blend == 0 ? LUMEN_RESULT_OK : LUMEN_RESULT_INVALID_PARAM));
+    }
+
+    /* 第 5 步：blend > 2 → 非法（两层都非空也一样）。 */
+    lumen_segment_t two;
+    memset(&two, 0, sizeof(two));
+    layer_set(LUMEN_EFFECT_STATIC, 0, 255, 0, 0, 0, &two.layer[0]);
+    layer_set(LUMEN_EFFECT_STATIC, 0, 128, 0, 0, 0, &two.layer[1]);
+    for (uint8_t blend = 0; blend <= 2; ++blend) {
+        two.blend = blend;
+        CHECK(lumen_segment_validate_shape(&two) == LUMEN_RESULT_OK);
+    }
+    two.blend = 3;
+    CHECK(lumen_segment_validate_shape(&two) == LUMEN_RESULT_INVALID_PARAM);
+    two.blend = 0xFF;
+    CHECK(lumen_segment_validate_shape(&two) == LUMEN_RESULT_INVALID_PARAM);
+
+    /* 第 6 步：静态层 param[3..6] 必须全 0——layer0 与 layer1 都要查。 */
+    lumen_segment_t res0 = two;
+    res0.blend = 0;
+    res0.layer[0].param[3] = 0x01;
+    CHECK(lumen_segment_validate_shape(&res0) == LUMEN_RESULT_INVALID_PARAM);
+    res0 = two;
+    res0.blend = 0;
+    res0.layer[0].param[6] = 0x01;
+    CHECK(lumen_segment_validate_shape(&res0) == LUMEN_RESULT_INVALID_PARAM);
+    lumen_segment_t res1 = two;
+    res1.blend = 0;
+    res1.layer[1].param[5] = 0x01;
+    CHECK(lumen_segment_validate_shape(&res1) == LUMEN_RESULT_INVALID_PARAM);
+
+    /* 第 7 步：呼吸周期低于 334、flags 保留位 → 非法；0（静止）合法。 */
+    lumen_segment_t fast = make_animated(LUMEN_EFFECT_BREATHING, 0, 4, 0, 255, 333, 0, 0, 0);
+    CHECK(lumen_segment_validate_shape(&fast) == LUMEN_RESULT_INVALID_PARAM);
+    fast = make_animated(LUMEN_EFFECT_BREATHING, 0, 4, 0, 255, 334, 0, 0, 0);
+    CHECK(lumen_segment_validate_shape(&fast) == LUMEN_RESULT_OK);
+    fast = make_animated(LUMEN_EFFECT_BREATHING, 0, 4, 0, 255, 0, 0, 0, 0);
+    CHECK(lumen_segment_validate_shape(&fast) == LUMEN_RESULT_OK);
+    /* 呼吸 bit3-7 保留。 */
+    fast = make_animated(LUMEN_EFFECT_BREATHING, 0, 4, 0, 255, 1000, 0, 0x08, 0);
+    CHECK(lumen_segment_validate_shape(&fast) == LUMEN_RESULT_INVALID_PARAM);
+    /* 彩虹 199 非法、200 合法、bit1-7 保留。 */
+    fast = make_animated(LUMEN_EFFECT_RAINBOW, 0, 4, 0, 255, 199, 0, 0, 0);
+    CHECK(lumen_segment_validate_shape(&fast) == LUMEN_RESULT_INVALID_PARAM);
+    fast = make_animated(LUMEN_EFFECT_RAINBOW, 0, 4, 0, 255, 200, 0, 0, 0);
+    CHECK(lumen_segment_validate_shape(&fast) == LUMEN_RESULT_OK);
+    fast = make_animated(LUMEN_EFFECT_RAINBOW, 0, 4, 0, 255, 200, 0, 0x02, 0);
+    CHECK(lumen_segment_validate_shape(&fast) == LUMEN_RESULT_INVALID_PARAM);
+
+    /* 第二层的参数同样要校验（例如 layer1 呼吸周期 100ms）。 */
+    lumen_segment_t bad1 = ok;
+    layer_set(LUMEN_EFFECT_STATIC, 0, 255, 0, 0, 0, &bad1.layer[0]);
+    layer_set(LUMEN_EFFECT_BREATHING, 0, 255, 100, 0, 0, &bad1.layer[1]);
+    bad1.blend = LUMEN_BLEND_MULTIPLY;
+    CHECK(lumen_segment_validate_shape(&bad1) == LUMEN_RESULT_INVALID_PARAM);
+    layer_set(LUMEN_EFFECT_BREATHING, 0, 255, 1000, 0, 0, &bad1.layer[1]);
+    CHECK(lumen_segment_validate_shape(&bad1) == LUMEN_RESULT_OK);
+
+    /* 空层作为 layer1 的合法形态：param 全 0。 */
+    lumen_segment_t empty1 = ok;
+    layer_clear(&empty1.layer[1]);
+    CHECK(lumen_segment_validate_shape(&empty1) == LUMEN_RESULT_OK);
+}
+
+/* 层编解码：8 字节线格式与结构一一对应。 */
+static void test_layer_codec(void)
+{
+    uint8_t wire[8];
+    lumen_effect_layer_t layer;
+
+    /* 动画层往返。 */
+    layer_set(LUMEN_EFFECT_COMET, 0xBEEF, 0x80, 500, 0x40, 0x01, &layer);
+    lumen_layer_encode(&layer, wire);
+    CHECK(wire[0] == LUMEN_EFFECT_COMET);
+    CHECK(wire[1] == 0xEF && wire[2] == 0xBE); /* hue 小端 */
+    CHECK(wire[3] == 0x80);                    /* sat */
+    CHECK(wire[4] == 0xF4 && wire[5] == 0x01); /* period 500 */
+    CHECK(wire[6] == 0x40);                    /* p5 */
+    CHECK(wire[7] == 0x01);                    /* flags */
+    lumen_effect_layer_t back;
+    CHECK(lumen_layer_decode(wire, &back));
+    CHECK(back.type == layer.type);
+    CHECK(memcmp(back.param, layer.param, 7) == 0);
+    CHECK(lumen_layer_hue(&back) == 0xBEEF);
+    CHECK(lumen_layer_sat(&back) == 0x80);
+    CHECK(lumen_layer_period_ms(&back) == 500);
+    CHECK(lumen_layer_p5(&back) == 0x40);
+    CHECK(lumen_layer_flags(&back) == 0x01);
+
+    /* 空层：decode 成功、is_empty 为真、参数全 0。 */
+    uint8_t empty_wire[8] = {LUMEN_LAYER_EMPTY, 0, 0, 0, 0, 0, 0, 0};
+    lumen_effect_layer_t empty;
+    CHECK(lumen_layer_decode(empty_wire, &empty));
+    CHECK(lumen_layer_is_empty(&empty));
+    CHECK(lumen_layer_empty_params_zero(&empty));
+
+    /* 未知 type：形状非法，但字节仍然完整复制（便于日志）。 */
+    uint8_t unknown_wire[8] = {0x07, 1, 2, 3, 4, 5, 6, 7};
+    lumen_effect_layer_t unknown;
+    CHECK(!lumen_layer_decode(unknown_wire, &unknown));
+    CHECK(unknown.type == 0x07);
+    CHECK(unknown.param[0] == 1 && unknown.param[6] == 7);
+
+    /* 静态层保留位检查。 */
+    lumen_effect_layer_t stat;
+    layer_set(LUMEN_EFFECT_STATIC, 100, 200, 0, 0, 0, &stat);
+    CHECK(lumen_layer_static_reserved_zero(&stat));
+    stat.param[4] = 1;
+    CHECK(!lumen_layer_static_reserved_zero(&stat));
+
+    CHECK(!lumen_layer_decode(NULL, &back));
+    CHECK(!lumen_layer_decode(wire, NULL));
+}
+
+/*
+ * gamma 只过一次：**在用户空间 blend，然后统一过 gamma**。
+ *
+ * 验收点「彩虹 + 呼吸相乘后暗部不塌陷」。两种顺序在这里给出可区分的数值：
+ *
+ *   正确：out = gamma(multiply(L0_user, L1_user))
+ *   错误：out = multiply(gamma(L0_user), gamma(L1_user))
+ *
+ * gamma 是凸函数（暗部压缩），先 gamma 再相乘会让结果远小于正确顺序，
+ * 这就是「暗部塌陷」。测试同时断言正确值与非零，并证明错误顺序确实更低。
+ */
+static void test_blend_gamma_once(void)
+{
+    lumen_gamma_init();
+
+    /*
+     * 取一组「暗部」输入：L0 = 64（彩虹的暗通道）、L1 = 96（呼吸的谷底附近）。
+     * 用户空间相乘：64 × 96 = 6144，(6144+127)/255 = 24。
+     */
+    uint8_t l0[3] = {64, 64, 64};
+    uint8_t l1[3] = {96, 96, 96};
+    uint8_t user[3];
+    lumen_blend_pixel(LUMEN_BLEND_MULTIPLY, l0, l1, user);
+    CHECK(user[0] == 24);
+
+    /* 正确顺序：用户空间合成后 gamma 一次。 */
+    uint8_t once[3];
+    lumen_gamma_apply_pixel(user, 255, once);
+
+    /* 错误顺序：先 gamma 再合成。 */
+    uint8_t gl0[3];
+    uint8_t gl1[3];
+    lumen_gamma_apply_pixel(l0, 255, gl0);
+    lumen_gamma_apply_pixel(l1, 255, gl1);
+    uint8_t twice[3];
+    lumen_blend_pixel(LUMEN_BLEND_MULTIPLY, gl0, gl1, twice);
+
+    /*
+     * 关键断言：正确顺序的值必须**明显大于**错误顺序（gamma 是凸函数，
+     * 先压缩再相乘会在暗部塌陷），而且必须非零。
+     * 真实数值：gamma(64)≈31, gamma(96)≈48 → 错误 ≈ 6；正确 gamma(24)≈11。
+     */
+    CHECK(once[0] > 0);
+    CHECK(twice[0] > 0);
+    CHECK(once[0] > twice[0]);
+    CHECK(once[0] == lumen_gamma_apply(24, 255));
+    /* 用同一个 gamma 表交叉验证「错误顺序确实被压得更低」。 */
+    CHECK(lumen_gamma_apply(24, 255) > lumen_gamma_apply(6, 255));
+
+    /*
+     * 整段路径：彩虹 + 呼吸相乘。layer0 用 period = 0（静止：色相恒为 0 →
+     * 纯红，span = 0 整段同色），layer1 用 min_level = 0（真正会到全黑），
+     * 这样只有呼吸在驱动时间，便于逐通道核对。
+     * t=0 时呼吸谷底全黑 → 相乘整段黑；t=500 时呼吸峰值 → 结果等于彩虹本身。
+     */
+    lumen_segment_store_t store;
+    lumen_segment_store_init(&store);
+    lumen_segment_t seg;
+    memset(&seg, 0, sizeof(seg));
+    seg.active = true;
+    seg.start = 0;
+    seg.end = 15;
+    seg.blend = LUMEN_BLEND_MULTIPLY;
+    layer_set(LUMEN_EFFECT_RAINBOW, 0, 255, 0, 0, 0, &seg.layer[0]);
+    layer_set(LUMEN_EFFECT_BREATHING, 0, 255, 1000, 0, 0, &seg.layer[1]);
+    CHECK(lumen_segment_validate_shape(&seg) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, 64, &seg) == LUMEN_RESULT_OK);
+
+    uint8_t dark[64 * 3];
+    uint8_t bright[64 * 3];
+    CHECK(lumen_segment_store_compose(&store, 0, dark, 64, 0) == 64);
+    CHECK(lumen_segment_store_compose(&store, 0, bright, 64, 500) == 64);
+    /* t=0：呼吸包络 0（min_level 0）→ 相乘为 0。 */
+    for (uint16_t i = 0; i < 16; ++i) {
+        CHECK(dark[i * 3] == 0 && dark[i * 3 + 1] == 0 && dark[i * 3 + 2] == 0);
+    }
+    /* t=500：呼吸满亮 → 与纯彩虹（单层）逐字节相同。 */
+    lumen_segment_store_t pure;
+    lumen_segment_store_init(&pure);
+    lumen_segment_t solo = make_animated(LUMEN_EFFECT_RAINBOW, 0, 15, 0, 255, 0, 0, 0, 0);
+    CHECK(lumen_segment_store_set(&pure, 0, 1, 0, 64, &solo) == LUMEN_RESULT_OK);
+    uint8_t reference[64 * 3];
+    CHECK(lumen_segment_store_compose(&pure, 0, reference, 64, 500) == 64);
+    CHECK(memcmp(&bright[0], &reference[0], 16 * 3) == 0);
+
+    /*
+     * 中间时刻（呼吸半亮）的暗部必须不塌陷：彩虹段是纯红 (255,0,0)，
+     * 与呼吸相乘后 R 约减半——远高于「先 gamma 再相乘」会把暗部压到的个位数。
+     */
+    uint8_t mid[64 * 3];
+    CHECK(lumen_segment_store_compose(&store, 0, mid, 64, 250) == 64);
+    uint8_t l0_pixel[3];
+    uint8_t l1_pixel[3];
+    lumen_layer_pixel(&seg, 0, 0, 250, l0_pixel);
+    lumen_layer_pixel(&seg, 1, 0, 250, l1_pixel);
+    uint8_t expected_user[3];
+    lumen_blend_pixel(LUMEN_BLEND_MULTIPLY, l0_pixel, l1_pixel, expected_user);
+    CHECK(mid[0] == expected_user[0]);
+    CHECK(mid[0] > 0);
+    /* 用户空间值（未经 gamma）必须等于合成结果——证明层里没偷偷过 gamma。 */
+    CHECK(l0_pixel[0] == 255); /* 彩虹段首满红（用户空间） */
+    CHECK(expected_user[0] > 100);
+}
+
+/* 两层的相位共享段上的 t0_ms（§9.4）。 */
+static void test_two_layer_shared_phase(void)
+{
+    lumen_segment_t seg;
+    memset(&seg, 0, sizeof(seg));
+    seg.active = true;
+    seg.start = 0;
+    seg.end = 15;
+    seg.blend = LUMEN_BLEND_ADD;
+    /* 两层参数完全相同（同 hue / period），只是类型不同。 */
+    layer_set(LUMEN_EFFECT_BREATHING, 0, 255, 1000, 0, 0, &seg.layer[0]);
+    layer_set(LUMEN_EFFECT_BREATHING, 0, 255, 1000, 0, 0, &seg.layer[1]);
+    seg.t0_ms = 1000;
+
+    /* 两层在任意时刻的包络相同 → 相加是 2 × 单层，饱和钳位。 */
+    for (uint32_t t = 1000; t <= 2000; t += 250) {
+        uint8_t l0[3];
+        uint8_t l1[3];
+        uint8_t composed[3];
+        lumen_layer_pixel(&seg, 0, 5, t, l0);
+        lumen_layer_pixel(&seg, 1, 5, t, l1);
+        CHECK(memcmp(l0, l1, 3) == 0); /* 共享同一个 t0_ms */
+        lumen_effect_pixel(&seg, 5, t, composed);
+        uint16_t sum = (uint16_t)l0[0] + (uint16_t)l1[0];
+        CHECK(composed[0] == (sum > 255 ? 255 : sum));
+    }
+
+    /* 两层的不活动段 / 越界下标都返回全黑，不崩。 */
+    uint8_t out[3];
+    seg.active = false;
+    lumen_layer_pixel(&seg, 0, 5, 0, out);
+    CHECK(out[0] == 0 && out[1] == 0 && out[2] == 0);
+    seg.active = true;
+    lumen_layer_pixel(&seg, 0, 99, 0, out);
+    CHECK(out[0] == 0 && out[1] == 0 && out[2] == 0);
+    lumen_layer_pixel(&seg, 2, 5, 0, out); /* layer_index 越界 */
+    CHECK(out[0] == 0 && out[1] == 0 && out[2] == 0);
+    lumen_layer_pixel(NULL, 0, 5, 0, out);
+    CHECK(out[0] == 0 && out[1] == 0 && out[2] == 0);
+    lumen_blend_pixel(LUMEN_BLEND_ADD, NULL, NULL, out); /* 不崩 */
+}
+
+/* 段表 / 剧本表的体积记录（#37 最后一个验收点）。 */
+static void test_two_layer_ram_sizes(void)
+{
+    /* 段：active(1) + start/end/blend(3) + 2 × layer(8) + t0_ms(4) = 24。 */
+    CHECK(sizeof(lumen_effect_layer_t) == 8);
+    CHECK(sizeof(lumen_segment_t) == 24);
+    /* 段表：8 条灯带 × 8 段 × 24 = 1536（v2 是 1024）。 */
+    CHECK(sizeof(lumen_segment_store_t) == 1536);
+    /* 剧本阶段：时长(2) + 64 段 × 24 = 1538（含对齐）。 */
+    CHECK(sizeof(lumen_script_stage_t) >= 8u * 8u * 24u);
+}
+
+/*
+ * 两层的帧循环判据：layer1 是动画也必须驱动帧循环。
+ */
+static void test_two_layer_needs_frames(void)
+{
+    lumen_segment_store_t store;
+    lumen_segment_store_init(&store);
+
+    /* 静态 + 静态（相乘）：常量画面，不需要帧循环。 */
+    lumen_segment_t both_static;
+    memset(&both_static, 0, sizeof(both_static));
+    both_static.active = true;
+    both_static.start = 0;
+    both_static.end = 9;
+    both_static.blend = LUMEN_BLEND_MULTIPLY;
+    layer_set(LUMEN_EFFECT_STATIC, 0, 255, 0, 0, 0, &both_static.layer[0]);
+    layer_set(LUMEN_EFFECT_STATIC, 0, 128, 0, 0, 0, &both_static.layer[1]);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, 64, &both_static) == LUMEN_RESULT_OK);
+    CHECK(!lumen_segment_store_needs_frames(&store, 1));
+    CHECK(!lumen_segment_is_animated(&both_static));
+
+    /* 静态 + 呼吸（相加）：layer1 动画 → 需要帧循环。 */
+    lumen_segment_t layer1_anim = both_static;
+    layer1_anim.blend = LUMEN_BLEND_ADD;
+    layer_set(LUMEN_EFFECT_BREATHING, 0, 255, 1000, 0, 0, &layer1_anim.layer[1]);
+    CHECK(lumen_segment_is_animated(&layer1_anim));
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, 64, &layer1_anim) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_needs_frames(&store, 1));
+
+    /* 单层静态仍然不需要（v2 的「静态不空转」不退化）。 */
+    lumen_segment_store_init(&store);
+    lumen_segment_t single = make_static(0, 9, 0, 255);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, 64, &single) == LUMEN_RESULT_OK);
+    CHECK(!lumen_segment_store_needs_frames(&store, 1));
+
+    /* 非活动段永远不算动画。 */
+    lumen_segment_t idle = layer1_anim;
+    idle.active = false;
+    CHECK(!lumen_segment_is_animated(&idle));
+}
+
+/* state blob v4：两层段 + blend + layer1 的往返与损坏拒绝。 */
+static void test_state_blob_v4_two_layers(void)
+{
+    lumen_persist_t in;
+    memset(&in, 0, sizeof(in));
+    in.state.power = 1;
+    in.state.brightness = 128;
+    in.state.led_count = 64;
+    in.state.strip_count = 2;
+    in.state.seg_count = 1;
+    in.state.strip_power_mask = 0x03;
+    in.strip_counts[0] = 64;
+    in.strip_counts[1] = 30;
+
+    /* 段：彩虹 + 呼吸相乘。 */
+    lumen_segment_t seg;
+    memset(&seg, 0, sizeof(seg));
+    seg.active = true;
+    seg.start = 0;
+    seg.end = 15;
+    seg.blend = LUMEN_BLEND_MULTIPLY;
+    layer_set(LUMEN_EFFECT_RAINBOW, 0x1234, 0x80, 1000, 255, 0, &seg.layer[0]);
+    layer_set(LUMEN_EFFECT_BREATHING, 0x5678, 0xA0, 500, 0x40, 0x02, &seg.layer[1]);
+    in.segments.slot[0][0] = seg;
+
+    /* strip 1 上一个单层流光段（blend 0、layer1 空）。 */
+    lumen_segment_t solo = make_animated(LUMEN_EFFECT_COMET, 0, 9, 0xABCD, 255, 800, 0x20, 0, 0);
+    in.segments.slot[1][0] = solo;
+
+    uint8_t blob[LUMEN_STATE_BLOB_SIZE];
+    CHECK(lumen_state_blob_encode(&in, blob) == LUMEN_STATE_BLOB_SIZE);
+    CHECK(blob[14] == 0x03); /* strip_power_mask 在偏移 14 */
+
+    lumen_persist_t out;
+    memset(&out, 0xAA, sizeof(out));
+    CHECK(lumen_state_blob_decode(blob, sizeof(blob), &out));
+
+    /* 状态字段。 */
+    CHECK(out.state.strip_power_mask == 0x03);
+    CHECK(out.state.strip_count == 2);
+    CHECK(out.strip_counts[1] == 30);
+
+    /* 两层段：blend 与两层参数逐项回来。 */
+    const lumen_segment_t *r = &out.segments.slot[0][0];
+    CHECK(r->active && r->start == 0 && r->end == 15);
+    CHECK(r->blend == LUMEN_BLEND_MULTIPLY);
+    CHECK(r->layer[0].type == LUMEN_EFFECT_RAINBOW);
+    CHECK(lumen_layer_hue(&r->layer[0]) == 0x1234);
+    CHECK(lumen_layer_sat(&r->layer[0]) == 0x80);
+    CHECK(lumen_layer_period_ms(&r->layer[0]) == 1000);
+    CHECK(lumen_layer_p5(&r->layer[0]) == 255);
+    CHECK(r->layer[1].type == LUMEN_EFFECT_BREATHING);
+    CHECK(lumen_layer_hue(&r->layer[1]) == 0x5678);
+    CHECK(lumen_layer_sat(&r->layer[1]) == 0xA0);
+    CHECK(lumen_layer_period_ms(&r->layer[1]) == 500);
+    CHECK(lumen_layer_p5(&r->layer[1]) == 0x40);
+    CHECK(lumen_layer_flags(&r->layer[1]) == 0x02);
+    CHECK(r->t0_ms == 0); /* 不持久化 */
+
+    /* 单层段：layer1 仍是空层、blend 0。 */
+    const lumen_segment_t *s = &out.segments.slot[1][0];
+    CHECK(s->active && s->blend == 0);
+    CHECK(s->layer[0].type == LUMEN_EFFECT_COMET);
+    CHECK(s->layer[1].type == LUMEN_LAYER_EMPTY);
+
+    /* 逐字节幂等：编解码一次后再编码，得到同一份 blob。 */
+    uint8_t again[LUMEN_STATE_BLOB_SIZE];
+    CHECK(lumen_state_blob_encode(&out, again) == LUMEN_STATE_BLOB_SIZE);
+    CHECK(memcmp(blob, again, sizeof(blob)) == 0);
+
+    /*
+     * 损坏必须**整份**拒绝（out 不动），不能半加载。
+     * 段记录 20 字节：0 active | 1 start | 2 end | 3 blend | 4..11 layer0 | 12..19 layer1
+     */
+    const uint8_t off = LUMEN_SEGMENTS_OFFSET;
+    uint8_t bad[LUMEN_STATE_BLOB_SIZE];
+
+    /* blend > 2。 */
+    memcpy(bad, blob, sizeof(bad));
+    bad[off + 3] = 3;
+    lumen_persist_t keep;
+    memset(&keep, 0x55, sizeof(keep));
+    lumen_persist_t before = keep;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &keep));
+    CHECK(memcmp(&keep, &before, sizeof(keep)) == 0);
+
+    /* layer1 未知类型。 */
+    memcpy(bad, blob, sizeof(bad));
+    bad[off + 12] = 0x07;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+
+    /* layer0 为空层。 */
+    memcpy(bad, blob, sizeof(bad));
+    bad[off + 4] = LUMEN_LAYER_EMPTY;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+
+    /* 单层段（strip 1 seg 0）带非零 blend → 形状非法。 */
+    memcpy(bad, blob, sizeof(bad));
+    bad[off + LUMEN_MAX_SEGMENTS * LUMEN_SEGMENT_RECORD_SIZE + 3] = 1;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+
+    /* 活动段落在未配置灯带（strip 2，strip_count = 2）→ 拒绝。 */
+    memcpy(bad, blob, sizeof(bad));
+    bad[off + 2 * LUMEN_MAX_SEGMENTS * LUMEN_SEGMENT_RECORD_SIZE] = 1;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+
+    /* 第二层呼吸周期低于 334 → 拒绝。 */
+    memcpy(bad, blob, sizeof(bad));
+    bad[off + 12 + 4] = 0x64; /* layer1.param[3..4] = 100 */
+    bad[off + 12 + 5] = 0x00;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
 }
 
 
@@ -5288,6 +6018,14 @@ int main(int argc, char **argv)
     test_selftest_compose();
     test_gamma();
     test_gamma_hue_loss_clip();
+    test_two_layer_single_layer_regression();
+    test_blend_math();
+    test_two_layer_validation_matrix();
+    test_layer_codec();
+    test_blend_gamma_once();
+    test_two_layer_shared_phase();
+    test_two_layer_ram_sizes();
+    test_two_layer_needs_frames();
     test_set_led_count_reducer();
     test_led_count_job();
     test_save_scheduler();
@@ -5313,6 +6051,7 @@ int main(int argc, char **argv)
     test_blob_strip_counts();
     test_set_segment_uses_own_strip_count();
     test_state_blob_per_strip_bounds();
+    test_state_blob_v4_two_layers();
     test_set_strip_power_command();
     test_reasm_single_chunk();
     test_reasm_multi_chunk();

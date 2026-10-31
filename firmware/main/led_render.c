@@ -152,7 +152,8 @@ bool lumen_led_render_strip_is_animated(const lumen_segment_store_t *segments, u
     /* 逐段问效果层「是否动画」：判据只有一处，不在渲染层另写一份类型表。 */
     for (uint8_t i = 0; i < LUMEN_MAX_SEGMENTS; ++i) {
         const lumen_segment_t *seg = lumen_segment_store_get(segments, strip_id, i);
-        if (seg != NULL && seg->active && lumen_effect_is_animated(seg->type)) {
+        /* 两层都可能是动画：#37 起 layer1（例如呼吸叠加）也要驱动帧循环。 */
+        if (seg != NULL && lumen_segment_is_animated(seg)) {
             return true;
         }
     }

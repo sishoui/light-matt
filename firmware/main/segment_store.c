@@ -53,7 +53,7 @@ static bool overlaps_others(const lumen_segment_store_t *store, uint8_t strip_id
 uint8_t lumen_segment_store_validate_params(uint8_t type, uint8_t flags, uint16_t period_ms)
 {
     if (!lumen_effect_type_implemented(type)) {
-        /* 未知类型 / 未实现类型：不静默降级（D7）。 */
+        /* 未知类型 / 未实现类型 / 空层：不静默降级（D7）。 */
         return LUMEN_RESULT_INVALID_PARAM;
     }
     if (type == LUMEN_EFFECT_STATIC) {
@@ -93,6 +93,63 @@ uint8_t lumen_segment_store_validate_params(uint8_t type, uint8_t flags, uint16_
     return LUMEN_RESULT_OK;
 }
 
+uint8_t lumen_segment_validate_shape(const lumen_segment_t *seg)
+{
+    if (seg == NULL) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    /*
+     * 严格按 docs/protocol-v3.md §7.1 的 1-7 步顺序。第 1 步（载荷精确长度）
+     * 在命令层完成——本函数拿到的是已经解析好的结构。
+     */
+    const lumen_effect_layer_t *l0 = &seg->layer[0];
+    const lumen_effect_layer_t *l1 = &seg->layer[1];
+
+    /* 第 2 步：layer0 必须是已知类型且不得为 0xFF。 */
+    if (l0->type == LUMEN_LAYER_EMPTY || !lumen_effect_type_known(l0->type)) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+
+    /* 第 3 步：layer1 必须是已知类型或 0xFF 空层。 */
+    if (l1->type != LUMEN_LAYER_EMPTY && !lumen_effect_type_known(l1->type)) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    if (l1->type == LUMEN_LAYER_EMPTY && !lumen_layer_empty_params_zero(l1)) {
+        /* 空层的 7 字节参数必须全 0（§7.1 空层编码）。 */
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+
+    /* 第 4 步：layer1 为空 ⇒ blend 必须为 0。 */
+    if (l1->type == LUMEN_LAYER_EMPTY && seg->blend != 0) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+
+    /* 第 5 步：blend ≤ 2（不支持取最大）。 */
+    if (seg->blend > LUMEN_BLEND_MAX) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+
+    /* 第 6 步：静态层的 param[3..6] 必须全 0（对两层都生效）。 */
+    if (l0->type == LUMEN_EFFECT_STATIC && !lumen_layer_static_reserved_zero(l0)) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    if (l1->type == LUMEN_EFFECT_STATIC && !lumen_layer_static_reserved_zero(l1)) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+
+    /* 第 7 步：各层按 type 校验参数（flags 保留位、周期下限）。 */
+    if (lumen_segment_store_validate_params(l0->type, lumen_layer_flags(l0),
+                                            lumen_layer_period_ms(l0)) != LUMEN_RESULT_OK) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    if (l1->type != LUMEN_LAYER_EMPTY &&
+        lumen_segment_store_validate_params(l1->type, lumen_layer_flags(l1),
+                                            lumen_layer_period_ms(l1)) != LUMEN_RESULT_OK) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    return LUMEN_RESULT_OK;
+}
+
 uint8_t lumen_segment_store_validate_single(uint8_t strip_id, uint8_t strip_count,
                                             uint8_t led_count, const lumen_segment_t *candidate)
 {
@@ -100,22 +157,24 @@ uint8_t lumen_segment_store_validate_single(uint8_t strip_id, uint8_t strip_coun
         return LUMEN_RESULT_INVALID_PARAM;
     }
 
-    /* 5 strip_id 范围。 */
+    /* 2-7 形状与参数。 */
+    if (lumen_segment_validate_shape(candidate) != LUMEN_RESULT_OK) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+
+    /* strip_id 范围。 */
     if (strip_count == 0 || strip_count > LUMEN_MAX_STRIPS || strip_id >= strip_count) {
         return LUMEN_RESULT_INVALID_PARAM;
     }
 
-    /* 6 段区间。 */
+    /* 段区间。 */
     if (led_count == 0 || led_count > LUMEN_MAX_LEDS) {
         return LUMEN_RESULT_INVALID_PARAM;
     }
     if (candidate->start > candidate->end || candidate->end >= led_count) {
         return LUMEN_RESULT_INVALID_PARAM;
     }
-
-    /* 8 flags 保留位 / 9 周期下限。 */
-    return lumen_segment_store_validate_params(candidate->type, candidate->flags,
-                                               candidate->period_ms);
+    return LUMEN_RESULT_OK;
 }
 
 uint8_t lumen_segment_store_validate(const lumen_segment_store_t *store, uint8_t strip_id,
@@ -127,14 +186,22 @@ uint8_t lumen_segment_store_validate(const lumen_segment_store_t *store, uint8_t
     }
 
     /*
-     * 5 strip_id 范围：0 ≤ strip_id < strip_count。
+     * 2-7：形状、层类型、blend、保留位、各类型参数。
+     * 放在 strip / 区间之前——§7.1 的顺序是「先判载荷形状，再判语义范围」。
+     */
+    if (lumen_segment_validate_shape(candidate) != LUMEN_RESULT_OK) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+
+    /*
+     * strip_id 范围：0 ≤ strip_id < strip_count。
      * 多灯带（#29）之前 strip_count 恒为 1，所以传 1 也是 InvalidParam。
      */
     if (strip_count == 0 || strip_count > LUMEN_MAX_STRIPS || strip_id >= strip_count) {
         return LUMEN_RESULT_INVALID_PARAM;
     }
 
-    /* 6 段区间：start <= end 且 end < led_count（led_count 至少为 1）。 */
+    /* 段区间：start <= end 且 end < led_count（led_count 至少为 1）。 */
     if (led_count == 0 || led_count > LUMEN_MAX_LEDS) {
         return LUMEN_RESULT_INVALID_PARAM;
     }
@@ -142,54 +209,9 @@ uint8_t lumen_segment_store_validate(const lumen_segment_store_t *store, uint8_t
         return LUMEN_RESULT_INVALID_PARAM;
     }
 
-    /* 7 段重叠：与同 strip 的其它活动段无交集。 */
+    /* 段重叠：与同 strip 的其它活动段无交集。 */
     if (overlaps_others(store, strip_id, seg_id, candidate->start, candidate->end)) {
         return LUMEN_RESULT_INVALID_PARAM;
-    }
-
-    /*
-     * 8 flags 保留位 / 9 周期下限（docs/protocol.md §11.3 第 8/9 步）。
-     *
-     * 静态段没有周期字段，flags 必须为 0（effects-spec §2.1：静态无 flags）。
-     * 动画类型的保留位与周期下限按类型分别判定。
-     */
-    if (candidate->type == LUMEN_EFFECT_STATIC) {
-        if (candidate->flags != 0) {
-            return LUMEN_RESULT_INVALID_PARAM;
-        }
-    } else if (!lumen_effect_type_implemented(candidate->type)) {
-        /*
-         * 动画类型尚未实现。命令层会把这种情况判成 UnknownCommand；
-         * 这里再拒一次是防御，避免绕过命令层直接写段（host 测试 / 未来剧本）。
-         */
-        return LUMEN_RESULT_INVALID_PARAM;
-    } else if (candidate->type == LUMEN_EFFECT_BREATHING) {
-        /*
-         * 呼吸（effects-spec §2.2 / §5 第 8-9 步）：
-         *   bit0 reverse（保留，无实际意义）、bit1-2 waveform、bit3-7 必须为 0；
-         *   period_ms != 0 时必须 ≥ 334（≈3Hz，光敏性癫痫安全线）。
-         * period_ms = 0 是合法值（静止），不受下限约束。
-         */
-        if ((candidate->flags & 0xF8u) != 0) {
-            return LUMEN_RESULT_INVALID_PARAM;
-        }
-        if (candidate->period_ms != 0 && candidate->period_ms < LUMEN_BREATHING_MIN_PERIOD_MS) {
-            return LUMEN_RESULT_INVALID_PARAM;
-        }
-    } else {
-        /*
-         * 彩虹 / 流光（effects-spec §2.3-§2.4 / §11.3 第 8-9 步）：
-         *   bit0 reverse（有实际意义）、**bit1-7 必须为 0**——
-         *   注意比呼吸更严：呼吸把 bit1-2 用作 waveform，这里没有位可借；
-         *   period_ms != 0 时必须 ≥ 200（5Hz）。这两类是空间移动不是亮度闪烁，
-         *   所以下限比呼吸宽松（D5）。
-         */
-        if ((candidate->flags & 0xFEu) != 0) {
-            return LUMEN_RESULT_INVALID_PARAM;
-        }
-        if (candidate->period_ms != 0 && candidate->period_ms < LUMEN_RAINBOW_MIN_PERIOD_MS) {
-            return LUMEN_RESULT_INVALID_PARAM;
-        }
     }
 
     return LUMEN_RESULT_OK;
@@ -276,7 +298,8 @@ bool lumen_segment_store_needs_frames(const lumen_segment_store_t *store, uint8_
     for (uint8_t strip = 0; strip < strip_count; ++strip) {
         for (uint8_t slot = 0; slot < LUMEN_MAX_SEGMENTS; ++slot) {
             const lumen_segment_t *seg = &store->slot[strip][slot];
-            if (seg->active && lumen_effect_is_animated(seg->type)) {
+            /* 任一层是动画就需要帧循环（静态双层是常量画面）。 */
+            if (lumen_segment_is_animated(seg)) {
                 return true;
             }
         }
@@ -297,15 +320,16 @@ void lumen_segment_store_state_rgb(const lumen_segment_store_t *store, uint8_t s
         return;
     }
     /*
-     * docs/protocol.md §7：State 字节 2-4 是 **strip 0 / seg 0 的基准色**，
-     * 由 seg 0 的 hue+sat 算出（静态段即其像素色），**不含动画包络**；
-     * seg 0 不存在时为 0。动画类型也能算出基准色（四种都有 hue+sat 前缀）。
+     * docs/protocol-v3.md §7.3：State 字节 2-4 是 **strip 0 / seg 0 层 0 的基准色**，
+     * 由 layer[0] 的 hue+sat 算出（静态层即其像素色），**不含动画包络、不含
+     * layer1 与 blend**；seg 0 不存在时为 0。
      */
     const lumen_segment_t *seg = &store->slot[strip_id][0];
     if (!seg->active) {
         return;
     }
-    lumen_effect_static_rgb(seg->hue, seg->sat, out_rgb);
+    lumen_effect_static_rgb(lumen_layer_hue(&seg->layer[0]), lumen_layer_sat(&seg->layer[0]),
+                            out_rgb);
 }
 
 uint16_t lumen_segment_store_compose(const lumen_segment_store_t *store, uint8_t strip_id,
@@ -330,8 +354,9 @@ uint16_t lumen_segment_store_compose(const lumen_segment_store_t *store, uint8_t
         }
         for (uint16_t i = seg->start; i <= seg->end && i < led_count; ++i) {
             uint8_t rgb[3];
+            /* 两层求值 + blend 都在 lumen_effect_pixel 内，用户空间。 */
             lumen_effect_pixel(seg, i, now_ms, rgb);
-            /* ② 用户空间 RGB 直接写进缓冲；gamma + 亮度由渲染层统一施加。 */
+            /* ② 用户空间 RGB 直接写进缓冲；gamma + 亮度由渲染层统一施加一次。 */
             buf[i * 3u + 0] = rgb[0];
             buf[i * 3u + 1] = rgb[1];
             buf[i * 3u + 2] = rgb[2];
