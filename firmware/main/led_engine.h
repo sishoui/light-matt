@@ -37,8 +37,9 @@ esp_err_t lumen_led_engine_init(void);
 /* BLE 层注册：引擎用它在渲染任务里回 SetLedCount 的异步 ACK。 */
 void lumen_led_engine_set_response_cb(lumen_led_engine_response_cb cb);
 
-/* 把共享状态编码成 LUMEN_STATE_BYTES(14) 字节 State（docs/protocol.md §7），
- * 供 State read 使用。 */
+/* 把共享状态编码成 LUMEN_STATE_BYTES(37) 字节 State（docs/protocol-v3.md §7.3），
+ * 供 State read 与 StateReport 使用。条带维度（灯珠数 / 活动段数）在同一临界区
+ * 内按当前生效的段配置填好。 */
 void lumen_led_engine_state_bytes(uint8_t out[LUMEN_STATE_BYTES]);
 
 /* 拷贝一份共享状态快照。 */
@@ -74,10 +75,13 @@ void lumen_led_engine_segments_snapshot(lumen_segment_store_t *out);
 /*
  * 拷出某灯带的活动段（QueryStrip → SegmentReport 用）。
  *
- * out 按 seg_id 升序填充活动段，最多 cap 个；返回写入个数。
+ * out 按槽位升序填充活动段，最多 cap 个；返回写入个数。
+ * out_slots 可选：同时给出每个活动段的**真实槽位号**（spec-v3 §4.2 第 3 处
+ * 缺陷修正——SegmentReport 的 seg_id 必须是真实槽位，不能是压缩序号）。
  * 该函数在调用者上下文拷贝快照，不唤醒渲染任务。
  */
-uint8_t lumen_led_engine_segments(uint8_t strip_id, lumen_segment_t *out, uint8_t cap);
+uint8_t lumen_led_engine_segments(uint8_t strip_id, lumen_segment_t *out, uint8_t *out_slots,
+                                  uint8_t cap);
 
 /* 某灯带的 seg_mask（SegmentListEnd 用）。 */
 uint8_t lumen_led_engine_segment_mask(uint8_t strip_id);
