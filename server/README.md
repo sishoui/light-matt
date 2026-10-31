@@ -254,10 +254,35 @@ wx.setStorageSync("lumen.usage.config.v1", JSON.stringify({
 
 ## 7. 技术栈与部署（问题 5）
 
-- **技术栈**：Node 24 + TypeScript + Fastify 5 + better-sqlite3 13，服务端渲染 HTML（无前端构建）——
-  与小程序的工具链一致、单进程零外部依赖，一台最小 VPS 就能跑。
+- **技术栈**：Node 22.5+ + TypeScript + Fastify 5 + **`node:sqlite`**（Node 内置），
+  服务端渲染 HTML（无前端构建）—— 与小程序的工具链一致、单进程零外部依赖，
+  一台最小 VPS 就能跑。
+  > 之前用 better-sqlite3 13，它是原生模块，安装时要用 C++ 编译器现场编译；
+  > Node 24 上没有预编译包，退到源码编译后因缺 VS 的「Desktop development with
+  > C++」直接失败。`node:sqlite` 是内置模块，`npm install` 零编译。
+  > 注意它标记为 experimental，但 API 已稳定（`prepare/run/all/get` 与
+  > better-sqlite3 同形），差异见 `src/db.ts` 头部注释。
 - **部署**：`npm ci && npm run build`，用环境变量启动 `node dist/index.js`，由 systemd 守护，
   SQLite 文件放本机卷，放在反向代理后面只暴露 443——就这一条。
+
+### 数据库结构变更（重要）
+
+建库用 `CREATE TABLE IF NOT EXISTS`，表已存在时会**直接跳过**。所以
+**只改 `schema.ts` 里的 `SCHEMA_SQL` 加列是无效的** —— 已有库里新列不会出现，
+而且不报错（实测）。加列/改表必须写进 `MIGRATIONS` 数组：
+
+```ts
+// src/schema.ts
+export const MIGRATIONS = [
+  { version: 2, sql: `ALTER TABLE usage_logs ADD COLUMN firmware_version TEXT;` },
+];
+```
+
+`openDatabase()` 会按 `PRAGMA user_version` 自动补齐未执行的迁移，包在事务里，
+失败回滚。迁移只追加、不改历史条目。`tests/schema-migration.test.ts` 是护栏。
+
+两张表都用了 `STRICT`：SQLite 默认是动态类型，`INTEGER` 列能存进字符串且不报错，
+`STRICT` 让类型检查真正生效。
 
 ### 环境变量
 
