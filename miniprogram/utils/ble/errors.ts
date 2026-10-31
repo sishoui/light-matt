@@ -113,9 +113,30 @@ export function resultText(resultCode: number): string {
     case 0x09:
       return "设备内部错误";
     case 0x0a:
-      return "剧本过大，设备无法保存（请减少阶段数 / 每阶段段数 / 灯带数；设备配置未改变）";
+      /*
+       * ScriptTooLarge：Commit 的尺寸预检没过。设备**不提交**，已提交的那一套
+       * 与整份配置都没变——用户最需要知道的是「改小一点再试」和「现状没坏」。
+       */
+      return "剧本过大，请减少阶段数/段数/灯带数（本次未保存，设备配置未改变）";
     default:
       return `设备返回错误码 0x${resultCode.toString(16).padStart(2, "0")}`;
+  }
+}
+
+/**
+ * 设备明确拒绝了一条命令（ACK 非零）。
+ *
+ * 为什么要有类型：`sendSequence` 逐帧发剧本时，某一帧被拒**不能**继续往下发
+ * （Commit 回 0x0A 之后还去 Activate 就是错的）。这个错误把结果码带到会话层，
+ * 由它决定「Abort + 告诉用户设备配置没变」，而不是把非零 ACK 当成功。
+ */
+export class AckRejectedError extends Error {
+  constructor(
+    readonly command: number,
+    readonly resultCode: number,
+  ) {
+    super(`${commandName(command)} 被设备拒绝：${resultText(resultCode)}`);
+    this.name = "AckRejectedError";
   }
 }
 
