@@ -215,7 +215,7 @@ describe("#40 currentLedCounts 来自 State 的逐带字段", () => {
 });
 
 describe("#40 activeStripId 接缝（#41 的灯带切换器入口）", () => {
-  it("缺省 stripId 的方法跟随 activeStripId", async () => {
+  it("#41 起 stripId 必填（不再缺省跟随 activeStripId）", async () => {
     const transport = new FakeTransport();
     const session = makeSession(transport);
     transport.emitState(baseState({ stripCount: 2, stripCounts: [30, 40, 0, 0, 0, 0, 0, 0] }));
@@ -225,7 +225,9 @@ describe("#40 activeStripId 接缝（#41 的灯带切换器入口）", () => {
     expect(session.activeStripId).toBe(1);
     expect(session.stripLedCount(1)).toBe(40);
 
-    await session.clearSegment(3);
+    /* 显式传带号：发的是 [strip 1, seg 3]。缺省参数会在改签名时变成编译错误，
+     * 运行期拿 undefined 也会被命令构造器的校验挡住——两条防线都在。 */
+    await session.clearSegment(1, 3);
     expect(Array.from(transport.writes[0].payload)).toEqual([1, 3]);
   });
 

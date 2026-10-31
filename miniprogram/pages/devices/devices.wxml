@@ -1,0 +1,143 @@
+<view class="page">
+  <!-- 连接状态条：已连接时点它跳到灯光页；未连接时开始扫描 -->
+  <view class="statusbar {{linkClass}}" bindtap="onStatusTap">
+    <view class="status-dot"></view>
+    <view class="status-main">
+      <text class="status-text">{{statusText}}</text>
+      <text class="status-sub" wx:if="{{statusSub}}">{{statusSub}}</text>
+    </view>
+    <text class="status-action">{{statusAction}}</text>
+  </view>
+
+  <!-- 当前设备：备注名 + 详情入口 + 灯带启用掩码（App 本地偏好） -->
+  <view class="section" wx:if="{{ready}}">
+    <view class="section-head">
+      <text class="section-title">{{currentDeviceName || '当前设备'}}</text>
+      <text class="section-action" bindtap="onOpenDeviceInfo">设备详情</text>
+    </view>
+    <view class="info-row">
+      <text class="info-label">deviceId</text>
+      <text class="info-value mono">{{currentDeviceId}}</text>
+    </view>
+
+    <view class="remark-row">
+      <input
+        class="range-input"
+        value="{{remarkInput}}"
+        maxlength="20"
+        placeholder="备注名"
+        bindinput="onRemarkInput"
+      />
+      <button class="range-apply" bindtap="onSaveRemark">保存</button>
+    </view>
+
+    <view class="section-subhead">
+      <text class="section-title small">显示的灯带</text>
+      <text class="section-hint inline">只在本机生效，设备配置不会改变</text>
+    </view>
+    <view class="strip-trim-row" wx:for="{{stripRows}}" wx:key="stripId">
+      <text class="strip-trim-label">{{item.label}}</text>
+      <switch
+        checked="{{item.enabled}}"
+        color="#ffb478"
+        data-strip-id="{{item.stripId}}"
+        bindchange="onTrimStrip"
+      />
+    </view>
+  </view>
+
+  <!-- 最近连过 -->
+  <view class="section">
+    <view class="section-head">
+      <text class="section-title">最近连过</text>
+      <text class="section-action" bindtap="onRescan">{{scanning ? '扫描中…' : '扫描'}}</text>
+    </view>
+    <view wx:if="{{recentDevices.length === 0}}" class="device-empty">
+      还没有连接记录。点右上角「扫描」查找附近的 Lumen 设备。
+    </view>
+    <view class="device-list" wx:else>
+      <view
+        wx:for="{{recentDevices}}"
+        wx:key="deviceId"
+        class="device-row {{item.current ? 'active' : ''}}"
+        data-device-id="{{item.deviceId}}"
+        data-name="{{item.label}}"
+        bindtap="onDeviceTap"
+      >
+        <text class="device-name">{{item.label}}</text>
+        <text class="device-meta">{{item.meta}}</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 附近可用（实时扫描结果） -->
+  <view class="section">
+    <view class="section-head">
+      <text class="section-title">附近可用</text>
+      <text class="section-action" wx:if="{{scanning}}" bindtap="onStopScan">停止</text>
+    </view>
+    <view wx:if="{{nearbyDevices.length === 0}}" class="device-empty">
+      {{scanHint || (scanning ? '扫描中…' : '点「扫描」开始查找')}}
+    </view>
+    <view class="device-list" wx:else>
+      <view
+        wx:for="{{nearbyDevices}}"
+        wx:key="deviceId"
+        class="device-row {{item.current ? 'active' : ''}}"
+        data-device-id="{{item.deviceId}}"
+        data-name="{{item.label}}"
+        bindtap="onDeviceTap"
+      >
+        <text class="device-name">{{item.label}}</text>
+        <text class="device-meta">{{item.meta}}</text>
+      </view>
+    </view>
+    <text wx:if="{{scanHint && nearbyDevices.length > 0}}" class="scan-hint">{{scanHint}}</text>
+    <text wx:if="{{switchBusy}}" class="scan-hint">正在连接 / 切换…</text>
+  </view>
+
+  <!-- 页脚：版本号连点 5 次开启隐藏协议日志面板（#13） -->
+  <view class="footer">
+    <text class="version" bindtap="onVersionTap">v{{version}}</text>
+    <text class="footer-hint">连接后自动进入灯光页</text>
+  </view>
+
+  <!-- 隐藏协议日志面板：数据源是会话的 FrameLog（与 console 同源） -->
+  <view wx:if="{{logVisible}}" class="log-mask" bindtap="onLogCloseTap">
+    <view class="log-panel" catchtap="noop">
+      <view class="log-head">
+        <text class="log-title">协议日志 · {{logCount}} 帧{{logPaused ? ' · 视图已暂停' : ''}}</text>
+        <text class="log-close" bindtap="onLogCloseTap">关闭</text>
+      </view>
+      <view class="log-toolbar">
+        <view class="log-btn" bindtap="onLogPauseTap">{{logPaused ? '继续' : '暂停'}}</view>
+        <view class="log-btn" bindtap="onLogClearTap">清空</view>
+        <view class="log-btn" bindtap="onLogCopyTap">复制</view>
+      </view>
+      <text wx:if="{{logHint}}" class="log-hint">{{logHint}}</text>
+      <scroll-view
+        scroll-y
+        class="log-list"
+        scroll-into-view="{{logScrollTarget}}"
+        scroll-with-animation="{{false}}"
+      >
+        <view
+          wx:for="{{logRows}}"
+          wx:key="id"
+          id="log-row-{{item.id}}"
+          class="log-row {{item.dir}} {{item.ok ? '' : 'bad'}}"
+        >
+          <text class="log-time">{{item.time}}</text>
+          <text class="log-arrow">{{item.arrow}}</text>
+          <text class="log-hex">{{item.hex}}</text>
+          <text class="log-name">{{item.name}}{{item.seq === '-' ? '' : ' seq=' + item.seq}}</text>
+          <text class="log-parsed">{{item.parsed}}</text>
+        </view>
+        <view wx:if="{{logRows.length === 0}}" class="log-empty">
+          还没有帧。连接设备并操作后，这里会显示收发记录。
+        </view>
+      </scroll-view>
+      <text class="log-foot">与固件串口按 seq 对齐；开发版 console 打印的是同一份数据</text>
+    </view>
+  </view>
+</view>

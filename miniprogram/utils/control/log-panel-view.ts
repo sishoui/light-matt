@@ -7,9 +7,9 @@
  * 合并规则不变：20Hz 的帧不能每帧 setData；暂停 / 隐藏时完全不动视图。
  */
 
-import { LogPanelModel, type LogPanelRow } from "../../utils/ble/log-panel";
-import type { FrameLog } from "../../utils/ble/log";
-import { errorText } from "../../utils/ble/errors";
+import { LogPanelModel, type LogPanelRow } from "../ble/log-panel";
+import type { FrameLog } from "../ble/log";
+import { errorText } from "../ble/errors";
 
 /** 日志面板的刷新合并间隔：帧可能以 20Hz 到达，不能每帧都 setData。 */
 export const LOG_PANEL_REFRESH_MS = 200;

@@ -24,7 +24,7 @@ import {
   stageSegmentText,
   typeName,
   upsertStageSegment,
-} from "../pages/index/script-view";
+} from "../utils/control/script-view";
 import { staticSegment, breathingSegment } from "../utils/protocol/commands";
 import { MAX_STAGES, PLAYBACK, SEGMENT_TYPE } from "../utils/protocol/constants";
 

@@ -1,0 +1,47 @@
+/* 设备页独有布局（共享外观在 app.wxss）。 */
+
+.section-action {
+  font-size: 24rpx;
+  color: #ffb478;
+}
+
+.section-title.small {
+  font-size: 24rpx;
+  color: #9a9aa5;
+  font-weight: 400;
+}
+
+.section-hint.inline {
+  font-size: 20rpx;
+}
+
+.section-subhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16rpx;
+  margin-top: 8rpx;
+}
+
+.remark-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+.strip-trim-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8rpx 0;
+  border-bottom: 1rpx solid #22222a;
+}
+
+.strip-trim-row:last-child {
+  border-bottom: none;
+}
+
+.strip-trim-label {
+  font-size: 24rpx;
+  color: #d8d8e0;
+}

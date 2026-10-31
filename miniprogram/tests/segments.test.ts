@@ -54,7 +54,7 @@ import {
   rainbowLabel,
   spanText,
   tailText,
-} from "../pages/index/segment-view";
+} from "../utils/control/segment-view";
 import { StripQueryCollector } from "../utils/ble/strip-collector";
 import {
   emptyLayer,

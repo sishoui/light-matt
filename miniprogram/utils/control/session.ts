@@ -143,11 +143,11 @@ export type SegmentResult =
   | { kind: "error"; message: string };
 
 /**
- * 会话默认操作的灯带（#40 起是**可切换**的显式维度）。
+ * 会话当前操作的灯带（App 级状态，#41）。
  *
- * v3 把灯带做成了真正的维度（逐带开关 / 逐带灯珠数 / 逐带 8 段），但 #40
- * 不允许改页面，所以旧签名继续可用：不传 `stripId` 的方法落到 `activeStripId`。
- * 页面在 #41 拆页后会显式传，那时这里只是默认值，不再是「隐含的 strip 0」。
+ * 灯带是 v3 的显式维度：**页面必须把正在展示的 stripId 传进来**，本字段只
+ * 用于「用户上次选的是哪条带」这类跨页记忆（切 tab 后不跳带）。它绝不是
+ * 「省略 stripId 时的默认值」——那种缺省会让第 3 条带上的删除操作写回第 0 条。
  */
 const DEFAULT_ACTIVE_STRIP_ID = 0;
 
@@ -257,6 +257,11 @@ const defaultTimer: TimerApi = {
   clearTimeout: (handle) => clearTimeout(handle),
 };
 
+/** 8 个空段列表（逐带缓存初值，与 MAX_STRIPS 对齐）。 */
+function emptyStripCache(): SegmentReport[][] {
+  return Array.from({ length: MAX_STRIPS }, () => []);
+}
+
 function delayWith(timer: TimerApi, ms: number): Promise<void> {
   return new Promise((resolve) => {
     timer.setTimeout(() => resolve(), ms);
@@ -277,6 +282,22 @@ export class ControlSession {
   private stripConfigCache: StripConfig | null = null;
   /** v3：最近一次 QueryDeviceInfo 的结果（§9.1 第 3 步）。 */
   private deviceInfoCache: DeviceInfo | null = null;
+  /**
+   * v3：逐带段列表缓存（§9.1 第 4 步，`QueryStrip(i)` 按需）。
+   *
+   * 下标 = stripId，元素是该带上一次读回的 SegmentReport。功能上只做「同一
+   * 条带重复读不必等」的加速——**每次切带仍以设备为准**，页面要最新值就调
+   * `queryStrip`。断线必须整体清空：它描述的是上一台 / 上一次连接。
+   */
+  private segmentsByStrip: SegmentReport[][] = emptyStripCache();
+  /**
+   * 「设备增强信息（引脚表 / 设备身份）已读完」的订阅者。
+   *
+   * 为什么需要：§9.1 的第 2、3 步由会话在进入 ready 后异步补，页面没法
+   * 知道它什么时候完成（用固定延时猜是错的）。这是**只读通知**，不带载荷：
+   * 页面收到后自己读 `stripConfigs` / `deviceInfo`。
+   */
+  private readonly deviceConfigListeners: Array<() => void> = [];
 
   private readonly retryAfterGapMs: number;
   /** 10008 间隔重试的计时器：与回连退避共用同一个注入实例。 */
@@ -394,6 +415,12 @@ export class ControlSession {
         this.noteUsageOnce();
       }
       this.reconnect.handleLinkChange(state, detail);
+      /* #41：每次进入 ready（首次连接 / 自动回连 / 切换设备）都补一次
+       * §9.1 的第 2、3 步。State 已由 transport.connect 的初始化流水线读过，
+       * 这里不再重读，避免把「回连读一次 State」的既有约定改掉。 */
+      if (state === "ready") {
+        void this.rebuildDeviceConfig();
+      }
     });
 
     this.transport.onState((state) => {
@@ -525,9 +552,10 @@ export class ControlSession {
     try {
       const state = await this.connect(deviceId, name);
       this.switchState = switchedReady(this.switchState);
-      // 设备是权威：切换后所有设备级状态都来自新设备。
-      // 分段/剧本的读取在这里之后追加（#25/#32），见 refreshDeviceConfig 的接缝。
-      await this.refreshDeviceConfig();
+      /* 设备是权威：切换后所有设备级状态都来自新设备。
+       * §9.1 的 QueryStripConfig / QueryDeviceInfo 已由 ready 钩子补过，
+       * 这里只再确认一次 State（分段按需由页面 queryStrip 拉取）。 */
+      await this.refreshState().catch(() => state);
       return state;
     } catch (err) {
       this.switchState = switchFailed(this.switchState, errorText(err));
@@ -566,23 +594,36 @@ export class ControlSession {
   }
 
   /**
-   * 切换成功后加载新设备的真实配置（§9.1 的权威重建路径）。
+   * §9.1 的「设备增强信息」重建：QueryStripConfig → QueryDeviceInfo。
    *
-   * #40 的义务：设备级状态全部从设备读，不残留上一台。顺序按 §9.1：
-   *   State（连接流水线已读）→ QueryStripConfig → QueryDeviceInfo。
-   * QueryStrip × 0..strip_count-1 与 QueryScript 留给 #41/#45（页面驱动），
-   * 这里不越界替页面决定要读哪些段。
+   * 为什么不在这里读 State：进入 ready 的那一刻 transport 的初始化流水线刚
+   * 读过 State，再读一次既多余又会改掉既有测试里「一次回连只读一次 State」的
+   * 约定。
    *
-   * 配置查询失败不影响连接结论：它们是「界面增强信息」，返回 null 即可，
-   * 绝不把一次成功的连接降级成失败。
+   * 两条查询都是界面增强信息：失败只让缓存保持为 null，绝不把一次成功的
+   * 连接降级成失败（旧固件不支持 0x1C/0x1D 时页面上只是看不到 GPIO）。
+   * `QueryStrip(i)` 不在这里做——它属于页面（按需、逐带），见 `queryStrip`。
    */
-  private async refreshDeviceConfig(): Promise<void> {
+  private async rebuildDeviceConfig(): Promise<void> {
     if (this.transport.linkState !== "ready") {
       return;
     }
-    await this.refreshState();
     await this.queryStripConfig().catch(() => undefined);
     await this.queryDeviceInfo().catch(() => undefined);
+    /* 通知页面「设备增强信息已就绪」（GPIO / hwId）。失败也要通知：
+     * 页面据此把「GPIO ?」收敛成「—」，不必自己猜什么时候该重画。 */
+    this.notifyDeviceConfig();
+  }
+
+  /** 设备增强信息（引脚表 / 设备身份）读取结束的一次通知。 */
+  private notifyDeviceConfig(): void {
+    for (const fn of this.deviceConfigListeners.slice()) {
+      try {
+        fn();
+      } catch (err) {
+        console.warn(`[lumen] 设备配置监听失败：${errorText(err)}`);
+      }
+    }
   }
 
   async disconnect(): Promise<void> {
@@ -673,6 +714,10 @@ export class ControlSession {
       // 成功：设备已按新数量重建并持久化，本地只改该带的灯珠数。
       if (this.latestState !== null) {
         this.latestState = applyStripLedCount(this.latestState, stripId, count);
+      }
+      /* 数量变化可能让设备裁掉越界的段（§9.2）：该带缓存作废。 */
+      if (this.segmentsByStrip[stripId] !== undefined) {
+        this.segmentsByStrip[stripId] = [];
       }
       return {
         kind: "ok",
@@ -1004,20 +1049,44 @@ export class ControlSession {
     segment: SegmentSpec | SegmentConfig,
     opts: SendOptions = {},
   ): Promise<AckResult> {
-    return this.sendCommand(cmdSetSegment(segment), opts);
+    const ack = await this.sendCommand(cmdSetSegment(segment), opts);
+    if (ack.ok) {
+      /* 写成功后缓存不再代表设备：清掉该带，逼页面重新 queryStrip。 */
+      const stripId = segment.stripId;
+      if (this.segmentsByStrip[stripId] !== undefined) {
+        this.segmentsByStrip[stripId] = [];
+      }
+    }
+    return ack;
   }
 
-  /** 清一个段槽位（ClearSegment 0x11）。 */
-  async clearSegment(segId: number, stripId = this.activeStrip): Promise<AckResult> {
-    return this.sendCommand(cmdClearSegment(stripId, segId));
+  /**
+   * 清一个段槽位（ClearSegment 0x11）。
+   *
+   * `stripId` 必填：段属于哪条带只有调用方（页面）知道。给缺省值等于把
+   * 第 3 条带上的删除偷偷写回第 0 条带——这是 #41 要消灭的缺陷。
+   */
+  async clearSegment(stripId: number, segId: number): Promise<AckResult> {
+    const ack = await this.sendCommand(cmdClearSegment(stripId, segId));
+    if (ack.ok) {
+      /* 清掉该带缓存里的这一格：读回值不再代表设备，宁可让页面重新 queryStrip。 */
+      if (this.segmentsByStrip[stripId] !== undefined) {
+        this.segmentsByStrip[stripId] = this.segmentsByStrip[stripId].filter(
+          (report) => report.segId !== segId,
+        );
+      }
+    }
+    return ack;
   }
 
   /**
    * 读回某灯带的段列表（QueryStrip 0x12）：seg_count 条 SegmentReport +
    * SegmentListEnd，同 seq 多帧。这是重连重建 UI 的权威路径
-   * （protocol-v3 §9.1 第 3 步）。
+   * （protocol-v3 §9.1 第 4 步）。
+   *
+   * `stripId` 必填：读哪条带是页面的决定，不是会话的缺省。
    */
-  async queryStrip(stripId = this.activeStrip): Promise<SegmentResult> {
+  async queryStrip(stripId: number): Promise<SegmentResult> {
     if (this.transport.linkState !== "ready") {
       return { kind: "error", message: "设备未连接" };
     }
@@ -1027,6 +1096,7 @@ export class ControlSession {
       if (this.reconnect.isStale(epoch)) {
         return { kind: "stale" };
       }
+      this.segmentsByStrip[stripId] = result.reports.map((report) => ({ ...report }));
       return { kind: "ok", reports: result.reports, end: result.end };
     } catch (err) {
       if (this.reconnect.isStale(epoch)) {
@@ -1034,6 +1104,17 @@ export class ControlSession {
       }
       return { kind: "error", message: errorText(err) };
     }
+  }
+
+  /**
+   * 某条灯带最近一次读回的段列表（设备权威的本地镜像）。
+   *
+   * 只反映「上一次 queryStrip 的结果」，不能当成实时状态：段配置不在 State
+   * 里，设备不会主动上报，页面在写操作后要自己再读。
+   */
+  segmentsOf(stripId: number): SegmentReport[] {
+    const cached = this.segmentsByStrip[stripId];
+    return cached === undefined ? [] : cached.map((report) => ({ ...report }));
   }
 
   /**
@@ -1414,9 +1495,26 @@ export class ControlSession {
     return this.transport.onScanHint(fn);
   }
 
+  /**
+   * 设备增强信息（引脚表 / 设备身份）重建完成。
+   *
+   * 每次进入 ready 后都会触发一次（成功或失败都触发）；页面据此重画
+   * GPIO / hwId，不要用固定延时去猜。
+   */
+  onDeviceConfig(fn: () => void): () => void {
+    this.deviceConfigListeners.push(fn);
+    return () => {
+      const index = this.deviceConfigListeners.indexOf(fn);
+      if (index >= 0) {
+        this.deviceConfigListeners.splice(index, 1);
+      }
+    };
+  }
+
   destroy(): void {
     this.reconnect.destroy();
     this.throttle.cancel();
+    this.deviceConfigListeners.length = 0;
     this.transport.destroy();
   }
 
@@ -1437,6 +1535,9 @@ export class ControlSession {
     this.defaultSegment = null;
     this.stripConfigCache = null;
     this.deviceInfoCache = null;
+    /* 逐带段缓存同样属于上一台 / 上一次连接，必须一起清：
+     * 留着会让重连后的灯光页显示不存在的段。 */
+    this.segmentsByStrip = emptyStripCache();
   }
 
   /**

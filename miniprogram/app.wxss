@@ -1,4 +1,749 @@
+/*
+ * 全局样式（#41 拆页后共享）。
+ *
+ * 拆页前这些规则都在 pages/index/index.wxss 里；拆页后多页复用同一套卡片 /
+ * 状态条 / 日志面板外观，所以提到 app.wxss。页面自己的 wxss 只放该页独有的
+ * 布局（例如灯光页的灯带切换条）。
+ *
+ * 颜色语义（不要散落硬编码）：
+ *   #101014 页面底 / #18181e 卡片 / #2a2a32 边框
+ *   #ffb478 主强调（连接、开关、主按钮）/ #4f8cff 次强调（动画参数）
+ *   #ff8a8a 危险与拒绝 / #6f6f7a 弱提示
+ */
+
 page {
   background: #101014;
   color: #f5f5f5;
+}
+
+.page {
+  min-height: 100vh;
+  padding: 24rpx;
+  box-sizing: border-box;
+  background: #101014;
+  color: #f5f5f5;
+  display: flex;
+  flex-direction: column;
+  gap: 24rpx;
+}
+
+/* ---------------- 连接状态条 ---------------- */
+
+.statusbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  min-height: 96rpx;
+  padding: 16rpx 20rpx;
+  box-sizing: border-box;
+  border-radius: 16rpx;
+  background: #18181e;
+  border: 1rpx solid #2a2a32;
+}
+
+.status-dot {
+  width: 16rpx;
+  height: 16rpx;
+  border-radius: 50%;
+  background: #6f6f7a;
+  flex-shrink: 0;
+}
+
+.link-ready .status-dot {
+  background: #4dd17a;
+}
+
+.link-busy .status-dot,
+.link-warn .status-dot {
+  background: #ffb478;
+}
+
+.link-error .status-dot {
+  background: #ff6b6b;
+}
+
+.status-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+  min-width: 0;
+}
+
+.status-text {
+  font-size: 30rpx;
+  font-weight: 600;
+}
+
+.status-sub {
+  font-size: 22rpx;
+  color: #9a9aa5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-action {
+  font-size: 24rpx;
+  color: #ffb478;
+  flex-shrink: 0;
+}
+
+/* ---------------- 卡片与区块 ---------------- */
+
+.section {
+  background: #18181e;
+  border: 1rpx solid #2a2a32;
+  border-radius: 20rpx;
+  padding: 24rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 20rpx;
+}
+
+.section.disabled,
+.presets.disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.section-title {
+  font-size: 28rpx;
+  font-weight: 600;
+}
+
+.section-value {
+  font-size: 26rpx;
+  color: #9a9aa5;
+  font-family: Menlo, Consolas, monospace;
+}
+
+.section-hint {
+  font-size: 22rpx;
+  color: #6f6f7a;
+  line-height: 1.6;
+}
+
+.swatch {
+  width: 48rpx;
+  height: 48rpx;
+  border-radius: 12rpx;
+  border: 1rpx solid #3a3a44;
+}
+
+.mono {
+  font-family: Menlo, Consolas, monospace;
+}
+
+/* ---------------- 大开关 ---------------- */
+
+.power-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16rpx;
+  padding: 24rpx 0 8rpx;
+}
+
+.power-btn {
+  width: 240rpx;
+  height: 240rpx;
+  border-radius: 50%;
+  background: #1c1c23;
+  border: 2rpx solid #2f2f38;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 120ms ease;
+}
+
+.power-btn.on {
+  background: #2a2118;
+  border-color: #ffb478;
+  box-shadow: 0 0 48rpx rgba(255, 180, 120, 0.35);
+}
+
+.power-btn.disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.power-btn.busy {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+/* 电源图标：圆环 + 竖线，纯 CSS，不引入图标资源 */
+.power-glyph {
+  position: relative;
+  width: 96rpx;
+  height: 96rpx;
+  border: 8rpx solid #c9c9d1;
+  border-radius: 50%;
+  border-top-color: transparent;
+}
+
+.power-btn.on .power-glyph {
+  border-color: #ffb478;
+  border-top-color: transparent;
+}
+
+.power-glyph::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -12rpx;
+  width: 8rpx;
+  height: 48rpx;
+  margin-left: -4rpx;
+  background: #c9c9d1;
+  border-radius: 4rpx;
+}
+
+.power-btn.on .power-glyph::after {
+  background: #ffb478;
+}
+
+.power-label {
+  font-size: 26rpx;
+  color: #9a9aa5;
+}
+
+/* ---------------- 滑块与读数 ---------------- */
+
+.brightness-slider {
+  margin: 8rpx 0;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+.row-label {
+  width: 70rpx;
+  font-size: 22rpx;
+  color: #9a9aa5;
+  flex-shrink: 0;
+}
+
+.row-slider {
+  flex: 1;
+}
+
+.row-value {
+  width: 130rpx;
+  text-align: right;
+  font-size: 22rpx;
+  color: #e8e8ee;
+  flex-shrink: 0;
+}
+
+/* ---------------- chip（模式 / 波形 / 灯带） ---------------- */
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+}
+
+.chip {
+  flex: 1 1 40%;
+  text-align: center;
+  padding: 14rpx 0;
+  border-radius: 12rpx;
+  font-size: 22rpx;
+  color: #9a9aa5;
+  background: #101014;
+  border: 1rpx solid #2a2a32;
+}
+
+.chip.selected {
+  color: #1a1208;
+  background: #ffb478;
+  border-color: #ffb478;
+}
+
+.chip.blue.selected {
+  color: #cfe0ff;
+  background: #1a2438;
+  border-color: #4f8cff;
+}
+
+/* ---------------- 预设色块 ---------------- */
+
+.presets {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12rpx 0;
+  padding: 20rpx;
+  background: #18181e;
+  border: 1rpx solid #2a2a32;
+  border-radius: 20rpx;
+}
+
+.preset {
+  width: 76rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8rpx;
+  padding: 4rpx 0;
+  border-radius: 16rpx;
+}
+
+.preset-dot {
+  width: 64rpx;
+  height: 64rpx;
+  border-radius: 50%;
+  border: 1rpx solid #3a3a44;
+  box-sizing: border-box;
+}
+
+.preset.selected .preset-dot {
+  box-shadow: 0 0 0 4rpx #101014, 0 0 0 8rpx #f5f5f5;
+}
+
+.preset-name {
+  font-size: 20rpx;
+  color: #9a9aa5;
+}
+
+.preset.selected .preset-name {
+  color: #f5f5f5;
+}
+
+/* ---------------- 色环 ---------------- */
+
+.wheel-wrap {
+  position: relative;
+  align-self: center;
+  width: 420rpx;
+  height: 420rpx;
+}
+
+.wheel-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.color-readout {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+/* ---------------- 段列表 ---------------- */
+
+.seg-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+}
+
+.seg-row {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  padding: 16rpx 20rpx;
+  border-radius: 14rpx;
+  background: #101014;
+  border: 1rpx solid #2a2a32;
+}
+
+.seg-row.selected {
+  border-color: #ffb478;
+  background: #1c1a17;
+}
+
+.seg-swatch {
+  width: 40rpx;
+  height: 40rpx;
+  border-radius: 10rpx;
+  border: 1rpx solid #3a3a44;
+  flex-shrink: 0;
+}
+
+.seg-index {
+  font-size: 24rpx;
+  color: #f5f5f5;
+  flex-shrink: 0;
+}
+
+.seg-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2rpx;
+  min-width: 0;
+}
+
+.seg-range {
+  font-size: 24rpx;
+  color: #9a9aa5;
+  font-family: Menlo, Consolas, monospace;
+}
+
+.seg-param {
+  font-size: 20rpx;
+  color: #8fa8d4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.seg-tag {
+  font-size: 20rpx;
+  color: #9a9aa5;
+  padding: 2rpx 10rpx;
+  border-radius: 8rpx;
+  background: #23232b;
+}
+
+.seg-tag.anim {
+  color: #9ec4ff;
+  background: #1a2438;
+}
+
+.seg-delete {
+  font-size: 22rpx;
+  color: #ff8a8a;
+  padding: 4rpx 8rpx;
+  flex-shrink: 0;
+}
+
+.seg-empty {
+  padding: 24rpx 8rpx;
+  font-size: 22rpx;
+  line-height: 1.6;
+  color: #6f6f7a;
+}
+
+/* ---------------- 输入与按钮 ---------------- */
+
+.range-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+.range-input {
+  flex: 1;
+  min-width: 0;
+  height: 72rpx;
+  padding: 0 16rpx;
+  box-sizing: border-box;
+  border-radius: 12rpx;
+  background: #101014;
+  border: 1rpx solid #2a2a32;
+  color: #f5f5f5;
+  font-size: 26rpx;
+  text-align: center;
+}
+
+.range-dash {
+  color: #6f6f7a;
+  flex-shrink: 0;
+}
+
+.range-apply {
+  flex-shrink: 0;
+  width: 200rpx;
+  height: 72rpx;
+  line-height: 72rpx;
+  padding: 0;
+  border-radius: 12rpx;
+  background: #ffb478;
+  color: #1a1208;
+  font-size: 26rpx;
+  font-weight: 600;
+  text-align: center;
+}
+
+.range-apply.busy {
+  opacity: 0.6;
+}
+
+.btn {
+  height: 80rpx;
+  line-height: 80rpx;
+  margin: 0;
+  padding: 0 24rpx;
+  border-radius: 14rpx;
+  background: #2a2a32;
+  color: #d8d8e0;
+  font-size: 26rpx;
+  text-align: center;
+}
+
+.btn.primary {
+  background: #ffb478;
+  color: #1a1208;
+  font-weight: 600;
+}
+
+.btn.ghost {
+  background: #23232b;
+  color: #f5f5f5;
+}
+
+.btn.danger {
+  background: #2a1d1d;
+  color: #ff8a8a;
+}
+
+.btn[disabled] {
+  opacity: 0.45;
+}
+
+.btn-row {
+  display: flex;
+  gap: 12rpx;
+}
+
+/* ---------------- 设备行 / 信息行 ---------------- */
+
+.device-list {
+  display: flex;
+  flex-direction: column;
+  border: 1rpx solid #2a2a32;
+  border-radius: 16rpx;
+  overflow: hidden;
+}
+
+.device-row {
+  padding: 20rpx 16rpx;
+  border-bottom: 1rpx solid #22222a;
+  display: flex;
+  flex-direction: column;
+  gap: 6rpx;
+  background: #101014;
+}
+
+.device-row:last-child {
+  border-bottom: none;
+}
+
+.device-row.active {
+  background: #1c1a17;
+}
+
+.device-name {
+  font-size: 28rpx;
+}
+
+.device-meta {
+  font-size: 22rpx;
+  color: #9a9aa5;
+  font-family: Menlo, Consolas, monospace;
+  word-break: break-all;
+}
+
+.device-section-title {
+  margin: 16rpx 0 8rpx;
+  font-size: 24rpx;
+  color: #9a9aa5;
+}
+
+.device-empty {
+  padding: 32rpx 16rpx;
+  font-size: 24rpx;
+  color: #6f6f7a;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.scan-hint {
+  font-size: 22rpx;
+  color: #ffb478;
+}
+
+.device-info {
+  display: flex;
+  flex-direction: column;
+  gap: 14rpx;
+  padding: 8rpx 0;
+}
+
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 24rpx;
+  font-size: 24rpx;
+}
+
+.info-label {
+  color: #9a9aa5;
+  flex-shrink: 0;
+}
+
+.info-value {
+  color: #f5f5f5;
+  word-break: break-all;
+  text-align: right;
+}
+
+/* ---------------- 页脚 ---------------- */
+
+.footer {
+  margin-top: auto;
+  padding: 16rpx 0 calc(16rpx + env(safe-area-inset-bottom));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+}
+
+.version {
+  font-size: 22rpx;
+  color: #6f6f7a;
+  font-family: Menlo, Consolas, monospace;
+  padding: 8rpx 0;
+}
+
+.footer-hint {
+  font-size: 22rpx;
+  color: #6f6f7a;
+}
+
+/* ---------------- 隐藏协议日志面板（#13） ---------------- */
+
+.log-mask {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex;
+  align-items: flex-end;
+}
+
+.log-panel {
+  width: 100%;
+  height: 78vh;
+  box-sizing: border-box;
+  padding: 20rpx 20rpx calc(20rpx + env(safe-area-inset-bottom));
+  background: #0c0c10;
+  border-radius: 28rpx 28rpx 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14rpx;
+}
+
+.log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.log-title {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: #f5f5f5;
+}
+
+.log-close {
+  font-size: 26rpx;
+  color: #9a9aa5;
+  padding: 4rpx 8rpx;
+}
+
+.log-toolbar {
+  display: flex;
+  gap: 12rpx;
+}
+
+.log-btn {
+  flex: 1;
+  height: 64rpx;
+  line-height: 64rpx;
+  text-align: center;
+  border-radius: 12rpx;
+  background: #1c1c23;
+  border: 1rpx solid #2f2f38;
+  font-size: 24rpx;
+  color: #f5f5f5;
+}
+
+.log-hint {
+  font-size: 22rpx;
+  color: #ffb478;
+}
+
+.log-list {
+  flex: 1;
+  min-height: 0;
+  border: 1rpx solid #22222a;
+  border-radius: 12rpx;
+  background: #101014;
+  padding: 8rpx;
+  box-sizing: border-box;
+}
+
+.log-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8rpx 12rpx;
+  padding: 8rpx 6rpx;
+  border-bottom: 1rpx solid #1c1c23;
+  font-family: Menlo, Consolas, monospace;
+  font-size: 20rpx;
+  line-height: 1.5;
+  color: #c9c9d1;
+}
+
+.log-row.tx .log-arrow {
+  color: #ffb478;
+}
+
+.log-row.rx .log-arrow {
+  color: #4dd17a;
+}
+
+.log-row.bad .log-parsed {
+  color: #ff8a8a;
+}
+
+.log-time {
+  color: #6f6f7a;
+}
+
+.log-hex {
+  color: #9a9aa5;
+  word-break: break-all;
+}
+
+.log-name {
+  color: #f5f5f5;
+}
+
+.log-parsed {
+  width: 100%;
+  color: #9a9aa5;
+  word-break: break-all;
+}
+
+.log-empty {
+  padding: 32rpx 12rpx;
+  font-size: 24rpx;
+  color: #6f6f7a;
+  line-height: 1.6;
+}
+
+.log-foot {
+  font-size: 20rpx;
+  color: #6f6f7a;
 }

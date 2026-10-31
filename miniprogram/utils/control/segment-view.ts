@@ -10,10 +10,10 @@
  *    空闲槽位；空闲与否以设备最近一次 QueryStrip 的 seg_mask 为准。
  */
 
-import { MAX_SEGMENTS, SEGMENT_TYPE, WAVEFORM_NAMES } from "../../utils/protocol/constants";
-import { breathingWaveform, segmentReverse } from "../../utils/protocol/commands";
-import type { RGB, SegmentReport, SegmentTarget } from "../../utils/protocol/types";
-import { rgbToHex } from "../../utils/color/hsv";
+import { MAX_SEGMENTS, SEGMENT_TYPE, WAVEFORM_NAMES } from "../protocol/constants";
+import { breathingWaveform, segmentReverse } from "../protocol/commands";
+import type { RGB, SegmentReport, SegmentTarget } from "../protocol/types";
+import { rgbToHex } from "../color/hsv";
 
 /** 列表里的一行：设备权威的段 + 展示用字段。 */
 export interface SegmentRow {
@@ -284,8 +284,13 @@ export function percentOf255(value: number): string {
   return `${Math.round((value / 255) * 100)}%`;
 }
 
-/** 从行视图里摘出目标段（颜色控件要写的位置）。 */
-export function targetOf(row: SegmentRow, stripId = 0): SegmentTarget {
+/**
+ * 从行视图里摘出目标段（颜色控件要写的位置）。
+ *
+ * `stripId` 必须由调用方显式给出：段属于哪条灯带只有页面（当前选中的带）
+ * 知道；这里给缺省值等于把用户的操作偷偷写回 strip 0。
+ */
+export function targetOf(row: Pick<SegmentRow, "segId" | "start" | "end">, stripId: number): SegmentTarget {
   return { stripId, segId: row.segId, start: row.start, end: row.end };
 }
 

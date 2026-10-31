@@ -11,9 +11,9 @@
 import {
   brightnessPercent as percentOf,
   clampBrightness,
-} from "../../utils/control/brightness";
-import { PRESETS } from "../../utils/color/hsv";
-import type { RGB } from "../../utils/protocol/types";
+} from "./brightness";
+import { PRESETS } from "../color/hsv";
+import type { RGB } from "../protocol/types";
 
 /** 亮度提示文案：未连接 / 亮度 0 的语义都要如实说明（§7）。 */
 export function brightnessHintText(value: number, ready: boolean): string {

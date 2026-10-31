@@ -1,0 +1,15 @@
+/* 段编辑页独有布局（共享外观在 app.wxss）。 */
+
+.params {
+  display: flex;
+  flex-direction: column;
+  gap: 10rpx;
+  margin-top: 8rpx;
+}
+
+/* 波形 / 方向这类短选项排成一行，不要用 40% 的两列宽度 */
+.chip-row.tight .chip {
+  flex: 0 1 auto;
+  min-width: 120rpx;
+  padding: 12rpx 20rpx;
+}
