@@ -1,22 +1,21 @@
 /**
- * 剧本页（tab 3）：阶段时间轴，跨带预览。
+ * 剧本页（tab 3）：阶段时间轴 + 跨带预览 + 设备摘要读回。
  *
- * 这一票把 #32 的剧本编辑从旧单页搬过来并**保持功能可用**；#45 会把它扩成
- * 时间轴编辑器（增删 / 重排、每带摘要、读回摘要）。当前形态：
- *  - 4 套剧本槽位（只切草稿的 id，不动设备）；
- *  - 最多 8 个阶段，每阶段一个时长输入；
- *  - 「把当前段加进阶段」用**灯光页选中的段**（会话里的 activeSegment），
- *    参数取设备刚读回的段配置（设备是权威，不复制页面里的临时值）；
- *  - 下发 = Begin → Stage/Segment… → Commit → Activate（script-plan 纯函数），
- *    进度以每帧 ACK 为权威；失败由 session 尽力 Abort，设备保留上一套可用配置。
+ * #45 把 #32 的剧本编辑扩成时间轴编辑器：
+ *  - 每阶段一张卡片：时长可改、可删、可上移 / 下移、可加阶段；
+ *  - 卡片上给出**跨带摘要**（哪几条带、各几个段），不逐颗预览像素；
+ *  - 4 套剧本槽位各自独立编辑 / 下发 / 激活；
+ *  - 下发前做容量预检（§10.4），超限直接提示且**不发请求**；
+ *  - 连上后 QueryScript 读回 4 个槽位的**摘要**（v3 没有整份读回）。
  *
- * 灯带维度：剧本跨带，所以 `stripCount` 取设备的 `State.stripCount`，段也各自
- * 带自己的 `stripId`（不写死 0）。
+ * **v3 没有「读回整份剧本」的命令**：QueryScript 只回 4 字节
+ * （script_id / stage_count / flags / active），拿不到阶段时长、段区间与灯效。
+ * 所以页面必须诚实地告诉用户：摘要是设备权威，但**内容读不回来，编辑后要
+ * 重新下发**才生效。这不是本票的偷懒，而是协议契约的边界（coordinator 裁定）。
  *
- * #45 的已知缺口（本票不修，避免越界改 script-view 的签名）：
- *  - `upsertStageSegment` 目前只按 segId 去重，没有把 stripId 算进键里；
- *    跨带同号槽位会互相覆盖。#45 要改成 (stripId, segId)。
- *  - 没有阶段重排，也没有 `QueryScript` 摘要读回。
+ * fade：格式预留且 caps.bit1 == 0，数据里恒为 0，**不提供过渡 UI**。
+ *
+ * 灯带维度：剧本跨带，`stripCount` 取设备 `State.stripCount`，段各自带 `stripId`。
  */
 
 import { resultText } from "../../utils/ble/errors";
@@ -24,25 +23,39 @@ import type { LinkDetail } from "../../utils/ble/transport";
 import {
   addStage,
   buildScriptStageRows,
-  createScriptDraft,
+  createScriptDrafts,
   draftInvalidStageCount,
+  draftCapacityBytes,
   draftToScriptConfig,
   downloadProgressText,
+  moveStage,
   playbackView,
   removeStage,
+  replaceScriptDraft,
+  scriptDraftOf,
+  scriptSummaryRow,
   setStageDuration,
   setStageSegments,
+  SUMMARY_ONLY_NOTE,
+  summaryReadErrorText,
   typeName,
   upsertStageSegment,
   type ScriptDraft,
   type ScriptStageRow,
+  type ScriptSummaryRow,
 } from "../../utils/control/script-view";
+import { checkScriptBlobBytes, SCRIPT_BLOB_MAX_BYTES } from "../../utils/control/script-plan";
 import { MAX_SCRIPTS, MAX_STAGES } from "../../utils/protocol/constants";
 import { ControlSession } from "../../utils/control/session";
 import { getSession } from "../../utils/control/session-singleton";
 import { statusView } from "../../utils/control/status-view";
 import { TAB_ROUTES, switchTabTo } from "../../utils/control/routes";
-import type { DeviceState, LinkState, SegmentConfig, SegmentReport } from "../../utils/protocol/types";
+import type {
+  DeviceState,
+  LinkState,
+  SegmentReport,
+  SegmentSpec,
+} from "../../utils/protocol/types";
 
 Page({
   data: {
@@ -62,18 +75,30 @@ Page({
       segId: number;
       rangeText: string;
       typeText: string;
+      secondLayer: boolean;
     }>,
     scriptActiveStage: 0,
     scriptMaxStages: MAX_STAGES,
     scriptBusy: false,
     scriptHintText: "",
 
+    /** 容量预检（§10.4）：本地草稿预估字节 / 上限。 */
+    scriptEstimatedBytes: 0,
+    scriptCapacityLimit: SCRIPT_BLOB_MAX_BYTES,
+    scriptOverCapacity: false,
+
+    /** 设备上 4 个槽位的摘要（v3 只能读摘要）。 */
+    scriptSummaries: [] as ScriptSummaryRow[],
+    summaryBusy: false,
+    summaryNote: SUMMARY_ONLY_NOTE,
+    summaryErrorText: "",
+
     // 下发进度（每帧 ACK 为权威；0x86 只作旁证）
     scriptProgressPercent: -1,
     scriptProgressText: "",
     scriptDeviceFrames: -1,
 
-    // 播放控制（State 字节 12 是权威）
+    // 播放控制（State 是权威）
     playbackText: "停止",
     playbackStageText: "无激活剧本",
     playbackState: 0,
@@ -86,18 +111,35 @@ Page({
   },
 
   session: null as ControlSession | null,
-  draft: null as ScriptDraft | null,
+  /** 4 个槽位各一份独立草稿（切 id 不覆盖别套）。 */
+  drafts: [] as ScriptDraft[],
   unsubscribers: [] as Array<() => void>,
+  /** 已读到的设备摘要（切剧本时重绘用；不参与编辑）。 */
+  deviceSummaries: [] as ScriptSummaryRow[],
+
+  /** 当前编辑的草稿（按 data.scriptId 取）。 */
+  currentDraft(): ScriptDraft | null {
+    return this.drafts.length === 0 ? null : scriptDraftOf(this.drafts, this.data.scriptId);
+  },
+
+  /** 把编辑后的草稿写回槽位数组。 */
+  storeDraft(draft: ScriptDraft): void {
+    this.drafts = replaceScriptDraft(this.drafts, draft);
+  },
 
   onLoad() {
     this.session = getSession();
-    this.draft = createScriptDraft();
+    this.drafts = createScriptDrafts();
     this.syncRows();
   },
 
   onShow() {
     this.subscribe();
     this.syncFromSession();
+    /* 回到页面就刷新摘要：设备可能在别处（或断电重启后）变了。 */
+    if (this.data.ready) {
+      void this.refreshSummaries();
+    }
   },
 
   onHide() {
@@ -119,7 +161,7 @@ Page({
       session.onState((state) => this.applyDeviceState(state)),
       /* 设备侧 ScriptProgress(0x86) 只是「确实收到了」的旁证，不进进度条。 */
       session.transport.onScriptProgress((scriptId, frames) => {
-        if (scriptId !== this.draft?.scriptId) {
+        if (scriptId !== this.data.scriptId) {
           return;
         }
         this.setData({ scriptDeviceFrames: frames });
@@ -155,11 +197,20 @@ Page({
       session?.reconnectPending ?? false,
       (session?.cachedDevice ?? null) !== null,
     );
+    const wasReady = this.data.ready;
     this.setData({ ...view, ready: state === "ready" });
+    /* 首次连上 / 重连成功：读一次摘要（§9.1 的重建顺序最后一步）。 */
+    if (!wasReady && state === "ready") {
+      void this.refreshSummaries();
+    } else if (wasReady && state !== "ready") {
+      /* 断线：摘要描述的是上一台设备，必须清掉，别让用户以为还在。 */
+      this.deviceSummaries = [];
+      this.setData({ scriptSummaries: [], summaryErrorText: "" });
+    }
   },
 
   applyDeviceState(state: DeviceState) {
-    const stageTotal = this.draft?.stages.length ?? 0;
+    const stageTotal = this.currentDraft()?.stages.length ?? 0;
     const playback = playbackView(
       state.playbackState,
       state.stageIndex,
@@ -177,17 +228,66 @@ Page({
     });
   },
 
+  // ---------------- 设备摘要读回 ----------------
+
+  async refreshSummaries() {
+    const session = this.session;
+    if (session === null || this.data.summaryBusy) {
+      return;
+    }
+    this.setData({ summaryBusy: true });
+    try {
+      const result = await session.queryScriptSummaries();
+      if (result.kind === "ok") {
+        this.deviceSummaries = result.summaries.map(scriptSummaryRow);
+        this.setData({
+          scriptSummaries: this.deviceSummaries,
+          summaryErrorText: "",
+        });
+        return;
+      }
+      if (result.kind === "stale") {
+        return;
+      }
+      /* 部分读回：已读到的照常显示，读不到的用错误行说明。 */
+      this.deviceSummaries = result.summaries.map(scriptSummaryRow);
+      this.setData({
+        scriptSummaries: this.deviceSummaries,
+        summaryErrorText: summaryReadErrorText(result.message),
+      });
+    } finally {
+      this.setData({ summaryBusy: false });
+    }
+  },
+
   // ---------------- 草稿 ----------------
 
   syncRows(patch: Record<string, unknown> = {}) {
-    const draft = this.draft;
+    const draft = this.currentDraft();
     if (draft === null) {
       return;
     }
+    /*
+     * 容量预检放在每次草稿变更后：用户改一个数字就能看到有没有超。
+     * 比较的是「4 个槽位合计」（§10.4），但只把设备上已提交的槽位算进来
+     * ——设备不让我们读回别套的内容，本机草稿是唯一替代；从没下发的草稿
+     * 在设备上只占 1 字节，算进来会误拦。当前这套一定参与。
+     */
+    const committedIds = this.deviceSummaries
+      .filter((row) => row.committed)
+      .map((row) => row.scriptId);
+    const estimate = draftCapacityBytes(
+      this.drafts,
+      committedIds,
+      draft.scriptId,
+      this.stripCountForScripts(),
+    );
     this.setData({
       scriptStageRows: buildScriptStageRows(draft, this.data.scriptActiveStage),
       currentStageSegments: this.segmentCellsOf(draft, this.data.scriptActiveStage),
       scriptId: draft.scriptId,
+      scriptEstimatedBytes: estimate,
+      scriptOverCapacity: estimate > SCRIPT_BLOB_MAX_BYTES,
       ...patch,
     });
   },
@@ -196,7 +296,14 @@ Page({
   segmentCellsOf(
     draft: ScriptDraft,
     stageIndex: number,
-  ): Array<{ key: string; stripId: number; segId: number; rangeText: string; typeText: string }> {
+  ): Array<{
+    key: string;
+    stripId: number;
+    segId: number;
+    rangeText: string;
+    typeText: string;
+    secondLayer: boolean;
+  }> {
     const stage = draft.stages[stageIndex];
     if (stage === undefined) {
       return [];
@@ -207,25 +314,28 @@ Page({
       stripId: seg.stripId,
       segId: seg.segId,
       rangeText: `${seg.start}-${seg.end}`,
-      typeText: typeName(seg.type),
+      typeText: typeName("layer0" in seg ? seg.layer0.type : seg.type),
+      secondLayer: "layer0" in seg && seg.layer1.type !== 0xff,
     }));
   },
 
   onScriptIdTap(e: WechatMiniprogram.TouchEvent) {
-    if (this.draft === null) {
-      return;
-    }
     const scriptId = Number(e.currentTarget.dataset.scriptId ?? -1);
     if (!Number.isInteger(scriptId) || scriptId < 0 || scriptId >= MAX_SCRIPTS) {
       return;
     }
-    this.draft = { ...this.draft, scriptId };
+    /*
+     * 4 套剧本各自独立草稿：切 id 只切「编哪一套」，不覆盖其它槽位。
+     * 必须先改 data.scriptId（currentDraft 按它取值），再重画行。
+     */
+    this.setData({ scriptId, scriptActiveStage: 0 });
     this.syncRows({ scriptHintText: "" });
   },
 
   onScriptStageTap(e: WechatMiniprogram.TouchEvent) {
+    const draft = this.currentDraft();
     const index = Number(e.currentTarget.dataset.stage ?? -1);
-    if (this.draft === null || index < 0 || index >= this.draft.stages.length) {
+    if (draft === null || index < 0 || index >= draft.stages.length) {
       return;
     }
     this.setData({ scriptActiveStage: index });
@@ -233,38 +343,41 @@ Page({
   },
 
   onScriptStageDurationInput(e: WechatMiniprogram.Input) {
-    if (this.draft === null) {
+    const draft = this.currentDraft();
+    if (draft === null) {
       return;
     }
     const index = Number(e.currentTarget.dataset.stage ?? -1);
-    this.draft = setStageDuration(this.draft, index, String(e.detail.value ?? ""));
+    this.storeDraft(setStageDuration(draft, index, String(e.detail.value ?? "")));
     this.syncRows({ scriptHintText: "" });
   },
 
   onScriptAddStage() {
-    if (this.draft === null) {
+    const draft = this.currentDraft();
+    if (draft === null) {
       return;
     }
-    const next = addStage(this.draft);
-    if (next === this.draft) {
+    const next = addStage(draft);
+    if (next === draft) {
       wx.showToast({ title: `最多 ${MAX_STAGES} 个阶段`, icon: "none" });
       return;
     }
-    this.draft = next;
+    this.storeDraft(next);
     this.syncRows({ scriptHintText: "" });
   },
 
   onScriptRemoveStage(e: WechatMiniprogram.TouchEvent) {
-    if (this.draft === null) {
+    const draft = this.currentDraft();
+    if (draft === null) {
       return;
     }
     const index = Number(e.currentTarget.dataset.stage ?? -1);
-    const next = removeStage(this.draft, index);
-    if (next === this.draft) {
+    const next = removeStage(draft, index);
+    if (next === draft) {
       wx.showToast({ title: "至少保留 1 个阶段", icon: "none" });
       return;
     }
-    this.draft = next;
+    this.storeDraft(next);
     this.setData({
       scriptActiveStage: Math.min(this.data.scriptActiveStage, next.stages.length - 1),
     });
@@ -272,15 +385,37 @@ Page({
   },
 
   /**
+   * 阶段重排（上移 / 下移）。
+   *
+   * 顺序就是设备上的播放顺序，所以这里只改草稿数组并保持「当前编辑阶段」
+   * 跟随被移动的那一张：用户点了它，重排后仍应该停在它上面。
+   */
+  onScriptMoveStage(e: WechatMiniprogram.TouchEvent) {
+    const draft = this.currentDraft();
+    if (draft === null) {
+      return;
+    }
+    const index = Number(e.currentTarget.dataset.stage ?? -1);
+    const delta = Number(e.currentTarget.dataset.delta ?? 0);
+    const next = moveStage(draft, index, delta);
+    if (next === draft) {
+      return;
+    }
+    this.storeDraft(next);
+    this.setData({ scriptActiveStage: index + delta });
+    this.syncRows({ scriptHintText: "" });
+  },
+
+  /**
    * 把**灯光页选中的段**加进当前阶段。
    *
    * 段参数取设备刚读回的段配置（`session.segmentsOf(stripId)`）：用户在灯光页
-   * 拖动过颜色时以设备为准，不在这里重复一套参数 UI。同一槽位是替换（upsert），
-   * 重复点只更新参数。
+   * 拖动过颜色时以设备为准，不在这里重复一套参数 UI。槽位按 (strip, seg) 计，
+   * 同一槽位是替换（upsert），重复点只更新参数。两层段原样保留（layer1 / blend）。
    */
   onScriptAddSegment() {
     const session = this.session;
-    const draft = this.draft;
+    const draft = this.currentDraft();
     if (session === null || draft === null || !this.data.ready) {
       return;
     }
@@ -301,46 +436,47 @@ Page({
     }
 
     /* 剧本里的段必须带自己的 stripId（跨带），不继承「当前带」。 */
-    const segment = configFromReport(report);
+    const segment = specFromReport(report);
     const segments = upsertStageSegment(stage.segments, segment);
-    this.draft = setStageSegments(draft, stageIndex, segments);
+    this.storeDraft(setStageSegments(draft, stageIndex, segments));
     this.syncRows({
       scriptHintText: `阶段 ${stageIndex + 1}：灯带 ${segment.stripId + 1} 段 ${segment.segId} 已加入`,
     });
   },
 
   onScriptRemoveSegment(e: WechatMiniprogram.TouchEvent) {
-    if (this.draft === null) {
+    const draft = this.currentDraft();
+    if (draft === null) {
       return;
     }
     const segId = Number(e.currentTarget.dataset.segId ?? -1);
     const stripId = Number(e.currentTarget.dataset.stripId ?? -1);
     const stageIndex = this.data.scriptActiveStage;
-    const stage = this.draft.stages[stageIndex];
-    if (stage === undefined || segId < 0) {
+    const stage = draft.stages[stageIndex];
+    if (stage === undefined || segId < 0 || stripId < 0) {
       return;
     }
-    /* 先按 (stripId, segId) 精确挑掉那条，再交给 removeStageSegment 做整体过滤：
-     * script-view 现在只按 segId 去重，跨带同号槽位要在这里区分（#45 改进）。 */
+    /* 槽位是 (strip, seg)：只挑掉这一条，别的带同号槽位不受影响。 */
     const keep = stage.segments.filter(
-      (seg) => !(seg.segId === segId && (stripId < 0 || seg.stripId === stripId)),
+      (seg) => !(seg.segId === segId && seg.stripId === stripId),
     );
     if (keep.length === stage.segments.length) {
       return;
     }
-    this.draft = setStageSegments(this.draft, stageIndex, keep);
+    this.storeDraft(setStageSegments(draft, stageIndex, keep));
     this.syncRows({
-      scriptHintText: `已从阶段 ${stageIndex + 1} 删除段 ${segId}`,
+      scriptHintText: `已从阶段 ${stageIndex + 1} 删除灯带 ${stripId + 1} 的段 ${segId}`,
     });
   },
 
-  /** stage-row 里「删本阶段最后加入的段」之外的入口：清空本阶段的段。 */
+  /** 清空本阶段的段（阶段仍保留，播到它时整条熄灭）。 */
   onScriptClearStageSegments() {
-    if (this.draft === null) {
+    const draft = this.currentDraft();
+    if (draft === null) {
       return;
     }
     const stageIndex = this.data.scriptActiveStage;
-    this.draft = setStageSegments(this.draft, stageIndex, []);
+    this.storeDraft(setStageSegments(draft, stageIndex, []));
     this.syncRows({ scriptHintText: `阶段 ${stageIndex + 1} 的段已清空` });
   },
 
@@ -348,14 +484,14 @@ Page({
 
   async onScriptDownload() {
     const session = this.session;
-    const draft = this.draft;
+    const draft = this.currentDraft();
     if (session === null || this.data.scriptBusy || !this.data.ready || draft === null) {
       return;
     }
 
     const invalidStages = draftInvalidStageCount(draft);
     if (invalidStages > 0) {
-      const message = `有 ${invalidStages} 个阶段的时长非法（必须是 1-65535 的整数）`;
+      const message = `有 ${invalidStages} 个阶段的时长非法（必须是 1-65535 的整数，0 不行）`;
       this.setData({ scriptHintText: message });
       wx.showToast({ title: message, icon: "none" });
       return;
@@ -366,6 +502,19 @@ Page({
     if (!precheck.ok) {
       this.setData({ scriptHintText: precheck.message });
       wx.showToast({ title: precheck.message, icon: "none" });
+      return;
+    }
+
+    /* 容量预检（§10.4）：超限直接提示，一帧都不发。 */
+    const committedIds = this.deviceSummaries
+      .filter((row) => row.committed)
+      .map((row) => row.scriptId);
+    const capacity = checkScriptBlobBytes(
+      draftCapacityBytes(this.drafts, committedIds, script.scriptId, script.stripCount),
+    );
+    if (!capacity.ok) {
+      this.setData({ scriptHintText: capacity.message });
+      wx.showToast({ title: capacity.message, icon: "none" });
       return;
     }
 
@@ -393,24 +542,33 @@ Page({
         this.setData({
           scriptProgressPercent: 100,
           scriptProgressText: "下发完成",
-          scriptHintText: `剧本 ${script.scriptId + 1} 已下发并激活`,
+          scriptHintText: `剧本 ${script.scriptId + 1} 已下发并激活（阶段数 / 激活态已按设备摘要刷新）`,
         });
         if (result.state !== undefined && result.state !== null) {
           this.applyDeviceState(result.state);
         }
+        /* 内容变了，摘要也要重读（stage_count 可能不同）。 */
+        void this.refreshSummaries();
         return;
       }
       if (result.kind === "stale") {
         this.setData({ scriptHintText: "连接已切换，下发结果已丢弃" });
         return;
       }
+      if (result.kind === "too-large") {
+        /* 设备明示 ScriptTooLarge：配置未变，必须说清楚（预检是按单套算的）。 */
+        this.setData({
+          scriptProgressPercent: -1,
+          scriptHintText: `${result.message}；上一套剧本仍可用`,
+        });
+        wx.showToast({ title: "剧本过大，设备未保存", icon: "none" });
+        return;
+      }
       const message =
         result.kind === "ack-error"
           ? `下发被设备拒绝（${resultText(result.ack.resultCode)}），上一套剧本仍可用`
-          : result.kind === "invalid"
-            ? result.message
-            : result.message;
-      this.setData({ scriptHintText: message });
+          : result.message;
+      this.setData({ scriptProgressPercent: -1, scriptHintText: message });
       wx.showToast({ title: message, icon: "none" });
     } finally {
       this.setData({ scriptBusy: false });
@@ -446,6 +604,7 @@ Page({
   },
 
   onPlaybackLoopChange(e: WechatMiniprogram.SwitchChange) {
+    /* 只改本地期望值；下次 play / activate 时随命令下发（设备在 State 里回报）。 */
     this.setData({ playbackLoop: Boolean(e.detail.value) });
   },
 
@@ -460,6 +619,7 @@ Page({
       if (result.kind === "ok" && result.state !== undefined && result.state !== null) {
         this.applyDeviceState(result.state);
         this.setData({ scriptHintText: `已激活剧本 ${this.data.scriptId + 1}` });
+        void this.refreshSummaries();
         return;
       }
       if (result.kind === "ack-error") {
@@ -492,18 +652,21 @@ Page({
   },
 });
 
-/** 设备上的段配置 → 剧本里的扁平段（保持类型与参数，stripId 原样）。 */
-function configFromReport(report: SegmentReport): SegmentConfig {
+/**
+ * 设备 SegmentReport → 可下发的两层段。
+ *
+ * v3 的报告本身就是 `SegmentSpec` + layer0 的扁平投影，所以这里直接取两层
+ * 权威字段（layer0 / layer1 / blend），**不**退化成扁平配置——否则剧本里
+ * 的第二层会在「加入阶段」时被静默丢掉，激活后与直接设段的视觉不一致。
+ */
+function specFromReport(report: SegmentReport): SegmentSpec {
   return {
     stripId: report.stripId,
     segId: report.segId,
     start: report.start,
     end: report.end,
-    type: report.type,
-    hue: report.hue,
-    sat: report.sat,
-    periodMs: report.periodMs,
-    p5: report.p5,
-    flags: report.flags,
+    blend: report.blend,
+    layer0: { ...report.layer0 },
+    layer1: { ...report.layer1 },
   };
 }

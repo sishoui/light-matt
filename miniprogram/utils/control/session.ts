@@ -36,7 +36,7 @@ import {
   type LinkDetail,
   type SendOptions,
 } from "../ble/transport";
-import { errorText, triage } from "../ble/errors";
+import { AckRejectedError, errorText, resultText, triage } from "../ble/errors";
 import { WxCallError } from "../ble/wx-promise";
 import {
   applyLocalBrightness,
@@ -63,7 +63,7 @@ import {
   type RecentDevice,
 } from "./device-history";
 import { LED_COUNT_ACK_TIMEOUT_MS } from "./ledCount";
-import { MAX_LEDS, MAX_STRIPS, MIN_LEDS } from "../protocol/constants";
+import { MAX_LEDS, MAX_SCRIPTS, MAX_STRIPS, MIN_LEDS, RESULT } from "../protocol/constants";
 import type { UsageLogSink } from "../usage/logger";
 import {
   breathingSegment,
@@ -87,8 +87,10 @@ import { rgbToHsv } from "../color/hsv";
 import {
   buildAbort,
   buildScriptPlan,
+  checkScriptCapacity,
   scriptProgressView,
   validateScript,
+  type ScriptCapacityCheck,
   type ScriptConfig,
   type ScriptPlanOptions,
   type ScriptProgressView,
@@ -196,14 +198,16 @@ export type PowerResult = CommandResult;
 export type PlaybackAction = 0 | 1 | 2;
 
 /**
- * 剧本命令的结果（#32）。
+ * 剧本命令的结果（#32 / #45）。
  *
- * 与 CommandResult 的区别：多了 `invalid`（本端预检就没过，一帧都没发），
+ * 与 CommandResult 的区别：多了 `invalid`（本端预检就没过，一帧都没发）、
+ * `too-large`（设备回 ScriptTooLarge；配置未变，文案已含「未保存」），
  * 以及成功时不强求 DeviceState（读回失败也不该让下发看起来失败）。
  */
 export type ScriptResult =
   | { kind: "ok"; plan?: unknown; state?: DeviceState | null }
   | { kind: "invalid"; message: string }
+  | { kind: "too-large"; message: string }
   | { kind: "ack-error"; ack: AckResult }
   | { kind: "stale" }
   | { kind: "error"; message: string };
@@ -213,6 +217,17 @@ export type ScriptSummaryResult =
   | { kind: "ok"; summary: ScriptSummary }
   | { kind: "stale" }
   | { kind: "error"; message: string };
+
+/**
+ * 4 个剧本槽位的摘要读回结果。
+ *
+ * 失败时仍带上已读到的部分（`summaries` 的前缀）：页面可以只灰掉读不到的
+ * 那几张卡片，而不是整块清空。
+ */
+export type ScriptSummariesResult =
+  | { kind: "ok"; summaries: ScriptSummary[] }
+  | { kind: "stale" }
+  | { kind: "error"; message: string; summaries: ScriptSummary[] };
 
 /** QueryStripConfig 的结果（0x87 是设备权威，只读）。 */
 export type StripConfigResult =
@@ -839,8 +854,12 @@ export class ControlSession {
    * 帧序由 script-plan 的纯函数决定（Begin → Stage/Segment… → Commit →
    * Activate）。这里只负责逐帧发送与失败处理：
    *
+   *  - 容量预检在**发第一帧之前**（§10.4）：预估持久化字节超过 16KB 直接
+   *    返回 `invalid`，一帧都不发——绝不等设备报到 Commit 才回 0x0A；
    *  - 任何一帧 ACK 非零 → 立即 ScriptAbort 丢弃设备暂存，**旧剧本保持可用**
    *    （设备侧 commit 才替换，这是协议保证的，也是本函数的前提）；
+   *  - `ScriptTooLarge (0x0A)`（预检漏了的合并超限）折成 `too-large`，
+   *    文案明确「设备配置未改变」，不让用户以为半套生效了；
    *  - 传输异常 → 同样尝试 Abort（尽力而为，链路已断时它会失败，无所谓：
    *    设备上没 commit 的暂存不会被激活）。
    *
@@ -859,6 +878,12 @@ export class ControlSession {
     const validation = this.validateScriptForDevice(script);
     if (!validation.ok) {
       return { kind: "invalid", message: validation.message };
+    }
+
+    /* 容量预检：按与固件 encode 相同的公式预估，超限直接拒发（§10.4）。 */
+    const capacity = checkScriptCapacity([script]);
+    if (!capacity.ok) {
+      return { kind: "invalid", message: capacity.message };
     }
 
     const plan = buildScriptPlan(script, opts);
@@ -880,6 +905,16 @@ export class ControlSession {
       if (this.reconnect.isStale(epoch)) {
         return { kind: "stale" };
       }
+      /*
+       * 设备明确拒绝：0x0A 是「编码后装不下」，必须单独说清楚——预检是按
+       * 单套算的，4 个槽位共享 16KB，合并超限只有设备知道。
+       */
+      if (err instanceof AckRejectedError) {
+        if (err.resultCode === RESULT.SCRIPT_TOO_LARGE) {
+          return { kind: "too-large", message: resultText(err.resultCode) };
+        }
+        return { kind: "error", message: errorText(err) };
+      }
       return { kind: "error", message: errorText(err) };
     }
 
@@ -896,6 +931,16 @@ export class ControlSession {
   validateScriptForDevice(script: ScriptConfig): ScriptValidation {
     const ledCounts = this.currentLedCounts();
     return validateScript(script, ledCounts);
+  }
+
+  /**
+   * 本端的剧本容量预检（§10.4）。
+   *
+   * 只看**这一套**：设备上其它槽位的内容读不回来（QueryScript 只给摘要），
+   * 所以「4 套合计超限」只能在 Commit 时由设备发现，走 0x0A 文案。
+   */
+  scriptCapacityForDevice(script: ScriptConfig): ScriptCapacityCheck {
+    return checkScriptCapacity([script]);
   }
 
   /**
@@ -967,6 +1012,9 @@ export class ControlSession {
   /**
    * 查一套剧本的摘要（QueryScript 0x1A → ScriptSummary 0x85）。
    * 重连重建 UI 的权威路径第 3 步（§10.1）。
+   *
+   * **只回摘要**：v3 没有「读回整份剧本」的命令，所以 stage_count / flags /
+   * active 之外拿不到任何内容（§10.4 的取舍）。页面必须把这个限制说清楚。
    */
   async queryScript(scriptId: number): Promise<ScriptSummaryResult> {
     if (this.transport.linkState !== "ready") {
@@ -985,6 +1033,30 @@ export class ControlSession {
       }
       return { kind: "error", message: errorText(err) };
     }
+  }
+
+  /**
+   * 依次读回 4 个剧本槽位的摘要（连上 / 回到页面时刷新「设备上有什么」）。
+   *
+   * 一条失败不中断：把失败原因单独返回，页面仍能展示读到的那些槽位——
+   * 「部分读回」比「整块空白」有用，也不会把已确认的信息丢掉。
+   */
+  async queryScriptSummaries(): Promise<ScriptSummariesResult> {
+    if (this.transport.linkState !== "ready") {
+      return { kind: "error", message: "设备未连接", summaries: [] };
+    }
+    const summaries: ScriptSummary[] = [];
+    for (let scriptId = 0; scriptId < MAX_SCRIPTS; scriptId += 1) {
+      const result = await this.queryScript(scriptId);
+      if (result.kind === "ok") {
+        summaries.push(result.summary);
+      } else if (result.kind === "stale") {
+        return { kind: "stale" };
+      } else {
+        return { kind: "error", message: result.message, summaries };
+      }
+    }
+    return { kind: "ok", summaries };
   }
 
   /** 只有 ACK 没有后续帧的剧本命令的公共路径。 */
