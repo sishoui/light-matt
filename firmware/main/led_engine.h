@@ -148,7 +148,7 @@ bool lumen_led_engine_cancel_selftest(void);
 uint8_t lumen_led_engine_script_begin(uint8_t script_id, uint8_t stage_count,
                                       uint8_t strip_count);
 uint8_t lumen_led_engine_script_stage(uint8_t script_id, uint8_t stage_index,
-                                      uint16_t duration_ms);
+                                      uint16_t duration_ms, uint16_t fade_ms);
 uint8_t lumen_led_engine_script_segment(uint8_t script_id, uint8_t stage_index, uint8_t strip_id,
                                         uint8_t seg_id, const lumen_segment_t *segment,
                                         uint16_t *frames_written);

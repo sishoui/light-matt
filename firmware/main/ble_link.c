@@ -478,7 +478,8 @@ static void handle_frame(const uint8_t *data, size_t len)
             break;
         case LUMEN_SCRIPT_OP_STAGE:
             outcome.result_code = lumen_led_engine_script_stage(
-                outcome.script_id, outcome.script_stage_index, outcome.script_duration_ms);
+                outcome.script_id, outcome.script_stage_index, outcome.script_duration_ms,
+                outcome.script_fade_ms);
             break;
         case LUMEN_SCRIPT_OP_SEGMENT: {
             uint16_t written = 0;

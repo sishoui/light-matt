@@ -97,6 +97,8 @@ typedef struct {
     uint8_t script_strip_count;
     uint8_t script_stage_index;
     uint16_t script_duration_ms;
+    /* fade_ms（§9.6）：格式预留，non-zero 照收并持久化，播放仍是硬切。 */
+    uint16_t script_fade_ms;
     uint8_t script_strip;
     uint8_t script_seg;
     lumen_segment_t script_segment;

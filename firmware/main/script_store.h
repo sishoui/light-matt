@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "effects.h"
@@ -30,9 +31,16 @@ typedef enum {
     LUMEN_PLAYBACK_PAUSED = 2,
 } lumen_playback_state_t;
 
-/* 一个阶段：固定时长 + 全部灯带的段配置（段用 active 位标记是否使用）。 */
+/* 一个阶段：固定时长 + 淡入淡出时长 + 全部灯带的段配置（段用 active 位标记是否使用）。 */
 typedef struct {
     uint16_t duration_ms; /* 1-65535；0 = 该阶段还没有时长（commit 时拒绝） */
+    /*
+     * fade_ms（v3 新增，docs/protocol-v3.md §9.6）：**格式预留，当前恒为 0**。
+     * 非 0 值照常接受并持久化，但播放行为仍是硬切——过渡期要同时渲染两套阶段帧，
+     * RMT 负载翻倍，与已实测的 BLE 抢 RMT ISR 问题叠加（见 docs/spec-v3.md 取舍）。
+     * caps.bit1 保持 0，App 据此不展示过渡选项。
+     */
+    uint16_t fade_ms;
     lumen_segment_t segments[LUMEN_MAX_STRIPS][LUMEN_MAX_SEGMENTS];
 } lumen_script_stage_t;
 
@@ -85,9 +93,12 @@ void lumen_script_store_init(lumen_script_store_t *store);
 bool lumen_script_begin(lumen_script_store_t *store, uint8_t script_id, uint8_t stage_count,
                         uint8_t strip_count);
 
-/* ScriptStage：写阶段时长。stage_index 必须 < 本次下发的 stage_count，时长非 0。 */
+/*
+ * ScriptStage：写阶段时长与 fade。stage_index 必须 < 本次下发的 stage_count，时长非 0。
+ * fade_ms 接受任意值（含非 0）但只存储，播放行为仍是硬切（见结构体注释）。
+ */
 bool lumen_script_stage(lumen_script_store_t *store, uint8_t script_id, uint8_t stage_index,
-                        uint16_t duration_ms);
+                        uint16_t duration_ms, uint16_t fade_ms);
 
 /*
  * ScriptSegment：写某阶段某条灯带的一个段槽位。
@@ -99,6 +110,13 @@ bool lumen_script_segment(lumen_script_store_t *store, uint8_t script_id, uint8_
                           uint8_t strip_id, uint8_t seg_id, const lumen_segment_t *segment,
                           uint16_t *frames_written);
 
+/* ScriptCommit 的结果（docs/protocol-v3.md §10.4「能提交的一定能持久化」）。 */
+typedef enum {
+    LUMEN_SCRIPT_COMMIT_OK = 0,
+    LUMEN_SCRIPT_COMMIT_INVALID = 1,   /* 整份校验不过 → InvalidParam (0x01) */
+    LUMEN_SCRIPT_COMMIT_TOO_LARGE = 2, /* 编码后超持久化上限 → ScriptTooLarge (0x0A) */
+} lumen_script_commit_result_t;
+
 /*
  * ScriptCommit：对整份暂存做校验，通过才原子替换已提交剧本。
  *
@@ -106,11 +124,19 @@ bool lumen_script_segment(lumen_script_store_t *store, uint8_t script_id, uint8_
  * 每个活动段的 type 已知且已实现、区间落在该灯带灯珠数内、同灯带内不重叠、
  * flags 保留位与周期下限（与 SetSegment 同一套规则）。
  *
- * strip_counts 长度须为 LUMEN_MAX_STRIPS（每条灯带自己的灯珠数）。
- * **失败：丢弃暂存区，已提交剧本原样保留，返回 false。**
+ * 校验通过后**再编码一遍**到调用方给的暂存缓冲，检查持久化尺寸
+ * （protocol-v3.md §10.4 的不变式：能 commit 的一定能持久化）。超限回
+ * `LUMEN_SCRIPT_COMMIT_TOO_LARGE`，**RAM 里不会出现「已提交但存不下」的剧本**，
+ * NVS 也不会收到任何写入。
+ *
+ * blob_out 可为 NULL（纯校验，不做尺寸检查），仅用于不需要持久化的纯逻辑测试。
+ *
+ * 失败时暂存区被丢弃，已提交剧本原样保留。
  */
-bool lumen_script_commit(lumen_script_store_t *store, uint8_t script_id,
-                         const uint16_t strip_counts[LUMEN_MAX_STRIPS]);
+lumen_script_commit_result_t lumen_script_commit(lumen_script_store_t *store, uint8_t script_id,
+                                                 const uint16_t strip_counts[LUMEN_MAX_STRIPS],
+                                                 uint8_t *blob_out, size_t blob_cap,
+                                                 size_t *blob_len);
 
 /* ScriptAbort：丢弃该 script_id 的暂存。已提交剧本不受影响。 */
 void lumen_script_abort(lumen_script_store_t *store, uint8_t script_id);

@@ -323,16 +323,17 @@ static void dispatch_script_stage(const lumen_frame_t *frame, lumen_command_outc
         return;
     }
     /*
-     * fade_ms 在 v3 是**格式预留**（docs/protocol-v3.md §9.6）：非 0 值照常接受，
-     * 但播放行为仍是硬切。#39 才把它存进阶段结构并接进剧本 blob v2；#36 只保证
-     * 「不因这个字段拒收」，所以这里刻意只校验长度、不校验取值。
+     * fade_ms 在 v3 是**格式预留**（docs/protocol-v3.md §9.6）：非 0 值照常接受、
+     * 存储并持久化（blob v2 的 stage 头有 2 字节），但播放行为仍是硬切——
+     * 过渡期要同时渲染两套阶段帧，RMT 负载翻倍，与已实测的 BLE 抢 RMT ISR
+     * 问题叠加。所以这里刻意只校验长度、不校验取值。
      */
-    (void)fade;
     outcome->result_code = LUMEN_RESULT_OK;
     outcome->script_op = LUMEN_SCRIPT_OP_STAGE;
     outcome->script_id = script_id;
     outcome->script_stage_index = stage_index;
     outcome->script_duration_ms = duration;
+    outcome->script_fade_ms = fade;
 }
 
 /*
@@ -636,6 +637,7 @@ void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *cur
     outcome->script_strip_count = 0;
     outcome->script_stage_index = 0;
     outcome->script_duration_ms = 0;
+    outcome->script_fade_ms = 0;
     outcome->script_strip = 0;
     outcome->script_seg = 0;
     outcome->script_segment.active = false;

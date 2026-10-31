@@ -3,49 +3,98 @@
 #include <string.h>
 
 /*
- * 剧本 blob 仍停留在 v1 的**单层**记录（docs/protocol-v3.md §10.3 的 v2 是 #39）。
+ * 剧本 blob v2（docs/protocol-v3.md §10.3）：两层定宽段 + 变长记录。
  *
- * #37 的段结构已经是两层，但 blob 格式的升级（LMS3 / version 2 / 变长记录 /
- * 容量 16384）属于 #39。为了让本票不产生数据损坏，这里的策略是**显式降级**：
- *   - 写：只持久化 layer[0] 与段几何；layer[1] 与 blend **不写**（记录形状不变，
- *     仍是 10 字节，旧固件也能读）；
- *   - 读：layer[1] 置为空层、blend 置 0——即「单层段」。
- * 也就是说：两层剧本在掉电重启后会退回单层（layer0 保留），不会写出一个
- * 自相矛盾或越界的 blob，也不会把 layer1 的字节当成 layer0 的参数。
- *
- * **#39 必须把这里换成双层变长记录**，否则用户的两层剧本重启即丢失上层。
+ * 段记录 = start(1) end(1) blend(1) layer0 layer1，其中每层是
+ * type(1) + param_len(type) 字节（空层 0xFF 长度为 0）。记录宽度因此由
+ * 两层类型决定，见 script_blob.h 的 LUMEN_SCRIPT_SEGMENT_MIN/MAX。
  */
-/* 写一个段记录（10 字节）：start, end, type, layer0.param[0..6]。t0_ms 不持久化。 */
-static void encode_segment(const lumen_segment_t *seg, uint8_t *out)
+
+/* 有界读指针。 */
+typedef struct {
+    const uint8_t *data;
+    size_t len;
+    size_t pos;
+} reader_t;
+
+static bool read_u8(reader_t *r, uint8_t *out)
 {
-    const uint8_t *param = seg->layer[0].param;
-    out[0] = seg->start;
-    out[1] = seg->end;
-    out[2] = seg->layer[0].type;
-    out[3] = param[0];
-    out[4] = param[1];
-    out[5] = param[2];
-    out[6] = param[3];
-    out[7] = param[4];
-    out[8] = param[5];
-    out[9] = param[6];
+    if (r->pos + 1 > r->len) {
+        return false;
+    }
+    *out = r->data[r->pos++];
+    return true;
 }
 
-static void decode_segment(const uint8_t *in, lumen_segment_t *seg)
+static bool read_u16(reader_t *r, uint16_t *out)
 {
-    memset(seg, 0, sizeof(*seg));
-    seg->active = true;
-    seg->start = in[0];
-    seg->end = in[1];
-    seg->layer[0].type = in[2];
-    for (size_t i = 0; i < sizeof(seg->layer[0].param); ++i) {
-        seg->layer[0].param[i] = in[3 + i];
+    if (r->pos + 2 > r->len) {
+        return false;
     }
-    /* #39：layer1 / blend 尚未持久化，读出即单层段（见文件头的降级说明）。 */
-    seg->layer[1].type = LUMEN_LAYER_EMPTY;
-    seg->blend = 0;
-    /* t0_ms 不持久化：阶段相位在切换/加载时由引擎统一重置。 */
-    seg->t0_ms = 0;
+    *out = (uint16_t)(r->data[r->pos] | ((uint16_t)r->data[r->pos + 1] << 8));
+    r->pos += 2;
+    return true;
+}
+
+/* 某一层在 blob 里的参数宽度（空层 0）。 */
+static size_t layer_param_len(uint8_t type)
+{
+    if (type == LUMEN_LAYER_EMPTY) {
+        return 0;
+    }
+    return lumen_effect_param_len(type);
+}
+
+/* 一条段记录的宽度。 */
+static size_t segment_record_len(const lumen_segment_t *seg)
+{
+    return 3u + 1u + layer_param_len(seg->layer[0].type) + 1u +
+           layer_param_len(seg->layer[1].type);
+}
+
+/* 写一层：type + 该类型的有效参数前缀（其余 param 字节不持久化）。 */
+static void encode_layer(const lumen_effect_layer_t *layer, uint8_t *out)
+{
+    out[0] = layer->type;
+    size_t n = layer_param_len(layer->type);
+    for (size_t i = 0; i < n; ++i) {
+        out[1 + i] = layer->param[i];
+    }
+}
+
+/* 写一条段记录。t0_ms 不持久化（阶段相位在加载/切换时统一重置）。 */
+static void encode_segment(const lumen_segment_t *seg, uint8_t *out)
+{
+    size_t pos = 0;
+    out[pos++] = seg->start;
+    out[pos++] = seg->end;
+    out[pos++] = seg->blend;
+    size_t n0 = layer_param_len(seg->layer[0].type);
+    encode_layer(&seg->layer[0], &out[pos]);
+    pos += 1u + n0;
+    encode_layer(&seg->layer[1], &out[pos]);
+}
+
+/* 读一层：type + 参数；未持久化的 param 尾部补 0（保留位必须为 0）。 */
+static bool decode_layer(reader_t *r, lumen_effect_layer_t *layer)
+{
+    uint8_t type = 0;
+    if (!read_u8(r, &type)) {
+        return false;
+    }
+    if (type != LUMEN_LAYER_EMPTY && !lumen_effect_type_known(type)) {
+        return false; /* 未知 type：整份拒绝，不静默降级 */
+    }
+    memset(layer, 0, sizeof(*layer));
+    layer->type = type;
+    size_t n = layer_param_len(type);
+    if (r->pos + n > r->len) {
+        return false;
+    }
+    for (size_t i = 0; i < n; ++i) {
+        layer->param[i] = r->data[r->pos++];
+    }
+    return true;
 }
 
 size_t lumen_script_blob_encode(const lumen_script_store_t *store, uint8_t active_script_id,
@@ -82,11 +131,13 @@ size_t lumen_script_blob_encode(const lumen_script_store_t *store, uint8_t activ
 
         for (uint8_t st = 0; st < script->stage_count; ++st) {
             const lumen_script_stage_t *stage = &script->stages[st];
-            if (pos + 2 > out_cap) {
+            if (pos + 4 > out_cap) {
                 return 0;
             }
             out[pos++] = (uint8_t)(stage->duration_ms & 0xFF);
             out[pos++] = (uint8_t)(stage->duration_ms >> 8);
+            out[pos++] = (uint8_t)(stage->fade_ms & 0xFF);
+            out[pos++] = (uint8_t)(stage->fade_ms >> 8);
 
             for (uint8_t strip = 0; strip < script->strip_count; ++strip) {
                 if (pos + 1 > out_cap) {
@@ -103,42 +154,18 @@ size_t lumen_script_blob_encode(const lumen_script_store_t *store, uint8_t activ
                     if ((mask & (uint8_t)(1u << seg)) == 0) {
                         continue;
                     }
-                    if (pos + LUMEN_SCRIPT_SEGMENT_SIZE > out_cap) {
+                    const lumen_segment_t *record = &stage->segments[strip][seg];
+                    size_t width = segment_record_len(record);
+                    if (pos + width > out_cap) {
                         return 0;
                     }
-                    encode_segment(&stage->segments[strip][seg], &out[pos]);
-                    pos += LUMEN_SCRIPT_SEGMENT_SIZE;
+                    encode_segment(record, &out[pos]);
+                    pos += width;
                 }
             }
         }
     }
     return pos;
-}
-
-/* 有界读指针。 */
-typedef struct {
-    const uint8_t *data;
-    size_t len;
-    size_t pos;
-} reader_t;
-
-static bool read_u8(reader_t *r, uint8_t *out)
-{
-    if (r->pos + 1 > r->len) {
-        return false;
-    }
-    *out = r->data[r->pos++];
-    return true;
-}
-
-static bool read_u16(reader_t *r, uint16_t *out)
-{
-    if (r->pos + 2 > r->len) {
-        return false;
-    }
-    *out = (uint16_t)(r->data[r->pos] | ((uint16_t)r->data[r->pos + 1] << 8));
-    r->pos += 2;
-    return true;
 }
 
 bool lumen_script_blob_decode(const uint8_t *blob, size_t len,
@@ -206,10 +233,14 @@ bool lumen_script_blob_decode(const uint8_t *blob, size_t len,
         }
         for (uint8_t st = 0; st < stage_count; ++st) {
             uint16_t duration = 0;
+            uint16_t fade = 0;
             if (!read_u16(&r, &duration)) {
                 return false;
             }
-            if (!lumen_script_stage(decoded, id, st, duration)) {
+            if (!read_u16(&r, &fade)) {
+                return false;
+            }
+            if (!lumen_script_stage(decoded, id, st, duration, fade)) {
                 return false;
             }
             for (uint8_t strip = 0; strip < strip_count; ++strip) {
@@ -221,12 +252,22 @@ bool lumen_script_blob_decode(const uint8_t *blob, size_t len,
                     if ((mask & (uint8_t)(1u << seg)) == 0) {
                         continue;
                     }
-                    if (r.pos + LUMEN_SCRIPT_SEGMENT_SIZE > r.len) {
+                    lumen_segment_t segment;
+                    memset(&segment, 0, sizeof(segment));
+                    segment.active = true;
+                    uint8_t start = 0;
+                    uint8_t end = 0;
+                    uint8_t blend = 0;
+                    if (!read_u8(&r, &start) || !read_u8(&r, &end) || !read_u8(&r, &blend)) {
                         return false;
                     }
-                    lumen_segment_t segment;
-                    decode_segment(&r.data[r.pos], &segment);
-                    r.pos += LUMEN_SCRIPT_SEGMENT_SIZE;
+                    segment.start = start;
+                    segment.end = end;
+                    segment.blend = blend;
+                    if (!decode_layer(&r, &segment.layer[0]) ||
+                        !decode_layer(&r, &segment.layer[1])) {
+                        return false;
+                    }
                     if (!lumen_script_segment(decoded, id, st, strip, seg, &segment, NULL)) {
                         return false;
                     }
@@ -234,7 +275,8 @@ bool lumen_script_blob_decode(const uint8_t *blob, size_t len,
             }
         }
         /* 整份校验复用 commit：越界 / 重叠 / flags / 周期都在这里一次判掉。 */
-        if (!lumen_script_commit(decoded, id, strip_counts)) {
+        if (lumen_script_commit(decoded, id, strip_counts, NULL, 0, NULL) !=
+            LUMEN_SCRIPT_COMMIT_OK) {
             return false;
         }
     }
