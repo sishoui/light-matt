@@ -90,11 +90,22 @@ menu "Lumen"
 
     config LUMEN_RENDER_TASK_STACK_SIZE
         int "渲染任务栈大小（字节）"
-        default 4096
-        range 2048 16384
+        default 6144
+        range 4096 16384
         help
-            渲染任务只做 gamma 查表、set_pixel 循环和阻塞 refresh，
-            4 KB 足以覆盖 led_strip 与 RMT 驱动的调用深度。
+            渲染任务做段合成、gamma 查表、set_pixel 循环和阻塞 refresh。
+
+            历史：v1 只用 4 KB，因为那条路径只有「整条同色」的局部变量。
+            v2 加分段后，真机实测 4 KB 会 **栈溢出**（`Guru Meditation ...
+            Stack protection fault, task "lumen_render"`），表现为上电反复重启。
+            根因是段存储（lumen_segment_store_t ≈ 1024 字节）与持久化快照
+            （lumen_persist_t ≈ 1060 字节）被放在渲染任务的栈上，再叠上
+            led_strip / RMT 驱动的调用深度。
+
+            已把这两类结构改成渲染任务私有的**静态工作区**
+            （led_engine.c 的 s_render_persist / s_render_segments），
+            大结构不再占栈；6 KB 是给驱动深度与后续灯效计算留的余量。
+            不要再往渲染任务栈上放大数组。
 
     config LUMEN_RENDER_TASK_PRIORITY
         int "渲染任务优先级"
@@ -124,10 +135,14 @@ menu "Lumen"
 
     config LUMEN_STORE_TASK_STACK_SIZE
         int "存储任务栈大小（字节）"
-        default 3072
+        default 4096
         range 2048 8192
         help
-            存储任务只做 NVS blob 写入与 commit，3 KB 足够。
+            存储任务做 NVS blob 编码与 commit。
+
+            v2 blob 含段表（约 719 字节）与剧本表，编码时会在栈上放一份
+            lumen_persist_t（≈ 1060 字节）。3 KB 太紧，4 KB 留出余量。
+            NVS 写还要求一个略大的栈做 cache 关闭期间的工作，不要压到 2 KB。
 
     config LUMEN_STORE_TASK_PRIORITY
         int "存储任务优先级"

@@ -891,3 +891,82 @@ scripts\flash-firmware.cmd COM6
 | 阶段切换的肉眼相位重置 | **仅真机可见** |
 | 断电重启从第一阶段 + 停止 | **仅真机可见**（加载路径已测，上电行为未测） |
 | 下发失败后灯带没有半套画面 | **仅真机可见** |
+
+---
+
+## 7. v2 首次烧录发现并修复：渲染任务栈溢出（2026-10-31）
+
+**这是 v2 第一轮真机上的第一个真实缺陷，host 测试完全测不出来。**
+
+### 现象
+
+烧录 v2 固件后设备**上电即反复重启**，串口刷屏：
+
+```
+I (327) lumen_engine: state default: power=0 brightness=128 rgb=255,180,120 leds=30 max=200 segs=0
+Guru Meditation Error: Core  0 panic'ed (Stack protection fault).
+Detected in task "lumen_render" at 0x420109c4
+Stack pointer: 0x3fcaa370
+Stack bounds:  0x3fcaa8cc - 0x3fcab8c0     ← SP 已越过下界
+```
+
+`SP < Stack bounds 下界`，说明渲染任务把栈打穿了，不是空指针也不是看门狗。
+
+### 根因
+
+v2 引入分段后，两个大结构被放在**任务栈上**：
+
+| 结构 | 大小 | 说明 |
+|---|---|---|
+| `lumen_segment_store_t` | **1024 B** | 8 条 × 8 段 × 16 字节 |
+| `lumen_persist_t` | **≈1060 B** | 状态 + 整份段表 + 每条的灯珠数 |
+
+而渲染任务栈只有 **4096 B**，再叠上 `led_strip` / RMT 驱动的调用深度就打穿了。
+同一个问题在 NimBLE 主机任务（也是 4096 B）里也存在：`lumen_led_engine_commit`、
+`set_segment`、`clear_segment` 各自都放了一份 `lumen_persist_t` 局部变量。
+
+**为什么 host 测试测不出来**：PC 的栈是 MB 级，`firmware/test` 编译的是纯逻辑模块，
+根本不跑 FreeRTOS 任务。这类缺陷只有真机能暴露——这正是「像素级/运行时行为必须真机验证」
+那句话的具体含义。
+
+### 修复
+
+1. **大结构移出栈**：渲染任务的 `s_render_persist` / `s_render_segments`、
+   BLE 回调路径的 `s_commit_persist` 都改为**文件级静态区**。
+   渲染任务是单实例任务、这些缓冲只被它使用，所以静态区天然安全；
+   两者分开（不共用）是因为 commit 在 NimBLE 任务里跑、渲染任务同时读自己那份。
+2. **消除返回值拷贝**：`persist_snapshot_locked()` 从「返回 1060 字节结构」
+   改为**指针出参**，否则按值返回仍会在调用者栈上放一份临时对象。
+3. **栈留余量**：`LUMEN_RENDER_TASK_STACK_SIZE` 4096 → **6144**，
+   `LUMEN_STORE_TASK_STACK_SIZE` 3072 → **4096**，理由写进 Kconfig。
+
+### 修复后验证（真机）
+
+```
+I (297) main_task: Calling app_main()
+I (327) lumen_engine: state default: power=0 brightness=128 rgb=255,180,120 leds=30 max=200 segs=0
+I (327) lumen_engine: render: n=30 brightness=128 power=0
+I (397) lumen_ble: GATT 服务已注册（Service 6c756d65-...-0001，RX/TX/State）
+I (417) lumen_ble: 开始广播（Lumen-5662），等连接
+```
+**零 panic**，启动补发按预期打 4 帧。
+
+协议层（PC 当 central，`bleak`）：
+
+| 项 | 结果 |
+|---|---|
+| State read | **14 字节** `0080FFB4781E00C80100FF000000`（v2 布局正确） |
+| `QueryState 0x05` | ACK `A5028001020500D0` + StateReport `A5028201...`，seq 回显 |
+| `SetLedCount 0x06` | ACK OK，`led_count=64` |
+| `SetPower 0x01` | ACK OK，`power=1` |
+| `SetSegment 0x10` ×3 | 三条全 ACK OK，`State.seg_count=3` |
+| `QueryStrip 0x12` | 3 条 SegmentReport `0x83` + SegmentListEnd `0x84` (mask `0x07`) |
+
+`State` 最终为 `0180FF00004000C80103FF000000`：
+`power=1, brightness=128, rgb=255,0,0`（seg 0 的红色基准色，符合 §7）、
+`led_count=64, max_brightness=200, strip_count=1, seg_count=3`。
+
+### 仍未确认
+
+**灯带的物理观感**（16-19 / 30-39 是否真的全黑、段内是否均匀）需要人眼。
+串口与协议侧的证据到此为止；请按 §4.3 做一次肉眼确认并拍照。
