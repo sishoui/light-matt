@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "sdkconfig.h"
 
 #include "gamma.h"
 #include "led_strip_owner.h"
@@ -183,7 +184,8 @@ void lumen_led_render_snapshot(led_strip_handle_t strip, const lumen_state_t *sn
     bool segmented = (selftest == NULL || !lumen_selftest_active(selftest)) && segments != NULL &&
                      lumen_segment_store_any_active(segments, 0) && snapshot->power != 0;
 
-    if (s_rendered_valid && count == s_rendered_count &&
+    /* CONFIG_LUMEN_FORCE_REFRESH：错色实验要求画面恒定但持续刷帧，跳过整帧去重。 */
+    if (!CONFIG_LUMEN_FORCE_REFRESH && s_rendered_valid && count == s_rendered_count &&
         memcmp(frame, s_rendered_frame, (size_t)count * 3u) == 0) {
         ++s_frames_skipped;
         /* docs/v2-effects-engine.md §3.2：跳过打 DEBUG，真刷打 INFO 带帧号。

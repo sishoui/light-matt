@@ -31,3 +31,7 @@ CONFIG_LUMEN_STRIP_PINS="3,10,0,1,4,5,6,7"
 # 动画帧率 20fps（8 路 × 64 灯占 42% RMT 带宽，留余量给 BLE 抢占）。
 # 等待量 = 帧周期 − 上一帧耗时，所以这是真实帧率。
 CONFIG_LUMEN_ANIM_FPS=20
+
+# #20 错色实验：静态画面也持续刷帧（错色判定要求画面恒定 + 持续刷帧）。
+# 量产固件必须关掉——它会让静态场景也持续占用 RMT 带宽。
+CONFIG_LUMEN_FORCE_REFRESH=y

@@ -170,6 +170,25 @@ menu "Lumen"
             存储任务优先级低于渲染任务：NVS 写不是实时路径，且 flash 操作
             会短暂关 cache，不应抢占渲染与协议栈。
 
+    config LUMEN_FORCE_REFRESH
+        bool "强制持续刷帧（仅 #20 错色实验，非产品功能）"
+        default n
+        help
+            开启后，即使画面完全静态，渲染任务也按 LUMEN_ANIM_FPS 持续刷帧，
+            并且**跳过逐帧去重**（像素没变也照发）。
+
+            用途：验证 RMT × BLE 共存（issue #20 的核心问题）。错色判定的前提是
+            「画面恒定 + 持续刷帧」——画面恒定才能用 analyze-strip-video.py
+            逐帧比对基线（任何偏离都是异常）；持续刷帧才能让 BLE 抢占 RMT 中断
+            的机会出现。
+
+            为什么不用 LUMEN_RMT_STRESS_MODE：那套压力固件直接对单个 led_strip
+            句柄刷，不认识 TDM 的引脚轮换，8 路场景下测不出真实负载。
+
+            副作用：静态场景也会持续占用 RMT 带宽（20fps 约 41%），功耗与
+            发热高于正常。**量产固件必须关闭。**
+            与 LUMEN_RMT_STRESS_MODE 互斥使用：两者同时开会以压力模式为准。
+
     config LUMEN_RMT_STRESS_MODE
         bool "RMT × BLE 共存压力测试模式（#7，仅实验固件）"
         default n
