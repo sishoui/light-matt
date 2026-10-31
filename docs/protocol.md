@@ -1,6 +1,9 @@
 # lumen 协议规格 v2
 
-**状态**：定稿（2026-10-31）。**v1 已退役**——旧固件与新小程序互相回 `UnsupportedVersion (0x07)`，不做兼容解析。
+**状态**：**已作废（2026-10-31）**——被 [`protocol-v3.md`](./protocol-v3.md) 取代（magic 0xA5→0xA6、
+version 0x02→0x03、State 14→37 字节、段 8/12→21 字节）。本文保留供对照。
+
+原状态：定稿（2026-10-31）。**v1 已退役**——旧固件与新小程序互相回 `UnsupportedVersion (0x07)`，不做兼容解析。
 **适用范围**：微信小程序 ↔ ESP32-C3 固件之间的 BLE 协议。
 **唯一真相**：本文件定义字节级契约，`docs/protocol-testvectors.json` 是它的可执行副本。改协议 = 本文件 + 测试向量 + 两端实现进同一个 commit。
 **相关**：[灯效规格](./effects-spec.md)（参数块布局的唯一真相）、[实现规格 v2](./spec-v2.md)、[固件架构](./firmware-architecture.md)。

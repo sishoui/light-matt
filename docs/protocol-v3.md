@@ -1,6 +1,7 @@
 # lumen 协议规格 v3
 
-**状态**：设计定稿（2026-10-31），**待实现**。实现落地后本文件取代 `docs/protocol.md`。
+**状态**：**已实现（2026-10-31，分支 `integration/lumen-v3`）**。本文件取代 `docs/protocol.md`（v2 已作废）。
+固件 host 测试 10993 项断言与小程序 553 个单测都对着 `docs/protocol-testvectors-v3.json` 跑。
 **适用范围**：微信小程序 ↔ ESP32-C3 固件之间的 BLE 协议。
 **唯一真相**：本文件定义字节级契约，`docs/protocol-testvectors-v3.json` 是它的可执行副本。
 改协议 = 本文件 + 测试向量 + 两端实现进同一个 commit。

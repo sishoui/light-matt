@@ -775,13 +775,15 @@ static void run_app_case(const vector_case_t *c)
     lumen_command_dispatch(&frame, &before, &segments, strip_counts, 255, &outcome);
 
     /*
-     * 契约里的预期结果码。唯一的例外是 script_commit_too_large：
-     * 0x0A 的尺寸预检属于 #39（ScriptCommit 的「能提交就一定能持久化」），
-     * #36 只保证信封与命令层都到达 ScriptCommit。这里断言命令层放行，
-     * 并把 0x0A 留给 #39 的测试——见下方 deferred_to_39。
+     * 契约里的预期结果码。
+     *
+     * script_commit_too_large 是唯一需要解释的一条：向量只带 `ScriptCommit`
+     * 这一帧，没有前置的暂存内容，所以命令层必然放行、结果码是 OK。真正的
+     * 0x0A 由 lumen_script_commit 的尺寸预检产生，覆盖在
+     * test_script_commit_too_large（8 带 × 8 阶段 × 8 段的两套满配剧本）
+     * 与 test_script_commit_implies_persistable（「能 commit 一定存得下」不变式）。
      */
-    bool deferred_to_39 = strcmp(c->name, "script_commit_too_large") == 0;
-    if (deferred_to_39) {
+    if (strcmp(c->name, "script_commit_too_large") == 0) {
         CHECK(outcome.result_code == LUMEN_RESULT_OK);
         CHECK(outcome.script_op == LUMEN_SCRIPT_OP_COMMIT);
         return;

@@ -1,6 +1,9 @@
 # lumen v2 · 实现规格：多设备 / 多灯效 / 多阶段 / 多分段
 
-**状态**：已发布（2026-10-31）。**GitHub issue**：[#27](https://github.com/sishoui/light-matt/issues/27)（label `spec`），6 张实现票是它的 sub-issues。
+**状态**：**已作废（2026-10-31）**——被 [`spec-v3.md`](./spec-v3.md) 取代。v3 是断崖升级，
+v2 的协议与 NVS blob 均不被识别。本文保留供对照。
+
+原状态：已发布（2026-10-31）。**GitHub issue**：[#27](https://github.com/sishoui/light-matt/issues/27)（label `spec`），6 张实现票是它的 sub-issues。
 
 **来源**：合成自 wayfinder 地图 [#16](https://github.com/sishoui/light-matt/issues/16) 的全部已关闭决策（#17 个人资质、#18 BLE 并发、#19 灯效规格、#26 IDF 升级）。
 

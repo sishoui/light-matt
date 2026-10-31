@@ -15,14 +15,15 @@ lumen/
 
 ## 从这里开始
 
-**v3 扩展（设计已定稿，待实现）**
+**v3 扩展（已实现，待真机验收）**
 
 - **v3 规格**：[docs/spec-v3.md](docs/spec-v3.md) —— 设备列表 / 多灯带 / 两层灯效 / 分阶段（GitHub [#35](https://github.com/sishoui/light-matt/issues/35)）
 - **v3 协议契约**：[docs/protocol-v3.md](docs/protocol-v3.md) —— 字节级唯一真相，含分片与两层段
 - **v3 测试向量**：[docs/protocol-testvectors-v3.json](docs/protocol-testvectors-v3.json) —— 由 `scripts/gen-protocol-testvectors-v3.mjs` 生成
+- **v3 真机验收**：[docs/acceptance-v3.md](docs/acceptance-v3.md) —— 8 带 / 每带开关 / 两层 / 剧本 / 稳定性清单与记录表（**需硬件，待执行**）
 - **灯效参数表**：[docs/effects-spec.md](docs/effects-spec.md) —— 四种灯效的字节布局与行为公式（v3 未改语义）
 
-**v2 扩展（已实现，v3 实现完成后作废）**
+**v2 扩展（已作废，被 v3 取代）**
 
 - **v2 规格**：[docs/spec-v2.md](docs/spec-v2.md) —— 多设备 / 多灯效 / 多阶段 / 多分段（GitHub [#27](https://github.com/sishoui/light-matt/issues/27)）
 - **v2 决策地图**：GitHub [#16](https://github.com/sishoui/light-matt/issues/16)
@@ -40,6 +41,24 @@ lumen/
 - **想跑 RMT × BLE 共存实验**：[docs/rmt-ble-stability.md](docs/rmt-ble-stability.md) —— 五组实验方案、待填数据表与判定流程
 
 ## 现状
+
+**v3 已实现，待真机验收。** 11 张实现票（#36–#45）全部合入 `integration/lumen-v3`，
+三端测试全绿：
+
+| 端 | 规模 |
+|---|---|
+| 固件 host 测试 | **10993 项断言**，58 条 v3 向量（CRC16 / 分片重组 / 两层合成 / blob v4 与 LMS3） |
+| 小程序 | **553 个 vitest 用例**，30 个测试文件，`tsc --noEmit` 干净 |
+| 后端 | **133 个 vitest 用例**，6 个测试文件，`tsc --noEmit` 干净 |
+
+v3 带来的变化：8 条灯带成为主界面维度（`PRIMARY_STRIP_ID` 已彻底消除）、同段两层灯效叠加
+（覆盖/相乘/相加）、每条灯带独立开关与 TDM 跳过、剧本两层化 + `ScriptTooLarge` 显式失败、
+设备登记与后端同步、State 14→37 字节、逻辑帧上限 20→240 字节（CRC16 + BLE 分片）。
+
+**真机验收（#46）尚未执行**——需要 8 条灯带、录像设备与 400s 稳定性长跑，
+清单与记录表在 [`docs/acceptance-v3.md`](docs/acceptance-v3.md)。
+固件需要在 IDF 6.1 下实际编译一次再烧录（本次实现环境无法访问组件仓库）。
+
 
 **MVP 已完成并通过真机验收。** 13 张实现票（#2–#13）全部落地，端到端验收 #14 七条
 全部通过（固件/代码侧 + 人眼/手机侧）。两端共用 37 条协议测试向量：固件 host 1426 项

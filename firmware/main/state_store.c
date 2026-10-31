@@ -258,11 +258,32 @@ bool lumen_state_store_load_scripts(const uint16_t strip_counts[LUMEN_MAX_STRIPS
         return false;
     }
 
-    static uint8_t blob[LUMEN_SCRIPT_BLOB_MAX];
-    size_t size = sizeof(blob);
-    err = nvs_get_blob(handle, LUMEN_NVS_SCRIPT_KEY, blob, &size);
+    /*
+     * 复用 s_script_blob 而不是再开一块 16KB 静态缓冲。
+     *
+     * 本函数只在启动加载时调用，那时候不可能有待写的剧本。为防将来有人在
+     * 运行期再调一次，这里持锁并在有待写内容时直接拒绝，而不是悄悄覆盖掉
+     * 一份还没落盘的快照。
+     *
+     * 这样全固件的 16KB 剧本缓冲从 3 块（48KB）降到 2 块（32KB）：
+     * 这里 + led_engine 的编码缓冲。C3 只有 ~400KB SRAM 且要与 NimBLE 共用。
+     */
+    if (s_lock == NULL) {
+        nvs_close(handle);
+        return false;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_script_pending) {
+        xSemaphoreGive(s_lock);
+        nvs_close(handle);
+        ESP_LOGW(TAG, "剧本加载被拒：已有待写的剧本快照（不应在运行期调用）");
+        return false;
+    }
+    size_t size = sizeof(s_script_blob);
+    err = nvs_get_blob(handle, LUMEN_NVS_SCRIPT_KEY, s_script_blob, &size);
     nvs_close(handle);
     if (err != ESP_OK) {
+        xSemaphoreGive(s_lock);
         return false;
     }
 
@@ -272,7 +293,10 @@ bool lumen_state_store_load_scripts(const uint16_t strip_counts[LUMEN_MAX_STRIPS
      * 由调用方回落到「没有剧本」，而不是让半套越界配置进入 RAM。
      * strip_counts 由调用方在加载剧本之前填好（它来自状态 blob）。
      */
-    return lumen_script_blob_decode(blob, size, strip_counts, store, active_script_id, loop);
+    bool ok = lumen_script_blob_decode(s_script_blob, size, strip_counts, store,
+                                       active_script_id, loop);
+    xSemaphoreGive(s_lock);
+    return ok;
 }
 
 void lumen_state_store_request_script_save(const uint8_t *blob, size_t len)
