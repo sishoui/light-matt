@@ -33,7 +33,7 @@ uint8_t lumen_strip_anim_mask(const lumen_segment_store_t *segments, uint8_t str
     for (uint8_t strip = 0; strip < strip_count; ++strip) {
         for (uint8_t slot = 0; slot < LUMEN_MAX_SEGMENTS; ++slot) {
             const lumen_segment_t *seg = &segments->slot[strip][slot];
-            if (seg->active && lumen_effect_is_animated(seg->type)) {
+            if (lumen_segment_is_animated(seg)) {
                 mask |= (uint8_t)(1u << strip);
                 break; /* 一条带只要有一个动画段就置位 */
             }
