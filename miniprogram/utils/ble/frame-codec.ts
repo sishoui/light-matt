@@ -2,39 +2,49 @@
  * 协议编解码：帧的字节层 ↔ 传输层可用的结果。
  *
  * 传输层只负责「把字节搬进搬出」；这里负责把入站字节解成可判定的动作
- * （ACK / StateReport / Event / 无可动作），并为日志行准备与既有格式完全
- * 一致的描述文本。所有函数都是纯函数，不接触 wx.*，也不持有任何连接状态。
+ * （ACK / StateReport / Event / StripConfigReport / DeviceInfoReport / 无可动作），
+ * 并为日志行准备与既有格式完全一致的描述文本。所有函数都是纯函数，
+ * 不接触 wx.*，也不持有任何连接状态。
+ *
+ * v3 变化：入站帧是**重组后的逻辑帧**（分片由 chunk.ts 剥掉分片头），
+ * 所以这里的输入与 v2 一样是完整帧字节。新增 0x87 / 0x88 两条报告。
  */
 
 import { DEVICE_CMD } from "../protocol/constants";
 import { decodeFrame, encodeFrame } from "../protocol/frame";
 import {
   parseAck,
+  parseDeviceInfoReport,
   parseScriptProgress,
   parseScriptSummary,
   parseSegmentListEnd,
   parseSegmentReport,
   parseState,
+  parseStripConfigReport,
   type ScriptProgress,
   type ScriptSummary,
 } from "../protocol/commands";
 import {
   describeAck,
   describeCommand,
+  describeDeviceInfo,
   describeEvent,
   describeScriptProgress,
   describeScriptSummary,
   describeSegmentListEnd,
   describeSegmentReport,
   describeState,
-  describeStateRead,
+  describeStateReadBytes,
+  describeStripConfig,
 } from "../protocol/describe";
 import type {
   AckResult,
   CommandRequest,
+  DeviceInfo,
   DeviceState,
   SegmentListEnd,
   SegmentReport,
+  StripConfig,
 } from "../protocol/types";
 import { errorText } from "./errors";
 
@@ -49,7 +59,10 @@ export type InboundAction =
   | { kind: "segment-list-end"; end: SegmentListEnd }
   /* #32：QueryScript 的响应（ScriptSummary）与下发进度（ScriptProgress）。 */
   | { kind: "script-summary"; summary: ScriptSummary }
-  | { kind: "script-progress"; progress: ScriptProgress };
+  | { kind: "script-progress"; progress: ScriptProgress }
+  /* v3：QueryStripConfig / QueryDeviceInfo 的单帧响应。 */
+  | { kind: "strip-config"; config: StripConfig }
+  | { kind: "device-info"; info: DeviceInfo };
 
 /** 一条入站帧的日志字段 + 动作。日志字段与拆分前逐字一致。 */
 export interface InboundFrame {
@@ -60,7 +73,7 @@ export interface InboundFrame {
   action: InboundAction;
 }
 
-/** 出站帧编码：命令字 + seq + 载荷 → 完整字节（含信封与 checksum）。 */
+/** 出站帧编码：命令字 + seq + 载荷 → 完整逻辑帧（含信封与 CRC16，不含分片头）。 */
 export function encodeTxFrame(command: number, seq: number, payload: Uint8Array): Uint8Array {
   return encodeFrame(command, seq, payload);
 }
@@ -70,20 +83,18 @@ export function describeTx(req: CommandRequest): string {
   return describeCommand(req.command, req.payload);
 }
 
-/** State read 的裸值：能解析就写出完整状态，不能解析也保留长度。 */
-export function describeStateReadBytes(bytes: Uint8Array): string {
-  try {
-    return describeStateRead(parseState(bytes));
-  } catch {
-    return `State read（${bytes.length} 字节，无法解析）`;
-  }
-}
+/**
+ * State read 的裸值：能解析就写出完整状态，不能解析也保留长度。
+ *
+ * 兼容旧调用点（transport 的日志路径）：实现已上移到 protocol/describe，
+ * 这里只是转发，避免同一段文案出现两份。
+ */
+export { describeStateReadBytes };
 
 /**
- * 解一条设备 → 小程序的帧。
+ * 解一条设备 → 小程序的逻辑帧（已重组，无分片头）。
  *
- * 顺序与拆分前的 handleDeviceFrame 完全一致：先判信封，再按命令字分派；
- * 解析失败只产出日志文本，不产出动作。
+ * 顺序：先判信封，再按命令字分派；解析失败只产出日志文本，不产出动作。
  */
 export function routeInboundFrame(bytes: Uint8Array): InboundFrame {
   const result = decodeFrame(bytes);
@@ -195,6 +206,37 @@ export function routeInboundFrame(bytes: Uint8Array): InboundFrame {
         text: describeScriptProgress(progress),
         ok: true,
         action: { kind: "script-progress", progress },
+      };
+    } catch (err) {
+      return { command, seq, text: errorText(err), ok: false, action: { kind: "none" } };
+    }
+  }
+
+  /* v3：QueryStripConfig 0x87 / QueryDeviceInfo 0x88 的单帧响应。 */
+  if (command === DEVICE_CMD.STRIP_CONFIG_REPORT) {
+    try {
+      const config = parseStripConfigReport(payload);
+      return {
+        command,
+        seq,
+        text: describeStripConfig(config),
+        ok: true,
+        action: { kind: "strip-config", config },
+      };
+    } catch (err) {
+      return { command, seq, text: errorText(err), ok: false, action: { kind: "none" } };
+    }
+  }
+
+  if (command === DEVICE_CMD.DEVICE_INFO_REPORT) {
+    try {
+      const info = parseDeviceInfoReport(payload);
+      return {
+        command,
+        seq,
+        text: describeDeviceInfo(info),
+        ok: true,
+        action: { kind: "device-info", info },
       };
     } catch (err) {
       return { command, seq, text: errorText(err), ok: false, action: { kind: "none" } };

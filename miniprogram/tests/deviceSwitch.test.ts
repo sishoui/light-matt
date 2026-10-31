@@ -33,19 +33,9 @@ import { ControlSession, type SessionStorage } from "../utils/control/session";
 import { WxCallError } from "../utils/ble/wx-promise";
 import type { BleTransport } from "../utils/ble/transport";
 import type { CommandRequest, DeviceState, LinkState } from "../utils/protocol/types";
+import { baseState } from "./helpers/state";
 
-function baseState(overrides: Partial<DeviceState> = {}): DeviceState {
-  return {
-    power: 1,
-    brightness: 128,
-    r: 255,
-    g: 180,
-    b: 120,
-    ledCount: 30,
-    maxBrightness: 255,
-    ...overrides,
-  };
-}
+/* v3 的 37 字节 State 夹具集中在 tests/helpers/state.ts（含派生字段一致性）。 */
 
 function memoryStorage(seed: Record<string, string> = {}): SessionStorage {
   const map = new Map(Object.entries(seed));

@@ -62,7 +62,7 @@ import {
   type RecentDevice,
 } from "./device-history";
 import { LED_COUNT_ACK_TIMEOUT_MS } from "./ledCount";
-import { MAX_LEDS, MIN_LEDS } from "../protocol/constants";
+import { MAX_LEDS, MAX_STRIPS, MIN_LEDS } from "../protocol/constants";
 import type { UsageLogSink } from "../usage/logger";
 import {
   breathingSegment,
@@ -76,6 +76,7 @@ import {
   cmdSetPlayback,
   cmdSetPower,
   cmdSetSegment,
+  cmdSetStripPower,
   cometSegment,
   rainbowSegment,
   staticSegment,
@@ -95,6 +96,7 @@ import {
 import type {
   AckResult,
   CommandRequest,
+  DeviceInfo,
   DeviceState,
   DiscoveredDevice,
   LinkState,
@@ -102,7 +104,9 @@ import type {
   SegmentConfig,
   SegmentListEnd,
   SegmentReport,
+  SegmentSpec,
   SegmentTarget,
+  StripConfig,
 } from "../protocol/types";
 import {
   clearCachedDevice,
@@ -138,8 +142,14 @@ export type SegmentResult =
   | { kind: "stale" }
   | { kind: "error"; message: string };
 
-/** 每套灯带在 State 里的 strip_id；多灯带 #29 之前固定 0。 */
-const PRIMARY_STRIP_ID = 0;
+/**
+ * 会话默认操作的灯带（#40 起是**可切换**的显式维度）。
+ *
+ * v3 把灯带做成了真正的维度（逐带开关 / 逐带灯珠数 / 逐带 8 段），但 #40
+ * 不允许改页面，所以旧签名继续可用：不传 `stripId` 的方法落到 `activeStripId`。
+ * 页面在 #41 拆页后会显式传，那时这里只是默认值，不再是「隐含的 strip 0」。
+ */
+const DEFAULT_ACTIVE_STRIP_ID = 0;
 
 export interface SessionOptions {
   platform: "android" | "ios" | "other";
@@ -180,7 +190,7 @@ export type CommandResult =
 /** #9 起沿用的名字；与 CommandResult 完全等价。 */
 export type PowerResult = CommandResult;
 
-/** SetPlayback 的 action（docs/protocol.md §10.5）。 */
+/** SetPlayback 的 action（docs/protocol-v3.md §9.6）。 */
 export type PlaybackAction = 0 | 1 | 2;
 
 /**
@@ -202,7 +212,45 @@ export type ScriptSummaryResult =
   | { kind: "stale" }
   | { kind: "error"; message: string };
 
+/** QueryStripConfig 的结果（0x87 是设备权威，只读）。 */
+export type StripConfigResult =
+  | { kind: "ok"; config: StripConfig }
+  | { kind: "stale" }
+  | { kind: "error"; message: string };
+
+/** QueryDeviceInfo 的结果（0x88 是设备权威）。 */
+export type DeviceInfoResult =
+  | { kind: "ok"; info: DeviceInfo }
+  | { kind: "stale" }
+  | { kind: "error"; message: string };
+
 const DEFAULT_RETRY_AFTER_GAP_MS = 500;
+
+/**
+ * 改某条灯带的灯珠数（本地镜像）。
+ *
+ * 同时维护派生字段 `ledCount`（= strip 0 的值），这样 #41 之前的页面继续读
+ * `state.ledCount` 时看到的仍是设备真实值。
+ */
+function applyStripLedCount(state: DeviceState, stripId: number, count: number): DeviceState {
+  const stripCounts = state.stripCounts.slice();
+  stripCounts[stripId] = count;
+  return {
+    ...state,
+    stripCounts,
+    ...(stripId === 0 ? { ledCount: count } : {}),
+  };
+}
+
+/**
+ * 改某条灯带的开关位（本地镜像）。mask 是设备的权威字段，命令成功后才改；
+ * 全局 `power` 不受影响（§9.5：总闸与每带开关是两件事）。
+ */
+function applyStripPower(state: DeviceState, stripId: number, on: boolean): DeviceState {
+  const bit = 1 << stripId;
+  const mask = on ? state.stripPowerMask | bit : state.stripPowerMask & ~bit;
+  return { ...state, stripPowerMask: mask };
+}
 
 const defaultTimer: TimerApi = {
   setTimeout: (fn, ms) => setTimeout(fn, ms),
@@ -223,6 +271,12 @@ export class ControlSession {
   private lastNonZeroBrightness = 128;
   /** 颜色控件的当前目标段（页面在选中/新建段时设置）。 */
   private defaultSegment: SegmentTarget | null = null;
+  /** v3：当前操作哪条灯带（#41 的灯带切换器会调 `setActiveStripId`）。 */
+  private activeStrip = DEFAULT_ACTIVE_STRIP_ID;
+  /** v3：最近一次 QueryStripConfig 的结果（§9.1 第 2 步）。 */
+  private stripConfigCache: StripConfig | null = null;
+  /** v3：最近一次 QueryDeviceInfo 的结果（§9.1 第 3 步）。 */
+  private deviceInfoCache: DeviceInfo | null = null;
 
   private readonly retryAfterGapMs: number;
   /** 10008 间隔重试的计时器：与回连退避共用同一个注入实例。 */
@@ -512,26 +566,31 @@ export class ControlSession {
   }
 
   /**
-   * 切换成功后加载新设备的真实配置。
+   * 切换成功后加载新设备的真实配置（§9.1 的权威重建路径）。
    *
-   * #33 目前的义务是：设备级状态必须全部重置并重新从设备读，不能残留上一台。
-   * 分段配置与剧本库的读取在这个接缝之后接入（#25 / #32）——
-   * 它们各自会在这里追加一条读命令，而不是另建一条切换路径。
+   * #40 的义务：设备级状态全部从设备读，不残留上一台。顺序按 §9.1：
+   *   State（连接流水线已读）→ QueryStripConfig → QueryDeviceInfo。
+   * QueryStrip × 0..strip_count-1 与 QueryScript 留给 #41/#45（页面驱动），
+   * 这里不越界替页面决定要读哪些段。
+   *
+   * 配置查询失败不影响连接结论：它们是「界面增强信息」，返回 null 即可，
+   * 绝不把一次成功的连接降级成失败。
    */
   private async refreshDeviceConfig(): Promise<void> {
-    // 连接流水线里已经读过 State（transport.connect 内部），这里只需确保
-    // 本地镜像与设备一致；分段/剧本读取在后续票追加。
-    if (this.transport.linkState === "ready") {
-      await this.refreshState();
+    if (this.transport.linkState !== "ready") {
+      return;
     }
+    await this.refreshState();
+    await this.queryStripConfig().catch(() => undefined);
+    await this.queryDeviceInfo().catch(() => undefined);
   }
 
   async disconnect(): Promise<void> {
     // 主动断开：不触发自动回连，也不再让 onShow 擅自重连。
-    this.throttle.cancel();
-    this.defaultSegment = null;
     await this.reconnect.disconnectIntent();
-    this.latestState = null;
+    /* 统一走 clearDeviceState：State / 选中段 / v3 的两份缓存一起清，
+     * 避免「主动断开」与「被动断线」两条路径的清理范围不一致。 */
+    this.clearDeviceState();
   }
 
   /** 页面 onShow：回连决策全部交给监督者（不打断扫描 / 手动连接）。 */
@@ -587,7 +646,7 @@ export class ControlSession {
    * 输入校验（1-64、纯整数）在页面层用 parseLedCountInput 先做，这里再兜一次：
    * 非法值不发帧，直接返回错误，绝不「尽量发送」。
    */
-  async setLedCount(count: number): Promise<CommandResult> {
+  async setLedCount(count: number, stripId = this.activeStrip): Promise<CommandResult> {
     if (!Number.isInteger(count) || count < MIN_LEDS || count > MAX_LEDS) {
       return { kind: "error", message: `灯珠数量必须是 ${MIN_LEDS}-${MAX_LEDS} 的整数` };
     }
@@ -599,8 +658,7 @@ export class ControlSession {
       // 走 #11 的统一命令通道（10008 加间隔重试 / 断线触发重连），
       // 但 ACK 超时仍是 3000ms，且不设 retryOnTimeout：重建是重操作，
       // 超时重发只会撞上 0x05 Busy。
-      // v2 载荷带 strip_id；多灯带（#29）之前固定 strip 0。
-      const ack = await this.sendCommand(cmdSetLedCount(PRIMARY_STRIP_ID, count), {
+      const ack = await this.sendCommand(cmdSetLedCount(stripId, count), {
         timeoutMs: LED_COUNT_ACK_TIMEOUT_MS,
       });
       // #11：旧连接上飞行的 ACK 晚到，不得覆盖回连后读到的新 State。
@@ -612,9 +670,9 @@ export class ControlSession {
         // 不更新本地值，页面按 ledCountResultHint 提示。
         return { kind: "ack-error", ack };
       }
-      // 成功：设备已按新数量重建并持久化，本地只改 ledCount。
+      // 成功：设备已按新数量重建并持久化，本地只改该带的灯珠数。
       if (this.latestState !== null) {
-        this.latestState = { ...this.latestState, ledCount: count };
+        this.latestState = applyStripLedCount(this.latestState, stripId, count);
       }
       return {
         kind: "ok",
@@ -708,20 +766,19 @@ export class ControlSession {
   }
 
   /**
-   * 各条灯带的灯珠数。
+   * 各条灯带的灯珠数（设备权威）。
    *
-   * 设备 State 只报 strip 0 的 led_count；多条灯带的 per-strip 数字要靠
-   * QueryStrip 之外的路径拿，v2 目前没有专门命令，所以其余条沿用 strip 0
-   * 的值（与固件 lumen_command_strip_count 的回落规则一致）。
+   * v3 的 State 逐带给出 `strip_counts[8]`，所以这里直接切前 strip_count 条，
+   * 不再像 v2 那样「其余条沿用 strip 0」。未连接时返回空数组：
+   * validateScript 对 `ledCount === 0` 会跳过上界检查（避免未连接时误拒）。
    */
-  private currentLedCounts(): number[] {
-    const count = this.latestState?.ledCount ?? 0;
-    const strips = this.latestState?.stripCount ?? 1;
-    const out: number[] = [];
-    for (let i = 0; i < strips; i += 1) {
-      out.push(count);
+  currentLedCounts(): number[] {
+    const state = this.latestState;
+    if (state === null) {
+      return [];
     }
-    return out;
+    const strips = Math.max(1, Math.min(state.stripCount, MAX_STRIPS));
+    return state.stripCounts.slice(0, strips);
   }
 
   /**
@@ -943,21 +1000,24 @@ export class ControlSession {
    * queryStrip()。失败区分 ACK（InvalidParam：重叠 / 越界 / 类型不支持）与
    * 传输异常——前者要给用户明确原因，后者交给统一错误分诊。
    */
-  async setSegment(segment: SegmentConfig, opts: SendOptions = {}): Promise<AckResult> {
+  async setSegment(
+    segment: SegmentSpec | SegmentConfig,
+    opts: SendOptions = {},
+  ): Promise<AckResult> {
     return this.sendCommand(cmdSetSegment(segment), opts);
   }
 
   /** 清一个段槽位（ClearSegment 0x11）。 */
-  async clearSegment(segId: number, stripId = PRIMARY_STRIP_ID): Promise<AckResult> {
+  async clearSegment(segId: number, stripId = this.activeStrip): Promise<AckResult> {
     return this.sendCommand(cmdClearSegment(stripId, segId));
   }
 
   /**
    * 读回某灯带的段列表（QueryStrip 0x12）：seg_count 条 SegmentReport +
    * SegmentListEnd，同 seq 多帧。这是重连重建 UI 的权威路径
-   * （protocol §10.1 第 2 步）。
+   * （protocol-v3 §9.1 第 3 步）。
    */
-  async queryStrip(stripId = PRIMARY_STRIP_ID): Promise<SegmentResult> {
+  async queryStrip(stripId = this.activeStrip): Promise<SegmentResult> {
     if (this.transport.linkState !== "ready") {
       return { kind: "error", message: "设备未连接" };
     }
@@ -1107,7 +1167,7 @@ export class ControlSession {
    */
   private async sendSegmentAwaitingAck(
     target: SegmentTarget,
-    segment: SegmentConfig,
+    segment: SegmentSpec | SegmentConfig,
     opts: SendOptions,
   ): Promise<SegmentResult> {
     if (this.transport.linkState !== "ready") {
@@ -1205,6 +1265,135 @@ export class ControlSession {
     }
   }
 
+  /* ---------------- v3 灯带维度 ---------------- */
+
+  /**
+   * 每条灯带的独立开关（SetStripPower 0x1B，§9.5）。
+   *
+   * 只改该带的掩码位，不动全局 `power`：实际是否出光 = 全局 power &&
+   * strip_power_mask 对应位。成功后就地更新本地掩码（设备权威字段），
+   * 不额外读 State——这是一条 O(1) 的绝对值命令。
+   */
+  async setStripPower(stripId: number, on: boolean): Promise<CommandResult> {
+    if (!Number.isInteger(stripId) || stripId < 0 || stripId >= MAX_STRIPS) {
+      return { kind: "error", message: `灯带号必须是 0-${MAX_STRIPS - 1} 的整数` };
+    }
+    if (this.transport.linkState !== "ready") {
+      return { kind: "error", message: "设备未连接" };
+    }
+    const epoch = this.reconnect.epoch;
+    try {
+      const ack = await this.sendCommand(cmdSetStripPower(stripId, on));
+      if (this.reconnect.isStale(epoch)) {
+        return { kind: "stale" };
+      }
+      if (!ack.ok) {
+        return { kind: "ack-error", ack };
+      }
+      if (this.latestState !== null) {
+        this.latestState = applyStripPower(this.latestState, stripId, on);
+      }
+      return {
+        kind: "ok",
+        state: this.latestState ?? fallbackState({ r: 0, g: 0, b: 0 }),
+      };
+    } catch (err) {
+      return { kind: "error", message: errorText(err) };
+    }
+  }
+
+  /**
+   * 读设备的引脚分配（QueryStripConfig 0x1C → 0x87）。
+   *
+   * 只读：引脚表来自构建期 Kconfig，协议不允许改（§1）。结果缓存在
+   * `stripConfigs`，失败时返回 error 但不清掉上一次的好值。
+   */
+  async queryStripConfig(): Promise<StripConfigResult> {
+    if (this.transport.linkState !== "ready") {
+      return { kind: "error", message: "设备未连接" };
+    }
+    const epoch = this.reconnect.epoch;
+    try {
+      const config = await this.transport.queryStripConfig();
+      if (this.reconnect.isStale(epoch)) {
+        return { kind: "stale" };
+      }
+      this.stripConfigCache = {
+        channels: config.channels.map((channel) => ({ ...channel })),
+      };
+      return { kind: "ok", config: this.stripConfigCache };
+    } catch (err) {
+      return { kind: "error", message: errorText(err) };
+    }
+  }
+
+  /**
+   * 读设备身份与能力上限（QueryDeviceInfo 0x1D → 0x88）。
+   *
+   * `hwId` 是设备真身份（广播名不再是身份，§2）。结果缓存在 `deviceInfo`，
+   * #44 的「连上后先用 hardwareId 登记」依赖这条路径。
+   */
+  async queryDeviceInfo(): Promise<DeviceInfoResult> {
+    if (this.transport.linkState !== "ready") {
+      return { kind: "error", message: "设备未连接" };
+    }
+    const epoch = this.reconnect.epoch;
+    try {
+      const info = await this.transport.queryDeviceInfo();
+      if (this.reconnect.isStale(epoch)) {
+        return { kind: "stale" };
+      }
+      this.deviceInfoCache = { ...info };
+      return { kind: "ok", info: this.deviceInfoCache };
+    } catch (err) {
+      return { kind: "error", message: errorText(err) };
+    }
+  }
+
+  /** v3：当前操作的灯带（页面切换灯带后所有缺省 stripId 的方法都跟着走）。 */
+  get activeStripId(): number {
+    return this.activeStrip;
+  }
+
+  /**
+   * 切到另一条灯带（#41 的灯带切换器入口）。
+   *
+   * 只改「缺省操作哪条带」；设备状态、段列表都是设备权威，页面切换后
+   * 自己重新 `queryStrip` / 读 State 即可，这里不做隐式 I/O。
+   */
+  setActiveStripId(stripId: number): void {
+    if (!Number.isInteger(stripId) || stripId < 0 || stripId >= MAX_STRIPS) {
+      throw new RangeError(`灯带号必须是 0-${MAX_STRIPS - 1} 的整数，收到 ${stripId}`);
+    }
+    this.activeStrip = stripId;
+  }
+
+  /** 最近一次读到的引脚分配（未读 / 已断开为 null）。 */
+  get stripConfigs(): StripConfig | null {
+    const config = this.stripConfigCache;
+    return config === null ? null : { channels: config.channels.map((c) => ({ ...c })) };
+  }
+
+  /** 最近一次读到的设备身份（未读 / 已断开为 null）。 */
+  get deviceInfo(): DeviceInfo | null {
+    const info = this.deviceInfoCache;
+    return info === null ? null : { ...info };
+  }
+
+  /** 某条灯带的开关位（本地镜像；未连接按「关」）。 */
+  stripPower(stripId: number): boolean {
+    const state = this.latestState;
+    if (state === null) {
+      return false;
+    }
+    return (state.stripPowerMask & (1 << stripId)) !== 0;
+  }
+
+  /** 某条灯带的灯珠数（本地镜像；未连接为 0）。 */
+  stripLedCount(stripId: number): number {
+    return this.latestState?.stripCounts[stripId] ?? 0;
+  }
+
   onLink(fn: (state: LinkState, detail?: LinkDetail) => void): () => void {
     return this.transport.onLink((state, detail) => fn(state, detail));
   }
@@ -1235,12 +1424,19 @@ export class ControlSession {
   // 内部
   // ------------------------------------------------------------------
 
-  /** 清本地设备镜像与节流残留：断线后不保留旧状态显示。 */
+  /**
+   * 清本地设备镜像与节流残留：断线后不保留旧状态显示。
+   *
+   * v3 新增的两份缓存（引脚表 / 设备身份）也必须一起清：它们描述的是
+   * **上一台设备**，留着会让重连后的页面显示错误的 GPIO 与 hwId。
+   */
   private clearDeviceState(): void {
     this.latestState = null;
     this.throttle.cancel();
     /* 断开后没有可写的段：颜色控件应回到禁用态。 */
     this.defaultSegment = null;
+    this.stripConfigCache = null;
+    this.deviceInfoCache = null;
   }
 
   /**

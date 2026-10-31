@@ -22,6 +22,7 @@ import { eventText } from "../utils/ble/errors";
 import { WxCallError } from "../utils/ble/wx-promise";
 import type { BleTransport, LinkDetail } from "../utils/ble/transport";
 import type { CommandRequest, DeviceState, LinkState } from "../utils/protocol/types";
+import { baseState } from "./helpers/state";
 
 const CMD_SET_POWER = 0x01;
 /* v2 退役了 SetAll（0x04）；事件文案测试用仍然存在的命令字。 */
@@ -31,24 +32,7 @@ function wxErr(errCode: number): WxCallError {
   return new WxCallError("test", { errCode, errMsg: "mock" });
 }
 
-function baseState(overrides: Partial<DeviceState> = {}): DeviceState {
-  return {
-    power: 1,
-    brightness: 128,
-    r: 255,
-    g: 180,
-    b: 120,
-    ledCount: 30,
-    maxBrightness: 255,
-    stripCount: 1,
-    segCount: 0,
-    scriptId: 0xff,
-    stageIndex: 0,
-    playbackState: 0,
-    flags: 0,
-    ...overrides,
-  };
-}
+/* v3 的 37 字节 State 夹具集中在 tests/helpers/state.ts（含派生字段一致性）。 */
 
 /** 可控时钟 + 计时器（与 brightness/color 测试同款）。 */
 function fakeClock() {

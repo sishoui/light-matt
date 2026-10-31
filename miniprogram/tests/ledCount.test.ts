@@ -15,6 +15,7 @@ import {
 import { ControlSession } from "../utils/control/session";
 import type { SendOptions } from "../utils/ble/transport";
 import type { AckResult, CommandRequest, DeviceState, LinkState } from "../utils/protocol/types";
+import { baseState } from "./helpers/state";
 
 /** 记录调用的假传输层；只实现 ControlSession 真正用到的那几个成员。 */
 class FakeTransport {
@@ -110,21 +111,7 @@ function sessionWith(transport: FakeTransport): ControlSession {
 }
 
 function stateWith(ledCount: number): DeviceState {
-  return {
-    power: 1,
-    brightness: 128,
-    r: 255,
-    g: 180,
-    b: 120,
-    ledCount,
-    maxBrightness: 255,
-    stripCount: 1,
-    segCount: 0,
-    scriptId: 0xff,
-    stageIndex: 0,
-    playbackState: 0,
-    flags: 0,
-  };
+  return baseState({ ledCount });
 }
 
 describe("parseLedCountInput", () => {
