@@ -3,6 +3,8 @@
  * 手写校验能给出中文可读的错误，也避免 schema 与类型两份真相。
  */
 
+import { normalizeMacAddress } from "./identity.js";
+
 export interface DevicePayload {
   hardwareId?: unknown;
   deviceName?: unknown;
@@ -142,4 +144,168 @@ export function validateLogPayload(body: unknown): { ok: true; value: Validated 
       device,
     },
   };
+}
+
+// ---------------------------------------------------------------- 会话 + 设备
+// 下面几个校验器只认白名单字段：请求体里塞 rgb / brightness / segment / script
+// 之类的东西会被**直接忽略**，既不会 400 也不会落库。理由见 schema.ts v2 注释。
+
+/** 本地身份的字面量格式，与小程序 `getOrCreateLocalUserKey` 保持一致。 */
+const LOCAL_USER_KEY = /^local-[0-9a-f]{16}$/;
+
+export interface SessionPayload {
+  /** 本地模式下是自称的 user_key；openid 模式下被忽略。 */
+  userKey: string | null;
+  /** 配了 AppSecret 时必填。 */
+  code: string | null;
+}
+
+export function validateSessionPayload(
+  body: unknown,
+): { ok: true; value: SessionPayload } | { ok: false; errors: ValidationError[] } {
+  const errors: ValidationError[] = [];
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return { ok: false, errors: [{ field: "body", message: "必须是 JSON 对象" }] };
+  }
+  const payload = body as { userKey?: unknown; code?: unknown };
+
+  let userKey: string | null = null;
+  if (payload.userKey !== undefined && payload.userKey !== null) {
+    if (typeof payload.userKey !== "string") {
+      errors.push({ field: "userKey", message: "必须是字符串" });
+    } else if (!LOCAL_USER_KEY.test(payload.userKey)) {
+      // 本地身份可伪造，但格式必须对：否则任意字符串都能当 user_key，
+      // 设备归属会变成一锅粥。openid 只有微信能给，不接受自称。
+      errors.push({ field: "userKey", message: "本地身份必须形如 local-<16 位小写 hex>" });
+    } else {
+      userKey = payload.userKey;
+    }
+  }
+
+  let code: string | null = null;
+  if (payload.code !== undefined && payload.code !== null) {
+    if (typeof payload.code !== "string" || payload.code.trim().length === 0) {
+      errors.push({ field: "code", message: "必须是非空字符串" });
+    } else {
+      code = payload.code.trim();
+    }
+  }
+
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, value: { userKey, code } };
+}
+
+/** 必需的用户标识头：只校验非空与长度，不校验格式（信任边界见 app.ts）。 */
+export function validateUserKeyHeader(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > 256) return null;
+  return trimmed;
+}
+
+export interface RegisterPayload {
+  hardwareId: string;
+  displayName: string | null;
+}
+
+export function validateRegisterPayload(
+  body: unknown,
+): { ok: true; value: RegisterPayload } | { ok: false; errors: ValidationError[] } {
+  const errors: ValidationError[] = [];
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return { ok: false, errors: [{ field: "body", message: "必须是 JSON 对象" }] };
+  }
+  const payload = body as { hardwareId?: unknown; displayName?: unknown };
+
+  const hardwareId = normalizeMacAddress(
+    typeof payload.hardwareId === "string" ? payload.hardwareId : null,
+  );
+  if (hardwareId === null) {
+    errors.push({ field: "hardwareId", message: "必填，且必须是 48 位蓝牙 MAC 地址" });
+  }
+  const displayName = optionalString(payload.displayName, "displayName", errors);
+
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, value: { hardwareId: hardwareId as string, displayName } };
+}
+
+export function validateRenamePayload(
+  body: unknown,
+): { ok: true; value: { displayName: string } } | { ok: false; errors: ValidationError[] } {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return { ok: false, errors: [{ field: "body", message: "必须是 JSON 对象" }] };
+  }
+  const payload = body as { displayName?: unknown };
+  // 改名不允许「改成空」来清除备注：清空在 UI 上是另一种操作，
+  // 混进同一个接口会让 PATCH 的语义变成两义（改名 / 删名）。
+  if (typeof payload.displayName !== "string") {
+    return { ok: false, errors: [{ field: "displayName", message: "必填，且必须是字符串" }] };
+  }
+  const trimmed = payload.displayName.trim();
+  if (trimmed.length === 0) {
+    return { ok: false, errors: [{ field: "displayName", message: "不能为空" }] };
+  }
+  if (trimmed.length > MAX_TEXT) {
+    return { ok: false, errors: [{ field: "displayName", message: `长度不能超过 ${MAX_TEXT}` }] };
+  }
+  return { ok: true, value: { displayName: trimmed } };
+}
+
+const MAX_STRIPS = 16;
+const MAX_FIRMWARE_VER = 65_535;
+
+export interface SeenPayload {
+  ledCounts: number[] | null;
+  firmwareVer: number | null;
+}
+
+export function validateSeenPayload(
+  body: unknown,
+): { ok: true; value: SeenPayload } | { ok: false; errors: ValidationError[] } {
+  const errors: ValidationError[] = [];
+  // 空 body（没 Content-Type / 空对象）是合法的：只推进 last_seen_at。
+  if (body === undefined || body === null) return { ok: true, value: { ledCounts: null, firmwareVer: null } };
+  if (typeof body !== "object" || Array.isArray(body)) {
+    return { ok: false, errors: [{ field: "body", message: "必须是 JSON 对象" }] };
+  }
+  const payload = body as { ledCounts?: unknown; firmwareVer?: unknown };
+
+  let ledCounts: number[] | null = null;
+  if (payload.ledCounts !== undefined && payload.ledCounts !== null) {
+    if (!Array.isArray(payload.ledCounts)) {
+      errors.push({ field: "ledCounts", message: "必须是正整数数组" });
+    } else if (payload.ledCounts.length > MAX_STRIPS) {
+      errors.push({ field: "ledCounts", message: `最多 ${MAX_STRIPS} 条灯带` });
+    } else {
+      const parsed: number[] = [];
+      let bad = false;
+      for (const value of payload.ledCounts) {
+        if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+          bad = true;
+          break;
+        }
+        parsed.push(value);
+      }
+      if (bad) errors.push({ field: "ledCounts", message: "每项都必须是正整数" });
+      else ledCounts = parsed;
+    }
+  }
+
+  let firmwareVer: number | null = null;
+  if (payload.firmwareVer !== undefined && payload.firmwareVer !== null) {
+    const value = payload.firmwareVer;
+    if (
+      typeof value !== "number" ||
+      !Number.isSafeInteger(value) ||
+      value < 0 ||
+      value > MAX_FIRMWARE_VER
+    ) {
+      errors.push({ field: "firmwareVer", message: `必须是 0..${MAX_FIRMWARE_VER} 的整数` });
+    } else {
+      firmwareVer = value;
+    }
+  }
+
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, value: { ledCounts, firmwareVer } };
 }

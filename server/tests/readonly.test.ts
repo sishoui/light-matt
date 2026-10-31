@@ -67,7 +67,7 @@ describe("只读看板：内容", () => {
 
   it("HTML 里没有任何表单或写操作控件", async () => {
     await seedOneLog();
-    for (const url of ["/admin/devices", "/admin/users"]) {
+    for (const url of ["/admin/devices", "/admin/users", "/admin/registry"]) {
       const res = await h.app.inject({
         method: "GET",
         url,
@@ -93,6 +93,8 @@ describe("只读看板：没有任何写路由", () => {
     "/admin/devices/1",
     "/admin/users/1",
     "/admin/logs",
+    "/admin/registry",
+    "/admin/registry/1",
   ];
 
   for (const method of writes) {

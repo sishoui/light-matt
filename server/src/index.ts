@@ -12,6 +12,9 @@ async function main(): Promise<void> {
     adminUser: env.ADMIN_USER,
     adminPassword: env.ADMIN_PASSWORD,
     appToken: env.APP_TOKEN,
+    ...(env.WX_APPID === undefined || env.WX_SECRET === undefined
+      ? {}
+      : { wx: { appid: env.WX_APPID, secret: env.WX_SECRET } }),
     logger: true,
   });
 

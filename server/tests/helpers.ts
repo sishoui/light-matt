@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { buildApp } from "../src/app.js";
+import { buildApp, type AppConfig } from "../src/app.js";
 import { openDatabase, type Db } from "../src/db.js";
 
 export const ADMIN_USER = "admin";
@@ -12,14 +12,18 @@ export interface Harness {
   close: () => Promise<void>;
 }
 
-/** 每个用例一套独立内存库 + fastify.inject，不监听端口、不联网。 */
-export async function makeHarness(): Promise<Harness> {
+/**
+ * 每个用例一套独立内存库 + fastify.inject，不监听端口、不联网。
+ * overrides 用来注入假的 `wx`（测试里绝不允许真的出网）。
+ */
+export async function makeHarness(overrides: Partial<AppConfig> = {}): Promise<Harness> {
   const db = openDatabase(":memory:");
   const app = await buildApp({
     db,
     adminUser: ADMIN_USER,
     adminPassword: ADMIN_PASSWORD,
     appToken: APP_TOKEN,
+    ...overrides,
   });
   await app.ready();
   return {

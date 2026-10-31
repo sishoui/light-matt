@@ -1,4 +1,4 @@
-import type { DeviceRow, UserRow } from "./db.js";
+import type { DeviceRow, RegisteredDeviceRow, UserRow } from "./db.js";
 
 /** 只读视图。整页没有任何 <form> / 写按钮 / 可编辑控件。 */
 
@@ -85,7 +85,52 @@ MAC 数 &gt; 1 表示广播名撞车。使用次数 = 连接会话数，不是�
     `<h1>设备</h1>
 <p class="sub">按最后出现时间倒序 · 共 ${rows.length} 台</p>
 ${body}
-<p class="hint"><a href="/admin/users">→ 用户列表</a></p>`,
+<p class="hint"><a href="/admin/users">→ 用户列表</a> · <a href="/admin/registry">→ 设备登记表</a></p>`,
+  );
+}
+
+/**
+ * 设备登记表（v3）：`devices` + `user_devices` 的实体列表，与上面的日志聚合视图
+ * 不是一回事 —— 前者是「登记过的设备实体」，后者是「日志按 device_key 聚合」。
+ *
+ * led_counts / firmware_ver 必须明确标注为非权威缓存：它们只在设备离线时
+ * 提供一点信息，真实配置永远以设备 NVS 为准。
+ */
+export function registeredDevicesPage(rows: readonly RegisteredDeviceRow[]): string {
+  const body =
+    rows.length === 0
+      ? `<p class="empty">还没有登记过的设备。</p>`
+      : `<table>
+<thead><tr>
+  <th>硬件 ID</th><th>备注名（全局默认）</th>
+  <th>最后在线</th><th>登记时间</th>
+  <th class="num">登记用户数</th>
+  <th>灯珠数 / 固件版本（缓存，非权威）</th>
+</tr></thead>
+<tbody>
+${rows
+  .map(
+    (r) => `<tr>
+  <td><code>${esc(r.hardware_id)}</code></td>
+  <td>${esc(r.display_name ?? "（未命名）")}</td>
+  <td>${esc(fmtTime(r.last_seen_at))}</td>
+  <td>${esc(fmtTime(r.created_at))}</td>
+  <td class="num">${esc(r.user_count)}</td>
+  <td><code>${esc(r.led_counts ?? "—")}</code> / ${esc(r.firmware_ver ?? "—")}</td>
+</tr>`,
+  )
+  .join("\n")}
+</tbody>
+</table>
+<p class="hint">这是「谁登记过」的展示，<strong>不是</strong>访问控制：任何人扫到设备都能连。
+灯珠数与固件版本只是离线时的提示，配置真相在设备 NVS 里。</p>`;
+
+  return layout(
+    "设备登记表",
+    `<h1>设备登记表</h1>
+<p class="sub">按最后在线时间倒序 · 共 ${rows.length} 台</p>
+${body}
+<p class="hint"><a href="/admin/devices">→ 日志聚合设备</a> · <a href="/admin/users">→ 用户列表</a></p>`,
   );
 }
 

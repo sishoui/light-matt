@@ -83,10 +83,44 @@ GROUP BY u.id;
  */
 export const MIGRATIONS: ReadonlyArray<{ readonly version: number; readonly sql: string }> = [
   // v1 = SCHEMA_SQL 的初始形态（users / usage_logs / 两个视图）。
-  // 后续迁移从 2 开始追加，例如：
+  // 后续迁移从 2 开始追加。
   //
-  // {
-  //   version: 2,
-  //   sql: `ALTER TABLE usage_logs ADD COLUMN firmware_version TEXT;`,
-  // },
+  // v2：设备登记表。**这里没有、也永远不要加任何灯光配置列**
+  // （rgb / brightness / segment / script / stage / power）。
+  // 设备 NVS 是灯光配置的唯一真相，后端存一份会立刻产生第二个真相源，
+  // 而且控制链路走 BLE 直连、根本不经过服务器（docs/spec-v3.md §2.2）。
+  //
+  // led_counts / firmware_ver 是**明确标注非权威**的缓存：只用于离线时列表里
+  // 能显示点东西，随时可以被设备真实值覆盖。
+  //
+  // display_name 出现在两张表里，这是有意的：
+  //   - devices.display_name      —— 非权威的全局默认值（最后一次改名留下的）；
+  //   - user_devices.display_name —— 每个用户自己的备注名，**权威**。
+  //   读列表时取 COALESCE(user_devices.display_name, devices.display_name)。
+  //   这样同一台设备在两台手机上可以各叫各的，同时没改过名的人也能看到默认值。
+  {
+    version: 2,
+    sql: `
+CREATE TABLE IF NOT EXISTS devices (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  hardware_id   TEXT    NOT NULL UNIQUE,
+  display_name  TEXT,
+  last_seen_at  INTEGER NOT NULL,
+  led_counts    TEXT,
+  firmware_ver  INTEGER,
+  created_at    INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS user_devices (
+  user_id      INTEGER NOT NULL REFERENCES users(id),
+  device_id    INTEGER NOT NULL REFERENCES devices(id),
+  added_at     INTEGER NOT NULL,
+  display_name TEXT,
+  PRIMARY KEY (user_id, device_id)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_user_devices_device ON user_devices(device_id);
+CREATE INDEX IF NOT EXISTS idx_devices_last_seen   ON devices(last_seen_at);
+`,
+  },
 ];
