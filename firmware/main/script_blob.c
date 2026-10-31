@@ -10,6 +10,13 @@
  * 两层类型决定，见 script_blob.h 的 LUMEN_SCRIPT_SEGMENT_MIN/MAX。
  */
 
+size_t lumen_script_blob_encode(const lumen_script_store_t *store, uint8_t active_script_id,
+                                bool loop, uint8_t *out, size_t out_cap)
+{
+    return lumen_script_blob_encode_with_override(store, 0, NULL, active_script_id, loop, out,
+                                                  out_cap);
+}
+
 /* 有界读指针。 */
 typedef struct {
     const uint8_t *data;
@@ -97,8 +104,11 @@ static bool decode_layer(reader_t *r, lumen_effect_layer_t *layer)
     return true;
 }
 
-size_t lumen_script_blob_encode(const lumen_script_store_t *store, uint8_t active_script_id,
-                                bool loop, uint8_t *out, size_t out_cap)
+size_t lumen_script_blob_encode_with_override(const lumen_script_store_t *store,
+                                              uint8_t override_slot,
+                                              const lumen_script_t *override_script,
+                                              uint8_t active_script_id, bool loop, uint8_t *out,
+                                              size_t out_cap)
 {
     if (store == NULL || out == NULL || out_cap < 8) {
         return 0;
@@ -113,7 +123,14 @@ size_t lumen_script_blob_encode(const lumen_script_store_t *store, uint8_t activ
     out[pos++] = loop ? 0x01 : 0x00;
 
     for (uint8_t id = 0; id < LUMEN_MAX_SCRIPTS; ++id) {
-        const lumen_script_t *script = lumen_script_get(store, id);
+        /*
+         * 覆盖视图：`override_script` 非空且 id 命中时，把这个槽位当成它。
+         * 用于 ScriptCommit 的尺寸预检——候选剧本还在 staging 里，不能为了
+         * 试编码把 12.6KB 的结构体往栈上拷（NimBLE host 栈只有 4KB）。
+         */
+        const lumen_script_t *script =
+            (override_script != NULL && id == override_slot) ? override_script
+                                                             : lumen_script_get(store, id);
         if (script == NULL) {
             /* 未提交的槽位用 committed = 0 占位，保持 4 个槽位的顺序。 */
             if (pos + 1 > out_cap) {

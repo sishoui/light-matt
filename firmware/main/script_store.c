@@ -256,19 +256,20 @@ lumen_script_commit_result_t lumen_script_commit(lumen_script_store_t *store, ui
      * 量出持久化尺寸。超限就直接拒签——此时还没写 RAM 的 committed 槽位，
      * 也没有任何 NVS 写入，所以 RAM 里不会出现「已提交但存不下」的剧本。
      *
-     * 做法：临时把候选放进 committed[id] 再编码，然后立刻还原。这段全程在
-     * 调用方锁内、没有可观察的中间态；还原用 memcpy 而不是再取一次指针，
-     * 免得编译器把两次读取合并。
+     * **绝不能在这里拷贝整份剧本**：`lumen_script_t` 约 12.6KB，而本函数跑在
+     * NimBLE host 任务的 4096 字节栈上（CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE）。
+     * 早先的实现往栈上放了两个局部 `lumen_script_t`（~25KB），真机一 commit
+     * 立刻栈溢出 panic；host 测试的栈以 MB 计，所以只有烧到板子上才暴露。
+     *
+     * 现在用「覆盖槽位视图」：给编码器一个 (slot, script) 覆盖对，它遍历到
+     * 那个 slot 时改用传入的指针，不搬动任何内容，栈开销是常量。
      */
     size_t encoded = 0;
     if (blob_out != NULL) {
-        lumen_script_t saved = store->committed[script_id];
-        lumen_script_t probe = store->staging;
-        probe.committed = true;
-        store->committed[script_id] = probe;
         /* 激活 id / loop 只占 header 两个字节，不影响尺寸，这里传中性值。 */
-        encoded = lumen_script_blob_encode(store, LUMEN_NO_SCRIPT, false, blob_out, blob_cap);
-        store->committed[script_id] = saved;
+        encoded = lumen_script_blob_encode_with_override(store, script_id, &store->staging,
+                                                        LUMEN_NO_SCRIPT, false, blob_out,
+                                                        blob_cap);
         if (encoded == 0) {
             memset(&store->staging, 0, sizeof(store->staging));
             store->staging_active = false;
@@ -295,6 +296,29 @@ lumen_script_commit_result_t lumen_script_commit(lumen_script_store_t *store, ui
     }
     return LUMEN_SCRIPT_COMMIT_OK;
 }
+
+/*
+ * 栈预算说明（不是断言，是给下一个人看的账）。
+ *
+ * 跑在 NimBLE host 任务（CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE = 4096）上的
+ * 路径**不得**在栈上放剧本结构体：
+ *     sizeof(lumen_script_stage_t) = 8 带 × 8 段 × 24B + 4 ≈ 1540 B
+ *     sizeof(lumen_script_t)      = 8 阶段 × 1540B + 3   ≈ 12324 B
+ *     sizeof(lumen_script_store_t)= 5 × 12324B          ≈ 61.6 KB
+ *
+ * 真机上踩过一次：ScriptCommit 的尺寸预检曾写
+ *     lumen_script_t saved = store->committed[id];
+ *     lumen_script_t probe = store->staging;
+ * 两个局部变量就是 ~25KB 栈 —— 一 commit 立刻栈溢出 panic。host 测试的栈
+ * 以 MB 计，完全掩盖了它，只有烧到板子上才暴露。
+ *
+ * 现在改成 `lumen_script_blob_encode_with_override` 的覆盖视图：只传指针，
+ * 栈开销是常量。想改回「拷贝一份再编码」的写法之前，先读这段。
+ */
+
+/* 5 套剧本的表一旦被误放到栈上，链接期就会撑爆 DRAM —— 它必须留在静态区。 */
+_Static_assert(sizeof(lumen_script_store_t) > 4096,
+               "lumen_script_store_t 必须留在静态区（BSS），不能声明为局部变量");
 
 void lumen_script_abort(lumen_script_store_t *store, uint8_t script_id)
 {

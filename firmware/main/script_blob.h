@@ -71,6 +71,22 @@ size_t lumen_script_blob_encode(const lumen_script_store_t *store, uint8_t activ
                                 bool loop, uint8_t *out, size_t out_cap);
 
 /*
+ * 带槽位覆盖的编码（ScriptCommit 的尺寸预检用）。
+ *
+ * `override_script` 非空时，编码器把 `override_slot` 这个槽位当成它来写，
+ * 其余槽位照常读 store。用途：候选剧本还在 staging 里，试编码时既不能把它
+ * 拷贝到 committed（会污染可见状态），也不能拷到栈上（~12.6KB，NimBLE host
+ * 任务栈只有 4KB —— 这正是真机上 commit 直接 panic 的原因）。
+ *
+ * override_script 为 NULL 时与 lumen_script_blob_encode 完全等价。
+ */
+size_t lumen_script_blob_encode_with_override(const lumen_script_store_t *store,
+                                              uint8_t override_slot,
+                                              const lumen_script_t *override_script,
+                                              uint8_t active_script_id, bool loop, uint8_t *out,
+                                              size_t out_cap);
+
+/*
  * 解码并整份校验。strip_counts 是每条灯带自己的灯珠数（与 commit 同一份规则）。
  *
  * **就地解码**：结果直接写进 store（一套剧本表约 41KB，不做临时副本，否则
