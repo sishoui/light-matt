@@ -13,6 +13,48 @@
 
 ---
 
+## 0.0 已完成的机器验收（2026-11-01，COM6 / ESP32-C3）
+
+不需要人眼的部分已经用 PC 当 central 跑过，结论如下。
+
+**编译**（`scripts\build-firmware.cmd`，ESP-IDF v6.1）
+- 零错误、零警告（我们自己的 `firmware/main/*.c`）
+- app 分区余量 **87%**（`lumen.bin` 0x85430 / 分区 0x3E0000）
+- NVS 分区实测 **64KB**，分区表符合 `protocol-v3.md` §10.1
+- DRAM 已用 **63%**，余 **118KB**（两层结构 + 两套 16KB 剧本缓冲之后）
+- 烧录哈希校验通过
+
+**协议层 47/47**（`python scripts/probe-v3.py`）
+
+| 组 | 结果 |
+|---|---|
+| State 37 字节（GATT read + 回落路径） | ✅ pmask=0xFF amask 有值，带数与灯珠数正确 |
+| StripConfigReport 24B | ✅ 8 带，已分配 gpio=3/10/0/1/4/5/6/7，未分配 0xFF |
+| DeviceInfoReport 15B | ✅ fw v3.0、MAC `cc:8d:a2:c2:56:62`、caps=0x01（两层有、fade 无） |
+| ACK 回显 seq / 原命令字 | ✅ |
+| 亮度钳位 | ✅ 写 255 读回 200 |
+| 每带开关 | ✅ 关 bit1 → pmask 0xFD，开回 0xFF；strip=8 / on=2 被拒 |
+| `SetPower(0)` 不改 pmask | ✅ 全局关灯后 pmask 仍 0xFF |
+| SetSegment 两层 × 三种 blend | ✅ 全部 ACK，21B 单片写 |
+| 非法段（单层带 blend / 空 layer0 / start>end / 呼吸 300ms） | ✅ 全部 `InvalidParam` |
+| SegmentReport 21B + 真实槽位 | ✅ |
+| 剧本下发全流程 | ✅ Begin→Stage(含 fade=250)→Segment→Commit→QueryScript |
+| 断电重启后剧本仍在 | ✅ `剧本已恢复`，`ScriptSummary` 仍报 stages=1 |
+
+**真机抓到并修掉的一个 P0**（host 测试无法发现）
+
+`ScriptCommit` 一执行就 panic 重启：尺寸预检在栈上拷了两个 `lumen_script_t`
+（各 ~12.3KB），而这条路径跑在 NimBLE host 任务的 **4096 字节**栈上。
+PC 栈以 MB 计，所以 10993 项 host 断言全绿也没暴露。已改为
+`lumen_script_blob_encode_with_override` 的覆盖视图（只传指针），
+并加 `_Static_assert` 把「剧本表必须留在静态区」固定住。
+**教训：凡在 BLE 回调链上新增代码，都要问一句「这会在 4KB 栈上放什么」。**
+
+**仍需真机人眼/手机的部分**：§1 的全部功能项（颜色对不对、两层叠加好不好看）、
+§2 的录像与错色率、§3.6 的日志面板、§4 的文档收尾。下面保持原清单不变。
+
+---
+
 ## 0. 前置条件
 
 | 项 | 要求 |
