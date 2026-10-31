@@ -100,19 +100,30 @@ async def clear_all(rig, strips=8, slots=8):
             await rig.send(CMD_CLEAR_SEGMENT, bytes([strip, seg]), wait=0.03)
 
 
-async def cmd_setup(rig, strip, brightness, leds):
+async def cmd_setup(rig, strip, brightness, leds, fill, indices=None):
     await clear_all(rig)
     await rig.send(CMD_SET_BRIGHTNESS, bytes([brightness]), wait=0.2)
     await rig.send(CMD_SET_POWER, bytes([1]), wait=0.3)
-    # 每个段覆盖 1 颗灯，沿对角线分散 —— 孤立的点便于逐颗判定，互不粘连。
-    indices = [round(i * 63 / (leds - 1)) for i in range(leds)] if leds > 1 else [0]
-    for seg, idx in enumerate(indices):
-        payload = bytes([strip, seg, idx, idx, TYPE_STATIC, 0x00, 0x00, 255])
-        result = await rig.send(CMD_SET_SEGMENT, payload, wait=0.18)
-        print(f"  段{seg} strip={strip} LED[{idx}] -> 0x{result:02X}")
+    if fill:
+        # 整板同色：一个段覆盖 0..63。二维方阵用这个比分散点更稳 ——
+        # 相邻格同色时，网格稍微歪一点也不会把邻灯的颜色算进来。
+        payload = bytes([strip, 0, 0, 63, TYPE_STATIC, 0x00, 0x00, 255])
+        result = await rig.send(CMD_SET_SEGMENT, payload, wait=0.2)
+        print(f"  段0 strip={strip} LED[0..63] 全红 -> 0x{result:02X}")
+    else:
+        if indices is None:
+            # 默认沿对角线分散 —— 孤立的点便于逐颗判定，互不粘连。
+            indices = ([round(i * 63 / (leds - 1)) for i in range(leds)]
+                       if leds > 1 else [0])
+        # 显式给序号时用于标定（例如四个角 0/7/56/63 可精确确定网格）
+        for seg, idx in enumerate(indices):
+            payload = bytes([strip, seg, idx, idx, TYPE_STATIC, 0x00, 0x00, 255])
+            result = await rig.send(CMD_SET_SEGMENT, payload, wait=0.18)
+            print(f"  段{seg} strip={strip} LED[{idx}] -> 0x{result:02X}")
     st = await rig.state()
     print(f"\nState: power={st[0]} brightness={st[1]} strip_count={st[8]} seg_count={st[9]}")
-    print(f"预期：{leds} 颗红灯（strip {strip} 上），其余全黑")
+    print("预期：整板红色（1 段覆盖 64 灯）" if fill
+          else f"预期：{leds} 颗红灯（strip {strip} 上），其余全黑")
 
 
 async def cmd_flood(rig, seconds, hz, brightness):
@@ -154,6 +165,10 @@ async def main():
     p_setup.add_argument("--brightness", type=int, default=60)
     p_setup.add_argument("--leds", type=int, default=8,
                          help="点亮几颗灯（沿对焦线分散，默认 8）")
+    p_setup.add_argument("--fill", action="store_true",
+                         help="整板同色（一个段覆盖全部灯珠）；二维方阵推荐")
+    p_setup.add_argument("--leds-list",
+                         help="显式灯珠序号，逗号分隔（如 0,7,56,63 用于标定四角）")
 
     p_flood = sub.add_parser("flood", help="高频写入制造 BLE 压力")
     p_flood.add_argument("--seconds", type=float, default=180)
@@ -169,7 +184,10 @@ async def main():
         rig = Rig(client)
         await rig.start()
         if args.cmd == "setup":
-            await cmd_setup(rig, args.strip, args.brightness, args.leds)
+            indices = None
+            if args.leds_list:
+                indices = [int(v) for v in args.leds_list.split(",") if v.strip()]
+            await cmd_setup(rig, args.strip, args.brightness, args.leds, args.fill, indices)
         elif args.cmd == "flood":
             await cmd_flood(rig, args.seconds, args.hz, args.brightness)
         else:

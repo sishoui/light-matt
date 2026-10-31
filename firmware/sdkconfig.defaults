@@ -35,3 +35,10 @@ CONFIG_LUMEN_ANIM_FPS=20
 # #20 错色实验：静态画面也持续刷帧（错色判定要求画面恒定 + 持续刷帧）。
 # 量产固件必须关掉——它会让静态场景也持续占用 RMT 带宽。
 CONFIG_LUMEN_FORCE_REFRESH=y
+
+# RMT 每块 symbol 数。显式写成默认值 48 是 #20 的实测结论：与 192（C3 硬件
+# 上限）对照，BLE 压力下的轮周期**没有改善**（>25ms 占比 37% vs 39%，
+# 中位 19.6 vs 19.8ms），见 docs/animation-baseline.md §7.8.2。
+# 8 路 TDM 只用一个 RMT 通道（靠切 GPIO），块大小不改变被打断的次数，
+# 只改变每次被打断后要重做的编码量，所以加大块尺寸在 8 路模式下无收益。
+CONFIG_LUMEN_RMT_MEM_BLOCK_SYMBOLS=48

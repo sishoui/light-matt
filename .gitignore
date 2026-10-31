@@ -18,3 +18,8 @@ __pycache__/
 
 # 发布辅助（由脚本生成，不入库）
 .scratch/publish/
+
+# #20 实验产物：标定绑相机机位，录像/抓帧是临时证据
+.board-homography.json
+.board-calib-check.png
+.runs/
