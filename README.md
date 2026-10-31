@@ -15,10 +15,16 @@ lumen/
 
 ## 从这里开始
 
-**v2 扩展（进行中）**
+**v3 扩展（设计已定稿，待实现）**
+
+- **v3 规格**：[docs/spec-v3.md](docs/spec-v3.md) —— 设备列表 / 多灯带 / 两层灯效 / 分阶段（GitHub [#35](https://github.com/sishoui/light-matt/issues/35)）
+- **v3 协议契约**：[docs/protocol-v3.md](docs/protocol-v3.md) —— 字节级唯一真相，含分片与两层段
+- **v3 测试向量**：[docs/protocol-testvectors-v3.json](docs/protocol-testvectors-v3.json) —— 由 `scripts/gen-protocol-testvectors-v3.mjs` 生成
+- **灯效参数表**：[docs/effects-spec.md](docs/effects-spec.md) —— 四种灯效的字节布局与行为公式（v3 未改语义）
+
+**v2 扩展（已实现，v3 实现完成后作废）**
 
 - **v2 规格**：[docs/spec-v2.md](docs/spec-v2.md) —— 多设备 / 多灯效 / 多阶段 / 多分段（GitHub [#27](https://github.com/sishoui/light-matt/issues/27)）
-- **灯效参数表**：[docs/effects-spec.md](docs/effects-spec.md) —— 四种灯效的字节布局与行为公式（已定稿）
 - **v2 决策地图**：GitHub [#16](https://github.com/sishoui/light-matt/issues/16)
 - **环境**：[docs/dev-environment.md](docs/dev-environment.md) —— **ESP-IDF v6.1**，项目不做旧版本兼容
 - **后端**：[server/README.md](server/README.md) —— 使用日志数据模型、API 清单、设备聚合口径与只读看板（#23）
@@ -27,7 +33,8 @@ lumen/
 
 - **接手/继续开发**：[docs/handoff.md](docs/handoff.md) —— 当前状态、下一步、必须知道的坑
 - **想了解架构**：[docs/wayfinding/architecture-brief.md](docs/wayfinding/architecture-brief.md)（⚠️ v1 历史产物）
-- **想写 codec**：[docs/protocol.md](docs/protocol.md) —— 字节级协议规格与测试向量
+- **想写 codec（v3，当前）**：[docs/protocol-v3.md](docs/protocol-v3.md) —— 字节级协议规格与测试向量
+- **想写 codec（v2，已作废）**：[docs/protocol.md](docs/protocol.md) —— 保留供对照
 - **想实现 MVP**：[docs/spec.md](docs/spec.md) —— MVP 实现规格（用户故事、实现决策、测试接缝）
 - **想跑真机验收**：[docs/end-to-end-acceptance.md](docs/end-to-end-acceptance.md) —— 7 条清单的操作步骤与记录表
 - **想跑 RMT × BLE 共存实验**：[docs/rmt-ble-stability.md](docs/rmt-ble-stability.md) —— 五组实验方案、待填数据表与判定流程

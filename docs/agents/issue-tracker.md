@@ -48,7 +48,48 @@ Issue 与 spec 住在 GitHub Issues。所有操作走 `gh` CLI；在仓库目录
 
 v1（MVP）的 wayfinder 地图与决策票仍在 `docs/wayfinding/`（历史产物）。之后新开的 wayfinder effort 走 GitHub Issues。
 
-### 当前 effort：v2 扩展
+### 当前 effort：v3 扩展
+
+- **规格（实现层）**：[#35 lumen v3 · 实现规格](https://github.com/sishoui/light-matt/issues/35)，label `spec`。11 张实现票是它的 sub-issues。
+- **字节细节**的唯一真相是 `docs/protocol-v3.md`（v3 契约，含分片与两层段）；可执行副本是 `docs/protocol-testvectors-v3.json`，由 `scripts/gen-protocol-testvectors-v3.mjs` 生成 —— **改契约必须重新生成向量**。
+- **不取代**：`docs/effects-spec.md` 的灯效参数语义在 v3 里没有变。
+
+**v3 要解决的核心问题**：v2 把多带 / 多段 / 多阶段 / 多灯效都做进了固件和协议，但**小程序没跟上**（`PRIMARY_STRIP_ID = 0` 写死，无灯带维度）。v3 的主战场是小程序，固件做「补齐 + 放开」。
+
+**依赖形状（11 张票）**
+
+| 票 | 阻塞 | 交付 |
+|---|---|---|
+| #36 固件：协议 v3 信封与持久化 | — | 新信封 + CRC16 + 分片 + blob v4/v2 + 分区表 |
+| #37 固件：段两层灯效与 blend 合成 | #36 | 段两层化、三种 blend、合成后再过 gamma |
+| #38 固件：每带独立开关与配置查询 | #36 | `SetStripPower` / `QueryStripConfig` / `QueryDeviceInfo` |
+| #39 固件：剧本两层化与容量预检 | #37 | `fade_ms` 预留、`ScriptTooLarge` 显式失败 |
+| #40 小程序：协议 v3 与分片传输 | — | frame/crc16/chunk/两层段/37B State |
+| #41 小程序：拆页与灯带维度 | #40 | tabBar 三页 + 二级页，消除 `PRIMARY_STRIP_ID` |
+| #42 小程序：段编辑与两层灯效 | #41 | 区间 + 两层 + blend 编辑 |
+| #43 后端：设备登记与会话 API | — | `devices` / `user_devices` + openid 可配置回落 |
+| #44 小程序：设备页与后端同步 | #41 + #43 | 本地优先列表 + 异步同步 |
+| #45 小程序：剧本页与读回 | #41 + #39 | 时间轴、从设备读回、容量预检 |
+| #46 v3 端到端真机验收 | #37 #39 #41 #42 #44 #45 | 真机证据 |
+
+**v3 的六条已定取舍（实现时不要「修复」）**：
+
+- **不做运行期改引脚**：句柄热重建会放大已实测的 BLE 抢 RMT ISR 问题。引脚仍由 Kconfig 定，协议只读。
+- **不做每带独立亮度**：只有每带开关，亮度保持全局。
+- **最多两层叠加**：三层会让段结构从 21B 涨到 29B，吃掉本就紧张的剧本容量。
+- **blend 只有覆盖/相乘/相加**：不做取最大（与相加视觉重合）。
+- **`fade_ms` 只预留格式**：行为仍硬切（过渡期 RMT 负载翻倍）。
+- **后端不存灯光配置**：设备 NVS 是唯一真相，双真相无解。
+
+**v3 仍然是断崖升级**：magic 改 `0xA6`、version 改 `0x03`、State 14B→37B、段 8/12B→21B。
+现场设备必须重刷固件，v2 的 NVS blob（state v3 / script v1）不被识别，刷完配置回默认值。
+个人测试阶段可接受，但要写进验收记录。
+
+**注意**：v2 的 `docs/protocol.md` 在 v3 实现完成后作废，`docs/spec-v2.md` 同时作废。
+
+---
+
+## 历史 effort：v2 扩展（已完成）
 
 - **地图（决策层）**：[#16](https://github.com/sishoui/light-matt/issues/16)，label `wayfinder:map`。已关闭的决策票是它的 sub-issues。
 - **规格（实现层）**：[#27 lumen v2 · 实现规格](https://github.com/sishoui/light-matt/issues/27)，label `spec`。所有实现票是它的 sub-issues。

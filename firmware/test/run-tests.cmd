@@ -35,3 +35,17 @@ if not exist "%VECTORS%" (
 )
 
 "%OUT%\lumen_host_tests.exe" "%VECTORS%"
+if errorlevel 1 exit /b 1
+
+REM v3 contract self-check: validates docs/protocol-testvectors-v3.json against
+REM docs/protocol-v3.md (frame widths, magic/version, chunk reassembly, result
+REM codes, command coverage). Independent of the generator, so it catches
+REM generator bugs such as a wrong field width.
+where node >nul 2>nul
+if errorlevel 1 (
+  echo [run-tests] node not found, skipping v3 vector self-check
+  exit /b 0
+)
+node "%~dp0..\..\scripts\check-protocol-testvectors-v3.mjs"
+if errorlevel 1 exit /b 1
+exit /b 0
