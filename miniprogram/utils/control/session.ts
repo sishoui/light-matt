@@ -59,6 +59,7 @@ import {
   forgetDevice,
   loadRecentDevices,
   recordConnection,
+  updateDeviceIdentity,
   type RecentDevice,
 } from "./device-history";
 import { LED_COUNT_ACK_TIMEOUT_MS } from "./ledCount";
@@ -121,6 +122,7 @@ import {
 } from "./device-cache";
 import { detectDevMode, detectPlatform, fallbackState } from "./platform";
 import { ReconnectSupervisor } from "./reconnect";
+import { loadRegistry, setHardwareId } from "./device-registry";
 
 export { DEVICE_CACHE_KEY, detectDevMode, detectPlatform };
 export type { CachedDevice, SessionStorage };
@@ -508,6 +510,12 @@ export class ControlSession {
   async connect(deviceId: string, name?: string): Promise<DeviceState> {
     // 手动连接优先：取消退避计时器与回连意图，并重置尝试次数（spec #41）。
     this.reconnect.manualConnectBegin();
+    /* #44：换了一台设备就先把上一台的一切清干净（State / 引脚表 / 身份 /
+     * 逐带段缓存）。页面走 switchTo 时也会清，这里是兜底——任何直接
+     * connect 新设备的路径都不能把旧设备的段列表带过去。 */
+    if (this.cached !== null && this.cached.deviceId !== deviceId) {
+      this.clearDeviceState();
+    }
     // #34：记下本次连接身份并置位——ready 事件据此写使用日志（一次会话一条）。
     this.armUsageLog(deviceId, name);
     try {
@@ -518,15 +526,27 @@ export class ControlSession {
       this.usageArmed = false;
       // 只有完整初始化成功后才缓存 deviceId（失败的下次扫描更可靠）。
       this.cached = saveCachedDevice(this.storage, deviceId, name);
-      this.recent = recordConnection(this.storage, deviceId, name, Date.now());
+      /* #44：连接成功立刻记一条本地记录（列表要能马上刷新，不等网络）。
+       * hardwareId 此时通常还没读到（它在 0x88 里），所以先用登记表里已知的
+       * 那个；读到之后由 `attachHardwareId` 补上并合并，不会多出一条。 */
+      this.recent = recordConnection(
+        this.storage,
+        deviceId,
+        name,
+        Date.now(),
+        this.knownHardwareIdOf(deviceId) ?? undefined,
+      );
       return state;
     } catch (err) {
       // 连接失败：撤掉日志置位，避免后面不相干的 ready 误记一条。
       this.usageArmed = false;
       // 10002 / 10013：设备不在附近或 deviceId 失效（iOS UUID 会变），清缓存。
       if (err instanceof WxCallError && (err.errCode === 10002 || err.errCode === 10013)) {
+        /* #44：知道 hardwareId 时按它删——旧 deviceId 已经失效，只有 hwId
+         * 能定位到同一条记录（iOS 换 UUID 后 deviceId 不再匹配）。 */
+        const hardwareId = this.knownHardwareIdOf(deviceId);
         this.clearCachedDevice();
-        this.recent = forgetDevice(this.storage, deviceId);
+        this.recent = forgetDevice(this.storage, deviceId, hardwareId ?? undefined);
       }
       throw err;
     } finally {
@@ -555,11 +575,15 @@ export class ControlSession {
         // 主动断开当前设备：取消节流与回连意图，避免旧连接的命令串到新连接上。
         this.throttle.cancel();
         await this.reconnect.disconnectIntent();
-        this.latestState = null;
+        /* #44：切换设备必须清空上一台的一切镜像——State、引脚表、hwId、
+         * **逐带段缓存**。少了这一步，新设备（尤其灯带数更少的一台）会显示
+         * 上一台残留的段，用户以为配置丢了。 */
+        this.clearDeviceState();
       } catch (err) {
         // 断开报错也照样往下连：目标状态是「连上新设备」，
         // 卡在 disconnecting 只会让用户看不到任何进展。
         console.warn(`[lumen] 切换前断开失败：${errorText(err)}`);
+        this.clearDeviceState();
       }
       this.switchState = switchedDisconnected(this.switchState);
     }
@@ -609,6 +633,16 @@ export class ControlSession {
   }
 
   /**
+   * 从「最近连过」里移除一台（#44 的「删除设备」）。
+   *
+   * 只删本机记录：设备本身不受影响，重新扫描连上后会再记一条。知道
+   * hardwareId 时一并按它删——iOS 换了 UUID 后 deviceId 已不匹配。
+   */
+  forgetRecent(deviceId: string, hardwareId?: string): void {
+    this.recent = forgetDevice(this.storage, deviceId, hardwareId);
+  }
+
+  /**
    * §9.1 的「设备增强信息」重建：QueryStripConfig → QueryDeviceInfo。
    *
    * 为什么不在这里读 State：进入 ready 的那一刻 transport 的初始化流水线刚
@@ -625,9 +659,63 @@ export class ControlSession {
     }
     await this.queryStripConfig().catch(() => undefined);
     await this.queryDeviceInfo().catch(() => undefined);
+    /* #44：hwId 是设备的稳定身份，读到后立刻补进本地两层存储
+     * （登记表 + 最近连过），后续去重、删除、同步都按它走。失败不影响连接。 */
+    this.attachHardwareId();
     /* 通知页面「设备增强信息已就绪」（GPIO / hwId）。失败也要通知：
      * 页面据此把「GPIO ?」收敛成「—」，不必自己猜什么时候该重画。 */
     this.notifyDeviceConfig();
+  }
+
+  /**
+   * 把 `QueryDeviceInfo` 读到的 hwId 与缓存快照落到本地（#44）。
+   *
+   * 只在**当前连接**的设备上做：`deviceInfoCache` 属于这一次连接，断开就清，
+   * 所以不存在「把上一台的 hwId 写给了新设备」的可能。
+   *
+   * 写入 `stripCount` / `firmwareVer` 的目的只有一个：设备页在**未连接**时
+   * 能显示「上次」的条数与固件。它们不是当前配置，UI 必须标注来源。
+   */
+  private attachHardwareId(): void {
+    const info = this.deviceInfoCache;
+    const deviceId = this.transport.currentDeviceId;
+    if (info === null || typeof deviceId !== "string" || deviceId.length === 0) {
+      return;
+    }
+    if (info.hwId.length === 0) {
+      return;
+    }
+    try {
+      setHardwareId(this.storage, deviceId, info.hwId);
+      /* 合并而非新增：这台设备可能已经有一条「只有 deviceId」的记录。 */
+      this.recent = updateDeviceIdentity(this.storage, deviceId, {
+        hardwareId: info.hwId,
+        /* State 的 stripCount 是设备权威的条数（0x88 只给上限 maxStrips）。 */
+        stripCount: this.latestState?.stripCount,
+        firmwareVer: info.firmwareVersion,
+      });
+    } catch (err) {
+      console.warn(`[lumen] 记录设备身份失败：${errorText(err)}`);
+    }
+  }
+
+  /**
+   * 某台设备已知的 hardwareId（登记表优先，最近连过的记录兜底）。
+   *
+   * 用途：连接成功的那一刻先按已知身份记一条；10002 时用它删掉失效记录。
+   * 还不知道就返回 null——**绝不**拿 deviceId 冒充。
+   */
+  private knownHardwareIdOf(deviceId: string): string | null {
+    try {
+      const entry = loadRegistry(this.storage).devices.find((item) => item.deviceId === deviceId);
+      if (entry?.hardwareId !== undefined && entry.hardwareId.length > 0) {
+        return entry.hardwareId;
+      }
+    } catch {
+      /* 存储损坏按「不知道」处理 */
+    }
+    const known = this.recent.find((item) => item.deviceId === deviceId);
+    return known?.hardwareId ?? null;
   }
 
   /** 设备增强信息（引脚表 / 设备身份）读取结束的一次通知。 */

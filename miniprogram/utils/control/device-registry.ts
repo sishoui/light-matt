@@ -36,6 +36,13 @@ export interface DeviceRegistryEntry {
   stripMask: number;
   /** 最后一次见到这台设备的时间（毫秒）；未知时不写。 */
   lastSeenAt?: number;
+  /**
+   * 后端行 id（#44）：`POST /devices/register` 返回的那个。
+   *
+   * 只用来定位「这台设备对应后端的哪一行」，让改名 / 删除不必每次重拉列表。
+   * 它不是身份（身份是 hardwareId），也不是灯光配置。
+   */
+  backendId?: number;
 }
 
 export interface DeviceRegistry {
@@ -55,6 +62,7 @@ function isValidEntry(value: unknown): value is DeviceRegistryEntry {
     hardwareId?: unknown;
     stripMask?: unknown;
     lastSeenAt?: unknown;
+    backendId?: unknown;
   };
   if (typeof entry.deviceId !== "string" || entry.deviceId.length === 0) {
     return false;
@@ -69,6 +77,9 @@ function isValidEntry(value: unknown): value is DeviceRegistryEntry {
     return false;
   }
   if (entry.lastSeenAt !== undefined && typeof entry.lastSeenAt !== "number") {
+    return false;
+  }
+  if (entry.backendId !== undefined && !Number.isInteger(entry.backendId)) {
     return false;
   }
   return true;
@@ -105,6 +116,57 @@ function writeRegistry(storage: SessionStorage, registry: DeviceRegistry): void 
 
 export function findEntry(registry: DeviceRegistry, deviceId: string): DeviceRegistryEntry | null {
   return registry.devices.find((entry) => entry.deviceId === deviceId) ?? null;
+}
+
+/**
+ * 按 hardwareId 找记录（#44）。
+ *
+ * 设备页合并后端列表后，"只有后端记录"的设备没有本机 deviceId，只能按
+ * hardwareId 定位；改名 / 删除 / 掩码都走这里。同一 hwId 正常只有一条
+ * （`setHardwareId` 在写入前不做去重，所以这里取第一条即可）。
+ */
+export function findEntryByHardwareId(
+  registry: DeviceRegistry,
+  hardwareId: string,
+): DeviceRegistryEntry | null {
+  if (hardwareId.length === 0) {
+    return null;
+  }
+  return registry.devices.find((entry) => entry.hardwareId === hardwareId) ?? null;
+}
+
+/**
+ * 「设备引用」：设备页一行同时可能知道 deviceId（本机连过）与 hardwareId
+ * （设备自报）。两者都缺时没有可操作对象。
+ */
+export interface DeviceRef {
+  readonly deviceId?: string | null;
+  readonly hardwareId?: string | null;
+}
+
+/** 解析引用到已有记录；deviceId 优先（它当前一定可连接），再按 hwId。 */
+export function resolveEntry(registry: DeviceRegistry, ref: DeviceRef): DeviceRegistryEntry | null {
+  const deviceId = ref.deviceId ?? "";
+  if (deviceId.length > 0) {
+    const byId = findEntry(registry, deviceId);
+    if (byId !== null) {
+      return byId;
+    }
+  }
+  const hardwareId = ref.hardwareId ?? "";
+  return hardwareId.length > 0 ? findEntryByHardwareId(registry, hardwareId) : null;
+}
+
+/** 引用的稳定存储键：已有记录用它的 deviceId，否则当前的 deviceId，再否则 null。 */
+export function storageKeyOf(registry: DeviceRegistry, ref: DeviceRef): string | null {
+  const existing = resolveEntry(registry, ref);
+  if (existing !== null) {
+    return existing.deviceId;
+  }
+  const deviceId = ref.deviceId ?? "";
+  /* 只有后端记录的设备没有 deviceId：它在本机不可连接，也就没有可写的
+   * 本地备注槽位（备注走后端 PATCH）。返回 null 让调用方明确拒绝。 */
+  return deviceId.length > 0 ? deviceId : null;
 }
 
 /** 取一条记录（没有就按默认值造一个，不落盘）。 */
@@ -212,7 +274,39 @@ export function setStripEnabled(
   return updated;
 }
 
-/** 删除一台设备的全部本地决定（备注 / 掩码 / 身份）。 */
+/**
+ * 记下「这台设备对应后端的哪一行」（#44，`POST /devices/register` 的返回）。
+ *
+ * 不改备注 / 掩码 / 时间戳：它只是后端 id 的映射，失败的下次 sync 会重取。
+ *
+ * 有 deviceId 时即使用户还没设过备注也建一条记录——它就是本机的设备行
+ * （默认全启用），后端 id 必须有个地方存。只有 hardwareId 时（本机没连过、
+ * 只有后端记录）找不到本地记录，**不建空壳**：那时改名 / 删除直接用后端 id。
+ */
+export function setBackendId(
+  storage: SessionStorage,
+  ref: DeviceRef,
+  backendId: number,
+): DeviceRegistry {
+  if (!Number.isInteger(backendId) || backendId <= 0) {
+    throw new RangeError(`后端设备 id 必须是正整数，收到 ${backendId}`);
+  }
+  const registry = loadRegistry(storage);
+  const deviceId = ref.deviceId ?? "";
+  const existing = resolveEntry(registry, ref);
+  if (existing === null && deviceId.length === 0) {
+    return registry;
+  }
+  const current =
+    existing ?? entryOf(registry, deviceId);
+  const updated = upsertEntry(registry, { ...current, backendId });
+  writeRegistry(storage, updated);
+  return updated;
+}
+
+/**
+ * 删除一台设备的全部本地决定（备注 / 掩码 / 身份）。
+ */
 export function removeDevice(storage: SessionStorage, deviceId: string): DeviceRegistry {
   const registry = loadRegistry(storage);
   const updated = {
