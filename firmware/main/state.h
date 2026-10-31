@@ -36,12 +36,13 @@ typedef struct {
     /*
      * 每条灯带的独立开关（docs/protocol-v3.md §9.5）。bit i = 第 i 条。
      * 实际是否出光 = 全局 power && 对应位。默认 0xFF（全开）。
-     * 当前只有影子字段：#38 接 SetStripPower 与渲染门控。
+     * 由 SetStripPower 改写；全局 SetPower 只动 power，**不碰**本字段。
+     * 门控判据集中在 strip_power.c 的 lumen_strip_mask_allows()。
      */
     uint8_t strip_power_mask;
     /*
      * 每条灯带当前是否有动画类活动段（§7.3）。渲染任务每帧维护的摘要，
-     * 只作 App 的显示提示，不作为正确性依据。#38 负责维护。
+     * 只作 App 的显示提示，不作为正确性依据（门控不读它）。
      */
     uint8_t strip_anim_mask;
 } lumen_state_t;

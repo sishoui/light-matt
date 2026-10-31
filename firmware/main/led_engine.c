@@ -23,6 +23,7 @@
 #include "selftest.h"
 #include "state_store.h"
 #include "strip_planar.h"
+#include "strip_power.h"
 #include "stress_metrics.h"
 
 static const char *TAG = "lumen_engine";
@@ -121,6 +122,15 @@ static uint16_t s_tdm_rendered_count[LUMEN_MAX_STRIPS];
 static uint8_t s_tdm_rendered_frame[LUMEN_MAX_STRIPS][LUMEN_MAX_LEDS * 3];
 
 /*
+ * 上一次 TDM 轮询时该条带是否真的出过光（#38）。
+ *
+ * 用来区分「本来就没光」与「刚被关掉」：前者直接跳过，后者必须先推一帧
+ * 全黑（WS2812B 锁存最后画面，不推黑就一直停在旧颜色上）。只有渲染任务
+ * 读写，不需要额外加锁——与 s_tdm_rendered_* 同一生命周期。
+ */
+static bool s_tdm_strip_lit[LUMEN_MAX_STRIPS];
+
+/*
  * #20 错色实验开关：开启时跳过逐帧去重，静态画面也持续刷帧。
  * 必须用 #ifdef —— Kconfig 的 bool 关闭时**不定义宏**，直接写
  * `!CONFIG_LUMEN_FORCE_REFRESH` 在关闭状态下编译不过（实测踩过）。
@@ -162,6 +172,11 @@ static uint32_t now_ms(void)
 static void state_summary_apply(lumen_state_t *state, const lumen_segment_store_t *segments)
 {
     state->seg_count = lumen_segment_store_count(segments, 0);
+    /*
+     * #38：动画位摘要与 seg_count 同源同寿命——段配置一变就重算，
+     * 不必等下一帧渲染。门控不读它，所以这里只是让 State read 立刻准确。
+     */
+    state->strip_anim_mask = lumen_strip_anim_mask(segments, state->strip_count);
     if (state->seg_count == 0) {
         return; /* 保持 v1 单色 */
     }
@@ -572,6 +587,11 @@ static void rebuild_led_count_if_pending(void)
  *
  * 去重按条独立：一段动画只让那一段所在的灯带每帧都刷，其余灯带不变就跳过，
  * 这样「静态段不因动画帧循环而空转刷帧」在多灯带下依然成立（#30 验收点）。
+ *
+ * #38 每带独立开关（§9.5）：关掉的带先推**一帧全黑**（compose 门控会给全 0，
+ * 且 push_pixels_n 把 max_count 之后的尾巴也写 0），之后整轮**跳过**该带——
+ * 不切引脚、不传像素，那一份 RMT 时间就省下来了。重开时绕过去重立刻推，
+ * 所以不会残留黑帧、也不需要重设段。
  */
 static bool tdm_push_strip(uint8_t strip_id, const lumen_state_t *snapshot,
                            const lumen_segment_store_t *segments,
@@ -585,6 +605,20 @@ static bool tdm_push_strip(uint8_t strip_id, const lumen_state_t *snapshot,
         return false;
     }
 
+    /*
+     * 出光门控：全局 power && 该带掩码位；自检期间忽略每带开关（§9.7）。
+     * 决策本身是纯函数（strip_power.c），这里只按结果执行。
+     */
+    bool selftest_on = lumen_selftest_active(selftest);
+    bool want_on = lumen_strip_mask_allows(snapshot, strip_id, selftest_on);
+    lumen_strip_tdm_action_t action = lumen_strip_tdm_plan(want_on, s_tdm_strip_lit[strip_id]);
+
+    if (action == LUMEN_STRIP_TDM_SKIP) {
+        /* 本来就不出光：本轮不占 RMT（这就是「关 4 条带缩短轮周期」的来源）。 */
+        s_tdm_rendered_valid[strip_id] = false;
+        return false;
+    }
+
     uint8_t frame[LUMEN_MAX_LEDS * 3];
     uint16_t n = lumen_led_render_compose_strip(snapshot, segments, selftest, max_brightness(),
                                                now_ms_value, strip_id, cfg->count, frame,
@@ -592,6 +626,7 @@ static bool tdm_push_strip(uint8_t strip_id, const lumen_state_t *snapshot,
     if (n == 0) {
         return false;
     }
+    /* 关带时 compose 已按门控输出全 0；重开时是真实画面。 */
 
     /*
      * 逐条去重：画面没变就不刷，省一整帧 RMT（静态段不因别人的动画而空转）。
@@ -601,8 +636,12 @@ static bool tdm_push_strip(uint8_t strip_id, const lumen_state_t *snapshot,
      * 让 BLE 抢占 RMT 中断的机会出现。那时必须每轮都真的发一帧。
      *
      * 用 LUMEN_SKIP_DEDUP 而非直接引用宏：Kconfig 的 bool 关闭时不定义宏。
+     *
+     * REENABLE（刚从关到开）也强制推送：上一帧是黑帧，去重会把真实画面
+     * 当成「没变化」吞掉，表现为重开无效。
      */
-    if (!LUMEN_SKIP_DEDUP && !force && s_tdm_rendered_valid[strip_id] &&
+    bool must_push = force || action != LUMEN_STRIP_TDM_PUSH;
+    if (!LUMEN_SKIP_DEDUP && !must_push && s_tdm_rendered_valid[strip_id] &&
         s_tdm_rendered_count[strip_id] == n &&
         memcmp(frame, s_tdm_rendered_frame[strip_id], (size_t)n * 3u) == 0) {
         lumen_led_render_note_skipped(); /* 该条画面没变：不切引脚、不刷，省一整帧 RMT */
@@ -629,9 +668,23 @@ static bool tdm_push_strip(uint8_t strip_id, const lumen_state_t *snapshot,
         return false;
     }
 
+    if (action == LUMEN_STRIP_TDM_BLACK_THEN_SKIP) {
+        /*
+         * 黑帧推完了：这一带从下一轮起真正跳过。清掉上一帧记录，
+         * 避免重开时把黑帧当成「已渲染的当前画面」而误判去重。
+         */
+        s_tdm_rendered_valid[strip_id] = false;
+        s_tdm_rendered_count[strip_id] = 0;
+        s_tdm_strip_lit[strip_id] = false;
+        lumen_led_render_note_drawn();
+        ESP_LOGI(TAG, "strip %u 关闭：已推黑帧，后续 TDM 轮询跳过", strip_id);
+        return true; /* 这次确实占了一帧 RMT（推黑），计入本轮推送数 */
+    }
+
     memcpy(s_tdm_rendered_frame[strip_id], frame, (size_t)n * 3u);
     s_tdm_rendered_count[strip_id] = n;
     s_tdm_rendered_valid[strip_id] = true;
+    s_tdm_strip_lit[strip_id] = true;
     lumen_led_render_note_drawn();
     return true;
 }
@@ -657,13 +710,22 @@ static void tdm_run_round(const lumen_state_t *snapshot, const lumen_segment_sto
     /*
      * 每 60 轮打一行：这是「8 路轮询实测周期」的唯一固件侧证据（#20 要求
      * 由 #29 补上这个数字）。逐轮打会把串口淹掉，且串口本身会干扰测量。
+     *
+     * #38 起这一行还带 lit（本轮真正出光的条数）：关掉 N 条带后 lit 应减少、
+     * round/avg 应下降，这正是「关带省 RMT」的实测判据（见票面测量说明）。
      */
     if (s_planar_stats.rounds % 60u == 0u) {
+        uint8_t lit = 0;
+        for (uint8_t i = 0; i < s_planar.strip_count; ++i) {
+            if (s_tdm_strip_lit[i]) {
+                ++lit;
+            }
+        }
         uint32_t avg = lumen_planar_stats_avg_us(&s_planar_stats);
         ESP_LOGI(TAG,
-                 "tdm: strips=%u active=%u round=%uus avg=%uus max=%uus pushed=%lu "
+                 "tdm: strips=%u active=%u lit=%u round=%uus avg=%uus max=%uus pushed=%lu "
                  "(每条间隔≈%uus)",
-                 s_planar.strip_count, lumen_planar_active_count(&s_planar), round_us, avg,
+                 s_planar.strip_count, lumen_planar_active_count(&s_planar), lit, round_us, avg,
                  s_planar_stats.round_us_max, (unsigned long)s_planar_stats.strips_pushed,
                  (unsigned)avg);
     }
@@ -870,6 +932,16 @@ static void render_task(void *arg)
          */
         s_render_segments = script_rendering ? s_stage_segments : s_segments;
         /*
+         * #38：每帧维护 strip_anim_mask（State 字节 12）——bit i = 第 i 条带
+         * 当前有动画类活动段。App 用它判断「这条是否在跑动画」，不需要逐带
+         * QueryStrip。以**这一帧真正要渲染**的段配置为准（播放中即当前阶段），
+         * 否则暂停/切阶段时 State 会报上一套的动画位。
+         *
+         * 只是摘要：渲染门控与 TDM 跳过都不读它，所以这里任意时刻的旧值
+         * 都不会造成画面错误。
+         */
+        s_state.strip_anim_mask = lumen_strip_anim_mask(&s_render_segments, s_state.strip_count);
+        /*
          * 推进自检步骤（持锁：与取消/重启自检的命令互斥），并把整份自检状态
          * 拷出来给渲染用——出锁后不能再用 s_selftest，BLE 回调随时可能改它。
          * 序列走完后 active 自动变 false，渲染就会回到存储状态，这就是
@@ -1034,6 +1106,11 @@ esp_err_t lumen_led_engine_init(void)
 
     /* State 字节 8 报实际配置的灯带数（小程序据此知道要查几条）。 */
     s_state.strip_count = strip_n > 1 ? strip_n : 1;
+    /*
+     * #38：strip_count 刚被改成真实条数，动画位摘要必须按同一口径重算
+     * （恢复路径里的 refresh_state_summary_locked 用的是持久化时的条数）。
+     */
+    s_state.strip_anim_mask = lumen_strip_anim_mask(&s_segments, s_state.strip_count);
 
     /*
      * #32 恢复已提交剧本 + 激活 id + loop。
@@ -1121,8 +1198,16 @@ void lumen_led_engine_commit(const lumen_state_t *next, uint8_t command)
 
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
     s_state = accepted;
-    /* State 摘要永远由段配置决定，不信任调用方传进来的 seg_count / rgb。 */
+    /*
+     * State 摘要永远由段配置决定，不信任调用方传进来的 seg_count / rgb。
+     */
     refresh_state_summary_locked();
+    /*
+     * #38：动画位按**当前生效**的段配置算（播放中 = 当前阶段），与渲染任务
+     * 每帧的算法一致。命令快照里的旧值不能漏进 State read。
+     */
+    s_state.strip_anim_mask =
+        lumen_strip_anim_mask(active_segments_locked(), s_state.strip_count);
     /*
      * 剧本摘要字段（字节 10-13）**不**信任命令层快照：播放头可能刚被渲染任务
      * 推进，用旧快照会把 stage_index / playback_state 回退。以播放时间轴为准。

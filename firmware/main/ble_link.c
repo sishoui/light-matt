@@ -28,6 +28,7 @@
 #include "state_store.h"
 #include "stress_metrics.h"
 #include "strip_planar.h"
+#include "strip_power.h"
 
 static const char *TAG = "lumen_ble";
 
@@ -519,15 +520,18 @@ static void handle_frame(const uint8_t *data, size_t len)
 
     /*
      * SetStripPower 0x1B（docs/protocol-v3.md §9.5）。命令层已校验 strip 已分配
-     * 且 on ∈ {0,1}。这里只更新 State 的 strip_power_mask，让小程序立刻能通过
-     * State 观察到结果；**渲染门控、推黑帧与 TDM 跳带属于 #38**，所以本次不
-     * 依赖画面行为，也不额外唤醒渲染任务。
+     * 且 on ∈ {0,1}。这里只改 State 的 strip_power_mask（一位），让小程序立刻
+     * 能通过 State 观察到结果。
+     *
+     * state_changed 会触发下面的 commit → 渲染信号：#38 的渲染门控与 TDM
+     * 跳带都在渲染任务里生效，所以关掉的带会在下一帧推黑并停止占轮询时间，
+     * 重开的带下一帧立刻恢复。全局 SetPower(0) 只动 power，**不碰**这个掩码，
+     * 因此关灯再开灯会回到各带原来的开关状态。
      */
     if (outcome.strip_power_op && outcome.result_code == LUMEN_RESULT_OK) {
-        uint8_t bit = (uint8_t)(1u << outcome.strip_power_strip);
-        uint8_t mask = outcome.next.strip_power_mask;
-        mask = outcome.strip_power_on ? (uint8_t)(mask | bit)
-                                      : (uint8_t)(mask & (uint8_t)~bit);
+        uint8_t mask = lumen_strip_power_set_mask(outcome.next.strip_power_mask,
+                                                   outcome.strip_power_strip,
+                                                   outcome.strip_power_on);
         if (mask != current.strip_power_mask) {
             outcome.next.strip_power_mask = mask;
             outcome.state_changed = true;
