@@ -1085,8 +1085,17 @@ void lumen_led_engine_state_bytes(uint8_t out[LUMEN_STATE_BYTES])
     if (out == NULL) {
         return;
     }
+    /* State 的条带维度（§7.3）：灯珠数与活动段数都按灯带展开，必须与状态
+     * 快照来自同一个临界区，否则会出现「段数更新了但灯珠数还是旧的」。 */
+    uint16_t counts[LUMEN_MAX_STRIPS];
+    uint8_t segs[LUMEN_MAX_STRIPS];
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    lumen_state_to_bytes(&s_state, max_brightness(), out);
+    strip_counts_locked(counts);
+    for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
+        /* State 报的是**当前生效**的段配置（剧本播放中即当前阶段）。 */
+        segs[i] = lumen_segment_store_count(active_segments_locked(), i);
+    }
+    lumen_state_to_bytes(&s_state, max_brightness(), counts, segs, out);
     xSemaphoreGive(s_state_lock);
 }
 
@@ -1146,9 +1155,22 @@ uint8_t lumen_led_engine_set_segment(uint8_t strip_id, uint8_t seg_id,
     uint8_t seg_count;
 
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    /* 防御性再校验一次（命令层已校验；这里用引擎里的权威段表与 led_count）。 */
+    /*
+     * 防御性再校验一次（命令层已校验；这里用引擎里的权威段表）。
+     *
+     * #36 / spec-v3 §4.2 第 1 处缺陷：这里过去用 s_state.led_count（strip 0 的
+     * 数字）校验**所有**灯带的段区间，与命令层的 per-strip 校验不一致——
+     * strip 3 只有 10 灯时会放行 end=40（设成功但后半段不亮）。改为按各自
+     * 灯带的灯珠数校验；未配置（0）时退回协议上限，与命令层同一规则。
+     */
+    uint16_t per_strip[LUMEN_MAX_STRIPS];
+    strip_counts_locked(per_strip);
+    uint16_t strip_leds = strip_id < LUMEN_MAX_STRIPS ? per_strip[strip_id] : 0;
+    if (strip_leds == 0 || strip_leds > LUMEN_MAX_LEDS) {
+        strip_leds = LUMEN_MAX_LEDS;
+    }
     result = lumen_segment_store_set(&s_segments, strip_id, s_state.strip_count, seg_id,
-                                     (uint8_t)s_state.led_count, &applied);
+                                     (uint8_t)strip_leds, &applied);
     if (result == LUMEN_RESULT_OK) {
         /*
          * 摘要按**当前生效**的段配置算：剧本播放中 State 应报当前阶段，
@@ -1216,7 +1238,8 @@ void lumen_led_engine_segments_snapshot(lumen_segment_store_t *out)
     xSemaphoreGive(s_state_lock);
 }
 
-uint8_t lumen_led_engine_segments(uint8_t strip_id, lumen_segment_t *out, uint8_t cap)
+uint8_t lumen_led_engine_segments(uint8_t strip_id, lumen_segment_t *out, uint8_t *out_slots,
+                                  uint8_t cap)
 {
     if (out == NULL || cap == 0 || strip_id >= LUMEN_MAX_STRIPS) {
         return 0;
@@ -1228,7 +1251,13 @@ uint8_t lumen_led_engine_segments(uint8_t strip_id, lumen_segment_t *out, uint8_
         if (!seg->active) {
             continue;
         }
-        out[written++] = *seg;
+        out[written] = *seg;
+        /* spec-v3 §4.2 第 3 处缺陷：SegmentReport 必须报**真实槽位**，
+         * 不是压缩后的序号——小程序要按 seg_id 精确对应到可编辑的槽位。 */
+        if (out_slots != NULL) {
+            out_slots[written] = slot;
+        }
+        ++written;
     }
     xSemaphoreGive(s_state_lock);
     return written;

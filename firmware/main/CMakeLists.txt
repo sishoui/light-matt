@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "app_main.c"
         "ble_link.c"
+        "chunk_reasm.c"
         "command.c"
         "effects.c"
         "segment_store.c"

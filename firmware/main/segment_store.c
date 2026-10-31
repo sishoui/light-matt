@@ -50,6 +50,49 @@ static bool overlaps_others(const lumen_segment_store_t *store, uint8_t strip_id
     return false;
 }
 
+uint8_t lumen_segment_store_validate_params(uint8_t type, uint8_t flags, uint16_t period_ms)
+{
+    if (!lumen_effect_type_implemented(type)) {
+        /* 未知类型 / 未实现类型：不静默降级（D7）。 */
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    if (type == LUMEN_EFFECT_STATIC) {
+        /* 静态段没有 flags 字段（effects-spec §2.1）：必须为 0。 */
+        if (flags != 0) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        return LUMEN_RESULT_OK;
+    }
+    if (type == LUMEN_EFFECT_BREATHING) {
+        /*
+         * 呼吸（effects-spec §2.2 / §5）：
+         *   bit1-2 waveform、bit3-7 必须为 0；
+         *   period_ms != 0 时必须 ≥ 334（≈3Hz，光敏性癫痫安全线）。
+         * period_ms = 0 是合法值（静止），不受下限约束。
+         */
+        if ((flags & 0xF8u) != 0) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        if (period_ms != 0 && period_ms < LUMEN_BREATHING_MIN_PERIOD_MS) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        return LUMEN_RESULT_OK;
+    }
+    /*
+     * 彩虹 / 流光（effects-spec §2.3-§2.4）：
+     *   bit0 reverse（有实际意义）、**bit1-7 必须为 0**——比呼吸更严，因为
+     *   这里没有 waveform 位可借；period_ms != 0 时必须 ≥ 200（5Hz）。
+     *   这两类是空间移动不是亮度闪烁，所以下限比呼吸宽松（D5）。
+     */
+    if ((flags & 0xFEu) != 0) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    if (period_ms != 0 && period_ms < LUMEN_RAINBOW_MIN_PERIOD_MS) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    return LUMEN_RESULT_OK;
+}
+
 uint8_t lumen_segment_store_validate_single(uint8_t strip_id, uint8_t strip_count,
                                             uint8_t led_count, const lumen_segment_t *candidate)
 {
@@ -70,29 +113,9 @@ uint8_t lumen_segment_store_validate_single(uint8_t strip_id, uint8_t strip_coun
         return LUMEN_RESULT_INVALID_PARAM;
     }
 
-    /* 8 flags 保留位 / 9 周期下限（与整表版本共用同一段规则）。 */
-    if (candidate->type == LUMEN_EFFECT_STATIC) {
-        if (candidate->flags != 0) {
-            return LUMEN_RESULT_INVALID_PARAM;
-        }
-    } else if (!lumen_effect_type_implemented(candidate->type)) {
-        return LUMEN_RESULT_INVALID_PARAM;
-    } else if (candidate->type == LUMEN_EFFECT_BREATHING) {
-        if ((candidate->flags & 0xF8u) != 0) {
-            return LUMEN_RESULT_INVALID_PARAM;
-        }
-        if (candidate->period_ms != 0 && candidate->period_ms < LUMEN_BREATHING_MIN_PERIOD_MS) {
-            return LUMEN_RESULT_INVALID_PARAM;
-        }
-    } else {
-        if ((candidate->flags & 0xFEu) != 0) {
-            return LUMEN_RESULT_INVALID_PARAM;
-        }
-        if (candidate->period_ms != 0 && candidate->period_ms < LUMEN_RAINBOW_MIN_PERIOD_MS) {
-            return LUMEN_RESULT_INVALID_PARAM;
-        }
-    }
-    return LUMEN_RESULT_OK;
+    /* 8 flags 保留位 / 9 周期下限。 */
+    return lumen_segment_store_validate_params(candidate->type, candidate->flags,
+                                               candidate->period_ms);
 }
 
 uint8_t lumen_segment_store_validate(const lumen_segment_store_t *store, uint8_t strip_id,

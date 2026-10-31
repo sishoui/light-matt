@@ -55,6 +55,16 @@ uint8_t lumen_segment_store_validate_single(uint8_t strip_id, uint8_t strip_coun
                                             const lumen_segment_t *candidate);
 
 /*
+ * 只做「类型参数」规则（§7.1 第 7 步）：flags 保留位与周期下限。
+ *
+ * 单独暴露给 v3 命令层：段的**第二层**不写进 lumen_segment_t（#37 才加），
+ * 但同样必须按类型校验参数，否则旧固件会静默接受将来才有语义的 flags。
+ * 静态层要求 flags == 0；呼吸 bit3-7 保留、周期 ≥334；彩虹/流光 bit1-7 保留、
+ * 周期 ≥200；未知类型一律非法。period_ms == 0 表示静止，不受下限约束。
+ */
+uint8_t lumen_segment_store_validate_params(uint8_t type, uint8_t flags, uint16_t period_ms);
+
+/*
  * 校验并写入。校验失败时不修改任何槽位（旧配置保持不变）。
  * success 时 *out_stored 为写入后的段（t0_ms 已由调用方设置）。
  */

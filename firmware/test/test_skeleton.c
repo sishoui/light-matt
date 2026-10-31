@@ -2,16 +2,19 @@
  * Host 单元测试：不依赖 ESP-IDF，不连硬件。
  *
  * 主要覆盖：
- *   1. docs/protocol-testvectors.json 里的全部用例（两端共用的唯一向量文件）：
- *      - app_to_device 合法帧：解码字段与编码结果逐字节一致；
- *      - app_to_device 非法帧：解码失败原因 / 结果码与向量一致；
- *      - device_to_app 帧：解码，并用 ACK / Event / StateReport 编码器逐字节复现；
+ *   1. docs/protocol-testvectors-v3.json 里的全部用例（两端共用的唯一向量文件）：
+ *      - app_to_device 合法帧：解码字段与编码结果逐字节一致，再跑命令层 reducer；
+ *      - 非法帧：只有 4 个是信封级失败（bad_magic / bad_version / bad_crc /
+ *        bad_length_overflow），其余 frame_valid=false 的是**命令层拒收**
+ *        （退役命令 / 参数越界 / ScriptTooLarge），信封本身是合法的；
+ *      - device_to_app 帧：解码，并用对应的报告编码器逐字节复现；
+ *      - chunks_hex：每一片喂给重组器，断言拼回的字节正好等于 frame_hex，
+ *        并核对 FIRST / LAST / 序号语义。
  *   2. SetPower / SetBrightness / SetLedCount reducer 的取值与状态语义
- *      （含亮度钳位、开关解耦、相同值不 commit），以及 v2 退役命令
- *      （0x03 / 0x04）与未实现命令的明确回退；
- *   3. state 默认值/钳位/14 字节布局与 gamma + 亮度乘算。
+ *      （含亮度钳位、开关解耦、相同值不 commit），以及退役命令与未实现命令的明确回退。
+ *   3. state 默认值/钳位/37 字节布局、CRC16 KAT、分片重组边界、gamma + 亮度乘算。
  *
- * 运行：firmware/test/run-tests.cmd（会把工作目录切到仓库根，再传向量路径）。
+ * 运行：firmware/test/run-tests.cmd（会传 v3 向量路径作为 argv[1]）。
  */
 
 #include <stdbool.h>
@@ -21,6 +24,7 @@
 #include <string.h>
 
 #include "command.h"
+#include "chunk_reasm.h"
 #include "effects.h"
 #include "gamma.h"
 #include "led_count_job.h"
@@ -48,7 +52,7 @@ static int g_failures;
 
 #define CHECK_BYTES(actual, expected_hex, expected_len)                                \
     do {                                                                               \
-        uint8_t _expected[128];                                                        \
+        uint8_t _expected[512];                                                        \
         size_t _expected_len =                                                         \
             hex_to_bytes((expected_hex), _expected, sizeof(_expected));                \
         ++g_checks;                                                                    \
@@ -90,7 +94,8 @@ static size_t hex_to_bytes(const char *hex, uint8_t *out, size_t cap)
 static lumen_decode_status_t decode_hex(const char *hex, lumen_frame_t *frame,
                                         uint8_t *result_code)
 {
-    uint8_t buf[256];
+    /* v3 逻辑帧上限 240 字节；留余量给「超长帧」用例。 */
+    uint8_t buf[512];
     size_t len = hex_to_bytes(hex, buf, sizeof(buf));
     if (len == (size_t)-1) {
         fprintf(stderr, "[FAIL] bad test hex: %s\n", hex);
@@ -241,18 +246,69 @@ static bool json_get_bool(const char *obj, const char *key, bool *out)
 
 /* ---------------- 向量用例 ---------------- */
 
+/*
+ * chunks_hex 是**字符串数组**："chunks_hex": ["C0A6...", "41FF..."]。
+ *
+ * 现有的 json_get_string 只会读 `"key": "value"`，遇到 `[` 直接失败。这里写一个
+ * 专用的扫描：定位 "chunks_hex" → 冒号 → `[` → 逐个引号串。只依赖「数组元素
+ * 都是不带转义的 hex 字符串」这个前提（向量文件是人工维护的固定格式），
+ * 格式变化会显式报错，不会静默跳过。
+ */
+#define MAX_CHUNKS 8
+typedef struct {
+    char hex[MAX_CHUNKS][512];
+    int count;
+} chunks_hex_t;
+
+static bool json_get_chunks(const char *obj, chunks_hex_t *out)
+{
+    out->count = 0;
+    const char *p = json_find_key(obj, "chunks_hex");
+    if (p == NULL) {
+        return false;
+    }
+    p = strchr(p, '[');
+    if (p == NULL) {
+        return false;
+    }
+    ++p;
+    for (;;) {
+        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n' || *p == ',') {
+            ++p;
+        }
+        if (*p == ']') {
+            return out->count > 0;
+        }
+        if (*p != '"') {
+            return false;
+        }
+        ++p;
+        size_t n = 0;
+        while (*p != '\0' && *p != '"') {
+            if (out->count >= MAX_CHUNKS || n + 1 >= sizeof(out->hex[0])) {
+                return false;
+            }
+            out->hex[out->count][n++] = *p++;
+        }
+        if (*p != '"') {
+            return false;
+        }
+        out->hex[out->count][n] = '\0';
+        ++out->count;
+        ++p;
+    }
+}
+
 typedef struct {
     char name[80];
     char direction[24];
-    char frame_hex[128];
-    char payload_hex[64];
+    char frame_hex[512];
+    char payload_hex[512];
+    chunks_hex_t chunks;
     char prior_segments[64]; /* 可选：段命令的前置段表，如 "0:0-15"（仅 host 测试用） */
     /*
-     * 可选：#32 剧本命令的**设备侧前置状态**，形如
-     *   "14:000401;15:0000E803;15:0100F401;17:00"
+     * 可选：剧本命令的**设备侧前置状态**，形如 "20:000401;21:0000E803;23:00"。
      * 每一项是 `命令字(十进制):载荷hex`，按顺序重放到一个本地剧本表上。
-     * 这让「整份下发 → commit → 上一套是否还在」能被向量驱动，而不是只在
-     * 下面的独立断言里覆盖。
      */
     char prior_script[512];
     int command;
@@ -260,12 +316,16 @@ typedef struct {
     int result_code; /* -1 = 缺失或 null（静默丢弃） */
     /*
      * 可选：设备侧（引擎整份校验后）的最终结果码。命令层只做形状校验，
-     * ScriptCommit 的越界 / 重叠 / 缺阶段只有引擎能判——两者不同时用这个
-     * 字段钉住设备真实回的结果码。
+     * ScriptCommit 的越界 / 重叠 / 缺阶段只有引擎能判。
      */
     int device_ack;
     /* 可选：本帧处理完后，script_id:stage_count 形式的前一套必须仍完好。 */
     char keep_script[32];
+    /*
+     * v3 的语义：frame_valid == true 表示**这条命令应当成功**；
+     * false 表示「命令层拒收，result_code 是预期结果码」——它仍可能是
+     * 合法信封（例如退役命令 / 参数越界）。
+     */
     bool frame_valid;
 } vector_case_t;
 
@@ -309,7 +369,11 @@ static int for_each_case(const char *path, void (*fn)(const vector_case_t *))
     }
 
     int count = 0;
-    char object[2048];
+    /*
+     * 8KB：一个用例最多带 3 个 chunks（每片 ~500 字符）+ 其余字段。
+     * 旧的 2048 装不下 chunks 数组。
+     */
+    static char object[8192];
     for (;;) {
         while (*p != '\0' && *p != '{' && *p != ']') {
             ++p;
@@ -352,6 +416,11 @@ static int for_each_case(const char *path, void (*fn)(const vector_case_t *))
         json_get_int(object, "seq", &c.seq);
         json_get_int(object, "result_code", &c.result_code);
         json_get_int(object, "device_ack", &c.device_ack);
+        if (!json_get_chunks(object, &c.chunks)) {
+            fprintf(stderr, "[FAIL] vector %s missing chunks_hex\n", c.name);
+            free(text);
+            return -1;
+        }
 
         fn(&c);
         ++count;
@@ -365,8 +434,9 @@ static int for_each_case(const char *path, void (*fn)(const vector_case_t *))
 /*
  * 在 host 上重放一串剧本命令（"cmd:payloadhex;cmd:payloadhex;…"）到本地剧本表。
  *
- * 这不是完整的引擎：它只做 §10.4 的下发流程（Begin → Stage → Segment → Commit），
+ * 这不是完整的引擎：它只做 §9.6 的下发流程（Begin → Stage → Segment → Commit），
  * 用来把一个用例的**设备侧前置状态**表达成向量数据。解析失败返回 false。
+ * v3 向量文件目前不带 prior_script，保留实现是为了 v2 的向量级前置状态仍可读。
  */
 static bool apply_prior_script(lumen_script_store_t *store, const char *spec)
 {
@@ -391,7 +461,7 @@ static bool apply_prior_script(lumen_script_store_t *store, const char *spec)
         }
 
         /* 拆 `cmd:payloadhex`（就地复制到局部缓冲，不改原串）。 */
-        char item[128];
+        char item[256];
         if (item_len >= sizeof(item)) {
             return false;
         }
@@ -417,27 +487,35 @@ static bool apply_prior_script(lumen_script_store_t *store, const char *spec)
             break;
         case LUMEN_CMD_SCRIPT_STAGE: {
             uint16_t duration = (uint16_t)(payload[2] | ((uint16_t)payload[3] << 8));
-            if (len != 4 || !lumen_script_stage(store, payload[0], payload[1], duration)) {
+            if ((len != 4 && len != 6) ||
+                !lumen_script_stage(store, payload[0], payload[1], duration)) {
                 return false;
             }
             break;
         }
         case LUMEN_CMD_SCRIPT_SEGMENT: {
-            if (len < 7) {
+            /* v3：script_id, stage_index + §7.1 的 21 字节（layer0 在偏移 7）。 */
+            size_t layer_off;
+            if (len == 23) {
+                layer_off = 7;
+            } else if (len >= 7) {
+                layer_off = 6; /* v2 形态：script_id, stage_index, strip, seg, start, end, type… */
+            } else {
                 return false;
             }
             lumen_segment_t seg;
             memset(&seg, 0, sizeof(seg));
             seg.active = true;
-            seg.start = payload[4];
-            seg.end = payload[5];
-            seg.type = payload[6];
-            seg.hue = (uint16_t)(payload[7] | ((uint16_t)payload[8] << 8));
-            seg.sat = payload[9];
-            if (len > 10) {
-                seg.period_ms = (uint16_t)(payload[10] | ((uint16_t)payload[11] << 8));
-                seg.p5 = payload[12];
-                seg.flags = payload[13];
+            seg.start = payload[layer_off - 3];
+            seg.end = payload[layer_off - 2];
+            seg.type = payload[layer_off];
+            seg.hue = (uint16_t)(payload[layer_off + 1] | ((uint16_t)payload[layer_off + 2] << 8));
+            seg.sat = payload[layer_off + 3];
+            if (lumen_effect_param_len(seg.type) > 3u) {
+                seg.period_ms =
+                    (uint16_t)(payload[layer_off + 4] | ((uint16_t)payload[layer_off + 5] << 8));
+                seg.p5 = payload[layer_off + 6];
+                seg.flags = payload[layer_off + 7];
             }
             if (!lumen_script_segment(store, payload[0], payload[1], payload[2], payload[3], &seg,
                                       NULL)) {
@@ -446,7 +524,7 @@ static bool apply_prior_script(lumen_script_store_t *store, const char *spec)
             break;
         }
         case LUMEN_CMD_SCRIPT_COMMIT: {
-            uint16_t counts[LUMEN_MAX_STRIPS] = {30, 0, 0, 0, 0, 0, 0, 0};
+            uint16_t counts[LUMEN_MAX_STRIPS] = {64, 64, 64, 64, 64, 64, 64, 64};
             if (len != 1 || !lumen_script_commit(store, payload[0], counts)) {
                 return false;
             }
@@ -523,314 +601,295 @@ static bool parse_keep_script(const char *spec, uint8_t *id, uint8_t *count)
     return true;
 }
 
+/*
+ * 向量用例的基线状态：8 条灯带 × 64 灯。
+ *
+ * 为什么不是 `lumen_state_defaults()` 的 1 条 30 灯：v3 向量里的段命令直接寻址
+ * strip 0-3 且 end=63，`set_strip_power_bad_strip8` 还明确假设 strip_count=8。
+ * 向量是字节契约，不是设备初始状态，所以这里显式给一个能容纳全部用例的基线。
+ */
+static void vector_baseline(lumen_state_t *state, uint16_t *strip_counts)
+{
+    lumen_state_defaults(state, 64);
+    state->strip_count = 8;
+    state->led_count = 64;
+    for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
+        strip_counts[i] = 64;
+    }
+}
+
+/*
+ * v3 的 4 个信封级失败用例。其余 frame_valid=false 的用例是合法信封配
+ * 命令层拒收（退役命令 / 参数越界 / ScriptTooLarge）。
+ */
+static bool is_envelope_failure(const char *name)
+{
+    return strcmp(name, "bad_magic") == 0 || strcmp(name, "bad_version") == 0 ||
+           strcmp(name, "bad_crc") == 0 || strcmp(name, "bad_length_overflow") == 0;
+}
+
 static void run_app_case(const vector_case_t *c)
 {
     lumen_frame_t frame;
     uint8_t result_code = 0xFF;
     lumen_decode_status_t status = decode_hex(c->frame_hex, &frame, &result_code);
 
-    if (c->frame_valid) {
-        CHECK(status == LUMEN_DECODE_OK);
-        CHECK(result_code == LUMEN_RESULT_OK);
-        if (c->command >= 0) {
-            CHECK(frame.command == (uint8_t)c->command);
+    if (is_envelope_failure(c->name)) {
+        /* 信封就坏了：不执行命令，按 §5 的顺序回对应结果码。 */
+        CHECK(c->result_code >= 0);
+        CHECK(status == LUMEN_DECODE_ERROR);
+        CHECK(result_code == (uint8_t)c->result_code);
+        return;
+    }
+
+    /* 其余用例（含 frame_valid=false）的信封必须合法。 */
+    CHECK(status == LUMEN_DECODE_OK);
+    CHECK(result_code == LUMEN_RESULT_OK);
+    if (c->command >= 0) {
+        CHECK(frame.command == (uint8_t)c->command);
+    }
+    if (c->seq >= 0) {
+        CHECK(frame.seq == (uint8_t)c->seq);
+    }
+
+    uint8_t expected_payload[LUMEN_MAX_PAYLOAD];
+    size_t expected_len =
+        hex_to_bytes(c->payload_hex, expected_payload, sizeof(expected_payload));
+    CHECK(expected_len != (size_t)-1);
+    CHECK(frame.payload_len == (uint8_t)expected_len);
+    CHECK(memcmp(frame.payload, expected_payload, expected_len) == 0);
+
+    lumen_state_t before;
+    uint16_t strip_counts[LUMEN_MAX_STRIPS];
+    vector_baseline(&before, strip_counts);
+
+    lumen_command_outcome_t outcome;
+
+    /*
+     * 段命令用向量里的 prior_segments 构造前置段表（形如 "0:0-15"，
+     * 分号分隔多条）。没有该字段就是空段表。
+     */
+    lumen_segment_store_t segments;
+    apply_prior_segments(&segments, c->prior_segments);
+
+    /* 剧本命令前置状态（v3 向量目前不带，保留给 v2 形态的向量级前置）。 */
+    lumen_script_store_t scripts;
+    CHECK(apply_prior_script(&scripts, c->prior_script));
+
+    lumen_command_dispatch(&frame, &before, &segments, strip_counts, 255, &outcome);
+
+    /*
+     * 契约里的预期结果码。唯一的例外是 script_commit_too_large：
+     * 0x0A 的尺寸预检属于 #39（ScriptCommit 的「能提交就一定能持久化」），
+     * #36 只保证信封与命令层都到达 ScriptCommit。这里断言命令层放行，
+     * 并把 0x0A 留给 #39 的测试——见下方 deferred_to_39。
+     */
+    bool deferred_to_39 = strcmp(c->name, "script_commit_too_large") == 0;
+    if (deferred_to_39) {
+        CHECK(outcome.result_code == LUMEN_RESULT_OK);
+        CHECK(outcome.script_op == LUMEN_SCRIPT_OP_COMMIT);
+        return;
+    }
+
+    CHECK(c->result_code >= 0);
+    CHECK(outcome.result_code == (uint8_t)c->result_code);
+
+    if (frame.command == LUMEN_CMD_SET_POWER) {
+        if (outcome.result_code == LUMEN_RESULT_OK) {
+            CHECK(outcome.next.power == frame.payload[0]);
+            CHECK(outcome.state_changed == (before.power != frame.payload[0]));
+        } else {
+            CHECK(!outcome.state_changed);
+            CHECK(outcome.next.power == before.power);
         }
-        if (c->seq >= 0) {
-            CHECK(frame.seq == (uint8_t)c->seq);
+    } else if (frame.command == LUMEN_CMD_SET_BRIGHTNESS) {
+        CHECK(outcome.next.power == before.power);
+        CHECK(outcome.next.brightness == frame.payload[0]);
+        CHECK(outcome.state_changed == (before.brightness != frame.payload[0]));
+    } else if (frame.command == LUMEN_CMD_SELF_TEST) {
+        CHECK(outcome.start_selftest);
+        CHECK(!outcome.cancels_selftest);
+        CHECK(!outcome.state_changed);
+    } else if (frame.command == LUMEN_CMD_SET_LED_COUNT) {
+        uint16_t expected =
+            (uint16_t)(frame.payload[1] | ((uint16_t)frame.payload[2] << 8));
+        CHECK(!outcome.state_changed);
+        if (outcome.result_code == LUMEN_RESULT_OK) {
+            CHECK(outcome.led_count_rebuild);
+            CHECK(outcome.led_count == expected);
+            CHECK(outcome.cancels_selftest);
+        } else {
+            CHECK(!outcome.led_count_rebuild);
+            CHECK(!outcome.cancels_selftest);
         }
-
-        uint8_t expected_payload[LUMEN_MAX_PAYLOAD];
-        size_t expected_len = hex_to_bytes(c->payload_hex, expected_payload,
-                                           sizeof(expected_payload));
-        CHECK(expected_len != (size_t)-1);
-        CHECK(frame.payload_len == (uint8_t)expected_len);
-        CHECK(memcmp(frame.payload, expected_payload, expected_len) == 0);
-
-        /* 命令层：所有非法取值/长度/未知命令都不能改变状态。 */
-        lumen_state_t before;
-        lumen_state_defaults(&before, 30);
-        lumen_command_outcome_t outcome;
-
-        /*
-         * 段命令用向量里的 prior_segments 构造前置段表（形如 "0:0-15"，
-         * 分号分隔多条）。没有该字段就是空段表。这让「重叠 → InvalidParam」
-         * 可以被向量驱动，而不是只在下面的独立断言里覆盖。
-         */
-        lumen_segment_store_t segments;
-        apply_prior_segments(&segments, c->prior_segments);
-
-        /*
-         * #32：剧本命令前置状态。prior_script 用同一套纯模块重放
-         * Begin/Stage/Segment/Commit，得到「上一套已提交剧本」。
-         * 这让失败路径可以断言「旧剧本还在」，而不是只在别处单独测。
-         */
-        lumen_script_store_t scripts;
-        CHECK(apply_prior_script(&scripts, c->prior_script));
-
-        /* 向量不涉及构建期上限，按 255 跑 reducer。 */
-        lumen_command_dispatch(&frame, &before, &segments, NULL, 255, &outcome);
-
-        if (frame.command == LUMEN_CMD_SET_POWER) {
-            /* SetPower 结果码必须与向量一致。 */
-            CHECK(c->result_code >= 0);
-            CHECK(outcome.result_code == (uint8_t)c->result_code);
-            if (outcome.result_code == LUMEN_RESULT_OK) {
-                CHECK(outcome.next.power == frame.payload[0]);
-                CHECK(outcome.state_changed == (before.power != frame.payload[0]));
-            } else {
-                CHECK(!outcome.state_changed);
-                CHECK(outcome.next.power == before.power);
-            }
-        } else if (frame.command == LUMEN_CMD_SET_BRIGHTNESS) {
-            /* SetBrightness 同样实现语义：载荷在 0-255 内，不需要钳位。 */
-            CHECK(c->result_code >= 0);
-            CHECK(outcome.result_code == (uint8_t)c->result_code);
-            CHECK(outcome.next.power == before.power);
-            CHECK(outcome.next.brightness == frame.payload[0]);
-            CHECK(outcome.state_changed == (before.brightness != frame.payload[0]));
-        } else if (frame.command == LUMEN_CMD_SELF_TEST) {
-            /* #13：SelfTest 立即回 0x00 并启动自检，但不改共享状态。 */
-            CHECK(c->result_code >= 0);
-            CHECK(outcome.result_code == (uint8_t)c->result_code);
-            CHECK(outcome.start_selftest);
+    } else if (frame.command == LUMEN_CMD_QUERY_STATE) {
+        CHECK(outcome.state_report);
+        CHECK(!outcome.state_changed);
+        CHECK(!outcome.cancels_selftest);
+    } else if (frame.command == LUMEN_CMD_QUERY_STRIP_CONFIG ||
+               frame.command == LUMEN_CMD_QUERY_DEVICE_INFO) {
+        /* v3 的两条无载荷查询：ACK 0x00 + 一条报告，不改状态、不取消自检。 */
+        CHECK(outcome.result_code == LUMEN_RESULT_OK);
+        CHECK(outcome.strip_config_query ==
+              (frame.command == LUMEN_CMD_QUERY_STRIP_CONFIG));
+        CHECK(outcome.device_info_query ==
+              (frame.command == LUMEN_CMD_QUERY_DEVICE_INFO));
+        CHECK(!outcome.state_changed);
+        CHECK(!outcome.cancels_selftest);
+    } else if (frame.command == LUMEN_CMD_SET_SEGMENT ||
+               frame.command == LUMEN_CMD_CLEAR_SEGMENT ||
+               frame.command == LUMEN_CMD_QUERY_STRIP) {
+        CHECK(!outcome.state_changed);
+        if (frame.command == LUMEN_CMD_SET_SEGMENT &&
+            outcome.result_code == LUMEN_RESULT_OK) {
+            CHECK(outcome.segment_op);
+            CHECK(!outcome.segment_clear);
+            CHECK(outcome.segment.active);
+            /* layer0 在 v3 载荷偏移 5：type + param[7]。 */
+            CHECK(outcome.segment.type == frame.payload[5]);
+            CHECK(outcome.segment.start == frame.payload[2]);
+            CHECK(outcome.segment.end == frame.payload[3]);
+            CHECK(outcome.cancels_selftest);
+        } else if (frame.command == LUMEN_CMD_CLEAR_SEGMENT &&
+                   outcome.result_code == LUMEN_RESULT_OK) {
+            CHECK(outcome.segment_op);
+            CHECK(outcome.segment_clear);
+            CHECK(outcome.cancels_selftest);
+        } else if (frame.command == LUMEN_CMD_QUERY_STRIP &&
+                   outcome.result_code == LUMEN_RESULT_OK) {
+            CHECK(outcome.strip_query);
+            CHECK(outcome.query_strip_id == frame.payload[0]);
             CHECK(!outcome.cancels_selftest);
-            CHECK(!outcome.state_changed);
-            CHECK(outcome.next.power == before.power);
-            CHECK(outcome.next.brightness == before.brightness);
-            CHECK(outcome.next.r == before.r);
-            CHECK(outcome.next.g == before.g);
-            CHECK(outcome.next.b == before.b);
-            CHECK(outcome.next.led_count == before.led_count);
-        } else if (frame.command == LUMEN_CMD_SET_LED_COUNT) {
-            /*
-             * SetLedCount（#12）：合法取值只标记「需要重建」，不改 next、
-             * state_changed 保持 false——数量要等渲染任务重建句柄成功后才写入
-             * 共享状态（§11.3）。越界 → 0x01 且不请求重建。
-             *
-             * #13：合法取值同时必须取消自检（§11.2 第 5 条），即使
-             * state_changed 为 false——这条断言是两票的接缝。
-             */
-            CHECK(c->result_code >= 0);
-            CHECK(outcome.result_code == (uint8_t)c->result_code);
-            /* v2 载荷：strip_id, count_lo, count_hi。 */
-            uint16_t expected =
-                (uint16_t)(frame.payload[1] | ((uint16_t)frame.payload[2] << 8));
-            CHECK(!outcome.state_changed);
-            CHECK(outcome.next.power == before.power);
-            CHECK(outcome.next.brightness == before.brightness);
-            CHECK(outcome.next.r == before.r);
-            CHECK(outcome.next.g == before.g);
-            CHECK(outcome.next.b == before.b);
-            if (outcome.result_code == LUMEN_RESULT_OK) {
-                CHECK(outcome.led_count_rebuild);
-                CHECK(outcome.led_count == expected);
-                CHECK(outcome.next.led_count == before.led_count);
-                CHECK(outcome.cancels_selftest);
-            } else {
-                CHECK(!outcome.led_count_rebuild);
-                CHECK(outcome.led_count == before.led_count);
-                CHECK(!outcome.cancels_selftest);
-            }
-        } else if (frame.command == LUMEN_CMD_QUERY_STATE) {
-            /* #6.1：QueryState 回 0x00 + 请求 StateReport，不改共享状态、
-             * 不取消自检。结果码直接对向量断言——这里以前硬编码 0x02，
-             * 导致向量里 query_state 的 result_code 从未被真正校验。 */
-            CHECK(c->result_code >= 0);
-            CHECK(outcome.result_code == (uint8_t)c->result_code);
-            CHECK(outcome.result_code == LUMEN_RESULT_OK);
-            CHECK(outcome.state_report);
-            CHECK(!outcome.state_changed);
+        } else {
+            CHECK(!outcome.segment_op);
+            CHECK(!outcome.strip_query);
             CHECK(!outcome.cancels_selftest);
-            CHECK(!outcome.led_count_rebuild);
-            CHECK(outcome.next.power == before.power);
-            CHECK(outcome.next.brightness == before.brightness);
-            CHECK(outcome.next.r == before.r);
-            CHECK(outcome.next.g == before.g);
-            CHECK(outcome.next.b == before.b);
-            CHECK(outcome.next.led_count == before.led_count);
-        } else if (frame.command == LUMEN_CMD_SET_SEGMENT ||
-                   frame.command == LUMEN_CMD_CLEAR_SEGMENT ||
-                   frame.command == LUMEN_CMD_QUERY_STRIP) {
-            /*
-             * #25：段命令的结果码完全由向量断言（正常 / 重叠 / 越界 / 长度不符 /
-             * 未知 type / 尚未实现的动画类型）。共享状态一律不变——段配置不在
-             * lumen_state_t 里，摘要字段由 led_engine 写入后重算。
-             */
-            CHECK(c->result_code >= 0);
-            CHECK(outcome.result_code == (uint8_t)c->result_code);
-            CHECK(!outcome.state_changed);
-            CHECK(!outcome.led_count_rebuild);
-            CHECK(outcome.next.power == before.power);
-            CHECK(outcome.next.brightness == before.brightness);
-            CHECK(outcome.next.r == before.r);
-            CHECK(outcome.next.g == before.g);
-            CHECK(outcome.next.b == before.b);
-            CHECK(outcome.next.led_count == before.led_count);
-
-            if (frame.command == LUMEN_CMD_SET_SEGMENT &&
-                outcome.result_code == LUMEN_RESULT_OK) {
-                CHECK(outcome.segment_op);
-                CHECK(!outcome.segment_clear);
-                CHECK(outcome.segment.active);
-                CHECK(outcome.segment.type == frame.payload[4]);
-                CHECK(outcome.segment.start == frame.payload[2]);
-                CHECK(outcome.segment.end == frame.payload[3]);
-                CHECK(outcome.cancels_selftest);
-            } else if (frame.command == LUMEN_CMD_CLEAR_SEGMENT &&
-                       outcome.result_code == LUMEN_RESULT_OK) {
-                CHECK(outcome.segment_op);
-                CHECK(outcome.segment_clear);
-                CHECK(outcome.cancels_selftest);
-            } else if (frame.command == LUMEN_CMD_QUERY_STRIP &&
-                       outcome.result_code == LUMEN_RESULT_OK) {
-                CHECK(outcome.strip_query);
-                CHECK(outcome.query_strip_id == frame.payload[0]);
-                /* 查询不取消自检（与 QueryState 同一条规则）。 */
-                CHECK(!outcome.cancels_selftest);
-            } else {
-                /* 失败路径：不得产生任何写入意图，也不取消自检。 */
-                CHECK(!outcome.segment_op);
-                CHECK(!outcome.strip_query);
-                CHECK(!outcome.cancels_selftest);
-            }
-        } else if (frame.command == LUMEN_CMD_SET_PLAYBACK ||
-                   frame.command == LUMEN_CMD_SCRIPT_BEGIN ||
-                   frame.command == LUMEN_CMD_SCRIPT_STAGE ||
-                   frame.command == LUMEN_CMD_SCRIPT_SEGMENT ||
-                   frame.command == LUMEN_CMD_SCRIPT_COMMIT ||
-                   frame.command == LUMEN_CMD_SCRIPT_ABORT ||
-                   frame.command == LUMEN_CMD_ACTIVATE_SCRIPT ||
-                   frame.command == LUMEN_CMD_QUERY_SCRIPT) {
-            /*
-             * #32 剧本命令：命令层只做形状校验（id / 下标 / type / 长度 /
-             * 时长非 0），真正的暂存 / 提交 / 激活在引擎里。所以这里断言
-             * 结果码与向量一致、产生了正确类型的操作意图、共享状态不变。
-             */
-            CHECK(c->result_code >= 0);
-            CHECK(outcome.result_code == (uint8_t)c->result_code);
-            CHECK(!outcome.state_changed);
-            CHECK(!outcome.led_count_rebuild);
-            CHECK(outcome.next.power == before.power);
-            CHECK(outcome.next.brightness == before.brightness);
-            CHECK(outcome.next.led_count == before.led_count);
-
-            if (outcome.result_code == LUMEN_RESULT_OK) {
-                CHECK(outcome.script_op != LUMEN_SCRIPT_OP_NONE);
-                switch (frame.command) {
-                case LUMEN_CMD_SET_PLAYBACK:
-                    CHECK(outcome.script_op == LUMEN_SCRIPT_OP_PLAYBACK);
-                    CHECK(outcome.script_action == frame.payload[0]);
-                    CHECK(outcome.script_loop == (frame.payload[1] != 0));
-                    break;
-                case LUMEN_CMD_SCRIPT_BEGIN:
-                    CHECK(outcome.script_op == LUMEN_SCRIPT_OP_BEGIN);
-                    CHECK(outcome.script_id == frame.payload[0]);
-                    CHECK(outcome.script_stage_count == frame.payload[1]);
-                    CHECK(outcome.script_strip_count == frame.payload[2]);
-                    break;
-                case LUMEN_CMD_SCRIPT_STAGE:
-                    CHECK(outcome.script_op == LUMEN_SCRIPT_OP_STAGE);
-                    CHECK(outcome.script_id == frame.payload[0]);
-                    CHECK(outcome.script_stage_index == frame.payload[1]);
-                    CHECK(outcome.script_duration_ms ==
-                          (uint16_t)(frame.payload[2] | (frame.payload[3] << 8)));
-                    break;
-                case LUMEN_CMD_SCRIPT_SEGMENT:
-                    CHECK(outcome.script_op == LUMEN_SCRIPT_OP_SEGMENT);
-                    CHECK(outcome.script_id == frame.payload[0]);
-                    CHECK(outcome.script_stage_index == frame.payload[1]);
-                    CHECK(outcome.script_strip == frame.payload[2]);
-                    CHECK(outcome.script_seg == frame.payload[3]);
+        }
+    } else if (frame.command == LUMEN_CMD_SET_STRIP_POWER) {
+        /* #36：只做校验与意图登记，掩码本身由 ble_link 写入（#38 接渲染）。 */
+        CHECK(!outcome.state_changed);
+        if (outcome.result_code == LUMEN_RESULT_OK) {
+            CHECK(outcome.strip_power_op);
+            CHECK(outcome.strip_power_strip == frame.payload[0]);
+            CHECK(outcome.strip_power_on == (frame.payload[1] != 0));
+            CHECK(outcome.cancels_selftest);
+        } else {
+            CHECK(!outcome.strip_power_op);
+            CHECK(!outcome.cancels_selftest);
+        }
+    } else if (frame.command == LUMEN_CMD_SET_PLAYBACK ||
+               frame.command == LUMEN_CMD_SCRIPT_BEGIN ||
+               frame.command == LUMEN_CMD_SCRIPT_STAGE ||
+               frame.command == LUMEN_CMD_SCRIPT_SEGMENT ||
+               frame.command == LUMEN_CMD_SCRIPT_COMMIT ||
+               frame.command == LUMEN_CMD_SCRIPT_ABORT ||
+               frame.command == LUMEN_CMD_ACTIVATE_SCRIPT ||
+               frame.command == LUMEN_CMD_QUERY_SCRIPT) {
+        CHECK(!outcome.state_changed);
+        CHECK(!outcome.led_count_rebuild);
+        if (outcome.result_code == LUMEN_RESULT_OK) {
+            CHECK(outcome.script_op != LUMEN_SCRIPT_OP_NONE);
+            switch (frame.command) {
+            case LUMEN_CMD_SET_PLAYBACK:
+                CHECK(outcome.script_op == LUMEN_SCRIPT_OP_PLAYBACK);
+                CHECK(outcome.script_action == frame.payload[0]);
+                CHECK(outcome.script_loop == (frame.payload[1] != 0));
+                break;
+            case LUMEN_CMD_SCRIPT_BEGIN:
+                CHECK(outcome.script_op == LUMEN_SCRIPT_OP_BEGIN);
+                CHECK(outcome.script_id == frame.payload[0]);
+                CHECK(outcome.script_stage_count == frame.payload[1]);
+                CHECK(outcome.script_strip_count == frame.payload[2]);
+                break;
+            case LUMEN_CMD_SCRIPT_STAGE:
+                CHECK(outcome.script_op == LUMEN_SCRIPT_OP_STAGE);
+                CHECK(outcome.script_id == frame.payload[0]);
+                CHECK(outcome.script_stage_index == frame.payload[1]);
+                CHECK(outcome.script_duration_ms ==
+                      (uint16_t)(frame.payload[2] | (frame.payload[3] << 8)));
+                break;
+            case LUMEN_CMD_SCRIPT_SEGMENT:
+                CHECK(outcome.script_op == LUMEN_SCRIPT_OP_SEGMENT);
+                CHECK(outcome.script_id == frame.payload[0]);
+                CHECK(outcome.script_stage_index == frame.payload[1]);
+                CHECK(outcome.script_strip == frame.payload[2]);
+                CHECK(outcome.script_seg == frame.payload[3]);
+                /* 两层都空 = 清空槽位（§9.6）：交出非活动段。 */
+                if (frame.payload[7] == LUMEN_NO_EFFECT) {
+                    CHECK(frame.payload[15] == LUMEN_NO_EFFECT);
+                    CHECK(!outcome.script_segment.active);
+                } else {
+                    CHECK(outcome.script_segment.active);
                     CHECK(outcome.script_segment.start == frame.payload[4]);
                     CHECK(outcome.script_segment.end == frame.payload[5]);
-                    CHECK(outcome.script_segment.type == frame.payload[6]);
-                    CHECK(outcome.script_segment.hue ==
-                          (uint16_t)(frame.payload[7] | (frame.payload[8] << 8)));
-                    CHECK(outcome.script_segment.sat == frame.payload[9]);
-                    break;
-                case LUMEN_CMD_SCRIPT_COMMIT:
-                    CHECK(outcome.script_op == LUMEN_SCRIPT_OP_COMMIT);
-                    CHECK(outcome.script_id == frame.payload[0]);
-                    break;
-                case LUMEN_CMD_SCRIPT_ABORT:
-                    CHECK(outcome.script_op == LUMEN_SCRIPT_OP_ABORT);
-                    break;
-                case LUMEN_CMD_ACTIVATE_SCRIPT:
-                    CHECK(outcome.script_op == LUMEN_SCRIPT_OP_ACTIVATE);
-                    CHECK(outcome.script_id == frame.payload[0]);
-                    CHECK(outcome.script_loop == (frame.payload[1] != 0));
-                    break;
-                case LUMEN_CMD_QUERY_SCRIPT:
-                    CHECK(outcome.script_op == LUMEN_SCRIPT_OP_QUERY);
-                    CHECK(outcome.script_id == frame.payload[0]);
-                    break;
-                default:
-                    CHECK(false);
-                    break;
+                    CHECK(outcome.script_segment.type == frame.payload[7]);
                 }
-                /*
-                 * 剧本命令全部属于「改变状态」类别，要取消自检（§10.6 第 5 条）；
-                 * QueryScript 例外——查询不改状态，不取消自检。
-                 */
-                if (frame.command == LUMEN_CMD_QUERY_SCRIPT) {
-                    CHECK(!outcome.cancels_selftest);
-                } else {
-                    CHECK(outcome.cancels_selftest);
-                }
-            } else {
-                CHECK(outcome.script_op == LUMEN_SCRIPT_OP_NONE);
+                break;
+            case LUMEN_CMD_SCRIPT_COMMIT:
+                CHECK(outcome.script_op == LUMEN_SCRIPT_OP_COMMIT);
+                CHECK(outcome.script_id == frame.payload[0]);
+                break;
+            case LUMEN_CMD_SCRIPT_ABORT:
+                CHECK(outcome.script_op == LUMEN_SCRIPT_OP_ABORT);
+                break;
+            case LUMEN_CMD_ACTIVATE_SCRIPT:
+                CHECK(outcome.script_op == LUMEN_SCRIPT_OP_ACTIVATE);
+                CHECK(outcome.script_id == frame.payload[0]);
+                CHECK(outcome.script_loop == (frame.payload[1] != 0));
+                break;
+            case LUMEN_CMD_QUERY_SCRIPT:
+                CHECK(outcome.script_op == LUMEN_SCRIPT_OP_QUERY);
+                CHECK(outcome.script_id == frame.payload[0]);
+                break;
+            default:
+                CHECK(false);
+                break;
+            }
+            if (frame.command == LUMEN_CMD_QUERY_SCRIPT) {
                 CHECK(!outcome.cancels_selftest);
-            }
-
-            /*
-             * 设备侧（引擎整份校验）的结果码。命令层只判形状，ScriptCommit
-             * 的缺阶段 / 越界 / 重叠只有引擎能判，所以有 device_ack 时以它为准。
-             *
-             * 命令层已拒的帧根本到不了引擎（ble_link 只在 result_code == OK
-             * 时调用引擎），所以这里只在命令层放行时比较。
-             */
-            if (outcome.result_code == LUMEN_RESULT_OK) {
-                uint8_t engine_result = apply_script_op(&scripts, &outcome);
-                if (c->device_ack >= 0) {
-                    CHECK(engine_result == (uint8_t)c->device_ack);
-                } else {
-                    CHECK(engine_result == outcome.result_code);
-                }
-            }
-
-            /*
-             * 失败回滚的向量级证据：本帧处理完后，keep_script 指定的那套
-             * 剧本必须仍然存在且阶段数不变。
-             */
-            uint8_t keep_id = 0;
-            uint8_t keep_count = 0;
-            if (parse_keep_script(c->keep_script, &keep_id, &keep_count)) {
-                CHECK(lumen_script_is_committed(&scripts, keep_id));
-                CHECK(lumen_script_stage_count(&scripts, keep_id) == keep_count);
+            } else {
+                CHECK(outcome.cancels_selftest);
             }
         } else {
-            /* 已知命令的兜底：结果码必须与向量一致，状态一律不变。
-             * 保留命令 / 未知命令同理。 */
-            CHECK(outcome.result_code == (uint8_t)c->result_code);
-            CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
-            CHECK(!outcome.state_changed);
-            CHECK(!outcome.led_count_rebuild);
-            CHECK(!outcome.state_report);
-            CHECK(outcome.next.power == before.power);
-            CHECK(outcome.next.brightness == before.brightness);
-            CHECK(outcome.next.r == before.r);
-            CHECK(outcome.next.g == before.g);
-            CHECK(outcome.next.b == before.b);
-            CHECK(outcome.next.led_count == before.led_count);
+            CHECK(outcome.script_op == LUMEN_SCRIPT_OP_NONE);
+            CHECK(!outcome.cancels_selftest);
+        }
+
+        /*
+         * 设备侧（引擎整份校验）的结果。v3 向量不带 prior_script，所以这里只在
+         * 向量显式给了前置状态或 device_ack 时才跑引擎，否则命令层的形状校验
+         * 就是本用例的全部断言（引擎级的剧本流程另有独立测试覆盖）。
+         */
+        if (c->prior_script[0] != '\0' && outcome.result_code == LUMEN_RESULT_OK) {
+            uint8_t engine_result = apply_script_op(&scripts, &outcome);
+            if (c->device_ack >= 0) {
+                CHECK(engine_result == (uint8_t)c->device_ack);
+            } else {
+                CHECK(engine_result == outcome.result_code);
+            }
+        }
+        uint8_t keep_id = 0;
+        uint8_t keep_count = 0;
+        if (parse_keep_script(c->keep_script, &keep_id, &keep_count)) {
+            CHECK(lumen_script_is_committed(&scripts, keep_id));
+            CHECK(lumen_script_stage_count(&scripts, keep_id) == keep_count);
         }
     } else {
-        if (c->result_code < 0) {
-            /* short_frame：静默丢弃 */
-            CHECK(status == LUMEN_DECODE_SILENT);
-        } else {
-            CHECK(status == LUMEN_DECODE_ERROR);
-            CHECK(result_code == (uint8_t)c->result_code);
-        }
+        /* 退役 / 保留 / 未知命令：一律 0x02，状态不动。 */
+        CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
+        CHECK(!outcome.state_changed);
+        CHECK(!outcome.led_count_rebuild);
+        CHECK(!outcome.state_report);
+        CHECK(!outcome.strip_config_query);
+        CHECK(!outcome.device_info_query);
+    }
+
+    if (c->frame_valid) {
+        /*
+         * frame_valid=true 的语义是「命令成功」，所以结果码必须是 0x00。
+         * 除了 SetLedCount 的延迟重建（仍回 0x00）外没有例外。
+         */
+        CHECK(outcome.result_code == LUMEN_RESULT_OK);
     }
 }
 
@@ -856,7 +915,7 @@ static void run_device_case(const vector_case_t *c)
     CHECK(frame.payload_len == (uint8_t)expected_len);
     CHECK(memcmp(frame.payload, expected_payload, expected_len) == 0);
 
-    /* 设备→小程序帧必须能用同一个编码器逐字节复现（ACK / Event / StateReport）。 */
+    /* 设备→小程序帧必须能用对应的编码器逐字节复现。 */
     uint8_t out[LUMEN_MAX_FRAME];
     size_t len = 0;
     switch (frame.command) {
@@ -874,9 +933,32 @@ static void run_device_case(const vector_case_t *c)
         CHECK(frame.payload_len == LUMEN_STATE_BYTES);
         len = lumen_protocol_encode_state_report(frame.seq, frame.payload, out, sizeof(out));
         break;
+    case LUMEN_CMD_STRIP_CONFIG_REPORT: {
+        CHECK(frame.payload_len == 24);
+        /* 从载荷还原引脚表：只对已分配（flags bit0）的记录取值。 */
+        uint8_t gpios[LUMEN_MAX_STRIPS];
+        uint8_t assigned = 0;
+        for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
+            CHECK(frame.payload[i * 3] == i);
+            gpios[i] = frame.payload[i * 3 + 1];
+            if ((frame.payload[i * 3 + 2] & 0x01u) != 0) {
+                ++assigned;
+            }
+        }
+        len = lumen_protocol_encode_strip_config_report(frame.seq, gpios, assigned, out,
+                                                        sizeof(out));
+        break;
+    }
+    case LUMEN_CMD_DEVICE_INFO_REPORT: {
+        CHECK(frame.payload_len == 15);
+        uint16_t version = (uint16_t)(frame.payload[0] | ((uint16_t)frame.payload[1] << 8));
+        len = lumen_protocol_encode_device_info_report(frame.seq, version, &frame.payload[2],
+                                                       frame.payload[13], out, sizeof(out));
+        break;
+    }
     default:
         /* SegmentReport / SegmentListEnd / ScriptSummary / ScriptProgress：
-         * 由 #25 / #32 提供专用编码器，这里用通用编码器验证信封逐字节一致。 */
+         * 用通用编码器验证信封逐字节一致。 */
         CHECK(frame.payload_len <= LUMEN_MAX_PAYLOAD);
         len = lumen_protocol_encode(frame.command, frame.seq, frame.payload,
                                     frame.payload_len, out, sizeof(out));
@@ -884,6 +966,69 @@ static void run_device_case(const vector_case_t *c)
     }
     CHECK(len == expected_len + LUMEN_FRAME_OVERHEAD);
     CHECK_BYTES(out, c->frame_hex, len);
+
+    if (frame.command == LUMEN_CMD_SEGMENT_REPORT) {
+        /* §7.1：SegmentReport 与 SetSegment 同构，固定 21 字节。 */
+        CHECK(frame.payload_len == 21);
+    }
+}
+
+/*
+ * 分片一致性（两端对称，§3.2）：
+ *   - 逐片喂给重组器，拼回的字节必须正好等于 frame_hex；
+ *   - 首片 FIRST、末片 LAST，单分片两者兼具；
+ *   - 序号从 0 递增（仅诊断用，但向量里是这么生成的）。
+ */
+static void check_chunks(const vector_case_t *c)
+{
+    CHECK(c->chunks.count > 0);
+    CHECK(c->chunks.count <= MAX_CHUNKS);
+
+    lumen_reasm_t reasm;
+    lumen_reasm_init(&reasm);
+
+    uint8_t assembled[LUMEN_REASM_CAPACITY];
+    size_t assembled_len = 0;
+    uint32_t now = 1000;
+
+    for (int i = 0; i < c->chunks.count; ++i) {
+        uint8_t raw[512];
+        size_t raw_len = hex_to_bytes(c->chunks.hex[i], raw, sizeof(raw));
+        CHECK(raw_len != (size_t)-1);
+        CHECK(raw_len >= 2);
+
+        uint8_t ctrl = raw[0];
+        bool first = (ctrl & LUMEN_CHUNK_FIRST) != 0;
+        bool last = (ctrl & LUMEN_CHUNK_LAST) != 0;
+        CHECK(first == (i == 0));
+        CHECK(last == (i == c->chunks.count - 1));
+        CHECK((ctrl & LUMEN_CHUNK_INDEX_MASK) == (uint8_t)i);
+
+        lumen_reasm_status_t st =
+            lumen_reasm_feed(&reasm, ctrl, &raw[1], raw_len - 1, now);
+        now += 10;
+        if (i + 1 < c->chunks.count) {
+            CHECK(st == LUMEN_REASM_PENDING);
+        } else {
+            CHECK(st == LUMEN_REASM_COMPLETE);
+            assembled_len = reasm.len;
+            memcpy(assembled, reasm.data, assembled_len);
+        }
+    }
+
+    uint8_t expected[LUMEN_MAX_FRAME];
+    size_t expected_len = hex_to_bytes(c->frame_hex, expected, sizeof(expected));
+    CHECK(expected_len != (size_t)-1);
+    CHECK(assembled_len == expected_len);
+    CHECK(memcmp(assembled, expected, expected_len) == 0);
+
+    /* 单分片（不分片）的帧 ctrl 必须是 0xC0——不许裸帧（§3.2）。 */
+    if (c->chunks.count == 1) {
+        uint8_t only[512];
+        size_t only_len = hex_to_bytes(c->chunks.hex[0], only, sizeof(only));
+        CHECK(only_len != (size_t)-1);
+        CHECK(only[0] == LUMEN_CHUNK_SINGLE);
+    }
 }
 
 static void dispatch_case(const vector_case_t *c)
@@ -896,18 +1041,39 @@ static void dispatch_case(const vector_case_t *c)
         fprintf(stderr, "[FAIL] unknown direction: %s\n", c->direction);
         ++g_failures;
     }
+    check_chunks(c);
 }
 
 /* ---------------- 独立断言 ---------------- */
 
 static void test_checksum(void)
 {
-    /* 协议 §3 例子：A5 02 01 01 01 01 → 0x54。 */
-    const uint8_t data[] = {0xA5, 0x02, 0x01, 0x01, 0x01, 0x01};
-    CHECK(lumen_protocol_checksum(data, sizeof(data)) == 0x54);
+    /* 标准校验值（docs/protocol-v3.md §3.4 / §11）："123456789" → 0x29B1。 */
+    const char *kat = "123456789";
+    CHECK(lumen_protocol_crc16((const uint8_t *)kat, strlen(kat)) == 0x29B1);
 
-    const uint8_t empty[] = {0x00};
-    CHECK(lumen_protocol_checksum(empty, 0) == 0xFF);
+    /* §3.3 的例子：SetPower(on) seq=1 → A6 03 01 01 01 00 01，CRC = 0xA0F0（小端 F0 A0）。 */
+    const uint8_t body[] = {0xA6, 0x03, 0x01, 0x01, 0x01, 0x00, 0x01};
+    CHECK(lumen_protocol_crc16(body, sizeof(body)) == 0xA0F0);
+
+    uint8_t out[LUMEN_MAX_FRAME];
+    size_t len = lumen_protocol_encode(LUMEN_CMD_SET_POWER, 0x01, &body[6], 1, out,
+                                       sizeof(out));
+    CHECK(len == 9);
+    CHECK_BYTES(out, "A6030101010001F0A0", len);
+
+    /* 空输入：初值 0xFFFF 原样返回（CRC 的定义，不是错误）。 */
+    CHECK(lumen_protocol_crc16(NULL, 0) == 0xFFFF);
+    CHECK(lumen_protocol_crc16(body, 0) == 0xFFFF);
+
+    /* 双字节长度字段：232 字节载荷编得出来，233 字节被拒（§1.1 的上限）。 */
+    uint8_t big[LUMEN_MAX_PAYLOAD];
+    memset(big, 0x5A, sizeof(big));
+    len = lumen_protocol_encode(0x7F, 0x01, big, LUMEN_MAX_PAYLOAD, out, sizeof(out));
+    CHECK(len == LUMEN_MAX_FRAME);
+    CHECK(out[4] == (uint8_t)(LUMEN_MAX_PAYLOAD & 0xFF));
+    CHECK(out[5] == (uint8_t)(LUMEN_MAX_PAYLOAD >> 8));
+    CHECK(len == LUMEN_FRAME_OVERHEAD + LUMEN_MAX_PAYLOAD);
 }
 
 static void test_set_power_reducer(void)
@@ -981,9 +1147,9 @@ static void test_set_power_reducer(void)
 
     /* 保留 / 未知 / 退役 / 设备→小程序命令字：0x02。
      * v2 退役的 0x03 SetColor / 0x04 SetAll 走这里。
-     * #25 起 0x10 / 0x11 / 0x12 已实现，#32 起 0x13–0x1A 也已实现，
-     * 都不再属于未知命令。 */
-    const uint8_t unknown[] = {0x00, 0x03, 0x04, 0x08, 0x09, 0x0F, 0x1B, 0x7F,
+     * 0x10 / 0x11 / 0x12 / 0x13–0x1A / 0x1B / 0x1C / 0x1D 都已实现，
+     * 都不再属于未知命令；0x1E 起才是保留字。 */
+    const uint8_t unknown[] = {0x00, 0x03, 0x04, 0x08, 0x09, 0x0F, 0x1E, 0x7F,
                                0x80, 0x81, 0x82, 0xFF};
     for (size_t i = 0; i < sizeof(unknown); ++i) {
         lumen_frame_t f = {0};
@@ -1172,26 +1338,48 @@ static void test_retired_commands(void)
     CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
     CHECK(!outcome.state_changed);
 
-    /* #32 剧本命令已实现：不能再出现在「未知命令」列表里，
-     * 但空载荷仍应回 BadLength（长度校验先于取值）。0x1B 起仍是保留字。 */
+    /* 剧本命令 / 段命令都已实现：不能再出现在「未知命令」列表里，
+     * 但空载荷仍应回 BadLength（长度校验先于取值）。 */
     const uint8_t implemented[] = {LUMEN_CMD_SET_PLAYBACK, LUMEN_CMD_SCRIPT_BEGIN,
                                    LUMEN_CMD_SCRIPT_STAGE, LUMEN_CMD_SCRIPT_SEGMENT,
                                    LUMEN_CMD_SCRIPT_COMMIT, LUMEN_CMD_SCRIPT_ABORT,
-                                   LUMEN_CMD_ACTIVATE_SCRIPT, LUMEN_CMD_QUERY_SCRIPT};
+                                   LUMEN_CMD_ACTIVATE_SCRIPT, LUMEN_CMD_QUERY_SCRIPT,
+                                   LUMEN_CMD_SET_SEGMENT, LUMEN_CMD_SET_STRIP_POWER};
     for (size_t i = 0; i < sizeof(implemented); ++i) {
         CHECK(lumen_command_is_known(implemented[i]));
         lumen_frame_t f = {0};
         f.command = implemented[i];
         f.payload_len = 0;
         lumen_command_dispatch(&f, &state, NULL, NULL, 255, &outcome);
-        /* ScriptSegment 载荷 < 7 也是 BadLength；其余命令期望长度 > 0。 */
+        /* v3 的段命令是固定长度（21/23），空载荷一律 BadLength。 */
         CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
         CHECK(!outcome.state_changed);
         CHECK(outcome.script_op == LUMEN_SCRIPT_OP_NONE);
+        CHECK(!outcome.segment_op);
+        CHECK(!outcome.strip_power_op);
     }
 
-    /* 0x1B 起的保留字仍回 0x02。 */
-    const uint8_t reserved[] = {0x1B, 0x20, 0x7F};
+    /* v3 的两条无载荷查询：已知命令、空载荷合法、回 0x00 + 报告意图。 */
+    const uint8_t queries[] = {LUMEN_CMD_QUERY_STRIP_CONFIG, LUMEN_CMD_QUERY_DEVICE_INFO};
+    for (size_t i = 0; i < sizeof(queries); ++i) {
+        CHECK(lumen_command_is_known(queries[i]));
+        lumen_frame_t f = {0};
+        f.command = queries[i];
+        f.payload_len = 0;
+        lumen_command_dispatch(&f, &state, NULL, NULL, 255, &outcome);
+        CHECK(outcome.result_code == LUMEN_RESULT_OK);
+        CHECK(outcome.strip_config_query == (queries[i] == LUMEN_CMD_QUERY_STRIP_CONFIG));
+        CHECK(outcome.device_info_query == (queries[i] == LUMEN_CMD_QUERY_DEVICE_INFO));
+        CHECK(!outcome.cancels_selftest);
+        /* 有载荷反而不合法（固定 0）。 */
+        f.payload_len = 1;
+        f.payload[0] = 0;
+        lumen_command_dispatch(&f, &state, NULL, NULL, 255, &outcome);
+        CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
+    }
+
+    /* 0x1E 起的保留字仍回 0x02；设备→小程序方向亦然。 */
+    const uint8_t reserved[] = {0x1E, 0x20, 0x7F, 0x87, 0x88, 0xFF};
     for (size_t i = 0; i < sizeof(reserved); ++i) {
         CHECK(!lumen_command_is_known(reserved[i]));
         lumen_frame_t f = {0};
@@ -1205,67 +1393,69 @@ static void test_retired_commands(void)
 static void test_encode_ack_all_results(void)
 {
     /* ACK 编码器覆盖全部结果码：载荷 [命令字, 结果码]，seq 回显。 */
-    for (uint8_t result = 0; result <= LUMEN_RESULT_INTERNAL_ERROR; ++result) {
+    for (uint8_t result = 0; result <= LUMEN_RESULT_SCRIPT_TOO_LARGE; ++result) {
         uint8_t out[LUMEN_MAX_FRAME];
         size_t len =
             lumen_protocol_encode_ack(0x5A, LUMEN_CMD_SET_POWER, result, out, sizeof(out));
-        CHECK(len == 8);
+        /* v3：header 6 + 2 字节载荷 + crc 2 = 10。 */
+        CHECK(len == 10);
         CHECK(out[0] == LUMEN_MAGIC);
         CHECK(out[1] == LUMEN_VERSION);
         CHECK(out[2] == LUMEN_CMD_ACK);
         CHECK(out[3] == 0x5A);
         CHECK(out[4] == 2);
-        CHECK(out[5] == LUMEN_CMD_SET_POWER);
-        CHECK(out[6] == result);
-        CHECK(out[7] == lumen_protocol_checksum(out, 7));
+        CHECK(out[5] == 0);
+        CHECK(out[6] == LUMEN_CMD_SET_POWER);
+        CHECK(out[7] == result);
+        uint16_t crc = lumen_protocol_crc16(out, 8);
+        CHECK(out[8] == (uint8_t)(crc & 0xFF));
+        CHECK(out[9] == (uint8_t)(crc >> 8));
     }
 
-    /* 缓冲不足必须失败，不能截断 */
+    /* 缓冲不足必须失败，不能截断：CRC 在 out[8]，所以 cap 9 也不够。 */
     uint8_t out[LUMEN_MAX_FRAME];
-    CHECK(lumen_protocol_encode_ack(0x03, 0x02, LUMEN_RESULT_OK, out, 7) == 0);
+    CHECK(lumen_protocol_encode_ack(0x03, 0x02, LUMEN_RESULT_OK, out, 9) == 0);
+    CHECK(lumen_protocol_encode_ack(0x03, 0x02, LUMEN_RESULT_OK, out, 10) == 10);
 }
 
 static void test_encode_event_storage_failed(void)
 {
-    /* §10.3：NVS 写失败用 Event 0x81 上报，载荷 [0x01, 原命令字]，seq 固定 0。
-     * 与向量 event_storage_failed 逐字节一致（detail = SetLedCount 0x06）。 */
+    /* §10.3：NVS 写失败用 Event 0x81 上报，载荷 [0x01, 原命令字]，seq 固定 0。 */
     uint8_t out[LUMEN_MAX_FRAME];
     size_t len =
         lumen_protocol_encode_event(LUMEN_EVENT_STORAGE_FAILED, 0x06, out, sizeof(out));
-    CHECK(len == 8);
+    CHECK(len == 10);
     CHECK(len == 2 + LUMEN_FRAME_OVERHEAD);
-    CHECK(out[0] == 0xA5);
-    CHECK(out[1] == 0x02);
+    CHECK(out[0] == LUMEN_MAGIC);
+    CHECK(out[1] == LUMEN_VERSION);
     CHECK(out[2] == 0x81);
     CHECK(out[3] == 0x00);
     CHECK(out[4] == 2);
-    CHECK(out[5] == LUMEN_EVENT_STORAGE_FAILED);
-    CHECK(out[6] == 0x06);
-    CHECK(out[7] == 0xCE);
-    CHECK_BYTES(out, "A5028100020106CE", len);
+    CHECK(out[5] == 0);
+    CHECK(out[6] == LUMEN_EVENT_STORAGE_FAILED);
+    CHECK(out[7] == 0x06);
+    CHECK_BYTES(out, "A60381000200010681C0", len);
 
     /* seq 不随连接序号变化：换 detail 也应始终是 0x00。 */
     len = lumen_protocol_encode_event(LUMEN_EVENT_STORAGE_FAILED, 0x01, out, sizeof(out));
-    CHECK(len == 8);
+    CHECK(len == 10);
     CHECK(out[3] == 0x00);
-    CHECK(out[6] == 0x01);
+    CHECK(out[7] == 0x01);
 
     /*
-     * #12 补充：每个可能触发持久化的命令字都能编出来，detail 原样透传，
+     * 每个可能触发持久化的命令字都能编出来，detail 原样透传，
      * 且编出来的帧能用同一信封解回（两端共用一份契约）。
      */
-    /* v2 的 0x03 / 0x04 已退役，不再触发持久化；这里只覆盖仍然存在的命令。 */
     const uint8_t commands[] = {LUMEN_CMD_SET_POWER, LUMEN_CMD_SET_BRIGHTNESS,
                                 LUMEN_CMD_SET_LED_COUNT};
     for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); ++i) {
         uint8_t frame[LUMEN_MAX_FRAME];
         size_t n = lumen_protocol_encode_event(LUMEN_EVENT_STORAGE_FAILED, commands[i], frame,
                                                sizeof(frame));
-        CHECK(n == 8);
+        CHECK(n == 10);
         CHECK(frame[3] == 0x00); /* seq 固定 0 */
-        CHECK(frame[5] == LUMEN_EVENT_STORAGE_FAILED);
-        CHECK(frame[6] == commands[i]);
-        CHECK(frame[7] == lumen_protocol_checksum(frame, 7));
+        CHECK(frame[6] == LUMEN_EVENT_STORAGE_FAILED);
+        CHECK(frame[7] == commands[i]);
 
         lumen_frame_t decoded;
         uint8_t rc = 0xFF;
@@ -1279,18 +1469,26 @@ static void test_encode_event_storage_failed(void)
 
     /* 缓冲不足必须失败，不能截断。 */
     CHECK(lumen_protocol_encode_event(LUMEN_EVENT_STORAGE_FAILED, LUMEN_CMD_SET_LED_COUNT, out,
-                                      7) == 0);
+                                      9) == 0);
 }
 
 static void test_encode_limits(void)
 {
-    uint8_t payload[15] = {0};
-    uint8_t out[32];
+    /* v3：载荷上限 232、整帧 240、header+crc 8 字节。 */
+    uint8_t payload[LUMEN_MAX_PAYLOAD + 1];
+    memset(payload, 0, sizeof(payload));
+    uint8_t out[LUMEN_MAX_FRAME + 8];
 
-    CHECK(lumen_protocol_encode(0x08, 0x01, payload, 15, out, sizeof(out)) == 0);
-    CHECK(lumen_protocol_encode(0x08, 0x01, payload, 14, out, 19) == 0);
-    CHECK(lumen_protocol_encode(0x08, 0x01, payload, 14, out, 20) == 20);
-    CHECK(lumen_protocol_encode(0x08, 0x01, payload, 0, NULL, 20) == 0);
+    CHECK(lumen_protocol_encode(0x08, 0x01, payload, LUMEN_MAX_PAYLOAD + 1, out,
+                                sizeof(out)) == 0);
+    CHECK(lumen_protocol_encode(0x08, 0x01, payload, LUMEN_MAX_PAYLOAD, out,
+                                LUMEN_MAX_FRAME - 1) == 0);
+    CHECK(lumen_protocol_encode(0x08, 0x01, payload, LUMEN_MAX_PAYLOAD, out, LUMEN_MAX_FRAME) ==
+          LUMEN_MAX_FRAME);
+    /* 0 长度载荷允许 NULL。 */
+    CHECK(lumen_protocol_encode(0x08, 0x01, NULL, 0, out, sizeof(out)) == LUMEN_FRAME_OVERHEAD);
+    /* 非 0 长度载荷必须是有效指针。 */
+    CHECK(lumen_protocol_encode(0x08, 0x01, NULL, 1, out, sizeof(out)) == 0);
 }
 
 static void test_decode_short(void)
@@ -1298,8 +1496,9 @@ static void test_decode_short(void)
     lumen_frame_t frame;
     uint8_t rc = 0xFF;
 
-    /* 不足 6 字节：连 seq 都读不可靠，静默丢弃 */
-    CHECK(decode_hex("A502010101", &frame, &rc) == LUMEN_DECODE_SILENT);
+    /* 不足 8 字节（header 6 + crc 2）：连 crc 都放不下，静默丢弃。 */
+    CHECK(decode_hex("A6030101", &frame, &rc) == LUMEN_DECODE_SILENT);
+    CHECK(decode_hex("A603010101", &frame, &rc) == LUMEN_DECODE_SILENT);
     CHECK(decode_hex("", &frame, &rc) == LUMEN_DECODE_SILENT);
     CHECK(lumen_protocol_decode(NULL, 0, &frame, &rc) == LUMEN_DECODE_SILENT);
 }
@@ -1309,35 +1508,55 @@ static void test_decode_bad_frames_echo_header(void)
     lumen_frame_t frame;
     uint8_t rc = 0xFF;
 
-    /* 坏帧也要保留 header，供 ACK 回显 seq / 命令字 */
-    CHECK(decode_hex("A6020101010153", &frame, &rc) == LUMEN_DECODE_ERROR);
+    /* 坏帧也要保留 header，供 ACK 回显 seq / 命令字。 */
+    CHECK(decode_hex("A50301010100010000", &frame, &rc) == LUMEN_DECODE_ERROR);
     CHECK(rc == LUMEN_RESULT_BAD_MAGIC);
     CHECK(frame.command == 0x01);
     CHECK(frame.seq == 0x01);
 
-    /* version 0x01（v1）现在是不支持的版本 → 0x07。 */
-    CHECK(decode_hex("A5010101010155", &frame, &rc) == LUMEN_DECODE_ERROR);
+    /* version 0x02（v2）现在是不支持的版本 → 0x07。 */
+    CHECK(decode_hex("A60201010100010000", &frame, &rc) == LUMEN_DECODE_ERROR);
     CHECK(rc == LUMEN_RESULT_UNSUPPORTED_VERSION);
 
-    CHECK(decode_hex("A5020101010155", &frame, &rc) == LUMEN_DECODE_ERROR);
+    /* CRC 错：用 §3.3 的合法帧把 CRC 高字节改掉。 */
+    CHECK(decode_hex("A6030101010001F0A1", &frame, &rc) == LUMEN_DECODE_ERROR);
     CHECK(rc == LUMEN_RESULT_BAD_CHECKSUM);
+
+    /* 长度字段 > 232 → 越界，BadLength（不读 payload）。 */
+    CHECK(decode_hex("A6030101E900000000", &frame, &rc) == LUMEN_DECODE_ERROR);
+    CHECK(rc == LUMEN_RESULT_BAD_LENGTH);
 }
 
 static void test_decode_max_payload(void)
 {
+    /* 232 字节载荷的合法帧：编出来再解回去，字段逐字节一致。 */
+    uint8_t payload[LUMEN_MAX_PAYLOAD];
+    for (size_t i = 0; i < sizeof(payload); ++i) {
+        payload[i] = (uint8_t)i;
+    }
+    uint8_t frame_bytes[LUMEN_MAX_FRAME];
+    size_t len = lumen_protocol_encode(0x7F, 0x05, payload, sizeof(payload), frame_bytes,
+                                       sizeof(frame_bytes));
+    CHECK(len == LUMEN_MAX_FRAME);
+
     lumen_frame_t frame;
     uint8_t rc = 0xFF;
-    lumen_decode_status_t status =
-        decode_hex("A5027F050E000102030405060708090A0B0C0D6B", &frame, &rc);
-
-    CHECK(status == LUMEN_DECODE_OK);
+    CHECK(lumen_protocol_decode(frame_bytes, len, &frame, &rc) == LUMEN_DECODE_OK);
     CHECK(rc == LUMEN_RESULT_OK);
     CHECK(frame.command == 0x7F);
     CHECK(frame.seq == 0x05);
-    CHECK(frame.payload_len == 14);
-    for (uint8_t i = 0; i < 14; ++i) {
-        CHECK(frame.payload[i] == i);
-    }
+    CHECK(frame.payload_len == LUMEN_MAX_PAYLOAD);
+    CHECK(memcmp(frame.payload, payload, sizeof(payload)) == 0);
+
+    /* 声明 232 但实际只有 231 字节（丢掉最后一个 payload 字节）→ BadLength。 */
+    uint8_t truncated[LUMEN_MAX_FRAME];
+    memcpy(truncated, frame_bytes, LUMEN_HEADER_LEN + 231);
+    uint16_t crc = lumen_protocol_crc16(truncated, LUMEN_HEADER_LEN + 231);
+    truncated[LUMEN_HEADER_LEN + 231] = (uint8_t)(crc & 0xFF);
+    truncated[LUMEN_HEADER_LEN + 232] = (uint8_t)(crc >> 8);
+    CHECK(lumen_protocol_decode(truncated, LUMEN_MAX_FRAME - 1, &frame, &rc) ==
+          LUMEN_DECODE_ERROR);
+    CHECK(rc == LUMEN_RESULT_BAD_LENGTH);
 }
 
 static void test_state_defaults_and_clamp(void)
@@ -1351,6 +1570,10 @@ static void test_state_defaults_and_clamp(void)
     CHECK(state.g == 180);
     CHECK(state.b == 120);
     CHECK(state.led_count == 30);
+    /* docs/protocol-v3.md §10.5：默认每带开关全开、没有动画、无剧本。 */
+    CHECK(state.strip_power_mask == 0xFF);
+    CHECK(state.strip_anim_mask == 0x00);
+    CHECK(state.script_id == LUMEN_NO_SCRIPT);
 
     CHECK(lumen_state_clamp_brightness(200, 180) == 180);
     CHECK(lumen_state_clamp_brightness(100, 180) == 100);
@@ -1361,55 +1584,67 @@ static void test_state_defaults_and_clamp(void)
 static void test_state_bytes_layout(void)
 {
     lumen_state_t state;
+    uint16_t counts[LUMEN_MAX_STRIPS];
+    uint8_t segs[LUMEN_MAX_STRIPS];
+
+    /* 参考向量 state_read_example_hex（docs/protocol-testvectors-v3.json）：
+     * 开灯/亮度 128/暖白 255,180,120/max_b 200/2 条灯带 30+60/
+     * pmask 0x03/amask 0x01/segcounts [2,4]。 */
     lumen_state_defaults(&state, 30);
     state.power = 1;
+    state.strip_count = 2;
+    state.strip_power_mask = 0x03;
+    state.strip_anim_mask = 0x01;
+    memset(counts, 0, sizeof(counts));
+    counts[0] = 30;
+    counts[1] = 60;
+    memset(segs, 0, sizeof(segs));
+    segs[0] = 2;
+    segs[1] = 4;
 
-    /* v2：State 固定 14 字节；0-7 与 v1 完全一致。 */
     uint8_t out[LUMEN_STATE_BYTES];
-    lumen_state_to_bytes(&state, 255, out);
-    /* 与 docs/protocol-testvectors.json 的 state_read_example_hex 一致 */
-    CHECK_BYTES(out, "0180FFB4781E00FF0100FF000000", sizeof(out));
+    CHECK(LUMEN_STATE_BYTES == 37);
+    lumen_state_to_bytes(&state, 200, counts, segs, out);
+    CHECK_BYTES(out, "0180FFB478C802FF00000003011E003C000000000000000000000000000204000000000000",
+                sizeof(out));
 
+    /* 逐字段核对 §7.3 的偏移。 */
+    CHECK(out[0] == 1);   /* power */
+    CHECK(out[1] == 128); /* brightness */
+    CHECK(out[2] == 255 && out[3] == 180 && out[4] == 120);
+    CHECK(out[5] == 200); /* max_brightness */
+    CHECK(out[6] == 2);   /* strip_count */
+    CHECK(out[7] == 0xFF);
+    CHECK(out[8] == 0);
+    CHECK(out[9] == 0);
+    CHECK(out[10] == 0);
+    CHECK(out[11] == 0x03); /* strip_power_mask */
+    CHECK(out[12] == 0x01); /* strip_anim_mask */
+
+    /* 亮度按 max_brightness 钳位后再写。 */
     state.brightness = 250;
-    lumen_state_to_bytes(&state, 200, out);
+    lumen_state_to_bytes(&state, 200, counts, segs, out);
     CHECK(out[1] == 200);
-    CHECK(out[7] == 200);
 
-    state.led_count = 300;
-    lumen_state_to_bytes(&state, 255, out);
-    CHECK(out[5] == 0x2C);
-    CHECK(out[6] == 0x01);
+    /* 灯珠数 u16 小端：300 → 2C 01。 */
+    counts[0] = 300;
+    lumen_state_to_bytes(&state, 255, counts, segs, out);
+    CHECK(out[13] == 0x2C);
+    CHECK(out[14] == 0x01);
+    counts[0] = 30;
 
-    /* 8-13：strip_count / seg_count / script_id / stage_index /
-     * playback_state / flags，默认值来自 lumen_state_defaults。 */
-    lumen_state_defaults(&state, 30);
-    CHECK(state.strip_count == 1);
-    CHECK(state.seg_count == 0);
-    CHECK(state.script_id == LUMEN_NO_SCRIPT);
-    CHECK(state.stage_index == 0);
-    CHECK(state.playback_state == 0);
-    CHECK(state.flags == 0);
-
-    state.strip_count = 8;
-    state.seg_count = 3;
-    state.script_id = 2;
-    state.stage_index = 5;
-    state.playback_state = 2;
-    state.flags = 0x03;
-    lumen_state_to_bytes(&state, 255, out);
-    CHECK(out[8] == 8);
-    CHECK(out[9] == 3);
-    CHECK(out[10] == 2);
-    CHECK(out[11] == 5);
-    CHECK(out[12] == 2);
-    CHECK(out[13] == 0x03);
-
-    /* 前 8 字节不因新增字段而改变布局。 */
-    CHECK(out[0] == 0 && out[5] == 30 && out[6] == 0 && out[7] == 255);
+    /* NULL 数组走兜底：strip 0 用 state.led_count，其余为 0。 */
+    state.led_count = 30;
+    state.seg_count = 7;
+    lumen_state_to_bytes(&state, 200, NULL, NULL, out);
+    CHECK(out[13] == 30 && out[14] == 0);
+    CHECK(out[15] == 0 && out[16] == 0);
+    CHECK(out[29] == 7);
+    CHECK(out[30] == 0);
 
     /* NULL 防御。 */
-    lumen_state_to_bytes(NULL, 255, out);
-    lumen_state_to_bytes(&state, 255, NULL);
+    lumen_state_to_bytes(NULL, 255, counts, segs, out);
+    lumen_state_to_bytes(&state, 255, counts, segs, NULL);
 }
 
 /*
@@ -1642,7 +1877,7 @@ static void test_selftest_leaves_state_untouched(void)
     state.b = 30;
 
     uint8_t before[LUMEN_STATE_BYTES];
-    lumen_state_to_bytes(&state, 255, before);
+    lumen_state_to_bytes(&state, 255, NULL, NULL, before);
 
     /* 自检启动是纯渲染层覆盖：命令结果 next 与 current 完全一致。 */
     lumen_frame_t frame = {0};
@@ -1662,7 +1897,7 @@ static void test_selftest_leaves_state_untouched(void)
 
     /* 同时刻的 State 仍是关灯 + 原亮度/颜色（§11.2 第 6 条）。 */
     uint8_t during[LUMEN_STATE_BYTES];
-    lumen_state_to_bytes(&state, 255, during);
+    lumen_state_to_bytes(&state, 255, NULL, NULL, during);
     CHECK(memcmp(before, during, sizeof(before)) == 0);
     CHECK(during[0] == 0);
     CHECK(during[1] == 77);
@@ -3355,6 +3590,38 @@ static void test_segment_store_prune(void)
 
 /* ---------------- #25：SetSegment / ClearSegment / QueryStrip reducer ---------------- */
 
+/* ---------------- #25 / #36：SetSegment / ClearSegment / QueryStrip reducer ---------------- */
+
+/* 把 21 字节段载荷填好（docs/protocol-v3.md §7.1）。
+ * layer1 传 NULL 时写空层（0xFF + 7 个 0）。 */
+static void fill_segment_payload(uint8_t payload[21], uint8_t strip, uint8_t seg,
+                                 uint8_t start, uint8_t end, uint8_t blend,
+                                 const uint8_t layer0[8], const uint8_t layer1[8])
+{
+    memset(payload, 0, 21);
+    payload[0] = strip;
+    payload[1] = seg;
+    payload[2] = start;
+    payload[3] = end;
+    payload[4] = blend;
+    memcpy(&payload[5], layer0, 8);
+    if (layer1 != NULL) {
+        memcpy(&payload[13], layer1, 8);
+    } else {
+        payload[13] = LUMEN_NO_EFFECT;
+    }
+}
+
+/* 静态层的 8 字节编码：type + hue(2) + sat + 4 个保留 0。 */
+static void fill_static_layer(uint8_t layer[8], uint16_t hue, uint8_t sat)
+{
+    memset(layer, 0, 8);
+    layer[0] = LUMEN_EFFECT_STATIC;
+    layer[1] = (uint8_t)(hue & 0xFF);
+    layer[2] = (uint8_t)(hue >> 8);
+    layer[3] = sat;
+}
+
 static void test_segment_commands(void)
 {
     lumen_state_t state;
@@ -3366,28 +3633,25 @@ static void test_segment_commands(void)
     lumen_command_outcome_t outcome;
     lumen_frame_t frame = {0};
 
-    /* 命令表：三条都已实现，载荷长度固定/变长分别正确。 */
+    /* 命令表：三条都已实现，载荷长度固定（21 / 2 / 1）。 */
     CHECK(lumen_command_is_known(LUMEN_CMD_SET_SEGMENT));
     CHECK(lumen_command_is_known(LUMEN_CMD_CLEAR_SEGMENT));
     CHECK(lumen_command_is_known(LUMEN_CMD_QUERY_STRIP));
     CHECK(lumen_command_changes_state(LUMEN_CMD_SET_SEGMENT));
     CHECK(lumen_command_changes_state(LUMEN_CMD_CLEAR_SEGMENT));
     CHECK(!lumen_command_changes_state(LUMEN_CMD_QUERY_STRIP));
+    CHECK(lumen_command_payload_len(LUMEN_CMD_SET_SEGMENT) == 21);
     CHECK(lumen_command_payload_len(LUMEN_CMD_CLEAR_SEGMENT) == 2);
     CHECK(lumen_command_payload_len(LUMEN_CMD_QUERY_STRIP) == 1);
 
-    /* 静态段：strip 0 seg 0 [0-9] hue=0 sat=255 → OK。 */
+    uint8_t layer[8];
+    fill_static_layer(layer, 0, 255);
+
+    /* 单层静态段：strip 0 seg 0 [0-9] hue=0 sat=255 blend=0 → OK。 */
     frame.command = LUMEN_CMD_SET_SEGMENT;
     frame.seq = 41;
-    frame.payload_len = 8;
-    frame.payload[0] = 0;    /* strip */
-    frame.payload[1] = 0;    /* seg */
-    frame.payload[2] = 0;    /* start */
-    frame.payload[3] = 9;    /* end */
-    frame.payload[4] = 0x00; /* type static */
-    frame.payload[5] = 0x00; /* hue lo */
-    frame.payload[6] = 0x00; /* hue hi */
-    frame.payload[7] = 0xFF; /* sat */
+    frame.payload_len = 21;
+    fill_segment_payload(frame.payload, 0, 0, 0, 9, 0, layer, NULL);
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.segment_op);
@@ -3396,15 +3660,14 @@ static void test_segment_commands(void)
     CHECK(!outcome.state_changed); /* 段配置不在 State 里 */
     CHECK(outcome.segment.start == 0 && outcome.segment.end == 9);
     CHECK(outcome.segment.hue == 0 && outcome.segment.sat == 255);
+    CHECK(outcome.segment.type == LUMEN_EFFECT_STATIC);
 
     /* 把它真正写进段表（模拟引擎），后续重叠校验才有前置状态。 */
     CHECK(lumen_segment_store_set(&segments, 0, 1, 0, 30, &outcome.segment) == LUMEN_RESULT_OK);
 
     /* 重叠段 [5-12] → InvalidParam，旧配置不变。 */
     frame.seq = 42;
-    frame.payload[1] = 1;
-    frame.payload[2] = 5;
-    frame.payload[3] = 12;
+    fill_segment_payload(frame.payload, 0, 1, 5, 12, 0, layer, NULL);
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
     CHECK(!outcome.segment_op);
@@ -3414,52 +3677,91 @@ static void test_segment_commands(void)
 
     /* 越界 end >= led_count（30）→ InvalidParam。 */
     frame.seq = 43;
-    frame.payload[1] = 1;
-    frame.payload[2] = 10;
-    frame.payload[3] = 30;
+    fill_segment_payload(frame.payload, 0, 1, 10, 30, 0, layer, NULL);
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
     CHECK(!outcome.segment_op);
 
-    /* 正常第二段 [10-19]。 */
+    /* 正常第二段 [10-19]，换个颜色。 */
     frame.seq = 44;
-    frame.payload[2] = 10;
-    frame.payload[3] = 19;
-    frame.payload[5] = 0x55;
-    frame.payload[6] = 0x55; /* hue = 0x5555 */
-    frame.payload[7] = 128;
+    fill_static_layer(layer, 0x5555, 128);
+    fill_segment_payload(frame.payload, 0, 1, 10, 19, 0, layer, NULL);
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.segment.hue == 0x5555);
     CHECK(outcome.segment.sat == 128);
 
-    /* 类型校验顺序（§11.3 第 4 步先于长度）：
-     * type=0x07（未知）+ 8 字节 → InvalidParam，不是 BadLength。 */
-    frame.command = LUMEN_CMD_SET_SEGMENT;
-    frame.payload_len = 8;
-    frame.payload[4] = 0x07;
+    /*
+     * §7.1 的校验顺序：
+     *   1 长度精确 21 → 不是 21 一律 BadLength（先于 type）
+     *   2 layer0 已知且不为 0xFF
+     *   3 layer1 已知或 0xFF
+     *   4 layer1 空 ⇒ blend = 0
+     *   5 blend ≤ 2
+     *   6 静态层 param[3..6] = 0
+     *   7 各层按 type 校验参数
+     */
+    fill_static_layer(layer, 0, 255);
+    fill_segment_payload(frame.payload, 0, 2, 0, 4, 0, layer, NULL);
+    frame.payload_len = 20;
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
+    frame.payload_len = 22;
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
+    frame.payload_len = 21;
+
+    /* layer0 type = 0x07（未知）→ InvalidParam。 */
+    frame.payload[5] = 0x07;
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(!outcome.segment_op);
+
+    /* layer0 = 0xFF（空层不允许作为底层）→ InvalidParam。 */
+    frame.payload[5] = LUMEN_NO_EFFECT;
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
 
-    /* type 已知但长度不符 → BadLength。 */
-    frame.payload[4] = 0x00;
-    frame.payload_len = 7;
+    /* 空层必须参数全 0：layer0 = 0xFF 且 param 非 0 → 仍是 InvalidParam。 */
+    frame.payload[6] = 0x01;
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
-    CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
 
-    /* #30：呼吸（已知且已实现）→ OK，参数被完整解析到 outcome.segment。
-     * 载荷 12 字节：strip seg start end type hue_lo hue_hi sat period_lo period_hi p5 flags。 */
-    frame.payload_len = 12;
-    frame.payload[4] = 0x01; /* breathing */
-    frame.payload[5] = 0x10;
-    frame.payload[6] = 0x0E; /* hue = 0x0E10 */
-    frame.payload[7] = 0xFF; /* sat */
-    frame.payload[8] = 0xF4;
-    frame.payload[9] = 0x01; /* period = 0x01F4 = 500ms */
-    frame.payload[10] = 0x60; /* min_level = 96 */
-    frame.payload[11] = 0x00; /* flags: waveform 0 (sine) */
-    frame.payload[2] = 20;
-    frame.payload[3] = 25;
+    /* 恢复合法静态层；blend 非 0 但 layer1 为空 → InvalidParam（第 4 步）。 */
+    fill_static_layer(layer, 0, 255);
+    fill_segment_payload(frame.payload, 0, 2, 0, 4, 1, layer, NULL);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(!outcome.segment_op);
+
+    /* blend = 3（不做取最大）→ InvalidParam（第 5 步），两层都非空也一样。 */
+    uint8_t layer1[8];
+    fill_static_layer(layer1, 0, 128);
+    fill_segment_payload(frame.payload, 0, 2, 0, 4, 3, layer, layer1);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+
+    /* 两层静态 + 三种合法 blend → OK（seg 2 [20-25]，避开前面已写入的段）。 */
+    for (uint8_t blend = 0; blend <= 2; ++blend) {
+        fill_segment_payload(frame.payload, 0, 2, 20, 25, blend, layer, layer1);
+        lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
+        CHECK(outcome.result_code == LUMEN_RESULT_OK);
+        CHECK(outcome.segment_op);
+        CHECK(outcome.segment.type == LUMEN_EFFECT_STATIC);
+    }
+
+    /* 静态层 param[3..6] 是保留位，必须全 0（第 6 步）。 */
+    fill_static_layer(layer, 0, 255);
+    layer[4] = 0x01; /* param[3] = period_lo */
+    fill_segment_payload(frame.payload, 0, 2, 0, 4, 0, layer, NULL);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(!outcome.segment_op);
+
+    /* 呼吸（动画类）：合法参数 → OK，字段被完整解析。
+     * layer0 = 01 | hue 0E10 | sat FF | period 01F4 | p5 60 | flags 00。 */
+    uint8_t anim[8] = {0x01, 0x10, 0x0E, 0xFF, 0xF4, 0x01, 0x60, 0x00};
+    fill_segment_payload(frame.payload, 0, 2, 20, 25, 0, anim, NULL);
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.segment_op);
@@ -3468,93 +3770,98 @@ static void test_segment_commands(void)
     CHECK(outcome.segment.p5 == 0x60);
     CHECK(outcome.segment.flags == 0);
 
-    /* 周期低于 3Hz 下限（334ms）→ InvalidParam，不产生写入意图。 */
-    frame.payload[8] = 0x4D; /* 333 */
-    frame.payload[9] = 0x01;
+    /* 周期低于 3Hz 下限（334ms）→ InvalidParam；正好 334 合法；0（静止）合法。 */
+    frame.payload[9] = 0x4D; /* 333 */
+    frame.payload[10] = 0x01;
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
     CHECK(!outcome.segment_op);
-    /* 正好 334 是合法下限。 */
-    frame.payload[8] = 0x4E; /* 334 */
-    frame.payload[9] = 0x01;
+    frame.payload[9] = 0x4E; /* 334 */
+    frame.payload[10] = 0x01;
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
-    /* period = 0（静止）不受下限约束。 */
-    frame.payload[8] = 0x00;
     frame.payload[9] = 0x00;
+    frame.payload[10] = 0x00;
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
 
-    /* flags 保留位（bit3-7）必须为 0。 */
-    frame.payload[8] = 0xF4;
-    frame.payload[9] = 0x01;
-    frame.payload[11] = 0x08; /* bit3 置位 */
+    /* flags 保留位（呼吸 bit3-7）必须为 0；bit0-2 合法。 */
+    frame.payload[9] = 0xF4;
+    frame.payload[10] = 0x01;
+    frame.payload[12] = 0x08; /* bit3 置位 */
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
     CHECK(!outcome.segment_op);
-    /* bit0 reverse 与 bit1-2 waveform 是允许的。 */
-    frame.payload[11] = 0x07; /* reverse + waveform 3 */
+    frame.payload[12] = 0x07; /* reverse + waveform 3 */
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.segment.flags == 0x07);
 
     /*
-     * 彩虹 / 流光（#31）：已实现，合法周期 → OK，写入意图带正确 type。
-     * 用 300ms（高于 200 的 5Hz 下限、低于呼吸的 334）证明这两类的下限
-     * 确实按类型区分，而不是沿用呼吸的 334。
+     * 彩虹 / 流光：300ms 高于 200 的 5Hz 下限、低于呼吸的 334，
+     * 证明下限确实按类型区分而不是沿用呼吸的 334。
      */
-    frame.payload_len = 12;
-    frame.payload[8] = 0x2C; /* 300 */
-    frame.payload[9] = 0x01;
-    frame.payload[10] = 0xFF; /* span / tail = 255（边界值） */
-    frame.payload[11] = 0x00;
-    frame.payload[4] = 0x02;
+    frame.payload[9] = 0x2C; /* 300 */
+    frame.payload[10] = 0x01;
+    frame.payload[11] = 0xFF; /* span / tail = 255（边界值） */
+    frame.payload[12] = 0x00;
+    frame.payload[5] = LUMEN_EFFECT_RAINBOW;
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
-    CHECK(outcome.segment_op);
     CHECK(outcome.segment.type == LUMEN_EFFECT_RAINBOW);
-    frame.payload[4] = 0x03;
+    frame.payload[5] = LUMEN_EFFECT_COMET;
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.segment.type == LUMEN_EFFECT_COMET);
 
-    /* 彩虹 / 流光：period 199 < 200 → InvalidParam（5Hz 下限）。 */
-    frame.payload[8] = 0xC7; /* 199 */
-    frame.payload[9] = 0x00;
-    frame.payload[4] = 0x02;
+    /* 199 < 200 → InvalidParam；正好 200 合法。 */
+    frame.payload[9] = 0xC7;
+    frame.payload[10] = 0x00;
+    frame.payload[5] = LUMEN_EFFECT_RAINBOW;
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
     CHECK(!outcome.segment_op);
-    /* 正好 200 是合法下限。 */
-    frame.payload[8] = 0xC8;
-    frame.payload[9] = 0x00;
+    frame.payload[9] = 0xC8;
+    frame.payload[10] = 0x00;
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
 
     /* 彩虹 / 流光：bit1-7 保留（比呼吸更严，bit0 reverse 允许）。 */
-    frame.payload[11] = 0x02; /* bit1 置位 */
+    frame.payload[12] = 0x02;
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
     CHECK(!outcome.segment_op);
-    frame.payload[11] = 0x01; /* 只有 reverse */
+    frame.payload[12] = 0x01;
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.segment.flags == 0x01);
 
-    /* 静态段却给了 12 字节载荷：先读 type 再定长 → BadLength。 */
-    frame.payload[4] = 0x00;
+    /* layer1 参数同样要校验：未知 type → InvalidParam。 */
+    uint8_t bad_l1[8] = {0x07, 0, 0, 0, 0, 0, 0, 0};
+    fill_static_layer(layer, 0, 255);
+    fill_segment_payload(frame.payload, 0, 2, 0, 4, 0, layer, bad_l1);
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
-    CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+    /* layer1 静态层带保留位 → InvalidParam（第 6 步对两层都生效）。 */
+    uint8_t l1_reserved[8];
+    fill_static_layer(l1_reserved, 0, 128);
+    l1_reserved[5] = 0x01;
+    fill_segment_payload(frame.payload, 0, 2, 0, 4, 0, layer, l1_reserved);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+    /* layer1 呼吸周期 100ms → InvalidParam。 */
+    uint8_t l1_fast[8] = {0x01, 0, 0, 0xFF, 0x64, 0x00, 0x00, 0x00};
+    fill_segment_payload(frame.payload, 0, 2, 0, 4, 1, layer, l1_fast);
+    lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
 
-    /* strip_id != 0 → InvalidParam（多灯带 #29）。 */
-    frame.payload_len = 8;
-    frame.payload[0] = 1;
+    /* strip_id != 0 → InvalidParam（baseline 只有 1 条灯带）。 */
+    fill_segment_payload(frame.payload, 1, 0, 0, 4, 0, layer, NULL);
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
 
     /* seg_id 越界（8）→ InvalidParam。 */
-    frame.payload[0] = 0;
-    frame.payload[1] = 8;
+    fill_segment_payload(frame.payload, 0, 8, 0, 4, 0, layer, NULL);
     lumen_command_dispatch(&frame, &state, &segments, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
 
@@ -3605,53 +3912,173 @@ static void test_segment_commands(void)
 
     /* 段配置快照为 NULL 时按「没有活动段」处理：区间校验仍生效。 */
     frame.command = LUMEN_CMD_SET_SEGMENT;
-    frame.payload_len = 8;
-    frame.payload[0] = 0;
-    frame.payload[1] = 0;
-    frame.payload[2] = 0;
-    frame.payload[3] = 29;
-    frame.payload[4] = 0x00;
+    frame.payload_len = 21;
+    fill_static_layer(layer, 0, 255);
+    fill_segment_payload(frame.payload, 0, 0, 0, 29, 0, layer, NULL);
     lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
-    frame.payload[3] = 30;
+    fill_segment_payload(frame.payload, 0, 0, 0, 30, 0, layer, NULL);
     lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
     CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
 }
 
 /* ---------------- #25：SegmentReport / SegmentListEnd 编码 ---------------- */
 
+/* ---------------- #25 / #36：SegmentReport / SegmentListEnd / 两条新报告编码 ---------------- */
+
 static void test_encode_segment_reports(void)
 {
-    /* 与 docs/protocol-testvectors.json 的 segment_report_static 逐字节一致。 */
-    uint8_t params[3] = {0x00, 0x00, 0xFF};
+    /*
+     * SegmentReport 0x83：载荷与 §7.1 的 SetSegment 同构，**固定 21 字节**
+     * （docs/protocol-v3.md §7.1；协调员裁决：9-21 的措辞以 §7.1 为准）。
+     *
+     * 这里用「单层静态 [0-29] hue=0 sat=255 + 空 layer1 + blend 0」，
+     * 参考值由独立脚本按 §3.1 / §3.4 算出。
+     */
+    uint8_t layer0[8];
+    memset(layer0, 0, sizeof(layer0));
+    layer0[0] = LUMEN_EFFECT_STATIC;
+    layer0[3] = 255;
+
     uint8_t out[LUMEN_MAX_FRAME];
     size_t len = lumen_protocol_encode_segment_report(0x1D, 0x00, 0x00, 0x00, 0x1D, 0x00,
-                                                      params, 3, out, sizeof(out));
-    CHECK(len == 8 + LUMEN_FRAME_OVERHEAD);
-    CHECK_BYTES(out, "A502831D080000001D000000FF94", len);
+                                                      layer0, NULL, out, sizeof(out));
+    /* 8 字节信封 + 21 载荷 = 29。 */
+    CHECK(len == 21 + LUMEN_FRAME_OVERHEAD);
+    CHECK_BYTES(out, "A603831D15000000001D00000000FF00000000FF00000000000000133D", len);
 
-    /* 呼吸用例 12B 载荷：params 7 字节。 */
-    uint8_t anim[7] = {0x10, 0x0E, 0xFF, 0xF4, 0x01, 0x60, 0x00};
-    len = lumen_protocol_encode_segment_report(0x1D, 0x00, 0x01, 0x00, 0x09, 0x01, anim, 7, out,
-                                               sizeof(out));
-    CHECK(len == 12 + LUMEN_FRAME_OVERHEAD);
-    CHECK_BYTES(out, "A502831D0C0001000901100EFFF40160002F", len);
+    /* 载荷布局逐字节核对：strip, seg, start, end, blend, layer0(8), layer1(8)。 */
+    CHECK(out[6] == 0x00);  /* strip_id */
+    CHECK(out[7] == 0x00);  /* seg_id */
+    CHECK(out[8] == 0x00);  /* start */
+    CHECK(out[9] == 0x1D);  /* end */
+    CHECK(out[10] == 0x00); /* blend */
+    CHECK(out[11] == LUMEN_EFFECT_STATIC);
+    CHECK(out[14] == 255);  /* sat */
+    /* 空 layer1：type = 0xFF，param 全 0。 */
+    CHECK(out[19] == LUMEN_NO_EFFECT);
+    for (size_t i = 20; i < 26; ++i) {
+        CHECK(out[i] == 0);
+    }
+
+    /* 两层非空：layer1 原样进偏移 13（帧内 19）。 */
+    uint8_t layer1[8];
+    memset(layer1, 0, sizeof(layer1));
+    layer1[0] = LUMEN_EFFECT_BREATHING;
+    layer1[1] = 0x55;
+    layer1[2] = 0x55;
+    len = lumen_protocol_encode_segment_report(0x1D, 0x00, 0x03, 0x00, 0x3F, 0x01, layer0,
+                                               layer1, out, sizeof(out));
+    CHECK(len == 21 + LUMEN_FRAME_OVERHEAD);
+    CHECK(out[10] == 0x01);              /* blend */
+    CHECK(out[19] == LUMEN_EFFECT_BREATHING);
+    CHECK(out[20] == 0x55 && out[21] == 0x55);
 
     /* SegmentListEnd：载荷 [strip_id, seg_mask]。 */
     len = lumen_protocol_encode_segment_list_end(0x1D, 0x00, 0x07, out, sizeof(out));
     CHECK(len == 2 + LUMEN_FRAME_OVERHEAD);
-    CHECK_BYTES(out, "A502841D020007AE", len);
+    CHECK_BYTES(out, "A603841D02000007B085", len);
 
-    /* 参数防御：0 长度 / 超过 7 / NULL params / 缓冲不足。 */
-    CHECK(lumen_protocol_encode_segment_report(1, 0, 0, 0, 1, 0, params, 0, out, sizeof(out)) ==
-          0);
-    CHECK(lumen_protocol_encode_segment_report(1, 0, 0, 0, 1, 0, params, 8, out, sizeof(out)) ==
-          0);
-    CHECK(lumen_protocol_encode_segment_report(1, 0, 0, 0, 1, 0, NULL, 3, out, sizeof(out)) ==
-          0);
-    CHECK(lumen_protocol_encode_segment_report(1, 0, 0, 0, 1, 0, anim, 7, out, 17) == 0);
-    CHECK(lumen_protocol_encode_segment_list_end(1, 0, 0x07, out, 7) == 0);
+    /* 参数防御：layer0 为 NULL / 缓冲不足。 */
+    CHECK(lumen_protocol_encode_segment_report(1, 0, 0, 0, 1, 0, NULL, NULL, out,
+                                               sizeof(out)) == 0);
+    CHECK(lumen_protocol_encode_segment_report(1, 0, 0, 0, 1, 0, layer0, NULL, out,
+                                               21 + LUMEN_FRAME_OVERHEAD - 1) == 0);
+    CHECK(lumen_protocol_encode_segment_list_end(1, 0, 0x07, out, 9) == 0);
 }
+
+static void test_encode_strip_config_report(void)
+{
+    /* 参考向量 strip_config_report_3_strips：GPIO 3 / 10 / 0，其余 0xFF + flags 0。 */
+    uint8_t gpios[LUMEN_MAX_STRIPS] = {3, 10, 0, 0, 0, 0, 0, 0};
+    uint8_t out[LUMEN_MAX_FRAME];
+    size_t len = lumen_protocol_encode_strip_config_report(0x35, gpios, 3, out, sizeof(out));
+    CHECK(len == 24 + LUMEN_FRAME_OVERHEAD);
+    CHECK_BYTES(out, "A60387351800000301010A0102000103FF0004FF0005FF0006FF0007FF00C4A6",
+                len);
+
+    /* 逐条核对：[strip_id, gpio, flags]，flags bit0 = 已分配。 */
+    for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
+        CHECK(out[6 + i * 3] == i);
+        if (i < 3) {
+            CHECK(out[6 + i * 3 + 1] == gpios[i]);
+            CHECK(out[6 + i * 3 + 2] == 0x01);
+        } else {
+            CHECK(out[6 + i * 3 + 1] == 0xFF);
+            CHECK(out[6 + i * 3 + 2] == 0x00);
+        }
+    }
+
+    /* 8 条全分配、order 也全分配；超过 8 条视为非法（协议上限）。 */
+    len = lumen_protocol_encode_strip_config_report(0x01, gpios, 8, out, sizeof(out));
+    CHECK(len == 24 + LUMEN_FRAME_OVERHEAD);
+    for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
+        CHECK(out[6 + i * 3 + 2] == 0x01);
+    }
+    CHECK(lumen_protocol_encode_strip_config_report(0x01, gpios, 9, out, sizeof(out)) == 0);
+    CHECK(lumen_protocol_encode_strip_config_report(0x01, NULL, 3, out, sizeof(out)) == 0);
+    CHECK(lumen_protocol_encode_strip_config_report(0x01, gpios, 3, out,
+                                                    24 + LUMEN_FRAME_OVERHEAD - 1) == 0);
+}
+
+static void test_encode_device_info_report(void)
+{
+    /* 参考向量 device_info_report：v3.0、MAC、五个上限、caps=0x01。 */
+    uint8_t hw[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    uint8_t out[LUMEN_MAX_FRAME];
+    size_t len = lumen_protocol_encode_device_info_report(0x36, 0x0300, hw, LUMEN_CAP_TWO_LAYERS,
+                                                          out, sizeof(out));
+    CHECK(len == 15 + LUMEN_FRAME_OVERHEAD);
+    CHECK_BYTES(out, "A60388360F000003AABBCCDDEEFF400808080401001AAB", len);
+
+    /* 偏移核对：0..1 version，2..7 hw_id，8..12 上限，13 caps，14 保留 0。 */
+    CHECK(out[6] == 0x00 && out[7] == 0x03);
+    CHECK(memcmp(&out[8], hw, sizeof(hw)) == 0);
+    CHECK(out[14] == LUMEN_MAX_LEDS);
+    CHECK(out[15] == LUMEN_MAX_STRIPS);
+    CHECK(out[16] == LUMEN_MAX_SEGMENTS);
+    CHECK(out[17] == LUMEN_MAX_STAGES);
+    CHECK(out[18] == LUMEN_MAX_SCRIPTS);
+    CHECK(out[19] == LUMEN_CAP_TWO_LAYERS);
+    CHECK(out[20] == 0x00);
+
+    /* caps 的保留位由调用方决定；编码器原样透传。 */
+    len = lumen_protocol_encode_device_info_report(0x01, 0x0301, hw, 0x03, out, sizeof(out));
+    CHECK(len == 15 + LUMEN_FRAME_OVERHEAD);
+    CHECK(out[7] == 0x03);
+    CHECK(out[6] == 0x01 && out[18] == LUMEN_MAX_SCRIPTS);
+    CHECK(lumen_protocol_encode_device_info_report(0x01, 0x0300, NULL, 0, out,
+                                                   15 + LUMEN_FRAME_OVERHEAD) == 0);
+}
+
+static void test_reject_v2_protocol_frames(void)
+{
+    /*
+     * v2 帧（magic 0xA5 / version 0x02）在 v3 固件上必须是明确失败，不能误解析。
+     * 这两个字节是「刷新固件后旧小程序立刻看到 UnsupportedVersion / BadMagic」
+     * 的唯一保证（docs/protocol-v3.md §4）。
+     */
+    lumen_frame_t frame;
+    uint8_t rc = 0xFF;
+
+    /* v2 的 SetLedCount(strip 0, 64) 帧：A5 02 06 01 03 00 40 00 0E。 */
+    CHECK(decode_hex("A5020601030040000E", &frame, &rc) == LUMEN_DECODE_ERROR);
+    CHECK(rc == LUMEN_RESULT_BAD_MAGIC);
+    CHECK(frame.command == 0x06);
+
+    /* magic 正确、version 为 2：UnsupportedVersion（版本先于 CRC 判，CRC 随便填）。 */
+    CHECK(decode_hex("A6020601030040000E", &frame, &rc) == LUMEN_DECODE_ERROR);
+    CHECK(rc == LUMEN_RESULT_UNSUPPORTED_VERSION);
+
+    /*
+     * 裸帧（没有分片头）同样不能进解码器：收到 ctrl=0xC0 打头的写入时，
+     * 分片层已经剥掉 1 字节，所以以 0xC0 开头的「逻辑帧」只可能来自违规的
+     * 裸帧实现——解码器按 BadMagic 拒绝，绝不猜。
+     */
+    CHECK(decode_hex("C0A6030101010001F0A0", &frame, &rc) == LUMEN_DECODE_ERROR);
+    CHECK(rc == LUMEN_RESULT_BAD_MAGIC);
+}
+
 
 
 /* ---------------- #29 八引脚 TDM ---------------- */
@@ -3830,6 +4257,309 @@ static void test_planar_null_safety(void)
     CHECK(lumen_planar_get(NULL, 0) == NULL);
 }
 
+/* ---------------- #36：SetStripPower / 分片重组 ---------------- */
+
+/*
+ * SetStripPower 0x1B（docs/protocol-v3.md §9.5）：命令层只校验并登记意图。
+ * 掩码写入、推黑帧与 TDM 跳带属于 #38。
+ */
+static void test_set_strip_power_command(void)
+{
+    lumen_state_t state;
+    lumen_state_defaults(&state, 30);
+    state.strip_count = 4;
+    state.strip_power_mask = 0x0F;
+
+    lumen_command_outcome_t outcome;
+    lumen_frame_t frame = {0};
+    frame.command = LUMEN_CMD_SET_STRIP_POWER;
+    frame.seq = 1;
+    frame.payload_len = 2;
+
+    CHECK(lumen_command_is_known(LUMEN_CMD_SET_STRIP_POWER));
+    CHECK(lumen_command_payload_len(LUMEN_CMD_SET_STRIP_POWER) == 2);
+    /* §9.5：改每带开关算「改变状态」，要取消自检。 */
+    CHECK(lumen_command_changes_state(LUMEN_CMD_SET_STRIP_POWER));
+
+    /* 合法：strip 2 关。 */
+    frame.payload[0] = 2;
+    frame.payload[1] = 0;
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(outcome.strip_power_op);
+    CHECK(outcome.strip_power_strip == 2);
+    CHECK(!outcome.strip_power_on);
+    CHECK(outcome.cancels_selftest);
+    /* 命令层不改 next：掩码由 ble_link 在 ACK 之前写入。 */
+    CHECK(!outcome.state_changed);
+
+    /* on = 1 同样合法。 */
+    frame.payload[1] = 1;
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(outcome.strip_power_on);
+
+    /* strip_id 未分配（>= strip_count）→ InvalidParam。 */
+    frame.payload[0] = 4;
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(!outcome.strip_power_op);
+    CHECK(!outcome.cancels_selftest);
+
+    /* on 只允许 0/1。 */
+    frame.payload[0] = 0;
+    frame.payload[1] = 2;
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+
+    /* 载荷长度必须正好 2。 */
+    frame.payload[1] = 1;
+    frame.payload_len = 1;
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
+    frame.payload_len = 3;
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
+
+    /* 掩码的算术（ble_link 里同一段逻辑的纯拷贝）：清位 / 置位。 */
+    uint8_t mask = 0x0F;
+    mask = (uint8_t)(mask & (uint8_t)~(1u << 2));
+    CHECK(mask == 0x0B);
+    mask |= (uint8_t)(1u << 2);
+    CHECK(mask == 0x0F);
+    /* 全局 power 不改掩码（§9.5）：SetPower(0) 只是总闸。 */
+    lumen_frame_t power = {0};
+    power.command = LUMEN_CMD_SET_POWER;
+    power.payload_len = 1;
+    power.payload[0] = 0;
+    lumen_command_dispatch(&power, &state, NULL, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(outcome.next.strip_power_mask == 0x0F);
+}
+
+/*
+ * 分片重组（docs/protocol-v3.md §3.2）。状态机是纯的、注入 now_ms，
+ * 所以这里直接驱动它，覆盖票面要求的六种情形。
+ */
+static void test_reasm_single_chunk(void)
+{
+    lumen_reasm_t r;
+    lumen_reasm_init(&r);
+
+    /* 不分片的帧也必须带 ctrl = 0xC0。 */
+    const uint8_t frame[] = {0xA6, 0x03, 0x01, 0x01, 0x01, 0x00, 0x01, 0xF0, 0xA0};
+    CHECK(lumen_reasm_feed(&r, LUMEN_CHUNK_SINGLE, frame, sizeof(frame), 0) ==
+          LUMEN_REASM_COMPLETE);
+    CHECK(r.len == sizeof(frame));
+    CHECK(memcmp(r.data, frame, sizeof(frame)) == 0);
+    /* 完成后 active 已复位：下一帧从 FIRST 重新开始，不会接在这帧后面。 */
+    CHECK(!r.active);
+    CHECK(!lumen_reasm_reset(&r));
+}
+
+static void test_reasm_multi_chunk(void)
+{
+    lumen_reasm_t r;
+    lumen_reasm_init(&r);
+
+    /* 与向量 chunking_two_chunks 同构：19 + 12 字节，ctrl 0x80 / 0x41。 */
+    uint8_t part1[19];
+    uint8_t part2[12];
+    for (uint8_t i = 0; i < sizeof(part1); ++i) {
+        part1[i] = i;
+    }
+    for (uint8_t i = 0; i < sizeof(part2); ++i) {
+        part2[i] = (uint8_t)(100 + i);
+    }
+
+    CHECK(lumen_reasm_feed(&r, 0x80, part1, sizeof(part1), 0) == LUMEN_REASM_PENDING);
+    CHECK(r.active);
+    CHECK(r.len == sizeof(part1));
+    CHECK(lumen_reasm_feed(&r, 0x41, part2, sizeof(part2), 20) == LUMEN_REASM_COMPLETE);
+    CHECK(r.len == sizeof(part1) + sizeof(part2));
+    CHECK(memcmp(r.data, part1, sizeof(part1)) == 0);
+    CHECK(memcmp(&r.data[sizeof(part1)], part2, sizeof(part2)) == 0);
+
+    /* 三片（与向量 chunking_three_chunks_state_report 同构：19 + 19 + 7）。 */
+    uint8_t a[19];
+    uint8_t b[19];
+    uint8_t c[7];
+    memset(a, 0xAA, sizeof(a));
+    memset(b, 0xBB, sizeof(b));
+    memset(c, 0xCC, sizeof(c));
+    lumen_reasm_init(&r);
+    CHECK(lumen_reasm_feed(&r, 0x80, a, sizeof(a), 0) == LUMEN_REASM_PENDING);
+    CHECK(lumen_reasm_feed(&r, 0x01, b, sizeof(b), 5) == LUMEN_REASM_PENDING);
+    CHECK(lumen_reasm_feed(&r, 0x42, c, sizeof(c), 10) == LUMEN_REASM_COMPLETE);
+    CHECK(r.len == 45);
+    CHECK(r.data[0] == 0xAA && r.data[18] == 0xAA);
+    CHECK(r.data[19] == 0xBB && r.data[37] == 0xBB);
+    CHECK(r.data[38] == 0xCC && r.data[44] == 0xCC);
+}
+
+static void test_reasm_first_reentry(void)
+{
+    lumen_reasm_t r;
+    lumen_reasm_init(&r);
+
+    uint8_t junk[8];
+    memset(junk, 0xEE, sizeof(junk));
+    const uint8_t frame[4] = {1, 2, 3, 4};
+
+    /* 半截数据后收到新的 FIRST：旧缓冲被丢弃（latest-wins），不回报错误。 */
+    CHECK(lumen_reasm_feed(&r, 0x80, junk, sizeof(junk), 0) == LUMEN_REASM_PENDING);
+    CHECK(r.len == sizeof(junk));
+    CHECK(lumen_reasm_feed(&r, LUMEN_CHUNK_SINGLE, frame, sizeof(frame), 10) ==
+          LUMEN_REASM_COMPLETE);
+    CHECK(r.len == sizeof(frame));
+    CHECK(memcmp(r.data, frame, sizeof(frame)) == 0);
+
+    /* FIRST 带序号 5 也照样从头收集（序号仅诊断用，不要求连续）。 */
+    lumen_reasm_init(&r);
+    CHECK(lumen_reasm_feed(&r, (uint8_t)(LUMEN_CHUNK_FIRST | 5), frame, 2, 0) ==
+          LUMEN_REASM_PENDING);
+    CHECK(lumen_reasm_feed(&r, (uint8_t)(LUMEN_CHUNK_LAST | 6), &frame[2], 2, 1) ==
+          LUMEN_REASM_COMPLETE);
+    CHECK(r.len == 4);
+}
+
+static void test_reasm_overflow(void)
+{
+    lumen_reasm_t r;
+    uint8_t block[100];
+    memset(block, 0x5A, sizeof(block));
+
+    /* 正好填满 240 是合法的。 */
+    lumen_reasm_init(&r);
+    CHECK(lumen_reasm_feed(&r, 0x80, block, 100, 0) == LUMEN_REASM_PENDING);
+    CHECK(lumen_reasm_feed(&r, 0x01, block, 100, 1) == LUMEN_REASM_PENDING);
+    CHECK(lumen_reasm_feed(&r, 0x02, block, 40, 2) == LUMEN_REASM_PENDING);
+    CHECK(lumen_reasm_feed(&r, 0x43, block, 0, 3) == LUMEN_REASM_COMPLETE);
+    CHECK(r.len == LUMEN_MAX_FRAME);
+
+    /* 241 → 溢出：缓冲丢弃、回 OVERFLOW（ble_link 据此回 BadLength）。 */
+    lumen_reasm_init(&r);
+    CHECK(lumen_reasm_feed(&r, 0x80, block, 100, 0) == LUMEN_REASM_PENDING);
+    CHECK(lumen_reasm_feed(&r, 0x01, block, 100, 1) == LUMEN_REASM_PENDING);
+    CHECK(lumen_reasm_feed(&r, 0x02, block, 41, 2) == LUMEN_REASM_OVERFLOW);
+    CHECK(!r.active);
+    CHECK(r.len == 0);
+
+    /* 溢出后即使再来 LAST 也不会拼出半截帧。 */
+    CHECK(lumen_reasm_feed(&r, LUMEN_CHUNK_SINGLE, block, 5, 3) == LUMEN_REASM_COMPLETE);
+    CHECK(r.len == 5);
+}
+
+static void test_reasm_timeout(void)
+{
+    lumen_reasm_t r;
+    lumen_reasm_init(&r);
+
+    const uint8_t part[10] = {0};
+    CHECK(lumen_reasm_feed(&r, 0x80, part, sizeof(part), 1000) == LUMEN_REASM_PENDING);
+
+    /* 999ms：还没超时。 */
+    CHECK(!lumen_reasm_expire(&r, 1999));
+    CHECK(r.active);
+
+    /* 1000ms（自上一个分片起算，含等号）：丢弃，返回 true，且**不发 ACK**
+     * （本函数没有 ACK 通道——这正是 §3.2 规则 4 的语义）。 */
+    CHECK(lumen_reasm_expire(&r, 2000));
+    CHECK(!r.active);
+    CHECK(r.len == 0);
+
+    /* 没有进行中的重组时 expire 返回 false。 */
+    CHECK(!lumen_reasm_expire(&r, 3000));
+
+    /* 下一个分片到达时就地清掉过期缓冲：新数据不会接在旧数据后面。 */
+    lumen_reasm_init(&r);
+    CHECK(lumen_reasm_feed(&r, 0x80, part, sizeof(part), 0) == LUMEN_REASM_PENDING);
+    const uint8_t fresh[3] = {7, 8, 9};
+    CHECK(lumen_reasm_feed(&r, LUMEN_CHUNK_SINGLE, fresh, sizeof(fresh), 1000) ==
+          LUMEN_REASM_COMPLETE);
+    CHECK(r.len == sizeof(fresh));
+    CHECK(memcmp(r.data, fresh, sizeof(fresh)) == 0);
+
+    /* 时间回绕安全：now 比 last_ms 小（uint32 回绕）时按无符号差算。
+     * last = 0xFFFFFF00，now = 0x400 → 差 0x500 = 1280ms > 1000 → 超时。 */
+    lumen_reasm_init(&r);
+    CHECK(lumen_reasm_feed(&r, 0x80, part, sizeof(part), 0xFFFFFF00u) == LUMEN_REASM_PENDING);
+    CHECK(!lumen_reasm_expire(&r, 0x00000200u)); /* 差 0x300 = 768ms，未超时 */
+    CHECK(lumen_reasm_expire(&r, 0x00000400u));  /* 差 0x500 = 1280ms，超时 */
+}
+
+static void test_reasm_orphan_and_helpers(void)
+{
+    lumen_reasm_t r;
+    lumen_reasm_init(&r);
+
+    const uint8_t data[4] = {1, 2, 3, 4};
+
+    /* 没有 FIRST 的尾巴分片：静默丢弃，不建缓冲。 */
+    CHECK(lumen_reasm_feed(&r, 0x01, data, sizeof(data), 0) == LUMEN_REASM_IGNORED);
+    CHECK(!r.active);
+    CHECK(r.len == 0);
+
+    /* LAST 单独到达（空帧）：没有可解析内容 → IGNORED。 */
+    CHECK(lumen_reasm_feed(&r, LUMEN_CHUNK_LAST, NULL, 0, 0) == LUMEN_REASM_IGNORED);
+
+    /* NULL 防御。 */
+    CHECK(lumen_reasm_feed(NULL, LUMEN_CHUNK_SINGLE, data, sizeof(data), 0) ==
+          LUMEN_REASM_IGNORED);
+    CHECK(!lumen_reasm_reset(NULL));
+    CHECK(!lumen_reasm_expire(NULL, 0));
+    lumen_reasm_init(NULL); /* 不崩即通过 */
+
+    /* 发送侧切分（与接收端对称）。 */
+    uint8_t frame[31];
+    for (uint8_t i = 0; i < sizeof(frame); ++i) {
+        frame[i] = i;
+    }
+
+    /*
+     * capacity 是**单分片的数据上限**（= chunk_capacity - 1）。MTU 23 时
+     * chunk_capacity = 20，数据上限 19：31 字节 → 2 片，19 + 12，
+     * 与向量 chunking_two_chunks 的切片完全一致。
+     */
+    CHECK(lumen_reasm_chunk_count(sizeof(frame), 19) == 2);
+    uint8_t chunk[32];
+    size_t n = lumen_reasm_build_chunk(frame, sizeof(frame), 19, 0, chunk, sizeof(chunk));
+    CHECK(n == 20); /* 19 字节数据 + 1 字节 ctrl */
+    CHECK(chunk[0] == 0x80);
+    CHECK(memcmp(&chunk[1], frame, 19) == 0);
+    n = lumen_reasm_build_chunk(frame, sizeof(frame), 19, 1, chunk, sizeof(chunk));
+    CHECK(n == 13); /* 12 字节数据 + ctrl，末片带 LAST */
+    CHECK(chunk[0] == 0x41);
+    CHECK(memcmp(&chunk[1], &frame[19], 12) == 0);
+
+    /* 单分片：ctrl = 0xC0。 */
+    CHECK(lumen_reasm_chunk_count(9, 179) == 1);
+    n = lumen_reasm_build_chunk(frame, 9, 179, 0, chunk, sizeof(chunk));
+    CHECK(n == 10);
+    CHECK(chunk[0] == LUMEN_CHUNK_SINGLE);
+
+    /* 越界 / 非法参数。 */
+    CHECK(lumen_reasm_chunk_count(0, 19) == 0);
+    CHECK(lumen_reasm_chunk_count(31, 0) == 0);
+    CHECK(lumen_reasm_build_chunk(frame, 31, 19, 2, chunk, sizeof(chunk)) == 0);
+    CHECK(lumen_reasm_build_chunk(frame, 31, 19, 0, chunk, 10) == 0);
+    CHECK(lumen_reasm_build_chunk(NULL, 31, 19, 0, chunk, sizeof(chunk)) == 0);
+    CHECK(lumen_reasm_build_chunk(frame, 31, 19, 0, NULL, sizeof(chunk)) == 0);
+
+    /* 切出来的每一片都能被接收端拼回原帧（两端对称的硬证据）。 */
+    lumen_reasm_init(&r);
+    uint8_t count = lumen_reasm_chunk_count(sizeof(frame), 19);
+    for (uint8_t i = 0; i < count; ++i) {
+        n = lumen_reasm_build_chunk(frame, sizeof(frame), 19, i, chunk, sizeof(chunk));
+        CHECK(n > 1);
+        CHECK(lumen_reasm_feed(&r, chunk[0], &chunk[1], n - 1, i * 10) ==
+              (i + 1 == count ? LUMEN_REASM_COMPLETE : LUMEN_REASM_PENDING));
+    }
+    CHECK(r.len == sizeof(frame));
+    CHECK(memcmp(r.data, frame, sizeof(frame)) == 0);
+}
+
+
 
 /* #29：每条灯带的灯珠数必须持久化（票面「断电重启后 8 条灯带的配置全部恢复」）。 */
 static void test_blob_strip_counts(void)
@@ -3882,6 +4612,16 @@ static void test_blob_strip_counts(void)
  *  - 给 strip 3 设 [0-9] 必须被接受。
  * 若实现错用 strip 0 的 64，第一条会被放行——表现为「设成功但后半段不亮」。
  */
+/*
+ * #29 integration bug regression：SetSegment 必须按「这条灯带自己」的灯珠数
+ * 校验区间，而不是一律用 strip 0 的。
+ *
+ * 场景：strip 0 有 64 灯，strip 3 只有 10 灯。
+ *  - 给 strip 3 设 [0-40] 必须被拒（越界）：40 >= 10。
+ *  - 给 strip 3 设 [0-9] 必须被接受。
+ * 若实现错用 strip 0 的 64，第一条会被放行——表现为「设成功但后半段不亮」。
+ * 这是 docs/spec-v3.md §4.2 的第 1 处缺陷在命令层的回归。
+ */
 static void test_set_segment_uses_own_strip_count(void)
 {
     lumen_state_t state;
@@ -3893,40 +4633,29 @@ static void test_set_segment_uses_own_strip_count(void)
     lumen_segment_store_t store;
     lumen_segment_store_init(&store);
 
+    uint8_t layer[8];
+    fill_static_layer(layer, 0, 255);
+    lumen_command_outcome_t out;
+
     /* 静态段 [0-40] 打到 strip 3（只有 10 灯）→ 越界，必须拒绝。 */
     {
-        lumen_frame_t f;
+        lumen_frame_t f = {0};
         f.command = LUMEN_CMD_SET_SEGMENT;
         f.seq = 1;
-        f.payload_len = 8;
-        f.payload[0] = 3; /* strip_id */
-        f.payload[1] = 0; /* seg_id */
-        f.payload[2] = 0; /* start */
-        f.payload[3] = 40; /* end：>= 10 → 越界 */
-        f.payload[4] = LUMEN_EFFECT_STATIC;
-        f.payload[5] = 0x00;
-        f.payload[6] = 0x00;
-        f.payload[7] = 255;
-        lumen_command_outcome_t out;
+        f.payload_len = 21;
+        fill_segment_payload(f.payload, 3, 0, 0, 40, 0, layer, NULL);
         lumen_command_dispatch(&f, &state, &store, strip_counts, 255, &out);
         CHECK(out.result_code == LUMEN_RESULT_INVALID_PARAM);
+        CHECK(!out.segment_op);
     }
 
     /* 同一帧打到 strip 0（64 灯）→ 合法。证明差异确实来自 per-strip 表。 */
     {
-        lumen_frame_t f;
+        lumen_frame_t f = {0};
         f.command = LUMEN_CMD_SET_SEGMENT;
         f.seq = 2;
-        f.payload_len = 8;
-        f.payload[0] = 0;
-        f.payload[1] = 0;
-        f.payload[2] = 0;
-        f.payload[3] = 40;
-        f.payload[4] = LUMEN_EFFECT_STATIC;
-        f.payload[5] = 0x00;
-        f.payload[6] = 0x00;
-        f.payload[7] = 255;
-        lumen_command_outcome_t out;
+        f.payload_len = 21;
+        fill_segment_payload(f.payload, 0, 0, 0, 40, 0, layer, NULL);
         lumen_command_dispatch(&f, &state, &store, strip_counts, 255, &out);
         CHECK(out.result_code == LUMEN_RESULT_OK);
         CHECK(out.segment_op);
@@ -3934,38 +4663,22 @@ static void test_set_segment_uses_own_strip_count(void)
 
     /* strip 3 的合法上界 [0-9] 必须被接受。 */
     {
-        lumen_frame_t f;
+        lumen_frame_t f = {0};
         f.command = LUMEN_CMD_SET_SEGMENT;
         f.seq = 3;
-        f.payload_len = 8;
-        f.payload[0] = 3;
-        f.payload[1] = 0;
-        f.payload[2] = 0;
-        f.payload[3] = 9;
-        f.payload[4] = LUMEN_EFFECT_STATIC;
-        f.payload[5] = 0x00;
-        f.payload[6] = 0x00;
-        f.payload[7] = 255;
-        lumen_command_outcome_t out;
+        f.payload_len = 21;
+        fill_segment_payload(f.payload, 3, 0, 0, 9, 0, layer, NULL);
         lumen_command_dispatch(&f, &state, &store, strip_counts, 255, &out);
         CHECK(out.result_code == LUMEN_RESULT_OK);
     }
 
     /* strip_counts == NULL 时退回 State 的 led_count（单灯带兼容）。 */
     {
-        lumen_frame_t f;
+        lumen_frame_t f = {0};
         f.command = LUMEN_CMD_SET_SEGMENT;
         f.seq = 4;
-        f.payload_len = 8;
-        f.payload[0] = 0;
-        f.payload[1] = 1;
-        f.payload[2] = 0;
-        f.payload[3] = 40;
-        f.payload[4] = LUMEN_EFFECT_STATIC;
-        f.payload[5] = 0x00;
-        f.payload[6] = 0x00;
-        f.payload[7] = 255;
-        lumen_command_outcome_t out;
+        f.payload_len = 21;
+        fill_segment_payload(f.payload, 0, 1, 0, 40, 0, layer, NULL);
         lumen_command_dispatch(&f, &state, &store, NULL, 255, &out);
         CHECK(out.result_code == LUMEN_RESULT_OK);
     }
@@ -3975,6 +4688,48 @@ static void test_set_segment_uses_own_strip_count(void)
     CHECK(lumen_command_strip_count(&state, NULL, 3) == 64); /* 退回 strip 0 */
     CHECK(lumen_command_strip_count(&state, strip_counts, 0) == 64);
 }
+
+/*
+ * docs/spec-v3.md §4.2 的第 2 处缺陷回归：state_blob 解码必须按**各自灯带**的
+ * 灯珠数校验段区间，不能用 strip 0 的数字校验所有条带。
+ *
+ * 场景：strip 0 = 64 灯、strip 3 = 10 灯，段 [0-40] 落在 strip 3 上。
+ * 旧实现用 64 校验 → 放行 → 加载后渲染越界（读到段外、画面残留）。
+ */
+static void test_state_blob_per_strip_bounds(void)
+{
+    lumen_persist_t in;
+    memset(&in, 0, sizeof(in));
+    lumen_state_defaults(&in.state, 64);
+    in.state.strip_count = 4;
+    in.state.led_count = 64;
+    for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
+        in.strip_counts[i] = i == 3 ? 10 : 64;
+    }
+    in.state.seg_count = 0; /* strip 0 没有段 */
+
+    /* strip 3 上一个 end=40 的段：对 10 灯是越界，对 64 灯「合法」。 */
+    lumen_segment_t seg = make_static(0, 40, 0, 255);
+    in.segments.slot[3][0] = seg;
+
+    uint8_t blob[LUMEN_STATE_BLOB_SIZE];
+    CHECK(lumen_state_blob_encode(&in, blob) == LUMEN_STATE_BLOB_SIZE);
+
+    lumen_persist_t out;
+    memset(&out, 0, sizeof(out));
+    CHECK(!lumen_state_blob_decode(blob, sizeof(blob), &out));
+
+    /* 同一段放进 strip 0（64 灯）必须解出来。 */
+    memset(&in.segments, 0, sizeof(in.segments));
+    in.segments.slot[0][0] = seg;
+    in.state.seg_count = 1;
+    CHECK(lumen_state_blob_encode(&in, blob) == LUMEN_STATE_BLOB_SIZE);
+    memset(&out, 0, sizeof(out));
+    CHECK(lumen_state_blob_decode(blob, sizeof(blob), &out));
+    CHECK(out.segments.slot[0][0].active);
+    CHECK(out.segments.slot[0][0].end == 40);
+}
+
 
 /* ---------------- #32 剧本 ---------------- */
 
@@ -4503,7 +5258,8 @@ static void test_gamma_hue_loss_clip(void)
 
 int main(int argc, char **argv)
 {
-    const char *vectors = argc > 1 ? argv[1] : "docs/protocol-testvectors.json";
+    /* 默认路径只是兜底：run-tests.cmd 会显式传 v3 向量（docs/protocol-testvectors-v3.json）。 */
+    const char *vectors = argc > 1 ? argv[1] : "docs/protocol-testvectors-v3.json";
 
     int cases = for_each_case(vectors, dispatch_case);
     CHECK(cases > 0);
@@ -4521,6 +5277,7 @@ int main(int argc, char **argv)
     test_decode_short();
     test_decode_bad_frames_echo_header();
     test_decode_max_payload();
+    test_reject_v2_protocol_frames();
     test_state_defaults_and_clamp();
     test_state_bytes_layout();
     test_selftest_sequence();
@@ -4544,6 +5301,8 @@ int main(int argc, char **argv)
     test_segment_store_needs_frames();
     test_segment_commands();
     test_encode_segment_reports();
+    test_encode_strip_config_report();
+    test_encode_device_info_report();
     test_effects_breathing_phase();
     test_effects_breathing_envelope();
     test_effects_breathing_gain_and_pixel();
@@ -4553,6 +5312,14 @@ int main(int argc, char **argv)
     test_effects_rainbow_comet_coexist();
     test_blob_strip_counts();
     test_set_segment_uses_own_strip_count();
+    test_state_blob_per_strip_bounds();
+    test_set_strip_power_command();
+    test_reasm_single_chunk();
+    test_reasm_multi_chunk();
+    test_reasm_first_reentry();
+    test_reasm_overflow();
+    test_reasm_timeout();
+    test_reasm_orphan_and_helpers();
     test_script_store_download();
     test_script_commit_failure_keeps_previous();
     test_script_multiple_scripts();

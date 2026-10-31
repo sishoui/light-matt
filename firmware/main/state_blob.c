@@ -143,6 +143,14 @@ bool lumen_state_blob_decode(const uint8_t *blob, size_t len, lumen_persist_t *o
     decoded.state.stage_index = 0;
     decoded.state.playback_state = 0;
     decoded.state.flags = 0;
+    /*
+     * v3 blob 不持久化两个掩码（docs/protocol-v3.md §10.2 的 v4 才带
+     * strip_power_mask）。当前布局下按协议默认值恢复「全部打开」，
+     * 否则会解出 strip_power_mask = 0 —— #38 接上渲染门控后，那等于
+     * 重启后所有灯带都不出光。strip_anim_mask 是每帧重算的摘要，恒 0。
+     */
+    decoded.state.strip_power_mask = 0xFF;
+    decoded.state.strip_anim_mask = 0x00;
 
     /* 每条灯带的灯珠数（#29）。越界视为损坏，不「尽量解析」。 */
     for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
@@ -161,6 +169,18 @@ bool lumen_state_blob_decode(const uint8_t *blob, size_t len, lumen_persist_t *o
     const uint8_t *p = &blob[LUMEN_SEGMENTS_OFFSET];
     uint8_t active_counts[LUMEN_MAX_STRIPS] = {0};
     for (uint8_t strip = 0; strip < LUMEN_MAX_STRIPS; ++strip) {
+        /*
+         * spec-v3 §4.2 第 2 处缺陷：这里过去一律用 strip 0 的 led_count 校验
+         * **所有**灯带的段区间。多灯带下 strip 3 只有 10 灯、strip 0 有 64 灯时，
+         * 一份 [0-40] 打到 strip 3 的 blob 会被放行，加载后渲染越界。改为按各自
+         * 灯带的灯珠数校验。
+         */
+        uint16_t strip_leds = decoded.strip_counts[strip];
+        if (strip_leds == 0 || strip_leds > LUMEN_MAX_LEDS) {
+            /* 未配置的条（i >= strip_count）在磁盘上是 0；用它只能兜底到上限，
+             * 但下面 `strip >= strip_count` 已先拒掉所有落在其上的活动段。 */
+            strip_leds = LUMEN_MAX_LEDS;
+        }
         for (uint8_t slot = 0; slot < LUMEN_MAX_SEGMENTS; ++slot) {
             lumen_segment_t *seg = &decoded.segments.slot[strip][slot];
             decode_segment(p, seg);
@@ -173,7 +193,7 @@ bool lumen_state_blob_decode(const uint8_t *blob, size_t len, lumen_persist_t *o
             if (!lumen_effect_type_known(seg->type)) {
                 return false;
             }
-            if (seg->start > seg->end || seg->end >= led_count) {
+            if (seg->start > seg->end || seg->end >= strip_leds) {
                 return false;
             }
             if (seg->type == LUMEN_EFFECT_STATIC && seg->flags != 0) {

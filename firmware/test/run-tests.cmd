@@ -7,12 +7,13 @@ REM OEM code page, so UTF-8 comments get mangled into bogus commands.
 
 set "MAIN=%~dp0..\main"
 set "OUT=%TEMP%\lumen-host-tests"
-set "VECTORS=%~dp0..\..\docs\protocol-testvectors.json"
+set "VECTORS=%~dp0..\..\docs\protocol-testvectors-v3.json"
 if not exist "%OUT%" mkdir "%OUT%"
 
 gcc -std=c11 -Wall -Wextra -Werror -I"%MAIN%" ^
     "%~dp0test_skeleton.c" ^
     "%MAIN%\protocol.c" ^
+    "%MAIN%\chunk_reasm.c" ^
     "%MAIN%\command.c" ^
     "%MAIN%\effects.c" ^
     "%MAIN%\segment_store.c" ^
