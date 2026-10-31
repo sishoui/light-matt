@@ -37,6 +37,7 @@
 #include "state.h"
 #include "state_blob.h"
 #include "strip_planar.h"
+#include "strip_power.h"
 
 static int g_checks;
 static int g_failures;
@@ -4257,6 +4258,283 @@ static void test_planar_null_safety(void)
     CHECK(lumen_planar_get(NULL, 0) == NULL);
 }
 
+/* ---------------- #38：每带独立开关 / 动画位 / TDM 跳过 ---------------- */
+
+/*
+ * 出光门控真值表（docs/protocol-v3.md §7.3 / §9.5 / §9.7）：
+ *   实际出光 = 全局 power && 该带掩码位；自检期间忽略每带开关。
+ *
+ * 这是单灯带路径（compose_frame）与 TDM 路径共用的唯一判据，所以在纯函数层
+ * 把 8 种组合全部钉死，而不是在渲染层靠肉眼检查。
+ */
+static void test_strip_mask_allows(void)
+{
+    lumen_state_t state;
+    lumen_state_defaults(&state, 30);
+    state.strip_count = 4;
+
+    /* 默认全开：power=0 → 一律不出光（总闸优先于每带开关）。 */
+    CHECK(state.strip_power_mask == 0xFF);
+    CHECK(!lumen_strip_mask_allows(&state, 0, false));
+    CHECK(!lumen_strip_mask_allows(&state, 3, false));
+
+    /* 总闸打开 + 掩码全开 → 四条都出光。 */
+    state.power = 1;
+    for (uint8_t i = 0; i < 4; ++i) {
+        CHECK(lumen_strip_mask_allows(&state, i, false));
+    }
+
+    /* 关 strip 2：只有它不出光，其余不受影响。 */
+    state.strip_power_mask = 0x0B; /* 1011 */
+    CHECK(lumen_strip_mask_allows(&state, 0, false));
+    CHECK(lumen_strip_mask_allows(&state, 1, false));
+    CHECK(!lumen_strip_mask_allows(&state, 2, false));
+    CHECK(lumen_strip_mask_allows(&state, 3, false));
+
+    /* 自检忽略每带开关（§9.7）：power=0、掩码=0 也必须全部点亮。 */
+    state.power = 0;
+    state.strip_power_mask = 0x00;
+    for (uint8_t i = 0; i < 4; ++i) {
+        CHECK(lumen_strip_mask_allows(&state, i, true));
+    }
+    /* 自检只看合法 strip_id：越界仍然 false（不能读到别的内存）。 */
+    CHECK(!lumen_strip_mask_allows(&state, 8, true));
+
+    /* NULL / 越界防御。 */
+    CHECK(!lumen_strip_mask_allows(NULL, 0, false));
+    CHECK(!lumen_strip_mask_allows(NULL, 0, true));
+    state.power = 1;
+    state.strip_power_mask = 0xFF;
+    CHECK(!lumen_strip_mask_allows(&state, LUMEN_MAX_STRIPS, false));
+
+    /* 掩码算术：置位 / 清位，越界不动。 */
+    CHECK(lumen_strip_power_set_mask(0x00, 2, true) == 0x04);
+    CHECK(lumen_strip_power_set_mask(0xFF, 2, false) == 0xFB);
+    CHECK(lumen_strip_power_set_mask(0xFF, 2, true) == 0xFF);
+    CHECK(lumen_strip_power_set_mask(0x0F, 8, true) == 0x0F); /* 越界原样返回 */
+    CHECK(lumen_strip_power_set_mask(0x0F, 8, false) == 0x0F);
+}
+
+/*
+ * 全局 SetPower(0) 只关总闸，**不改** strip_power_mask（§9.5）。
+ * 关灯再开灯必须回到各带原来的开关状态。
+ */
+static void test_global_power_leaves_strip_mask(void)
+{
+    lumen_state_t state;
+    lumen_state_defaults(&state, 30);
+    state.strip_count = 4;
+    state.power = 1;
+    state.strip_power_mask = 0x0B; /* strip 2 关着 */
+
+    lumen_command_outcome_t outcome;
+    lumen_frame_t frame = {0};
+    frame.command = LUMEN_CMD_SET_POWER;
+    frame.payload_len = 1;
+
+    frame.payload[0] = 0;
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(outcome.state_changed);
+    CHECK(outcome.next.power == 0);
+    /* 总闸不改掩码：各带自己的开关状态原样保留。 */
+    CHECK(outcome.next.strip_power_mask == 0x0B);
+
+    /* 再开回来：掩码仍是 0x0B，strip 2 依旧关着。 */
+    state.power = 0;
+    frame.payload[0] = 1;
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(outcome.next.power == 1);
+    CHECK(outcome.next.strip_power_mask == 0x0B);
+
+    /* 门控复核：总闸开 + 掩码 0x0B ⇒ strip 2 依然不出光。 */
+    CHECK(lumen_strip_mask_allows(&outcome.next, 0, false));
+    CHECK(!lumen_strip_mask_allows(&outcome.next, 2, false));
+}
+
+/*
+ * strip_anim_mask 的三种状态（§7.3）：静态段 / 动画段 / 无段。
+ * 每条带只关心「有没有动画类活动段」，与段的槽位、数量、其它带无关。
+ */
+static void test_strip_anim_mask(void)
+{
+    lumen_segment_store_t store;
+    lumen_segment_store_init(&store);
+
+    /* 无段：全 0。 */
+    CHECK(lumen_strip_anim_mask(&store, 4) == 0x00);
+    CHECK(lumen_strip_anim_mask(NULL, 4) == 0x00);
+
+    /* 只有静态段：仍然全 0（静态不产生动画位）。 */
+    store.slot[0][0] = make_static(0, 9, 0, 255);
+    store.slot[2][3] = make_static(5, 9, 0, 255);
+    CHECK(lumen_strip_anim_mask(&store, 4) == 0x00);
+
+    /* strip 1 加一个动画段 → bit1。 */
+    store.slot[1][0] = make_animated(LUMEN_EFFECT_BREATHING, 0, 9, 0, 255, 1000, 0, 0, 0);
+    CHECK(lumen_strip_anim_mask(&store, 4) == 0x02);
+
+    /* strip 3 再加一个 → bit1 | bit3；strip 0/2 仍只有静态段。 */
+    store.slot[3][7] = make_animated(LUMEN_EFFECT_RAINBOW, 0, 9, 0, 255, 500, 0, 0, 0);
+    CHECK(lumen_strip_anim_mask(&store, 4) == 0x0A);
+
+    /* 一条带多个动画段也只占一位。 */
+    store.slot[1][1] = make_animated(LUMEN_EFFECT_COMET, 0, 9, 0, 255, 500, 0, 0, 0);
+    CHECK(lumen_strip_anim_mask(&store, 4) == 0x0A);
+
+    /* strip_count 之外的带不参与（strip 3 在 strip_count=3 时不置位）。 */
+    CHECK(lumen_strip_anim_mask(&store, 3) == 0x02);
+
+    /* 清掉动画段 → 位跟着消失。 */
+    store.slot[1][0].active = false;
+    store.slot[1][1].active = false;
+    CHECK(lumen_strip_anim_mask(&store, 4) == 0x08);
+
+    /* 8 条带全动画 → 0xFF。 */
+    for (uint8_t s = 0; s < LUMEN_MAX_STRIPS; ++s) {
+        store.slot[s][0] = make_animated(LUMEN_EFFECT_BREATHING, 0, 9, 0, 255, 1000, 0, 0, 0);
+    }
+    CHECK(lumen_strip_anim_mask(&store, LUMEN_MAX_STRIPS) == 0xFF);
+    /* strip_count = 0 视为「全部」（与 segment_store_needs_frames 同口径）。 */
+    CHECK(lumen_strip_anim_mask(&store, 0) == 0xFF);
+}
+
+/*
+ * TDM 跳过决策真值表（§9.5）。四象限：
+ *   持续出光 → PUSH；刚关 → 推黑再跳过；一直黑 → 直接跳过；刚开 → 强制推送。
+ */
+static void test_strip_tdm_plan(void)
+{
+    /* 一直在：正常推（允许去重）。 */
+    CHECK(lumen_strip_tdm_plan(true, true) == LUMEN_STRIP_TDM_PUSH);
+    /* 刚被打开：必须绕过去重，否则上一帧黑帧会被当成「没变化」吞掉。 */
+    CHECK(lumen_strip_tdm_plan(true, false) == LUMEN_STRIP_TDM_REENABLE);
+    /* 刚被关掉：先推一帧全黑（WS2812B 锁存旧画面）。 */
+    CHECK(lumen_strip_tdm_plan(false, true) == LUMEN_STRIP_TDM_BLACK_THEN_SKIP);
+    /* 一直是黑：直接跳过，省一整帧 RMT —— 这就是关带缩短轮周期的来源。 */
+    CHECK(lumen_strip_tdm_plan(false, false) == LUMEN_STRIP_TDM_SKIP);
+}
+
+/*
+ * 不同灯珠数的每带区间校验（票面 30/60/10）。命令层必须按各自带的上限
+ * 判定，否则短带会「设成功但后半段不亮」。
+ */
+static void test_per_strip_led_counts_30_60_10(void)
+{
+    lumen_state_t state;
+    lumen_state_defaults(&state, 30);
+    state.strip_count = 3;
+    state.led_count = 30; /* strip 0 */
+
+    uint16_t counts[LUMEN_MAX_STRIPS] = {30, 60, 10, 0, 0, 0, 0, 0};
+    lumen_segment_store_t store;
+    lumen_segment_store_init(&store);
+
+    uint8_t layer[8];
+    fill_static_layer(layer, 0, 255);
+    lumen_command_outcome_t out;
+
+    struct {
+        uint8_t strip;
+        uint8_t start;
+        uint8_t end;
+        uint8_t expect_ok;
+    } cases[] = {
+        {0, 0, 29, 1},  /* 30 灯：上界 29 合法 */
+        {0, 0, 30, 0},  /* 30 灯：30 越界 */
+        {1, 0, 59, 1},  /* 60 灯：59 合法 */
+        {1, 0, 60, 0},  /* 60 灯：60 越界 */
+        {1, 0, 30, 1},  /* 60 灯也能装下 30 灯的区间 */
+        {2, 0, 9, 1},   /* 10 灯：9 合法 */
+        {2, 0, 10, 0},  /* 10 灯：10 越界 */
+        {2, 0, 29, 0},  /* 30 灯的数字对 10 灯必须越界 */
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        lumen_segment_store_init(&store);
+        lumen_frame_t f = {0};
+        f.command = LUMEN_CMD_SET_SEGMENT;
+        f.seq = (uint8_t)(i + 1);
+        f.payload_len = 21;
+        fill_segment_payload(f.payload, cases[i].strip, 0, cases[i].start, cases[i].end, 0, layer,
+                             NULL);
+        lumen_command_dispatch(&f, &state, &store, counts, 255, &out);
+        if (cases[i].expect_ok) {
+            CHECK(out.result_code == LUMEN_RESULT_OK);
+            CHECK(out.segment_op);
+        } else {
+            CHECK(out.result_code == LUMEN_RESULT_INVALID_PARAM);
+            CHECK(!out.segment_op);
+        }
+    }
+
+    /* helper 取到的就是各自带的数字。 */
+    CHECK(lumen_command_strip_count(&state, counts, 0) == 30);
+    CHECK(lumen_command_strip_count(&state, counts, 1) == 60);
+    CHECK(lumen_command_strip_count(&state, counts, 2) == 10);
+}
+
+/*
+ * 8 条带边界下的 SetStripPower 校验：strip_id ∈ [0, strip_count) 且
+ * strip_id < LUMEN_MAX_STRIPS，on ∈ {0,1}。多带场景的最后一格最容易被
+ * 「<=」写错成放行 8。
+ */
+static void test_set_strip_power_validation_edges(void)
+{
+    lumen_state_t state;
+    lumen_state_defaults(&state, 30);
+    state.strip_count = 8;
+
+    lumen_command_outcome_t out;
+    lumen_frame_t f = {0};
+    f.command = LUMEN_CMD_SET_STRIP_POWER;
+    f.payload_len = 2;
+
+    /* 上界 7 合法。 */
+    f.payload[0] = 7;
+    f.payload[1] = 0;
+    lumen_command_dispatch(&f, &state, NULL, NULL, 255, &out);
+    CHECK(out.result_code == LUMEN_RESULT_OK);
+    CHECK(out.strip_power_op);
+    CHECK(out.strip_power_strip == 7);
+
+    /* 8 越界：既不是已分配灯带，也超出 LUMEN_MAX_STRIPS。 */
+    f.payload[0] = 8;
+    lumen_command_dispatch(&f, &state, NULL, NULL, 255, &out);
+    CHECK(out.result_code == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(!out.strip_power_op);
+    /* 0xFF 这类脏值同样拒绝，不能按位运算误命中。 */
+    f.payload[0] = 0xFF;
+    lumen_command_dispatch(&f, &state, NULL, NULL, 255, &out);
+    CHECK(out.result_code == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(!out.strip_power_op);
+
+    /* on 只有 0 / 1；0xFF 不能当「开」。 */
+    f.payload[0] = 0;
+    for (uint8_t on = 2; on <= 0xFF; ++on) {
+        f.payload[1] = on;
+        lumen_command_dispatch(&f, &state, NULL, NULL, 255, &out);
+        if (out.result_code != LUMEN_RESULT_INVALID_PARAM || out.strip_power_op) {
+            CHECK(false);
+            break;
+        }
+        if (on == 0xFF) {
+            break; /* uint8_t 回绕，显式停在 0xFF */
+        }
+    }
+    CHECK(out.result_code == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(!out.strip_power_op);
+
+    /* 掩码写入是纯算术：8 条全开 → 关 0/3/7 → 重开 3。 */
+    uint8_t mask = 0xFF;
+    mask = lumen_strip_power_set_mask(mask, 0, false);
+    mask = lumen_strip_power_set_mask(mask, 3, false);
+    mask = lumen_strip_power_set_mask(mask, 7, false);
+    CHECK(mask == 0x76); /* 0111 0110 */
+    mask = lumen_strip_power_set_mask(mask, 3, true);
+    CHECK(mask == 0x7E); /* 0111 1110 */
+}
+
 /* ---------------- #36：SetStripPower / 分片重组 ---------------- */
 
 /*
@@ -5314,6 +5592,12 @@ int main(int argc, char **argv)
     test_set_segment_uses_own_strip_count();
     test_state_blob_per_strip_bounds();
     test_set_strip_power_command();
+    test_set_strip_power_validation_edges();
+    test_strip_mask_allows();
+    test_global_power_leaves_strip_mask();
+    test_strip_anim_mask();
+    test_strip_tdm_plan();
+    test_per_strip_led_counts_30_60_10();
     test_reasm_single_chunk();
     test_reasm_multi_chunk();
     test_reasm_first_reentry();

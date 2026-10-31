@@ -20,6 +20,7 @@ gcc -std=c11 -Wall -Wextra -Werror -I"%MAIN%" ^
     "%MAIN%\script_store.c" ^
     "%MAIN%\script_blob.c" ^
     "%MAIN%\strip_planar.c" ^
+    "%MAIN%\strip_power.c" ^
     "%MAIN%\state.c" ^
     "%MAIN%\gamma.c" ^
     "%MAIN%\selftest.c" ^

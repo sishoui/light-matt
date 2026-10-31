@@ -8,6 +8,7 @@
 
 #include "gamma.h"
 #include "led_strip_owner.h"
+#include "strip_power.h"
 
 static const char *TAG = "lumen_engine";
 
@@ -100,6 +101,19 @@ static uint16_t compose_frame(const lumen_state_t *snapshot,
     bool selftest_on = selftest != NULL && lumen_selftest_active(selftest);
     bool segmented = !selftest_on && segments != NULL &&
                      lumen_segment_store_any_active(segments, strip_id) && snapshot->power != 0;
+
+    /*
+     * 每带独立开关的门控（#38，§7.3 / §9.5）：实际是否出光 = 全局 power &&
+     * 该带掩码位；自检期间忽略每带开关（全部点亮，§9.7）。
+     *
+     * 门控在这里而不是调用方：单灯带路径（strip_count == 1）没有 TDM 可跳过，
+     * 只有这一处能保证「关掉的带」真的不亮。被判为不出光时整帧清零
+     * （包括尾部的空灯珠），调用方照常推送/比较，不会再出现残影。
+     */
+    if (!lumen_strip_mask_allows(snapshot, strip_id, selftest_on)) {
+        memset(frame, 0, (size_t)count * 3u);
+        return count;
+    }
 
     if (segmented) {
         /* ① compose 内部先 memset(buf, 0, count*3)：未覆盖的灯珠必须是 0。 */

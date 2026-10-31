@@ -9,6 +9,7 @@ idf_component_register(
         "script_store.c"
         "script_blob.c"
         "strip_planar.c"
+        "strip_power.c"
         "led_engine.c"
         "led_render.c"
         "led_stress.c"
