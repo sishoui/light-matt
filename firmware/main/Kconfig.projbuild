@@ -153,14 +153,16 @@ menu "Lumen"
 
     config LUMEN_STORE_TASK_STACK_SIZE
         int "存储任务栈大小（字节）"
-        default 4096
-        range 2048 8192
+        default 5120
+        range 3072 8192
         help
             存储任务做 NVS blob 编码与 commit。
 
-            v2 blob 含段表（约 719 字节）与剧本表，编码时会在栈上放一份
-            lumen_persist_t（≈ 1060 字节）。3 KB 太紧，4 KB 留出余量。
-            NVS 写还要求一个略大的栈做 cache 关闭期间的工作，不要压到 2 KB。
+            v4 blob 的段记录是 20 字节（两层），所以编码时栈上同时有
+            lumen_persist_t（8×8 段 × 24 + 状态 ≈ 1.6 KB）与 1312 字节的
+            blob 缓冲，合计约 2.9 KB，再加 NVS 在 cache 关闭期间的工作量。
+            v2/v3 时约 1.8 KB / 4 KB；#37 的两层结构把这里推高，默认改为
+            5120。不要压回 2 KB。
 
     config LUMEN_STORE_TASK_PRIORITY
         int "存储任务优先级"

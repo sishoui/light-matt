@@ -36,7 +36,17 @@ typedef struct {
     lumen_segment_t segments[LUMEN_MAX_STRIPS][LUMEN_MAX_SEGMENTS];
 } lumen_script_stage_t;
 
-/* 一套已提交（或正在暂存）的剧本。 */
+/* 一套已提交（或正在暂存）的剧本。
+ *
+ * RAM（#37 记录）：段体积从 16 涨到 24 字节后，
+ *   sizeof(lumen_script_stage_t) = 8 灯带 × 8 段 × 24 + 2 ≈ 1538 字节
+ *   sizeof(lumen_script_t)       = 8 阶段 × 1538 + 3 ≈ 12.3 KB
+ *   sizeof(lumen_script_store_t) = 5 套（4 committed + 1 staging）× 12.3 KB
+ *                                ≈ 61.5 KB（v2 约 41 KB）
+ * 其中约 49 KB 是静态区（led_engine 的 s_scripts），另有 8 灯带 × 8 段 × 24
+ * ≈ 1536 字节的阶段渲染快照。C3 的 ~400KB SRAM 要与 NimBLE 共用，这个增量在
+ * #39 引入 16KB 剧本 blob 缓冲前需要复核（firmware.md §8 的 RAM risk）。
+ */
 typedef struct {
     bool committed;   /* 已提交才可激活 / 播放 */
     uint8_t stage_count; /* 1-8 */

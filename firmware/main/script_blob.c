@@ -2,19 +2,33 @@
 
 #include <string.h>
 
-/* 写一个段记录（10 字节）。t0_ms 不持久化。 */
+/*
+ * 剧本 blob 仍停留在 v1 的**单层**记录（docs/protocol-v3.md §10.3 的 v2 是 #39）。
+ *
+ * #37 的段结构已经是两层，但 blob 格式的升级（LMS3 / version 2 / 变长记录 /
+ * 容量 16384）属于 #39。为了让本票不产生数据损坏，这里的策略是**显式降级**：
+ *   - 写：只持久化 layer[0] 与段几何；layer[1] 与 blend **不写**（记录形状不变，
+ *     仍是 10 字节，旧固件也能读）；
+ *   - 读：layer[1] 置为空层、blend 置 0——即「单层段」。
+ * 也就是说：两层剧本在掉电重启后会退回单层（layer0 保留），不会写出一个
+ * 自相矛盾或越界的 blob，也不会把 layer1 的字节当成 layer0 的参数。
+ *
+ * **#39 必须把这里换成双层变长记录**，否则用户的两层剧本重启即丢失上层。
+ */
+/* 写一个段记录（10 字节）：start, end, type, layer0.param[0..6]。t0_ms 不持久化。 */
 static void encode_segment(const lumen_segment_t *seg, uint8_t *out)
 {
+    const uint8_t *param = seg->layer[0].param;
     out[0] = seg->start;
     out[1] = seg->end;
-    out[2] = seg->type;
-    out[3] = (uint8_t)(seg->hue & 0xFF);
-    out[4] = (uint8_t)(seg->hue >> 8);
-    out[5] = seg->sat;
-    out[6] = (uint8_t)(seg->period_ms & 0xFF);
-    out[7] = (uint8_t)(seg->period_ms >> 8);
-    out[8] = seg->p5;
-    out[9] = seg->flags;
+    out[2] = seg->layer[0].type;
+    out[3] = param[0];
+    out[4] = param[1];
+    out[5] = param[2];
+    out[6] = param[3];
+    out[7] = param[4];
+    out[8] = param[5];
+    out[9] = param[6];
 }
 
 static void decode_segment(const uint8_t *in, lumen_segment_t *seg)
@@ -23,12 +37,13 @@ static void decode_segment(const uint8_t *in, lumen_segment_t *seg)
     seg->active = true;
     seg->start = in[0];
     seg->end = in[1];
-    seg->type = in[2];
-    seg->hue = (uint16_t)(in[3] | ((uint16_t)in[4] << 8));
-    seg->sat = in[5];
-    seg->period_ms = (uint16_t)(in[6] | ((uint16_t)in[7] << 8));
-    seg->p5 = in[8];
-    seg->flags = in[9];
+    seg->layer[0].type = in[2];
+    for (size_t i = 0; i < sizeof(seg->layer[0].param); ++i) {
+        seg->layer[0].param[i] = in[3 + i];
+    }
+    /* #39：layer1 / blend 尚未持久化，读出即单层段（见文件头的降级说明）。 */
+    seg->layer[1].type = LUMEN_LAYER_EMPTY;
+    seg->blend = 0;
     /* t0_ms 不持久化：阶段相位在切换/加载时由引擎统一重置。 */
     seg->t0_ms = 0;
 }

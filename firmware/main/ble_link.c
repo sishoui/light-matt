@@ -243,10 +243,8 @@ static void reject_oversized(const struct os_mbuf *om, uint16_t mbuf_len)
  * SegmentReport 载荷固定 21 字节，与 §7.1 的 SetSegment 同构：
  *   strip_id, seg_id(真实槽位), start, end, blend, layer0(8), layer1(8)
  *
- * #36 段表还是 v2 的平铺结构（没有 blend / layer1）：
- *   - 现有单层数据映射进 layer0；
- *   - layer1 固定为空层（0xFF + 7 个 0），blend 固定 0。
- * #37 的两层结构落地后，这一段换成真实的 layer1 / blend。
+ * #37：段就是两层结构，layer0 / layer1 / blend 直接编码上报（与持久化记录
+ * 的层编码完全一致，用 lumen_layer_encode 而不是在这里手抄一遍字段）。
  */
 static void send_strip_reports(uint8_t seq, uint8_t strip_id)
 {
@@ -259,25 +257,19 @@ static void send_strip_reports(uint8_t seq, uint8_t strip_id)
     uint8_t sent = 0;
     for (uint8_t i = 0; i < count; ++i) {
         const lumen_segment_t *seg = &segments[i];
-        uint8_t param_len = lumen_effect_param_len(seg->type);
-        if (param_len == 0) {
-            continue; /* 未知类型不回报（不该出现在权威段表里） */
+        /* layer0.type 未知说明段表已被写坏；不回报（权威段表不该出现）。 */
+        if (!lumen_effect_type_known(seg->layer[0].type)) {
+            continue;
         }
-        /* layer0：type + 参数右对齐填满 7 字节，未用字节必须为 0（§7.1）。 */
-        uint8_t layer0[8] = {0};
-        layer0[0] = seg->type;
-        layer0[1] = (uint8_t)(seg->hue & 0xFF);
-        layer0[2] = (uint8_t)(seg->hue >> 8);
-        layer0[3] = seg->sat;
-        if (param_len > 3) {
-            layer0[4] = (uint8_t)(seg->period_ms & 0xFF);
-            layer0[5] = (uint8_t)(seg->period_ms >> 8);
-            layer0[6] = seg->p5;
-            layer0[7] = seg->flags;
-        }
+        /* 层编码：type + param[7]，未用字节由 param 原样给出（§7.1 定宽）。 */
+        uint8_t layer0[8];
+        uint8_t layer1[8];
+        lumen_layer_encode(&seg->layer[0], layer0);
+        lumen_layer_encode(&seg->layer[1], layer1);
+
         size_t len = lumen_protocol_encode_segment_report(seq, strip_id, slots[i], seg->start,
-                                                          seg->end, 0, layer0, NULL, frame,
-                                                          sizeof(frame));
+                                                          seg->end, seg->blend, layer0, layer1,
+                                                          frame, sizeof(frame));
         if (len == 0 || lumen_ble_link_notify(frame, len) != ESP_OK) {
             ESP_LOGW(TAG, "SegmentReport 发送失败 strip=%u seg=%u", strip_id, slots[i]);
             continue;
@@ -426,8 +418,8 @@ static void handle_frame(const uint8_t *data, size_t len)
 
     /*
      * 段配置快照只给段命令用：0x10 / 0x11 / 0x12。
-     * 1KB 拷贝放在栈上会吃掉主机任务的栈余量，所以用静态缓冲——RX 回调
-     * 在 NimBLE 主机任务里串行执行，不存在并发进入。
+     * 1.5KB 拷贝（#37 两层结构：8×8×24）放在栈上会吃掉主机任务的栈余量，
+     * 所以用静态缓冲——RX 回调在 NimBLE 主机任务里串行执行，不存在并发进入。
      */
     static lumen_segment_store_t s_segment_scratch;
     const lumen_segment_store_t *segments = NULL;

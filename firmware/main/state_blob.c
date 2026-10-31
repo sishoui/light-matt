@@ -12,22 +12,18 @@ static const uint8_t s_blob_magic[4] = {'L', 'M', 'E', 'N'};
 #define BLOB_OFF_R 8
 #define BLOB_OFF_LED_COUNT 11
 #define BLOB_OFF_STRIP_COUNT 13
-#define BLOB_OFF_SEG_COUNT 14
-/* 每条灯带的灯珠数表与段表偏移统一取自 state_blob.h，避免两处各写一份。 */
+#define BLOB_OFF_STRIP_POWER_MASK 14
+/* 灯珠数表 / seg_count / 段表偏移统一取自 state_blob.h，避免两处各写一份。 */
 
 static void encode_segment(const lumen_segment_t *seg, uint8_t *out)
 {
     out[0] = seg->active ? 1 : 0;
     out[1] = seg->start;
     out[2] = seg->end;
-    out[3] = seg->type;
-    out[4] = (uint8_t)(seg->hue & 0xFF);
-    out[5] = (uint8_t)(seg->hue >> 8);
-    out[6] = seg->sat;
-    out[7] = (uint8_t)(seg->period_ms & 0xFF);
-    out[8] = (uint8_t)(seg->period_ms >> 8);
-    out[9] = seg->p5;
-    out[10] = seg->flags;
+    out[3] = seg->blend;
+    /* 层编码与 §7.1 的 8 字节线格式完全一致（type + param[7]）。 */
+    lumen_layer_encode(&seg->layer[0], &out[4]);
+    lumen_layer_encode(&seg->layer[1], &out[12]);
 }
 
 static void decode_segment(const uint8_t *in, lumen_segment_t *seg)
@@ -36,12 +32,9 @@ static void decode_segment(const uint8_t *in, lumen_segment_t *seg)
     seg->active = in[0] != 0;
     seg->start = in[1];
     seg->end = in[2];
-    seg->type = in[3];
-    seg->hue = (uint16_t)(in[4] | ((uint16_t)in[5] << 8));
-    seg->sat = in[6];
-    seg->period_ms = (uint16_t)(in[7] | ((uint16_t)in[8] << 8));
-    seg->p5 = in[9];
-    seg->flags = in[10];
+    seg->blend = in[3];
+    (void)lumen_layer_decode(&in[4], &seg->layer[0]);
+    (void)lumen_layer_decode(&in[12], &seg->layer[1]);
     /* t0_ms 不持久化：加载后由引擎统一设为当前时刻（v2-effects-engine §7.3）。 */
     seg->t0_ms = 0;
 }
@@ -66,7 +59,8 @@ size_t lumen_state_blob_encode(const lumen_persist_t *state,
     out[BLOB_OFF_LED_COUNT] = (uint8_t)(s->led_count & 0xFF);
     out[BLOB_OFF_LED_COUNT + 1] = (uint8_t)(s->led_count >> 8);
     out[BLOB_OFF_STRIP_COUNT] = s->strip_count;
-    out[BLOB_OFF_SEG_COUNT] = s->seg_count;
+    out[BLOB_OFF_STRIP_POWER_MASK] = s->strip_power_mask;
+    out[LUMEN_SEG_COUNT_OFFSET] = s->seg_count;
 
     /* 每条灯带的灯珠数（#29）：strip 0 用 State 的权威值，其余用快照里的表。 */
     for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
@@ -117,6 +111,11 @@ bool lumen_state_blob_decode(const uint8_t *blob, size_t len, lumen_persist_t *o
     uint16_t version =
         (uint16_t)blob[BLOB_OFF_VERSION] | ((uint16_t)blob[BLOB_OFF_VERSION + 1] << 8);
     if (version != LUMEN_STATE_BLOB_VERSION) {
+        /*
+         * v3（以及任何别的版本）整体拒绝：记录宽度从 11 变成 20、pmask 挪进
+         * 偏移 14，布局不兼容。绝不能「尽量解析」——错位的段表会写出越界区间。
+         * 调用方因此回落到协议默认值（一次干净的重置，不是半套状态）。
+         */
         return false;
     }
 
@@ -127,6 +126,12 @@ bool lumen_state_blob_decode(const uint8_t *blob, size_t len, lumen_persist_t *o
         strip_count < 1 || strip_count > LUMEN_MAX_STRIPS) {
         return false;
     }
+    uint8_t strip_power_mask = blob[BLOB_OFF_STRIP_POWER_MASK];
+    /*
+     * 未配置灯带（i >= strip_count）的掩码位在规格里没有语义，按原样保留、
+     * 不做校验：拒绝它们只会让一份「关掉了不存在的灯带」的 blob 整份作废，
+     * 而那份数据在渲染上完全无害（渲染只查已配置的条）。
+     */
 
     lumen_persist_t decoded;
     memset(&decoded, 0, sizeof(decoded));
@@ -137,19 +142,14 @@ bool lumen_state_blob_decode(const uint8_t *blob, size_t len, lumen_persist_t *o
     decoded.state.b = blob[BLOB_OFF_R + 2];
     decoded.state.led_count = led_count;
     decoded.state.strip_count = strip_count;
-    decoded.state.seg_count = blob[BLOB_OFF_SEG_COUNT];
+    decoded.state.seg_count = blob[LUMEN_SEG_COUNT_OFFSET];
+    decoded.state.strip_power_mask = strip_power_mask;
     /* 剧本 / 播放相关字段不持久化（protocol §12）：上电从第一阶段、停止态开始。 */
     decoded.state.script_id = LUMEN_NO_SCRIPT;
     decoded.state.stage_index = 0;
     decoded.state.playback_state = 0;
     decoded.state.flags = 0;
-    /*
-     * v3 blob 不持久化两个掩码（docs/protocol-v3.md §10.2 的 v4 才带
-     * strip_power_mask）。当前布局下按协议默认值恢复「全部打开」，
-     * 否则会解出 strip_power_mask = 0 —— #38 接上渲染门控后，那等于
-     * 重启后所有灯带都不出光。strip_anim_mask 是每帧重算的摘要，恒 0。
-     */
-    decoded.state.strip_power_mask = 0xFF;
+    /* strip_anim_mask 是每帧重算的摘要，恒 0。 */
     decoded.state.strip_anim_mask = 0x00;
 
     /* 每条灯带的灯珠数（#29）。越界视为损坏，不「尽量解析」。 */
@@ -170,10 +170,8 @@ bool lumen_state_blob_decode(const uint8_t *blob, size_t len, lumen_persist_t *o
     uint8_t active_counts[LUMEN_MAX_STRIPS] = {0};
     for (uint8_t strip = 0; strip < LUMEN_MAX_STRIPS; ++strip) {
         /*
-         * spec-v3 §4.2 第 2 处缺陷：这里过去一律用 strip 0 的 led_count 校验
-         * **所有**灯带的段区间。多灯带下 strip 3 只有 10 灯、strip 0 有 64 灯时，
-         * 一份 [0-40] 打到 strip 3 的 blob 会被放行，加载后渲染越界。改为按各自
-         * 灯带的灯珠数校验。
+         * 按**各自灯带**的灯珠数校验段区间：strip 3 只有 10 灯、strip 0 有 64 灯时，
+         * 一份 [0-40] 打到 strip 3 的 blob 必须被拒，否则加载后渲染越界。
          */
         uint16_t strip_leds = decoded.strip_counts[strip];
         if (strip_leds == 0 || strip_leds > LUMEN_MAX_LEDS) {
@@ -189,14 +187,14 @@ bool lumen_state_blob_decode(const uint8_t *blob, size_t len, lumen_persist_t *o
             if (!seg->active) {
                 continue;
             }
-            /* 段表自洽性：类型已知、区间合法、flags 保留位为 0。伪造/损坏即拒绝。 */
-            if (!lumen_effect_type_known(seg->type)) {
+            /*
+             * 段表自洽性：§7.1 的形状规则（两层类型 / blend / 保留位 / 参数）
+             * 与区间都必须是合法的。伪造 / 损坏即整体拒绝。
+             */
+            if (lumen_segment_validate_shape(seg) != LUMEN_RESULT_OK) {
                 return false;
             }
             if (seg->start > seg->end || seg->end >= strip_leds) {
-                return false;
-            }
-            if (seg->type == LUMEN_EFFECT_STATIC && seg->flags != 0) {
                 return false;
             }
             if (strip >= strip_count) {
