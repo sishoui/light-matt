@@ -1,5 +1,8 @@
 /**
- * State read 的等待者：一次 read 请求 → 等 value 事件拿真正的 14 字节。
+ * State read 的等待者：一次 read 请求 → 等 value 事件拿真正的 37 字节。
+ *
+ * v3 起 State 是 37 字节；长度不对时由 transport 回落到 QueryState，
+ * 这里只负责「等待并交出原始字节」，不做长度判断（避免两处各判一次）。
  *
  * read 的 success 只代表请求受理，真正的值走 onBLECharacteristicValueChange，
  * 因此必须在这里挂一个等待者。同一时刻只允许一个在飞（重复调用复用同一个
@@ -24,7 +27,7 @@ export class StateReadSlot {
   /**
    * 建立一次 read 等待。
    *
-   * @param onValue 拿到 14 字节后由调用方解析并派发（保持解析异常落到这里）。
+   * @param onValue 拿到回值后由调用方解析并派发（保持解析异常落到这里）。
    */
   open(
     timeoutMs: number,

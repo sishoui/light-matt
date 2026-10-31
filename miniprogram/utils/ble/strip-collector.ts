@@ -2,7 +2,9 @@
  * QueryStrip 的多帧收集器：#25。
  *
  * 一条 QueryStrip(0x12) 的响应是 **seg_count 条 SegmentReport(0x83) + 1 条
- * SegmentListEnd(0x84)**，全部回显同一个 seq（docs/protocol.md §9/§10.1）。
+ * SegmentListEnd(0x84)**，全部回显同一个 seq（docs/protocol-v3.md §8/§9.1）。
+ *
+ * v3 的 SegmentReport 是固定 21 字节（两层），本收集器只做归集，不看载荷形状。
  * 因为「同 seq 多帧」不是 ACK，ack-waiters 接不住，这里按 seq 单独收集。
  *
  * 只做「按 seq 归集 + 收尾」，不碰 wx / BLE 状态机——与 ack-waiters 同层。

@@ -112,6 +112,8 @@ export function resultText(resultCode: number): string {
       return "帧头错误";
     case 0x09:
       return "设备内部错误";
+    case 0x0a:
+      return "剧本过大，设备无法保存（请减少阶段数 / 每阶段段数 / 灯带数；设备配置未改变）";
     default:
       return `设备返回错误码 0x${resultCode.toString(16).padStart(2, "0")}`;
   }

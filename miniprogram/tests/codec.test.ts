@@ -1,7 +1,10 @@
 /**
- * codec 测试：直接消费仓库里 docs/protocol-testvectors.json（两端共用同一份）。
+ * codec 测试：直接消费仓库里 docs/protocol-testvectors-v3.json（两端共用同一份）。
  *
  * 不复制向量、不伪造期望值：任何协议字节变化都会让这里失败。
+ *
+ * v3 覆盖：58 条向量（编码 / 解码两个方向）、CRC16 标准校验值、分片重组，
+ * 以及 232/240 的帧长上限。
  */
 
 import { readFileSync } from "node:fs";
@@ -9,51 +12,76 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { bytesToCompactHex, hexToBytes } from "../utils/protocol/hex";
-import { checksumOf, decodeFrame, encodeFrame, FrameTooLongError } from "../utils/protocol/frame";
+import { crc16, decodeFrame, encodeFrame, FrameTooLongError } from "../utils/protocol/frame";
+import { chunkFrame, ChunkAssembler } from "../utils/protocol/chunk";
+import { MAX_FRAME_BYTES, MAX_PAYLOAD_BYTES } from "../utils/protocol/constants";
 
 interface VectorCase {
   name: string;
   direction: "app_to_device" | "device_to_app";
-  command?: number;
-  seq?: number;
-  payload_hex?: string;
+  command: number;
+  command_name?: string;
+  seq: number;
+  payload_hex: string;
+  payload_len: number;
   frame_hex: string;
+  frame_len: number;
+  chunks_hex: string[];
   frame_valid: boolean;
-  result_code?: number | null;
+  result_code: number;
   note?: string;
+  chunk_count?: number;
+  chunk_capacity?: number;
 }
 
 interface VectorFile {
   protocol_version: number;
+  magic: string;
+  state_bytes: number;
   state_read_example_hex: string;
   cases: VectorCase[];
 }
 
 const vectors: VectorFile = JSON.parse(
-  readFileSync(new URL("../../docs/protocol-testvectors.json", import.meta.url), "utf8"),
+  readFileSync(new URL("../../docs/protocol-testvectors-v3.json", import.meta.url), "utf8"),
 );
 
 function payloadOf(c: VectorCase): Uint8Array {
-  const bytes = hexToBytes(c.payload_hex ?? "");
+  const bytes = hexToBytes(c.payload_hex);
   expect(bytes).not.toBeNull();
   return bytes as Uint8Array;
 }
 
-describe("协议测试向量", () => {
-  it("向量文件本身是 v2 且包含 120 个用例（#25 段 / #30 呼吸 / #31 彩虹·流光 / #32 剧本）", () => {
-    expect(vectors.protocol_version).toBe(2);
-    expect(vectors.cases.length).toBe(120);
+/**
+ * result_code → decodeFrame 的失败原因（§5 的固定校验顺序）。
+ *
+ * 只有**信封层**的结果码会在这里出现：0x01/0x02/0x0A 是「信封合法、语义被拒」，
+ * 字节层必须接受它们（拒绝是命令层 / 设备的事）。
+ */
+const ENVELOPE_FAILURES: Record<number, string> = {
+  0x03: "crc",
+  0x04: "length",
+  0x07: "version",
+  0x08: "magic",
+};
+
+describe("协议测试向量（v3）", () => {
+  it("向量文件本身是 v3 且包含 58 个用例", () => {
+    expect(vectors.protocol_version).toBe(3);
+    expect(vectors.magic).toBe("0xA6");
+    expect(vectors.state_bytes).toBe(37);
+    expect(vectors.cases.length).toBe(58);
   });
 
   it("app_to_device 有效帧：encode 逐字节复现 frame_hex", () => {
     const cases = vectors.cases.filter((c) => c.direction === "app_to_device" && c.frame_valid);
     expect(cases.length).toBeGreaterThan(0);
     for (const c of cases) {
-      expect(c.command, c.name).toBeTypeOf("number");
-      expect(c.seq, c.name).toBeTypeOf("number");
-      const frame = encodeFrame(c.command as number, c.seq as number, payloadOf(c));
+      const frame = encodeFrame(c.command, c.seq, payloadOf(c));
       expect(bytesToCompactHex(frame), c.name).toBe(c.frame_hex.toUpperCase());
-      expect(frame.length, c.name).toBe(frame[4] + 6);
+      /* 整帧 = 8 + payload（16 位长度字段）。 */
+      expect(frame.length, c.name).toBe(c.payload_len + 8);
+      expect(frame[4] | (frame[5] << 8), c.name).toBe(c.payload_len);
     }
   });
 
@@ -66,32 +94,43 @@ describe("协议测试向量", () => {
       if (!result.ok) continue;
       expect(result.command, c.name).toBe(c.command);
       expect(result.seq, c.name).toBe(c.seq);
-      expect(bytesToCompactHex(result.payload), c.name).toBe((c.payload_hex ?? "").toUpperCase());
+      expect(bytesToCompactHex(result.payload), c.name).toBe(c.payload_hex.toUpperCase());
     }
   });
 
-  it("app_to_device 无效帧：decode 返回与 result_code 对应的失败原因", () => {
-    const reasonByResult: Record<number, string> = {
-      3: "checksum",
-      4: "length",
-      8: "magic",
-    };
-    const cases = vectors.cases.filter((c) => c.direction === "app_to_device" && !c.frame_valid);
-    expect(cases.length).toBeGreaterThan(0);
+  it("信封层无效帧：decode 返回与 result_code 对应的失败原因", () => {
+    const cases = vectors.cases.filter(
+      (c) => c.direction === "app_to_device" && ENVELOPE_FAILURES[c.result_code] !== undefined,
+    );
+    expect(cases.length).toBe(4);
     for (const c of cases) {
       const bytes = hexToBytes(c.frame_hex) as Uint8Array;
       const result = decodeFrame(bytes);
       expect(result.ok, c.name).toBe(false);
       if (result.ok) continue;
-      if (c.result_code === null || c.result_code === undefined) {
-        expect(result.reason, c.name).toBe("short");
-      } else {
-        expect(result.reason, c.name).toBe(reasonByResult[c.result_code]);
+      expect(result.reason, c.name).toBe(ENVELOPE_FAILURES[c.result_code]);
+    }
+  });
+
+  it("语义被拒的帧在字节层仍然合法（退役命令 / 参数越界 / 剧本过大）", () => {
+    const cases = vectors.cases.filter(
+      (c) =>
+        c.direction === "app_to_device" &&
+        !c.frame_valid &&
+        ENVELOPE_FAILURES[c.result_code] === undefined,
+    );
+    expect(cases.length).toBeGreaterThan(0);
+    for (const c of cases) {
+      const result = decodeFrame(hexToBytes(c.frame_hex) as Uint8Array);
+      expect(result.ok, c.name).toBe(true);
+      if (result.ok) {
+        expect(result.command, c.name).toBe(c.command);
+        expect(bytesToCompactHex(result.payload), c.name).toBe(c.payload_hex.toUpperCase());
       }
     }
   });
 
-  it("device_to_app 帧：decode 成功，字段与向量一致", () => {
+  it("device_to_app 帧：decode 成功且能用同一编码器复现", () => {
     const cases = vectors.cases.filter((c) => c.direction === "device_to_app");
     expect(cases.length).toBeGreaterThan(0);
     for (const c of cases) {
@@ -101,75 +140,112 @@ describe("协议测试向量", () => {
       if (!result.ok) continue;
       expect(result.command, c.name).toBe(c.command);
       expect(result.seq, c.name).toBe(c.seq);
-      expect(bytesToCompactHex(result.payload), c.name).toBe((c.payload_hex ?? "").toUpperCase());
+      expect(bytesToCompactHex(result.payload), c.name).toBe(c.payload_hex.toUpperCase());
 
-      // 设备→小程序帧也必须能用同一编码器逐字节复现（ACK / Event / StateReport）。
       const reencoded = encodeFrame(result.command, result.seq, result.payload);
       expect(bytesToCompactHex(reencoded), c.name).toBe(c.frame_hex.toUpperCase());
     }
   });
 
-  it("120 条向量逐条被覆盖（每条都属于下面三类之一）", () => {
-    const appValid = vectors.cases.filter(
-      (c) => c.direction === "app_to_device" && c.frame_valid,
-    ).length;
-    const appInvalid = vectors.cases.filter(
-      (c) => c.direction === "app_to_device" && !c.frame_valid,
-    ).length;
-    const device = vectors.cases.filter((c) => c.direction === "device_to_app").length;
-    expect(appValid + appInvalid + device).toBe(vectors.cases.length);
-    expect(vectors.cases.length).toBe(120);
+  it("58 条向量逐条被覆盖（decode 的 ok 与 frame_valid 一致）", () => {
+    const appValid = vectors.cases.filter((c) => c.direction === "app_to_device" && c.frame_valid);
+    const appInvalid = vectors.cases.filter((c) => c.direction === "app_to_device" && !c.frame_valid);
+    const device = vectors.cases.filter((c) => c.direction === "device_to_app");
+    expect(appValid.length + appInvalid.length + device.length).toBe(vectors.cases.length);
 
-    // 直接逐条 decode：任何一条的 ok 与 frame_valid 不符都视为失败。
     for (const c of vectors.cases) {
-      const bytes = hexToBytes(c.frame_hex);
-      expect(bytes, c.name).not.toBeNull();
-      const result = decodeFrame(bytes as Uint8Array);
-      expect(result.ok, c.name).toBe(c.frame_valid);
+      const result = decodeFrame(hexToBytes(c.frame_hex) as Uint8Array);
+      /* frame_valid 表示设备是否**业务接受**；信封层只在 4 个坏帧上失败。 */
+      const envelopeValid = ENVELOPE_FAILURES[c.result_code] === undefined;
+      expect(result.ok, c.name).toBe(envelopeValid);
     }
   });
 
-  it("坏校验帧不能通过（即使 payload 完全相同）", () => {
+  it("分片：向量里的 chunks_hex 能被 chunkFrame 逐字节复现并重组回逻辑帧", () => {
+    const cases = vectors.cases.filter((c) => c.chunks_hex.length > 0);
+    expect(cases.length).toBe(vectors.cases.length);
+    for (const c of cases) {
+      const capacity = c.chunk_capacity ?? 180;
+      const frame = hexToBytes(c.frame_hex) as Uint8Array;
+      const chunks = chunkFrame(frame, capacity);
+      expect(chunks.map((chunk) => bytesToCompactHex(chunk)), c.name).toEqual(
+        c.chunks_hex.map((hex) => hex.toUpperCase()),
+      );
+
+      const assembler = new ChunkAssembler();
+      let assembled: Uint8Array | null = null;
+      for (const chunk of chunks) {
+        const result = assembler.push(chunk);
+        if (result.kind === "frame") {
+          assembled = result.frame;
+        }
+      }
+      expect(assembled, c.name).not.toBeNull();
+      expect(bytesToCompactHex(assembled as Uint8Array), c.name).toBe(c.frame_hex.toUpperCase());
+    }
+  });
+
+  it("坏 CRC 帧不能通过（即使 payload 完全相同）", () => {
     const good = encodeFrame(0x01, 0x01, [0x01]);
     const bad = good.slice();
     bad[bad.length - 1] ^= 0xff;
     const result = decodeFrame(bad);
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toBe("checksum");
+    if (!result.ok) expect(result.reason).toBe("crc");
   });
 });
 
-describe("checksum", () => {
-  it("协议文档例子：A5 02 01 01 01 01 → 0x54", () => {
-    const frame = hexToBytes("A5 02 01 01 01 01") as Uint8Array;
-    expect(checksumOf(frame, 6)).toBe(0x54);
+describe("CRC16（CCITT-FALSE）", () => {
+  it('标准校验值 "123456789" → 0x29B1', () => {
+    const bytes = new Uint8Array(Buffer.from("123456789", "ascii"));
+    expect(crc16(bytes)).toBe(0x29b1);
   });
 
-  it("one's complement 而不是取负：覆盖长度 0 时返回 0xFF", () => {
-    const empty = new Uint8Array([0]);
-    expect(checksumOf(empty, 0)).toBe(0xff);
+  it("空输入返回初值 0xFFFF", () => {
+    expect(crc16(new Uint8Array(0))).toBe(0xffff);
+  });
+
+  it("与协议 §3.3 的示例帧一致（SetPower(on)，seq=1 → F0A0）", () => {
+    /* A6 03 01 01 01 00 01 的 CRC16 = 0xA0F0，小端存 F0 A0。 */
+    const covered = hexToBytes("A6 03 01 01 01 00 01") as Uint8Array;
+    expect(crc16(covered)).toBe(0xa0f0);
+  });
+
+  it("CRC 覆盖 magic 到 payload 末字节（改 payload 会变）", () => {
+    const a = hexToBytes("A6 03 01 01 01 00 01") as Uint8Array;
+    const b = hexToBytes("A6 03 01 01 01 00 00") as Uint8Array;
+    expect(crc16(a)).not.toBe(crc16(b));
   });
 });
 
-describe("encode 边界", () => {
-  it("14 字节 payload 恰好 20 字节，不抛错", () => {
-    const frame = encodeFrame(0x7f, 1, new Uint8Array(14));
-    expect(frame.length).toBe(20);
-    expect(frame[4]).toBe(14);
+describe("encode 边界（v3：载荷 232 / 整帧 240）", () => {
+  it("232 字节 payload 恰好 240 字节，不抛错且可解码", () => {
+    const payload = new Uint8Array(MAX_PAYLOAD_BYTES);
+    const frame = encodeFrame(0x7f, 1, payload);
+    expect(frame.length).toBe(MAX_FRAME_BYTES);
+    expect(frame[4] | (frame[5] << 8)).toBe(MAX_PAYLOAD_BYTES);
     expect(decodeFrame(frame).ok).toBe(true);
   });
 
-  it("15 字节 payload 抛 FrameTooLongError，绝不截断", () => {
+  it("233 字节 payload 抛 FrameTooLongError，绝不截断", () => {
     let thrown: unknown = null;
     try {
-      encodeFrame(0x7f, 1, new Uint8Array(15));
+      encodeFrame(0x7f, 1, new Uint8Array(MAX_PAYLOAD_BYTES + 1));
     } catch (err) {
       thrown = err;
     }
     expect(thrown).toBeInstanceOf(FrameTooLongError);
     const error = thrown as FrameTooLongError;
-    expect(error.payloadLength).toBe(15);
-    expect(error.frameLength).toBe(21);
+    expect(error.payloadLength).toBe(MAX_PAYLOAD_BYTES + 1);
+    expect(error.frameLength).toBe(MAX_FRAME_BYTES + 1);
+  });
+
+  it("16 位长度字段：200 字节载荷写出 C8 00（不是单字节截断）", () => {
+    const frame = encodeFrame(0x7f, 1, new Uint8Array(200));
+    expect(frame.length).toBe(208);
+    expect(frame[4]).toBe(0xc8);
+    expect(frame[5]).toBe(0x00);
+    expect(decodeFrame(frame).ok).toBe(true);
   });
 
   it("command / seq 按 0xFF 掩码", () => {
@@ -178,7 +254,31 @@ describe("encode 边界", () => {
     expect(frame[3]).toBe(0x01);
   });
 
-  it("空 payload 的帧长度为 6", () => {
-    expect(encodeFrame(0x05, 0x09).length).toBe(6);
+  it("空 payload 的帧长度为 8（6 字节头 + 2 字节 CRC）", () => {
+    expect(encodeFrame(0x05, 0x09).length).toBe(8);
+  });
+
+  it("短于 8 字节的输入返回 short（不是 magic）", () => {
+    const result = decodeFrame(new Uint8Array([0xa6, 0x03, 0x01]));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("short");
+  });
+});
+
+describe("v3 状态示例", () => {
+  it("state_read_example_hex 是 37 字节且能按 v3 布局解析", async () => {
+    const { parseState } = await import("../utils/protocol/commands");
+    const bytes = hexToBytes(vectors.state_read_example_hex) as Uint8Array;
+    expect(bytes.length).toBe(37);
+    const state = parseState(bytes);
+    expect(state.power).toBe(1);
+    expect(state.brightness).toBe(128);
+    expect(state.stripCount).toBe(2);
+    expect(state.stripPowerMask).toBe(0x03);
+    expect(state.stripCounts.slice(0, 2)).toEqual([30, 60]);
+    expect(state.stripSegCounts.slice(0, 2)).toEqual([2, 4]);
+    /* 派生字段与 strip 0 一致。 */
+    expect(state.ledCount).toBe(30);
+    expect(state.segCount).toBe(2);
   });
 });
