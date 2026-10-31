@@ -17,7 +17,7 @@ import {
   hsvToRgb,
   normalizeHue,
   rgbToHex,
-} from "../../utils/color/hsv";
+} from "../color/hsv";
 import {
   drawWheel,
   hueAtPoint,
@@ -25,8 +25,8 @@ import {
   wheelGeometry,
   type WheelContext2D,
   type WheelGeometry,
-} from "../../utils/color/wheel";
-import type { RGB } from "../../utils/protocol/types";
+} from "../color/wheel";
+import type { RGB } from "../protocol/types";
 import { colorHintText } from "./view-model";
 
 interface WheelCtx {

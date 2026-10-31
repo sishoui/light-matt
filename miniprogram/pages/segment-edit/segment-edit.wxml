@@ -1,0 +1,209 @@
+<view class="page">
+  <!-- 连接状态（本页不提供连接入口：从灯光页进来时已经连上） -->
+  <view class="statusbar {{ready ? 'link-ready' : 'link-idle'}}">
+    <view class="status-dot"></view>
+    <view class="status-main">
+      <text class="status-text">{{stripTitle}} · 段 {{segId >= 0 ? segId : '新建'}}</text>
+      <text class="status-sub">{{linkText}} · {{ledCount}} 颗灯珠</text>
+    </view>
+  </view>
+
+  <!-- 区间：闭区间，end < 该带灯珠数（设备仍会权威校验） -->
+  <view class="section {{ready ? '' : 'disabled'}}">
+    <view class="section-head">
+      <text class="section-title">灯珠区间</text>
+      <text class="section-value">0 – {{ledCount > 0 ? ledCount - 1 : 0}}</text>
+    </view>
+    <view class="range-row">
+      <input
+        class="range-input"
+        type="number"
+        value="{{startInput}}"
+        maxlength="2"
+        placeholder="起点"
+        disabled="{{!ready || busy}}"
+        bindinput="onStartInput"
+      />
+      <text class="range-dash">–</text>
+      <input
+        class="range-input"
+        type="number"
+        value="{{endInput}}"
+        maxlength="2"
+        placeholder="终点"
+        disabled="{{!ready || busy}}"
+        bindinput="onEndInput"
+      />
+    </view>
+    <text class="section-hint">闭区间；同一条带内的段不能重叠，未覆盖的灯珠保持熄灭</text>
+  </view>
+
+  <!-- 灯效类型（本票的基础形态；#42 会扩成两层 + blend） -->
+  <view class="section {{ready ? '' : 'disabled'}}">
+    <view class="section-head">
+      <text class="section-title">灯效</text>
+      <text class="section-value">{{mode === 'breathing' ? '呼吸' : (mode === 'rainbow' ? '彩虹' : (mode === 'comet' ? '流光' : '静态'))}}</text>
+    </view>
+    <view class="chip-row">
+      <view
+        wx:for="{{modeOptions}}"
+        wx:key="mode"
+        class="chip {{mode === item.mode ? 'selected' : ''}}"
+        data-mode="{{item.mode}}"
+        bindtap="onModeTap"
+      >{{item.name}}</view>
+    </view>
+
+    <!-- 呼吸参数：0 = 静止，其余下限 334ms -->
+    <view wx:if="{{breathingVisible}}" class="params">
+      <view class="row">
+        <text class="row-label">周期</text>
+        <slider
+          class="row-slider"
+          min="0"
+          max="{{maxPeriod}}"
+          step="10"
+          value="{{breathingPeriod}}"
+          disabled="{{!ready || busy}}"
+          activeColor="#4f8cff"
+          backgroundColor="#2a2a32"
+          block-size="20"
+          bindchange="onBreathingPeriodChange"
+        />
+        <text class="row-value">{{breathingPeriodText}}</text>
+      </view>
+      <text class="section-hint">周期 0 = 静止；最短 {{breathingMinPeriod}}ms（约 3Hz）</text>
+
+      <view class="row">
+        <text class="row-label">最暗</text>
+        <slider
+          class="row-slider"
+          min="0"
+          max="255"
+          step="1"
+          value="{{breathingMinLevel}}"
+          disabled="{{!ready || busy}}"
+          activeColor="#4f8cff"
+          backgroundColor="#2a2a32"
+          block-size="20"
+          bindchanging="onBreathingMinLevelChanging"
+          bindchange="onBreathingMinLevelChange"
+        />
+        <text class="row-value">{{breathingMinLevelText}}</text>
+      </view>
+
+      <view class="chip-row tight">
+        <view
+          wx:for="{{waveformOptions}}"
+          wx:key="value"
+          class="chip blue {{breathingWaveform === item.value ? 'selected' : ''}}"
+          data-value="{{item.value}}"
+          bindtap="onWaveformTap"
+        >{{item.name}}</view>
+      </view>
+    </view>
+
+    <!-- 彩虹 / 流光参数：p5 按类型解释（span / tail），下限 200ms -->
+    <view wx:if="{{animVisible}}" class="params">
+      <view class="row">
+        <text class="row-label">周期</text>
+        <slider
+          class="row-slider"
+          min="0"
+          max="{{maxPeriod}}"
+          step="10"
+          value="{{animPeriod}}"
+          disabled="{{!ready || busy}}"
+          activeColor="#4f8cff"
+          backgroundColor="#2a2a32"
+          block-size="20"
+          bindchange="onAnimPeriodChange"
+        />
+        <text class="row-value">{{animPeriodText}}</text>
+      </view>
+      <text class="section-hint">周期 0 = 静止；最短 {{animMinPeriod}}ms（5Hz）</text>
+
+      <view wx:if="{{mode === 'rainbow'}}" class="row">
+        <text class="row-label">跨度</text>
+        <slider
+          class="row-slider"
+          min="0"
+          max="255"
+          step="1"
+          value="{{animSpan}}"
+          disabled="{{!ready || busy}}"
+          activeColor="#4f8cff"
+          backgroundColor="#2a2a32"
+          block-size="20"
+          bindchange="onAnimSpanChange"
+        />
+        <text class="row-value">{{animSpanText}}</text>
+      </view>
+
+      <view wx:if="{{mode === 'comet'}}" class="row">
+        <text class="row-label">拖尾</text>
+        <slider
+          class="row-slider"
+          min="0"
+          max="255"
+          step="1"
+          value="{{animTail}}"
+          disabled="{{!ready || busy}}"
+          activeColor="#4f8cff"
+          backgroundColor="#2a2a32"
+          block-size="20"
+          bindchange="onAnimTailChange"
+        />
+        <text class="row-value">{{animTailText}}</text>
+      </view>
+
+      <view class="chip-row tight">
+        <view
+          class="chip blue {{!animReverse ? 'selected' : ''}}"
+          data-value="0"
+          bindtap="onAnimReverseTap"
+        >正向</view>
+        <view
+          class="chip blue {{animReverse ? 'selected' : ''}}"
+          data-value="1"
+          bindtap="onAnimReverseTap"
+        >反向</view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 基准色：预设只改草稿，点「应用」才下发 -->
+  <view class="section {{ready ? '' : 'disabled'}}">
+    <view class="section-head">
+      <text class="section-title">基准色</text>
+      <view class="color-readout">
+        <view class="swatch" style="background: {{colorHex}}"></view>
+        <text class="section-value mono">{{colorHex}}</text>
+      </view>
+    </view>
+    <view class="presets">
+      <view
+        wx:for="{{presetList}}"
+        wx:key="name"
+        class="preset {{colorHex === item.hex ? 'selected' : ''}}"
+        data-index="{{index}}"
+        bindtap="onPresetTap"
+      >
+        <view class="preset-dot" style="background: {{item.hex}}"></view>
+        <text class="preset-name">{{item.name}}</text>
+      </view>
+    </view>
+    <text class="section-hint">四种灯效都用它作 hue+sat 基准色；静态段就是这一色</text>
+  </view>
+
+  <!-- 应用 / 返回 -->
+  <view class="btn-row">
+    <button class="btn ghost" bindtap="onCancel">返回（丢弃草稿）</button>
+    <button
+      class="btn primary"
+      disabled="{{!ready || busy}}"
+      bindtap="onApply"
+    >{{busy ? '下发中…' : '应用'}}</button>
+  </view>
+  <text class="section-hint">{{hint}}</text>
+</view>

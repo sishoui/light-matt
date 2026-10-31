@@ -1,0 +1,47 @@
+/* 设备详情页独有布局（共享外观在 app.wxss）。 */
+
+.strip-info-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.strip-info-row {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  padding: 14rpx 0;
+  border-bottom: 1rpx solid #22222a;
+}
+
+.strip-info-row:last-child {
+  border-bottom: none;
+}
+
+.strip-info-name {
+  flex: 1;
+  font-size: 26rpx;
+  color: #f5f5f5;
+}
+
+.strip-info-meta {
+  font-size: 22rpx;
+  color: #9a9aa5;
+  font-family: Menlo, Consolas, monospace;
+  min-width: 96rpx;
+  text-align: right;
+}
+
+.strip-info-hidden {
+  font-size: 20rpx;
+  color: #6f6f7a;
+  padding: 2rpx 8rpx;
+  border-radius: 8rpx;
+  background: #23232b;
+}
+
+/* 灯带选择 chip 排一行（最多 8 个，短标签） */
+.chip-row.tight .chip {
+  flex: 0 1 auto;
+  min-width: 120rpx;
+  padding: 12rpx 18rpx;
+}

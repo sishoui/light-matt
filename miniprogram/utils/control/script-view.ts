@@ -18,9 +18,9 @@ import {
   MAX_STAGE_MS,
   PLAYBACK,
   SEGMENT_TYPE,
-} from "../../utils/protocol/constants";
-import type { ScriptConfig, ScriptStageConfig } from "../../utils/control/script-plan";
-import type { SegmentConfig } from "../../utils/protocol/types";
+} from "../protocol/constants";
+import type { ScriptConfig, ScriptStageConfig } from "./script-plan";
+import type { SegmentConfig } from "../protocol/types";
 
 /** 草稿里的一个阶段（与 ScriptStageConfig 同构，但允许空时段用于编辑）。 */
 export interface ScriptStageDraft {
