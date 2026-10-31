@@ -1,13 +1,64 @@
-# 交接：lumen MVP 当前状态与下一步
+# 交接：lumen 当前状态与下一步
 
-**最后更新**：2026-10-30　**分支**：`integration/lumen-mvp`（已推送到 origin，见 `git log -1`）
+**最后更新**：2026-10-31　**分支**：`integration/lumen-v3`（未推送）
 
 这份文件是给**新会话**的入口。它只写「新会话必须知道、但代码和文档里读不到」的东西；
 其余一律给指针，不重复。
 
 ---
 
-## 1. 现在在哪
+## 0. v3 已完成，等真机验收（先读这一节）
+
+**v3 的 11 张实现票（#36–#45）全部实现并合入 `integration/lumen-v3`，只有 #46（真机验收）
+需要硬件，还没跑。** 这是当前唯一的主线。
+
+| 端 | 测试基线 |
+|---|---|
+| 固件 host | `cmd.exe //c "firmware\test\run-tests.cmd"` → **10993 项断言**，58 条 v3 向量 |
+| 小程序 | `cd miniprogram && npx vitest run` → **553 用例**；`npx tsc --noEmit` 干净 |
+| 后端 | `cd server && npm test` → **133 用例**；`npm run typecheck` 干净 |
+
+**下一步只有一件事**：按 [`acceptance-v3.md`](./acceptance-v3.md) 跑 #46。
+
+### 0.1 烧录前必须先编译一次固件
+
+本次实现环境**无法访问 ESP-IDF 组件仓库**（`components-file.espressif.com` 不可达），
+所以下面这些非 host 编译的文件是**对照 IDF 6.1 头文件手工复核的，没经过编译器**：
+
+- `firmware/main/ble_link.c`（分片收发、MTU、两条新报告）
+- `firmware/main/led_engine.c`（每带开关、TDM 跳过、commit 尺寸预检）
+- `firmware/main/led_render.c`（两层合成后的 gamma 位置、每带门控）
+- `firmware/main/state_store.c`（剧本加载复用保存缓冲 + 持锁）
+
+先跑一次 `scripts\build-firmware.cmd`，把编译错误清掉再烧。
+
+### 0.2 v3 是断崖升级，旧配置全部丢失
+
+刷 v3 固件后设备配置回到默认值：协议 magic `0xA5`→`0xA6`、version `0x02`→`0x03`，
+NVS 的 state blob 升到 v4、script blob 换成 `LMS3`/v2。**不是 bug，不要写迁移代码。**
+
+### 0.3 v3 里两处「票据文字与实现不一致」
+
+两条都已在代码注释、`docs/agents/issue-tracker.md` 和父票 #35 里记明：
+
+1. **`SegmentReport` 固定 21 字节**。`protocol-v3.md:335` 写「9-21」，但 §7.1 说报告与
+   `SetSegment` 同构、blob 记录也按 21 字节算。实现取固定 21（§7.1 优先）。
+2. **v3 没有读回完整剧本内容的命令**。`QueryScript` 只回 4 字节摘要（是否提交 / 阶段数 /
+   是否激活 / loop）。所以 #45 的「从设备读回」只到摘要，界面明确说明。想加完整读回
+   必须同时改契约、向量与两端实现——不要在单侧偷偷加。
+
+### 0.4 实现期发现并修掉的真问题（都已有回归测试）
+
+- `strip_power.c` 用旧的扁平 `seg->type`（跨 #37/#38 的接缝），改为按层判定
+- 剧本「两层都空 = 清空槽位」原先没真清空（被无条件置 `active=true`）
+- 小程序 `transport.sendSequence` 在 ACK 非 0 时继续发后续帧，导致 `ScriptCommit` 被拒后
+  仍可能「成功」激活
+- 设备同步把 `State.stripCounts` 的 8 个固定槽位（未用为 0）直接发给 `/seen`，单带设备每次
+  连接都会 400
+
+---
+
+## 1. 历史：MVP 状态（v1，已完成）
 
 **MVP 已完成并通过 #14 真机验收。** 剩下的是三个未验证项（见下），不是主要工作量。
 
