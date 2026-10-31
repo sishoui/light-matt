@@ -39,6 +39,7 @@ import { bytesToCompactHex } from "../utils/protocol/hex";
 import { encodeFrame } from "../utils/protocol/frame";
 import type { BleTransport } from "../utils/ble/transport";
 import type { CommandRequest, DeviceState } from "../utils/protocol/types";
+import { baseState } from "./helpers/state";
 
 const CMD_SET_BRIGHTNESS = 0x02;
 
@@ -52,8 +53,8 @@ interface VectorCase {
 }
 
 const vectors = JSON.parse(
-  readFileSync(new URL("../../docs/protocol-testvectors.json", import.meta.url), "utf8"),
-) as { cases: VectorCase[] };
+  readFileSync(new URL("../../docs/protocol-testvectors-v3.json", import.meta.url), "utf8"),
+) as { cases: VectorCase[]; state_read_example_hex: string };
 
 function vector(name: string): VectorCase {
   const found = vectors.cases.find((c) => c.name === name);
@@ -61,24 +62,7 @@ function vector(name: string): VectorCase {
   return found as VectorCase;
 }
 
-function baseState(overrides: Partial<DeviceState> = {}): DeviceState {
-  return {
-    power: 1,
-    brightness: 128,
-    r: 255,
-    g: 180,
-    b: 120,
-    ledCount: 30,
-    maxBrightness: 255,
-    stripCount: 1,
-    segCount: 0,
-    scriptId: 0xff,
-    stageIndex: 0,
-    playbackState: 0,
-    flags: 0,
-    ...overrides,
-  };
-}
+/* v3 的 37 字节 State 夹具集中在 tests/helpers/state.ts（含派生字段一致性）。 */
 
 /** 可控时钟 + 计时器（与 brightness.test.ts 同款）。 */
 function fakeClock() {
@@ -296,12 +280,13 @@ describe("HSV → 用户空间 RGB（不做 gamma）", () => {
 
     const warm = PRESETS.find((p) => p.name === "暖白");
     expect(warm).toBeDefined();
-    /* 协议默认 RGB 255/180/120；向量 set_color_warm_white 的载荷是 FFB478
-     * （该命令在 v2 退役，但载荷字节仍与默认色一致）。 */
+    /* 协议默认 RGB 255/180/120：v3 的 State 示例里字节 2-4 就是这三个值
+     * （层 0 基准色），所以直接拿向量文件当唯一真相，不另抄一份 hex。 */
     expect(warm?.rgb).toEqual({ r: 255, g: 180, b: 120 });
     expect(warm?.hex).toBe("#FFB478");
+    const stateHex = vectors.state_read_example_hex;
     expect(bytesToCompactHex(new Uint8Array([warm!.rgb.r, warm!.rgb.g, warm!.rgb.b]))).toBe(
-      vector("set_color_warm_white").payload_hex,
+      stateHex.slice(4, 10).toUpperCase(),
     );
 
     /* 每个预设的 hex 与 rgb 必须一致（同一来源解析，避免两套值漂移）。 */
@@ -469,7 +454,11 @@ describe("#25：颜色写进选中段（不再是占位）", () => {
     const req = transport.writes[0];
     expect(req.command).toBe(0x10);
     /* strip, seg, start, end, type, hue_lo, hue_hi, sat */
-    expect(bytesToCompactHex(req.payload)).toBe("0002283F000000FF");
+    /* v3：21 字节两层载荷，单层时 layer1 全 0xFF。 */
+    expect(req.payload.length).toBe(21);
+    expect(bytesToCompactHex(req.payload)).toBe(
+      "0002283F00000000FF00000000FF00000000000000",
+    );
 
     /* 连续拖动：50ms 闸门，只保留最新值。 */
     transport.writes.length = 0;
@@ -487,7 +476,9 @@ describe("#25：颜色写进选中段（不再是占位）", () => {
     }
     /* 绿色 hue=120° → 0x5555（21845），sat=255。 */
     const last = transport.writes[transport.writes.length - 1];
-    expect(bytesToCompactHex(last.payload)).toBe("0002283F005555FF");
+    expect(bytesToCompactHex(last.payload)).toBe(
+      "0002283F00005555FF00000000FF00000000000000",
+    );
 
     vi.restoreAllMocks();
   });
@@ -505,7 +496,9 @@ describe("#25：颜色写进选中段（不再是占位）", () => {
     expect(withTarget.kind).toBe("ok");
     expect(transport.writes).toHaveLength(1);
     expect(transport.writes[0].command).toBe(0x10);
-    expect(bytesToCompactHex(transport.writes[0].payload)).toBe("0000000F000000FF");
+    expect(bytesToCompactHex(transport.writes[0].payload)).toBe(
+      "0000000F00000000FF00000000FF00000000000000",
+    );
 
     vi.restoreAllMocks();
   });

@@ -16,6 +16,7 @@ import { breathingSegment, staticSegment } from "../utils/protocol/commands";
 import type { AckResult, CommandRequest, DeviceState } from "../utils/protocol/types";
 import { CMD } from "../utils/protocol/constants";
 import type { ScriptConfig } from "../utils/control/script-plan";
+import { baseState } from "./helpers/state";
 
 /** 只实现 session 用到的成员。 */
 class FakeTransport {
@@ -97,22 +98,7 @@ function makeSession(transport: FakeTransport): ControlSession {
 }
 
 function state(overrides: Partial<DeviceState> = {}): DeviceState {
-  return {
-    power: 1,
-    brightness: 128,
-    r: 255,
-    g: 180,
-    b: 120,
-    ledCount: 30,
-    maxBrightness: 255,
-    stripCount: 1,
-    segCount: 0,
-    scriptId: 0xff,
-    stageIndex: 0,
-    playbackState: 0,
-    flags: 0,
-    ...overrides,
-  };
+  return baseState(overrides);
 }
 
 /** 一套 4 阶段剧本（阶段 2 / 3 带段）。 */

@@ -1,44 +1,67 @@
 /**
  * 命令构造器与载荷解析（纯函数）。业务范围校验在构造器里做，
- * 字节布局严格按 docs/protocol.md §6/§7。
+ * 字节布局严格按 docs/protocol-v3.md §6/§7。
  *
- * v2（#21）变化：
- *  - SetLedCount 0x06 变成 3 字节 `strip_id, count_lo, count_hi`；
- *  - v1 的 SetColor 0x03 / SetAll 0x04 退役，构造器一并删除；
- *  - State 从 8 字节扩到 14 字节。
+ * v3（#40）变化：
+ *  - 信封换成 16 位长度 + CRC16（frame.ts）；载荷上限 232；
+ *  - 段载荷定宽两层：SetSegment 21、ScriptSegment 23、SegmentReport 21；
+ *  - ScriptStage 增加 `fade_ms`（预留，恒 0）；
+ *  - 新增 SetStripPower 0x1B / QueryStripConfig 0x1C / QueryDeviceInfo 0x1D；
+ *  - State 从 14 字节扩到 37 字节（带每条灯带的灯珠数 / 段数 / 开关位）。
  *
- * #25 补上段配置：SetSegment 0x10 / ClearSegment 0x11 / QueryStrip 0x12，
- * 以及设备回报 SegmentReport 0x83 / SegmentListEnd 0x84 的解析。
+ * 扁平 vs 两层：`SegmentSpec` 是线上形状；页面沿用的 `SegmentConfig` 是
+ * 「只有层 0」的 UI 草稿。两者由 protocol/segment-shapes.ts 互转，
+ * 构造器两者都接受（`isSegmentSpec` 区分），这样 #40 不必改页面。
  */
 
 import {
   ANIMATION_MIN_PERIOD_MS,
+  BLEND,
   BREATHING_MIN_PERIOD_MS,
+  DEVICE_INFO_BYTES,
+  LAYER_BYTES,
   MAX_LEDS,
-  MAX_PERIOD_MS,
   MAX_SCRIPTS,
   MAX_SEGMENTS,
   MAX_STAGES,
   MAX_STAGE_MS,
   MAX_STRIPS,
   MIN_LEDS,
+  NO_EFFECT,
   NO_SCRIPT,
+  SCRIPT_SEGMENT_BYTES,
+  SEGMENT_BYTES,
   SEGMENT_TYPE,
   STATE_BYTES,
+  STRIP_CONFIG_BYTES,
+  STRIP_CONFIG_RECORD_BYTES,
   WAVEFORM,
 } from "./constants";
+import { isSegmentSpec, toFlat, toSpec } from "./segment-shapes";
 import type {
   AckResult,
+  BlendMode,
   CommandRequest,
+  DeviceInfo,
   DeviceState,
+  EffectLayer,
   SegmentConfig,
   SegmentListEnd,
   SegmentReport,
+  SegmentSpec,
+  StripConfig,
 } from "./types";
 
 function assertByte(value: number, field: string): number {
   if (!Number.isInteger(value) || value < 0 || value > 255) {
     throw new RangeError(`${field} 必须是 0-255 的整数，收到 ${value}`);
+  }
+  return value;
+}
+
+function assertUint16(value: number, field: string): number {
+  if (!Number.isInteger(value) || value < 0 || value > 0xffff) {
+    throw new RangeError(`${field} 必须是 0-65535 的整数，收到 ${value}`);
   }
   return value;
 }
@@ -59,18 +82,15 @@ export function cmdQueryState(): CommandRequest {
  * 灯珠数量：载荷 `strip_id, count_lo, count_hi`，数量 1-64。
  *
  * strip_id 必须先确认（0-7），数量再校验；非整数或越界直接抛错，不发帧。
- * 固件当前只接受 strip_id = 0（多灯带 #29），传其它值会得到 InvalidParam。
  */
 export function cmdSetLedCount(stripId: number, count: number): CommandRequest {
-  if (!Number.isInteger(stripId) || stripId < 0 || stripId >= MAX_STRIPS) {
-    throw new RangeError(`strip_id 必须是 0-${MAX_STRIPS - 1} 的整数，收到 ${stripId}`);
-  }
+  const strip = assertStripId(stripId);
   if (!Number.isInteger(count) || count < MIN_LEDS || count > MAX_LEDS) {
     throw new RangeError(`灯珠数量必须是 ${MIN_LEDS}-${MAX_LEDS} 的整数，收到 ${count}`);
   }
   return {
     command: 0x06,
-    payload: new Uint8Array([stripId, count & 0xff, (count >> 8) & 0xff]),
+    payload: new Uint8Array([strip, count & 0xff, (count >> 8) & 0xff]),
   };
 }
 
@@ -101,11 +121,37 @@ function assertStripId(stripId: number): number {
   return stripId;
 }
 
+/** `strip_count` 是「灯带条数」1-8（与 strip_id 0-7 差一，必须分开校验）。 */
+function assertStripCount(stripCount: number): number {
+  if (!Number.isInteger(stripCount) || stripCount < 1 || stripCount > MAX_STRIPS) {
+    throw new RangeError(`strip_count 必须是 1-${MAX_STRIPS} 的整数，收到 ${stripCount}`);
+  }
+  return stripCount;
+}
+
+function assertSegId(segId: number): number {
+  if (!Number.isInteger(segId) || segId < 0 || segId >= MAX_SEGMENTS) {
+    throw new RangeError(`seg_id 必须是 0-${MAX_SEGMENTS - 1} 的整数，收到 ${segId}`);
+  }
+  return segId;
+}
+
+function isKnownLayerType(type: number): boolean {
+  return (
+    type === SEGMENT_TYPE.STATIC ||
+    type === SEGMENT_TYPE.BREATHING ||
+    type === SEGMENT_TYPE.RAINBOW ||
+    type === SEGMENT_TYPE.COMET
+  );
+}
+
 /**
- * 段类型的参数块长度（effects-spec §2.5）：静态 3，动画 7。
- * 未知类型返回 0（构造器据此拒绝，不猜布局）。
+ * 层类型的有效参数长度（effects-spec §2.5）：静态 3、动画 7、空层/未知 0。
+ *
+ * 层在线上是定宽 8 字节（type + 7 字节参数），这里给的是**有效字节数**，
+ * 只用于校验与日志，不决定编码宽度。
  */
-export function segmentParamLength(type: number): number {
+export function layerParamLength(type: number): number {
   if (type === SEGMENT_TYPE.STATIC) {
     return 3;
   }
@@ -119,88 +165,140 @@ export function segmentParamLength(type: number): number {
   return 0;
 }
 
+/** v2 名字的兼容别名：扁平段类型与层类型共用同一张枚举。 */
+export function segmentParamLength(type: number): number {
+  return layerParamLength(type);
+}
+
 /**
- * SetSegment 0x10：载荷 `strip_id, seg_id, start, end, type, params(3|7)`。
+ * 校验一层并按 §7.1 的 8 字节定宽写入。
  *
- * #25 交付静态单色；#30 交付呼吸（type 0x01）；#31 交付彩虹（0x02）与
- * 流光（0x03）。四类的参数块布局都在 effects-spec §2 定稿：
- *   静态     hue(2) sat(1)
- *   呼吸     hue(2) sat(1) period(2) min_level(1) flags(1)
- *   彩虹     hue(2) sat(1) period(2) span(1) flags(1)
- *   流光     hue(2) sat(1) period(2) tail(1) flags(1)
- * 后三者的 p5 字段语义不同（min_level / span / tail），但字节位置相同。
- *
- * 校验只做构造层能判定的部分（字节范围、start ≤ end、段类型已知、
- * 周期下限与 flags 保留位）；「end < led_count」与「不重叠」是
- * 设备侧权威校验（§11.3 第 6/7 步），这里不做，以免 App 与设备的
- * led_count 快照不一致时误拒。
+ * 规则（顺序固定，§7.1）：
+ *  - 未知 type → 拒绝（不静默降级，effects-spec D7）；
+ *  - 静态层的 param[3..6] 必须全 0（防止将来语义漂移时旧固件静默接受）；
+ *  - 呼吸周期 0 或 ≥ 334；flags bit3-7 必须为 0；
+ *  - 彩虹 / 流光周期 0 或 ≥ 200；flags bit1-7 必须为 0。
  */
-export function cmdSetSegment(segment: SegmentConfig): CommandRequest {
-  const stripId = assertStripId(segment.stripId);
-  if (!Number.isInteger(segment.segId) || segment.segId < 0 || segment.segId >= MAX_SEGMENTS) {
-    throw new RangeError(`seg_id 必须是 0-${MAX_SEGMENTS - 1} 的整数，收到 ${segment.segId}`);
+function writeLayer(out: Uint8Array, offset: number, layer: EffectLayer, field: string): void {
+  const type = layer.type;
+  if (type === NO_EFFECT) {
+    /* 空层：8 字节全 0（type 除外）。 */
+    out[offset] = NO_EFFECT;
+    return;
   }
-  const start = assertLedIndex(segment.start, "start");
-  const end = assertLedIndex(segment.end, "end");
+  if (!isKnownLayerType(type)) {
+    throw new RangeError(`${field} 的类型未知：0x${type.toString(16)}`);
+  }
+  const hue = assertHue(layer.hue);
+  const sat = assertByte(layer.sat, `${field}.sat`);
+  const period = assertUint16(layer.periodMs, `${field}.period_ms`);
+  const p5 = assertByte(layer.p5, `${field}.p5`);
+  const flags = assertByte(layer.flags, `${field}.flags`);
+
+  if (type === SEGMENT_TYPE.STATIC) {
+    if (period !== 0 || p5 !== 0 || flags !== 0) {
+      throw new RangeError(`${field} 是静态层，period / p5 / flags 必须为 0`);
+    }
+  } else if (type === SEGMENT_TYPE.BREATHING) {
+    if (period !== 0 && period < BREATHING_MIN_PERIOD_MS) {
+      throw new RangeError(
+        `呼吸周期不能短于 ${BREATHING_MIN_PERIOD_MS}ms（约 3Hz），收到 ${period}`,
+      );
+    }
+    if ((flags & 0xf8) !== 0) {
+      throw new RangeError(`${field} 的 flags 保留位 bit3-7 必须为 0，收到 0x${flags.toString(16)}`);
+    }
+  } else {
+    if (period !== 0 && period < ANIMATION_MIN_PERIOD_MS) {
+      throw new RangeError(
+        `彩虹/流光周期不能短于 ${ANIMATION_MIN_PERIOD_MS}ms（5Hz），收到 ${period}`,
+      );
+    }
+    if ((flags & 0xfe) !== 0) {
+      throw new RangeError(
+        `${field} 的 flags 保留位 bit1-7 必须为 0，收到 0x${flags.toString(16)}`,
+      );
+    }
+  }
+  out[offset] = type;
+  out[offset + 1] = hue & 0xff;
+  out[offset + 2] = (hue >> 8) & 0xff;
+  out[offset + 3] = sat;
+  if (type !== SEGMENT_TYPE.STATIC) {
+    out[offset + 4] = period & 0xff;
+    out[offset + 5] = (period >> 8) & 0xff;
+    out[offset + 6] = p5;
+    out[offset + 7] = flags;
+  }
+}
+
+function assertBlend(blend: number): BlendMode {
+  if (blend !== BLEND.OVER && blend !== BLEND.MULTIPLY && blend !== BLEND.ADD) {
+    throw new RangeError(`blend 只允许 0(覆盖) / 1(相乘) / 2(相加)，收到 ${blend}`);
+  }
+  return blend;
+}
+
+/**
+ * 段载荷（21 字节）的公共校验与编码：SetSegment / ScriptSegment 共用。
+ *
+ * 校验只做构造层能判定的部分（字节范围、start ≤ end、层类型与参数）；
+ * 「end < led_count」与「不重叠」是设备侧权威校验（§9.2），这里不做，
+ * 以免 App 与设备的 led_count 快照不一致时误拒。
+ */
+function encodeSegmentPayload(spec: SegmentSpec): Uint8Array {
+  const stripId = assertStripId(spec.stripId);
+  const segId = assertSegId(spec.segId);
+  const start = assertLedIndex(spec.start, "start");
+  const end = assertLedIndex(spec.end, "end");
   if (start > end) {
     throw new RangeError(`start 不能大于 end，收到 ${start} > ${end}`);
   }
-  const paramLen = segmentParamLength(segment.type);
-  if (paramLen === 0) {
-    throw new RangeError(`未知的段类型 0x${segment.type.toString(16)}`);
+  const blend = assertBlend(spec.blend);
+  const layer0 = spec.layer0;
+  const layer1 = spec.layer1;
+  if (layer0 === undefined || layer0 === null || layer0.type === NO_EFFECT) {
+    throw new RangeError("layer0 不能为空");
   }
-  const hue = assertHue(segment.hue);
-  const sat = assertByte(segment.sat, "sat");
+  if (layer1 === undefined || layer1 === null) {
+    throw new RangeError("layer1 必须给出（空层用 type = 0xFF）");
+  }
+  if (layer1.type === NO_EFFECT && blend !== BLEND.OVER) {
+    throw new RangeError(`layer1 为空时 blend 必须为 0（覆盖），收到 ${blend}`);
+  }
 
-  const payload = new Uint8Array(5 + paramLen);
+  const payload = new Uint8Array(SEGMENT_BYTES);
   payload[0] = stripId;
-  payload[1] = segment.segId;
+  payload[1] = segId;
   payload[2] = start;
   payload[3] = end;
-  payload[4] = segment.type;
-  payload[5] = hue & 0xff;
-  payload[6] = (hue >> 8) & 0xff;
-  payload[7] = sat;
-  if (paramLen > 3) {
-    const period = segment.periodMs;
-    if (!Number.isInteger(period) || period < 0 || period > MAX_PERIOD_MS) {
-      throw new RangeError(`period_ms 必须是 0-${MAX_PERIOD_MS} 的整数，收到 ${period}`);
-    }
-    const flags = assertByte(segment.flags, "flags");
-    if (segment.type === SEGMENT_TYPE.BREATHING) {
-      /* effects-spec §5 / protocol §11.3 第 8-9 步，在本端就拒绝：
-       * period != 0 时 ≥ 334；flags bit3-7 必须为 0（bit1-2 是 waveform）。 */
-      if (period !== 0 && period < BREATHING_MIN_PERIOD_MS) {
-        throw new RangeError(
-          `呼吸周期不能短于 ${BREATHING_MIN_PERIOD_MS}ms（约 3Hz），收到 ${period}`,
-        );
-      }
-      if ((flags & 0xf8) !== 0) {
-        throw new RangeError(`呼吸 flags 的保留位 bit3-7 必须为 0，收到 0x${flags.toString(16)}`);
-      }
-    } else {
-      /* 彩虹 / 流光：period != 0 时 ≥ 200（5Hz）；flags **bit1-7** 全部保留，
-       * 只有 bit0 reverse（比呼吸更严——没有 waveform 位可借）。 */
-      if (period !== 0 && period < ANIMATION_MIN_PERIOD_MS) {
-        throw new RangeError(
-          `彩虹/流光周期不能短于 ${ANIMATION_MIN_PERIOD_MS}ms（5Hz），收到 ${period}`,
-        );
-      }
-      if ((flags & 0xfe) !== 0) {
-        throw new RangeError(
-          `彩虹/流光 flags 的保留位 bit1-7 必须为 0，收到 0x${flags.toString(16)}`,
-        );
-      }
-    }
-    payload[8] = period & 0xff;
-    payload[9] = (period >> 8) & 0xff;
-    payload[10] = assertByte(segment.p5, "p5");
-    payload[11] = flags;
-  }
-  return { command: 0x10, payload };
+  payload[4] = blend;
+  writeLayer(payload, 5, layer0, "layer0");
+  writeLayer(payload, 5 + LAYER_BYTES, layer1, "layer1");
+  return payload;
 }
 
-/** 构造一个静态段（#25 的唯一可下发类型）。 */
+/**
+ * SetSegment 0x10：21 字节两层载荷（§7.1）。
+ *
+ * 接受 `SegmentSpec`（两层）或页面沿用的扁平 `SegmentConfig`（自动补空层、
+ * blend = 覆盖）。扁平输入等效于「只设层 0」。
+ */
+export function cmdSetSegment(segment: SegmentSpec | SegmentConfig): CommandRequest {
+  const spec = isSegmentSpec(segment) ? segment : toSpec(segment);
+  return { command: 0x10, payload: encodeSegmentPayload(spec) };
+}
+
+/** 构造一个静态层（hue 0-65535、sat 0-255）。 */
+export function staticLayer(hue: number, sat: number): EffectLayer {
+  return { type: SEGMENT_TYPE.STATIC, hue, sat, periodMs: 0, p5: 0, flags: 0 };
+}
+
+/**
+ * 构造一个静态段草稿（扁平 UI 形状）。
+ *
+ * 只是数据装配（不校验）；校验全部在 cmdSetSegment。
+ */
 export function staticSegment(
   stripId: number,
   segId: number,
@@ -229,12 +327,10 @@ export function breathingWaveform(flags: number): number {
 }
 
 /**
- * 构造一个呼吸段（#30）。
+ * 构造一个呼吸段草稿。
  *
- * `minLevel` 是「最暗时的亮度占比」0-255（0 → 能暗到全黑，200 左右几乎不呼吸）；
- * `waveform` 取 WAVEFORM 枚举；`reverse` 写进 flags bit0（当前无视觉意义，保留）。
- *
- * 只装配数据，校验全部在 cmdSetSegment（周期下限、保留位、区间）。
+ * `minLevel` 是「最暗时的亮度占比」0-255；`waveform` 取 WAVEFORM 枚举；
+ * `reverse` 写进 flags bit0（当前无视觉意义，保留）。
  */
 export function breathingSegment(
   stripId: number,
@@ -262,13 +358,11 @@ export function breathingSegment(
   };
 }
 
-/* ---------------- #31 彩虹 / 流光 ---------------- */
+/* ---------------- 彩虹 / 流光 ---------------- */
 
 /**
  * 彩虹 / 流光的 flags 字节（effects-spec §2.3-§2.4）：
  *   bit0 reverse；**bit1-7 保留 = 0**（与呼吸不同，这里没有 waveform 位）。
- *
- * 只装配 bit0，保留位恒 0——传 true/false 以外的东西也不会污染协议。
  */
 export function directionFlags(reverse = false): number {
   return reverse ? 0x01 : 0x00;
@@ -279,15 +373,7 @@ export function segmentReverse(flags: number): boolean {
   return (flags & 0x01) !== 0;
 }
 
-/**
- * 构造一个彩虹段（#31）。
- *
- * `span` 是沿灯带的色相跨度：0 = 整条同色（色相随时间循环）、
- * 255 = 铺满一整圈、中间值线性连续（effects-spec §2.3）。
- * 基准色 hue+sat 来自色环；`reverse` 让色相沿灯带递减。
- *
- * 只装配数据，校验全部在 cmdSetSegment（周期下限、保留位、区间）。
- */
+/** 构造一个彩虹段草稿（`span` 0-255，见 effects-spec §2.3）。 */
 export function rainbowSegment(
   stripId: number,
   segId: number,
@@ -313,12 +399,7 @@ export function rainbowSegment(
   };
 }
 
-/**
- * 构造一个流光段（#31）。
- *
- * `tail` 是拖尾长度：0 = 硬边亮点（无尾）、255 = 整条都是尾（§2.4）。
- * `reverse` 让亮点反向移动。基准色 hue+sat 来自色环。
- */
+/** 构造一个流光段草稿（`tail` 0-255，见 effects-spec §2.4）。 */
 export function cometSegment(
   stripId: number,
   segId: number,
@@ -344,23 +425,9 @@ export function cometSegment(
   };
 }
 
-/**
- * 段参数块（静态 3 字节 / 动画 7 字节），SetSegment 与 ScriptSegment 共用。
- *
- * 实现成一个薄封装而不是第二份校验：直接复用 cmdSetSegment 的载荷尾部，
- * 保证「直接设段能过、剧本下发被拒」这类两端漂移不可能发生。
- */
-export function segmentParams(segment: SegmentConfig): Uint8Array {
-  return cmdSetSegment(segment).payload.slice(5);
-}
-
 /** ClearSegment 0x11：载荷 `strip_id, seg_id`。 */
 export function cmdClearSegment(stripId: number, segId: number): CommandRequest {
-  const strip = assertStripId(stripId);
-  if (!Number.isInteger(segId) || segId < 0 || segId >= MAX_SEGMENTS) {
-    throw new RangeError(`seg_id 必须是 0-${MAX_SEGMENTS - 1} 的整数，收到 ${segId}`);
-  }
-  return { command: 0x11, payload: new Uint8Array([strip, segId]) };
+  return { command: 0x11, payload: new Uint8Array([assertStripId(stripId), assertSegId(segId)]) };
 }
 
 /** QueryStrip 0x12：载荷 `strip_id`。 */
@@ -368,7 +435,27 @@ export function cmdQueryStrip(stripId: number): CommandRequest {
   return { command: 0x12, payload: new Uint8Array([assertStripId(stripId)]) };
 }
 
-/* ---------------- #32 剧本 ---------------- */
+/* ---------------- 灯带开关 / 配置查询（v3 新增） ---------------- */
+
+/** SetStripPower 0x1B：载荷 `strip_id, on`（§9.5）。 */
+export function cmdSetStripPower(stripId: number, on: boolean): CommandRequest {
+  return {
+    command: 0x1b,
+    payload: new Uint8Array([assertStripId(stripId), on ? 1 : 0]),
+  };
+}
+
+/** QueryStripConfig 0x1C：无载荷；响应 StripConfigReport 0x87（24 字节）。 */
+export function cmdQueryStripConfig(): CommandRequest {
+  return { command: 0x1c, payload: new Uint8Array(0) };
+}
+
+/** QueryDeviceInfo 0x1D：无载荷；响应 DeviceInfoReport 0x88（15 字节）。 */
+export function cmdQueryDeviceInfo(): CommandRequest {
+  return { command: 0x1d, payload: new Uint8Array(0) };
+}
+
+/* ---------------- 剧本 ---------------- */
 
 /** script_id 必须是 0-3（MAX_SCRIPTS = 4）。 */
 function assertScriptId(scriptId: number): number {
@@ -407,7 +494,11 @@ export function cmdSetPlayback(action: number, loop: boolean): CommandRequest {
   return { command: 0x13, payload: new Uint8Array([action, loop ? 1 : 0]) };
 }
 
-/** ScriptBegin 0x14：载荷 `script_id, stage_count, strip_count`。 */
+/**
+ * ScriptBegin 0x14：载荷 `script_id, stage_count, strip_count`。
+ *
+ * v3 修复：strip_count 允许 8（v2 误用 strip_id 的 0-7 校验，最多只能声明 7 条）。
+ */
 export function cmdScriptBegin(
   scriptId: number,
   stageCount: number,
@@ -417,61 +508,58 @@ export function cmdScriptBegin(
   if (!Number.isInteger(stageCount) || stageCount < 1 || stageCount > MAX_STAGES) {
     throw new RangeError(`stage_count 必须是 1-${MAX_STAGES} 的整数，收到 ${stageCount}`);
   }
-  const strips = assertStripId(stripCount);
-  if (strips === 0) {
-    throw new RangeError("strip_count 必须 ≥ 1");
-  }
-  return { command: 0x14, payload: new Uint8Array([id, stageCount, strips]) };
-}
-
-/** ScriptStage 0x15：载荷 `script_id, stage_index, duration_lo, duration_hi`。 */
-export function cmdScriptStage(
-  scriptId: number,
-  stageIndex: number,
-  durationMs: number,
-): CommandRequest {
-  const id = assertScriptId(scriptId);
-  const stage = assertStageIndex(stageIndex);
-  const duration = assertDuration(durationMs);
   return {
-    command: 0x15,
-    payload: new Uint8Array([id, stage, duration & 0xff, (duration >> 8) & 0xff]),
+    command: 0x14,
+    payload: new Uint8Array([id, stageCount, assertStripCount(stripCount)]),
   };
 }
 
 /**
- * ScriptSegment 0x16：载荷
- *   `script_id, stage_index, strip_id, seg_id, start, end, type, params(3|7)`。
+ * ScriptStage 0x15：载荷 `script_id, stage_index, duration(2 LE), fade(2 LE)`。
  *
- * 参数块与 SetSegment 完全同构（segmentParams 复用同一份校验），所以四种
- * 灯效都能直接进剧本。动画类载荷 14 字节，整帧正好 20 字节（协议上限）。
+ * `fadeMs` 是格式预留：协议允许非 0（设备接受并存储），但当前播放行为仍是硬切。
+ */
+export function cmdScriptStage(
+  scriptId: number,
+  stageIndex: number,
+  durationMs: number,
+  fadeMs = 0,
+): CommandRequest {
+  const id = assertScriptId(scriptId);
+  const stage = assertStageIndex(stageIndex);
+  const duration = assertDuration(durationMs);
+  const fade = assertUint16(fadeMs, "fade_ms");
+  return {
+    command: 0x15,
+    payload: new Uint8Array([
+      id,
+      stage,
+      duration & 0xff,
+      (duration >> 8) & 0xff,
+      fade & 0xff,
+      (fade >> 8) & 0xff,
+    ]),
+  };
+}
+
+/**
+ * ScriptSegment 0x16：载荷 `script_id, stage_index` + 21 字节段 = 23 字节。
+ *
+ * 两层段与扁平段都接受（扁平自动补空层）；两层都空等同于「清空该槽位」。
  */
 export function cmdScriptSegment(
   scriptId: number,
   stageIndex: number,
-  segment: SegmentConfig,
+  segment: SegmentSpec | SegmentConfig,
 ): CommandRequest {
   const id = assertScriptId(scriptId);
   const stage = assertStageIndex(stageIndex);
-  const stripId = assertStripId(segment.stripId);
-  if (!Number.isInteger(segment.segId) || segment.segId < 0 || segment.segId >= MAX_SEGMENTS) {
-    throw new RangeError(`seg_id 必须是 0-${MAX_SEGMENTS - 1} 的整数，收到 ${segment.segId}`);
-  }
-  const start = assertLedIndex(segment.start, "start");
-  const end = assertLedIndex(segment.end, "end");
-  if (start > end) {
-    throw new RangeError(`start 不能大于 end，收到 ${start} > ${end}`);
-  }
-  const params = segmentParams(segment);
-  const payload = new Uint8Array(7 + params.length);
+  const spec = isSegmentSpec(segment) ? segment : toSpec(segment);
+  const body = encodeSegmentPayload(spec);
+  const payload = new Uint8Array(SCRIPT_SEGMENT_BYTES);
   payload[0] = id;
   payload[1] = stage;
-  payload[2] = stripId;
-  payload[3] = segment.segId;
-  payload[4] = start;
-  payload[5] = end;
-  payload[6] = segment.type;
-  payload.set(params, 7);
+  payload.set(body, 2);
   return { command: 0x16, payload };
 }
 
@@ -546,45 +634,89 @@ export function parseScriptProgress(payload: Uint8Array): ScriptProgress {
 }
 
 /**
- * 解析 SegmentReport 0x83（与 SetSegment 载荷同构）。
+ * 解析 8 字节定宽层（§7.1）。
  *
- * 长度必须与 type 对应的参数块一致，否则视为协议不匹配（不「尽量解析」）。
+ * 未知 type、静态层保留字节非 0 都视为协议不匹配（不「尽量解析」）。
  */
-export function parseSegmentReport(payload: Uint8Array): SegmentReport {
-  if (payload.length < 5) {
-    throw new RangeError(`SegmentReport 至少 5 字节，收到 ${payload.length}`);
+export function parseLayer(bytes: Uint8Array, offset = 0): EffectLayer {
+  if (bytes.length < offset + LAYER_BYTES) {
+    throw new RangeError(`层编码需要 ${LAYER_BYTES} 字节，收到 ${bytes.length - offset}`);
   }
-  const type = payload[4];
-  const paramLen = segmentParamLength(type);
-  if (paramLen === 0) {
-    throw new RangeError(`SegmentReport 的段类型未知：0x${type.toString(16)}`);
+  const type = bytes[offset];
+  if (type === NO_EFFECT) {
+    return { type: NO_EFFECT, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0 };
   }
-  if (payload.length !== 5 + paramLen) {
-    throw new RangeError(
-      `SegmentReport 长度必须是 ${5 + paramLen} 字节（type=0x${type.toString(16).padStart(2, "0")}），收到 ${payload.length}`,
-    );
+  if (!isKnownLayerType(type)) {
+    throw new RangeError(`层的类型未知：0x${type.toString(16)}`);
   }
-  const report: SegmentReport = {
-    stripId: payload[0],
-    segId: payload[1],
-    start: payload[2],
-    end: payload[3],
+  const layer: EffectLayer = {
     type,
-    hue: payload[5] | (payload[6] << 8),
-    sat: payload[7],
+    hue: bytes[offset + 1] | (bytes[offset + 2] << 8),
+    sat: bytes[offset + 3],
     periodMs: 0,
     p5: 0,
     flags: 0,
   };
-  if (paramLen > 3) {
-    report.periodMs = payload[8] | (payload[9] << 8);
-    report.p5 = payload[10];
-    report.flags = payload[11];
+  if (type === SEGMENT_TYPE.STATIC) {
+    /* 保留位必须是 0（§7.1 第 6 条），否则视为协议漂移。 */
+    for (let i = offset + 4; i < offset + LAYER_BYTES; i += 1) {
+      if (bytes[i] !== 0) {
+        throw new RangeError(`静态层保留字节必须为 0，偏移 ${i} 收到 0x${bytes[i].toString(16)}`);
+      }
+    }
+    return layer;
   }
-  if (report.start > report.end) {
-    throw new RangeError(`SegmentReport 的 start > end：${report.start} > ${report.end}`);
+  layer.periodMs = bytes[offset + 4] | (bytes[offset + 5] << 8);
+  layer.p5 = bytes[offset + 6];
+  layer.flags = bytes[offset + 7];
+  return layer;
+}
+
+/**
+ * 解析 21 字节段载荷（SetSegment / SegmentReport 同构，§7.1）。
+ *
+ * 返回纯 `SegmentSpec`；报告层的扁平兼容字段由 parseSegmentReport 补。
+ */
+export function parseSegmentPayload(payload: Uint8Array): SegmentSpec {
+  if (payload.length !== SEGMENT_BYTES) {
+    throw new RangeError(`段载荷必须是 ${SEGMENT_BYTES} 字节，收到 ${payload.length}`);
   }
-  return report;
+  const layer0 = parseLayer(payload, 5);
+  const layer1 = parseLayer(payload, 5 + LAYER_BYTES);
+  const blend = payload[4];
+  if (blend > BLEND.ADD) {
+    throw new RangeError(`段载荷的 blend 非法：0x${blend.toString(16)}`);
+  }
+  if (layer0.type === NO_EFFECT) {
+    throw new RangeError("段载荷的 layer0 不能为空");
+  }
+  if (layer1.type === NO_EFFECT && blend !== BLEND.OVER) {
+    throw new RangeError(`layer1 为空时 blend 必须为 0，收到 ${blend}`);
+  }
+  const spec: SegmentSpec = {
+    stripId: payload[0],
+    segId: payload[1],
+    start: payload[2],
+    end: payload[3],
+    blend: blend as BlendMode,
+    layer0,
+    layer1,
+  };
+  if (spec.start > spec.end) {
+    throw new RangeError(`段载荷的 start > end：${spec.start} > ${spec.end}`);
+  }
+  return spec;
+}
+
+/**
+ * 解析 SegmentReport 0x83（与 SetSegment 载荷同构，固定 21 字节）。
+ *
+ * 除两层的权威字段外，还给出 layer0 的扁平投影（type/hue/sat/…），
+ * 让 #41 之前的页面继续按「单层」读取，不需要改页面代码。
+ */
+export function parseSegmentReport(payload: Uint8Array): SegmentReport {
+  const spec = parseSegmentPayload(payload);
+  return { ...spec, ...toFlat(spec) };
 }
 
 /** 解析 SegmentListEnd 0x84：载荷 `strip_id, seg_mask`。 */
@@ -596,8 +728,71 @@ export function parseSegmentListEnd(payload: Uint8Array): SegmentListEnd {
 }
 
 /**
- * 解析 14 字节 State（State read 与 StateReport 共用）。
- * 长度不符视为协议不匹配，不「尽量解析」。
+ * 解析 StripConfigReport 0x87：8 路 × `strip_id, gpio, flags`（24 字节）。
+ *
+ * 记录必须按 0-7 顺序给出（结构不变式）；`assigned` 是 flags bit0 的投影。
+ */
+export function parseStripConfigReport(payload: Uint8Array): StripConfig {
+  if (payload.length !== STRIP_CONFIG_BYTES) {
+    throw new RangeError(`StripConfigReport 载荷必须是 ${STRIP_CONFIG_BYTES} 字节，收到 ${payload.length}`);
+  }
+  const channels = [];
+  for (let i = 0; i < MAX_STRIPS; i += 1) {
+    const base = i * STRIP_CONFIG_RECORD_BYTES;
+    const stripId = payload[base];
+    if (stripId !== i) {
+      throw new RangeError(`StripConfigReport 第 ${i} 条的 strip_id 必须是 ${i}，收到 ${stripId}`);
+    }
+    const flags = payload[base + 2];
+    channels.push({
+      stripId,
+      gpio: payload[base + 1],
+      flags,
+      assigned: (flags & 0x01) !== 0,
+    });
+  }
+  return { channels };
+}
+
+/**
+ * 解析 DeviceInfoReport 0x88（15 字节）。
+ *
+ * 固件版本按**高字节在前**给出（major, minor）——这正是向量与 §7.4 的
+ * 「major<<8 | minor」在线上的一致表现（向量 `0300` 注释为 v3.0）。
+ * `hw_id` 是 6 字节 BT MAC，按 `AA:BB:CC:DD:EE:FF` 的自然顺序。
+ */
+export function parseDeviceInfoReport(payload: Uint8Array): DeviceInfo {
+  if (payload.length !== DEVICE_INFO_BYTES) {
+    throw new RangeError(`DeviceInfoReport 载荷必须是 ${DEVICE_INFO_BYTES} 字节，收到 ${payload.length}`);
+  }
+  const firmwareMajor = payload[0];
+  const firmwareMinor = payload[1];
+  const mac: string[] = [];
+  for (let i = 0; i < 6; i += 1) {
+    mac.push(payload[2 + i].toString(16).padStart(2, "0").toUpperCase());
+  }
+  const caps = payload[13];
+  return {
+    firmwareVersion: (firmwareMajor << 8) | firmwareMinor,
+    firmwareMajor,
+    firmwareMinor,
+    hwId: mac.join(":"),
+    maxLeds: payload[8],
+    maxStrips: payload[9],
+    maxSegments: payload[10],
+    maxStages: payload[11],
+    maxScripts: payload[12],
+    caps,
+    supportsTwoLayers: (caps & 0x01) !== 0,
+    fadeImplemented: (caps & 0x02) !== 0,
+  };
+}
+
+/**
+ * 解析 37 字节 State（State read 与 StateReport 共用，§7.3）。
+ *
+ * 长度不符视为协议不匹配，不「尽量解析」、不静默截断。
+ * `ledCount` / `segCount` 是 strip 0 的派生投影（供 #41 之前的页面使用）。
  */
 export function parseState(payload: Uint8Array): DeviceState {
   if (payload.length !== STATE_BYTES) {
@@ -607,28 +802,44 @@ export function parseState(payload: Uint8Array): DeviceState {
   if (power !== 0 && power !== 1) {
     throw new RangeError(`State.power 必须是 0/1，收到 ${power}`);
   }
-  const stripCount = payload[8];
+  const stripCount = payload[6];
   if (stripCount < 1 || stripCount > MAX_STRIPS) {
     throw new RangeError(`State.strip_count 必须是 1-${MAX_STRIPS}，收到 ${stripCount}`);
   }
-  const playbackState = payload[12];
+  const playbackState = payload[9];
   if (playbackState > 2) {
     throw new RangeError(`State.playback_state 必须是 0-2，收到 ${playbackState}`);
   }
+
+  const stripCounts: number[] = [];
+  for (let i = 0; i < MAX_STRIPS; i += 1) {
+    const base = 13 + i * 2;
+    stripCounts.push(payload[base] | (payload[base + 1] << 8));
+  }
+  const stripSegCounts: number[] = [];
+  for (let i = 0; i < MAX_STRIPS; i += 1) {
+    stripSegCounts.push(payload[29 + i]);
+  }
+
   return {
     power,
     brightness: payload[1],
     r: payload[2],
     g: payload[3],
     b: payload[4],
-    ledCount: payload[5] | (payload[6] << 8),
-    maxBrightness: payload[7],
+    maxBrightness: payload[5],
     stripCount,
-    segCount: payload[9],
-    scriptId: payload[10],
-    stageIndex: payload[11],
+    scriptId: payload[7],
+    stageIndex: payload[8],
     playbackState,
-    flags: payload[13],
+    flags: payload[10],
+    stripPowerMask: payload[11],
+    stripAnimMask: payload[12],
+    stripCounts,
+    stripSegCounts,
+    /* 派生字段：保持 #41 之前的单灯带语义。 */
+    ledCount: stripCounts[0],
+    segCount: stripSegCounts[0],
   };
 }
 
@@ -645,6 +856,21 @@ export function stateLoop(state: DeviceState): boolean {
 /** 是否有激活剧本（script_id != 0xFF）。 */
 export function stateHasScript(state: DeviceState): boolean {
   return state.scriptId !== NO_SCRIPT;
+}
+
+/** 某条灯带的独立开关位（`strip_power_mask` 的 bit i）。 */
+export function stateStripPower(state: DeviceState, stripId: number): boolean {
+  return (state.stripPowerMask & (1 << stripId)) !== 0;
+}
+
+/** 某条灯带当前是否有动画类活动段（只作显示提示，§7.3）。 */
+export function stateStripAnimated(state: DeviceState, stripId: number): boolean {
+  return (state.stripAnimMask & (1 << stripId)) !== 0;
+}
+
+/** 某条灯带的灯珠数（越界返回 0，不猜）。 */
+export function stateStripLedCount(state: DeviceState, stripId: number): number {
+  return state.stripCounts[stripId] ?? 0;
 }
 
 /** ACK 载荷固定 [原命令字, 结果码]。 */

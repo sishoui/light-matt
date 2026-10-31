@@ -90,3 +90,111 @@ describe("schema 迁移", () => {
     db.close();
   });
 });
+
+describe("schema v2：设备登记表", () => {
+  it("全新库升到最高版本，devices 与 user_devices 都在", () => {
+    const db = openDatabase(":memory:");
+    expect(userVersion(db)).toBe(Math.max(...MIGRATIONS.map((m) => m.version)));
+    const tables = (
+      db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{
+        name: string;
+      }>
+    ).map((r) => r.name);
+    expect(tables).toContain("devices");
+    expect(tables).toContain("user_devices");
+    expect(columns(db, "devices")).toEqual([
+      "id",
+      "hardware_id",
+      "display_name",
+      "last_seen_at",
+      "led_counts",
+      "firmware_ver",
+      "created_at",
+    ]);
+    expect(columns(db, "user_devices")).toEqual([
+      "user_id",
+      "device_id",
+      "added_at",
+      "display_name",
+    ]);
+    db.close();
+  });
+
+  it("从旧库（user_version = 1，只有基础表）平滑升到 2，数据保留", () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec(SCHEMA_SQL);
+    db.prepare("INSERT INTO users (user_key, first_seen_at, last_seen_at) VALUES (?, ?, ?)").run(
+      "u1",
+      1_000,
+      2_000,
+    );
+    db.prepare(
+      `INSERT INTO usage_logs
+         (user_id, device_key, platform, started_at, reported_at, client_event_id)
+       VALUES (1, 'name:LUMEN-1A2B', 'android', 1_000, 1_000, 'evt-old')`,
+    ).run();
+    db.exec("PRAGMA user_version = 1");
+
+    migrate(db);
+
+    expect(userVersion(db)).toBe(2);
+    expect((db.prepare("SELECT COUNT(*) AS n FROM users").get() as { n: number }).n).toBe(1);
+    expect((db.prepare("SELECT COUNT(*) AS n FROM usage_logs").get() as { n: number }).n).toBe(1);
+    expect(columns(db, "devices")).toContain("hardware_id");
+    expect(columns(db, "user_devices")).toContain("display_name");
+    db.close();
+  });
+
+  it("升级后重复迁移仍然幂等（版本不回退、表结构不变）", () => {
+    const db = openDatabase(":memory:");
+    const before = columns(db, "devices");
+    db.exec("PRAGMA user_version = 1");
+    migrate(db);
+    migrate(db);
+    expect(userVersion(db)).toBe(2);
+    expect(columns(db, "devices")).toEqual(before);
+    db.close();
+  });
+
+  it("hardware_id 唯一：同一 MAC 无法插两次", () => {
+    const db = openDatabase(":memory:");
+    const insert = db.prepare(
+      "INSERT INTO devices (hardware_id, last_seen_at, created_at) VALUES (?, ?, ?)",
+    );
+    insert.run("AA:BB:CC:DD:EE:FF", 1, 1);
+    expect(() => insert.run("AA:BB:CC:DD:EE:FF", 2, 2)).toThrow(/UNIQUE/);
+    db.close();
+  });
+
+  it("user_devices 主键去重 + 外键生效", () => {
+    const db = openDatabase(":memory:");
+    db.prepare("INSERT INTO users (user_key, first_seen_at, last_seen_at) VALUES (?, ?, ?)").run(
+      "u1",
+      1,
+      1,
+    );
+    db.prepare(
+      "INSERT INTO devices (hardware_id, last_seen_at, created_at) VALUES (?, ?, ?)",
+    ).run("AA:BB:CC:DD:EE:FF", 1, 1);
+    db.prepare("INSERT INTO user_devices (user_id, device_id, added_at) VALUES (?, ?, ?)").run(
+      1,
+      1,
+      1,
+    );
+    expect(() =>
+      db.prepare("INSERT INTO user_devices (user_id, device_id, added_at) VALUES (?, ?, ?)").run(
+        1,
+        1,
+        2,
+      ),
+    ).toThrow(/UNIQUE|PRIMARY KEY/);
+    expect(() =>
+      db.prepare("INSERT INTO user_devices (user_id, device_id, added_at) VALUES (?, ?, ?)").run(
+        999,
+        1,
+        2,
+      ),
+    ).toThrow(/FOREIGN KEY/);
+    db.close();
+  });
+});

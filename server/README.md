@@ -1,10 +1,12 @@
-# lumen server —— 使用日志后端 + 只读看板
+# lumen server —— 使用日志后端 + 设备登记 + 只读看板
 
-对应 GitHub issue：[#23 后端数据模型与 API](https://github.com/sishoui/light-matt/issues/23)，
-下游消费方是 [#34 端到端：后端使用日志与只读看板](https://github.com/sishoui/light-matt/issues/34)。
+对应 GitHub issue：[#23 后端数据模型与 API](https://github.com/sishoui/light-matt/issues/23)、
+[#34 端到端：后端使用日志与只读看板](https://github.com/sishoui/light-matt/issues/34)、
+[#43 后端：设备登记与会话 API](https://github.com/sishoui/light-matt/issues/43)。
 
-**一句话定位**：一张用户表 + 一张使用日志表 + 两个只读视图。**不做归属、不做共享、不做权限、
-不做远程控制、不做业务处理。** 控制路径始终是手机 ↔ 设备的本地 BLE 直连，后端永远不在控制链路上。
+**一句话定位**：两张用户数据表 + 两张设备登记表 + 两个只读视图。**不做归属、不做共享、不做权限、
+不做远程控制、不做业务处理、不存任何灯光配置。** 控制路径始终是手机 ↔ 设备的本地 BLE 直连，
+后端永远不在控制链路上，设备 NVS 是灯光配置的唯一真相。
 
 本目录只有 `src/`（服务）、`tests/`（vitest）、三个配置文件和本文档。没有前端构建、没有
 ORM、没有迁移框架、没有定时任务。
@@ -52,6 +54,39 @@ ORM、没有迁移框架、没有定时任务。
 **没有的列（有意）**：颜色、亮度、开关、灯珠数量、剧本、分段、命令字节 —— 任何实时控制数据。
 `tests/api.test.ts` 里有一条用例专门断言表结构里不存在这些列。
 
+### `devices` 与 `user_devices`（v3 迁移 version 2）
+
+`devices` 是**设备实体**，`user_devices` 是「哪个用户登记过哪台设备」。
+
+| `devices` 列 | 类型 | 说明 |
+|---|---|---|
+| `id` | INTEGER PK AUTOINCREMENT | 内部主键，对外以 `deviceId` 暴露 |
+| `hardware_id` | TEXT NOT NULL UNIQUE | 48 位蓝牙 MAC，归一为大写冒号 `AA:BB:CC:DD:EE:FF` |
+| `display_name` | TEXT NULL | **非权威的全局默认**备注名（最后一次改名留下的） |
+| `last_seen_at` | INTEGER NOT NULL | 最近一次 `.../seen` 的时间 |
+| `led_counts` | TEXT NULL | JSON 数组，**缓存，非权威** |
+| `firmware_ver` | INTEGER NULL | **缓存，非权威** |
+| `created_at` | INTEGER NOT NULL | 首次登记时间 |
+
+| `user_devices` 列 | 类型 | 说明 |
+|---|---|---|
+| `user_id` | INTEGER NOT NULL → `users(id)` | |
+| `device_id` | INTEGER NOT NULL → `devices(id)` | |
+| `added_at` | INTEGER NOT NULL | 登记时间 |
+| `display_name` | TEXT NULL | **每个用户自己的备注名，权威** |
+
+主键 `(user_id, device_id)`；索引在 `device_id` 与 `devices.last_seen_at` 上。
+
+**备注名为什么有两份**：#43 把 `display_name` 放在 `devices` 上，#44 要求「同一台设备在两台
+手机上能各叫各的」。两者都要满足，所以读路径统一取
+`COALESCE(user_devices.display_name, devices.display_name)`：改过名的人看到自己的名字，
+没改过的人看到全局默认值。`PATCH` 只写调用者的那一条关联，同时刷新全局默认（非权威）。
+
+**没有的列（有意）**：`rgb` / `brightness` / `segment` / `script` / `stage` / `power` / 任何
+实时控制数据。`devices` 上只有登记信息与**明确标注非权威**的缓存；配置真相在设备 NVS
+（`docs/spec-v3.md` §2.2）。`tests/devices.test.ts` 有两条用例从两个方向断言这一点：表结构
+里没有这些列，请求体里塞进去也只会被忽略。
+
 ### 两个只读视图
 
 两者都是 `CREATE VIEW`，没有对应的可写实体，后台只 `SELECT` 它们。
@@ -83,6 +118,12 @@ ORM、没有迁移框架、没有定时任务。
 | 方法 | 路径 | 鉴权 | 说明 |
 |---|---|---|---|
 | `POST` | `/api/v1/usage-logs` | `x-lumen-app-token: <APP_TOKEN>` | 追加一条使用日志。`201` = 新建，`200` = 幂等重复 |
+| `POST` | `/api/v1/session` | `x-lumen-app-token` | 换取身份。配了 `WX_APPID`/`WX_SECRET` 时用 `code` 换 openid，否则接受 `local-<16hex>` |
+| `POST` | `/api/v1/devices/register` | app token + `x-lumen-user-key` | 登记一台设备。`201` = 新设备，`200` = 幂等重复 |
+| `GET` | `/api/v1/devices` | app token + `x-lumen-user-key` | 当前用户登记的设备列表 |
+| `PATCH` | `/api/v1/devices/:id` | app token + `x-lumen-user-key` | 改**自己的**备注名 |
+| `DELETE` | `/api/v1/devices/:id` | app token + `x-lumen-user-key` | **只解除关联**，不删设备记录 |
+| `POST` | `/api/v1/devices/:id/seen` | app token + `x-lumen-user-key` | 推进 `last_seen_at`，可选更新非权威缓存 |
 | `GET` | `/health` | 无 | 存活探针，无数据。小程序据此决定是否补报本地缓存 |
 
 请求体：
@@ -135,11 +176,12 @@ wx.setStorageSync("lumen.usage.config.v1", JSON.stringify({
 |---|---|---|
 | `GET` | `/admin/devices` | 设备列表：设备名、聚合键、使用次数、用户数、最后出现时间、可见 MAC 数 |
 | `GET` | `/admin/users` | 用户列表：昵称、标识、使用次数、设备数、首末出现时间 |
+| `GET` | `/admin/registry` | v3 设备登记表：硬件 ID、默认备注名、最后在线、登记人数量、非权威缓存 |
 | `GET` | `/admin/` | `302` → `/admin/devices` |
 
 **写方法在 `/admin/**` 上一律 `405`**，且带 `Allow: GET, HEAD`。这不是靠「没写路由所以 404」
 兜底，而是显式注册了 `POST/PUT/PATCH/DELETE` 的通配处理器；`tests/readonly.test.ts` 用
-28 条参数化用例逐格验证了这一点。页面 HTML 里也没有 `<form>` / `<input>` / `<button>`，
+36 条参数化用例逐格验证了这一点。页面 HTML 里也没有 `<form>` / `<input>` / `<button>`，
 同样有测试断言。
 
 鉴权先于路由匹配：匿名的 `POST /admin/devices` 得到 `401` 而不是 `405`，不泄露路由形状。
@@ -148,8 +190,10 @@ wx.setStorageSync("lumen.usage.config.v1", JSON.stringify({
 
 - 没有控制/命令下发通道（控制只在 BLE 上）。
 - 没有配置读取或同步接口（见 §5）。
-- 没有用户注册、密码、OAuth、`code2session`。
-- 没有删除/编辑接口，任何一侧都没有。
+- 没有用户注册、密码、OAuth、登录态、签名令牌。
+- 后台（`/admin/**`）没有删除/编辑接口，任何一侧都没有。
+- **设备路由的身份是可伪造的自称**：`x-lumen-user-key` 头配共享 app token，没有 HMAC、没有
+  会话令牌、没有签名。这是刻意为之，见下方「安全边界」。
 
 ---
 
@@ -167,8 +211,25 @@ wx.setStorageSync("lumen.usage.config.v1", JSON.stringify({
     清缓存/重装 = 新 `user_key`。
   - 它满足个人测试阶段真正的运维问题「这台设备最近有没有人用」，且不需要登录流程。
   - 接入 `code2session` 后只需替换这一个函数，`userKey` 字段与后端全部不用改。
+- **v3 已实现 `code2session`（#43）**：`POST /api/v1/session` 在 `WX_APPID` + `WX_SECRET`
+  都配置时用 `wx.login` 的 `code` 换 openid，响应 `identityKind: "openid"`、`trusted: true`；
+  没配时回落到 `local-<16hex>`，响应 `identityKind: "local"`、`trusted: false`。
+  两种模式下设备登记都能用，区别只是 openid 能跨手机对齐同一个人。
+  **只配一半会启动失败**——避免运行期「永远 502 但看不出原因」。
 - **不做的事**：不建账号密码、不发会话、不做角色。后台的唯一账号是环境变量里的那一个
   运营者，与用户表无关。
+
+### 3.1 安全边界（v3 设备登记，必须理解）
+
+- **不做访问控制**：`user_devices` 只回答「谁登记过」，不回答「谁能连」。任何人扫到设备
+  都能连——这是个人测试阶段的前提（`docs/spec-v3.md` §2.3、`docs/agents/issue-tracker.md`）。
+- **身份传输不做签名**：设备路由用 `x-lumen-user-key` 头 + 共享 app token。这个头是
+  **可伪造的自称**，没有 HMAC、没有会话令牌、没有过期时间。加签名的前提是「设备归属即权限」，
+  而本项目刻意不做归属，所以签名只会增加复杂度而不增加安全性。上线前若要加，改
+  `src/app.ts` 里的 `resolveUser` 一处即可。
+- **`local-<hex>` 身份可伪造**：此时设备列表只在单机有意义。`session` 响应用
+  `identityKind` / `trusted` 明示当前是哪种身份，App 据此显示「仅本机可见」。
+- **`led_counts` / `firmware_ver` 是缓存**：不可作为权威向 App 展示「设备当前配置」。
 
 ---
 
@@ -221,6 +282,16 @@ wx.setStorageSync("lumen.usage.config.v1", JSON.stringify({
 > 不同手机上的 `deviceId` 只作为原始证据存档，不参与分组。同一广播名下的多台设备会被合并，
 > 用 `mac_count` 观察。使用次数 = 连接会话数，不是心跳数。**
 
+**v3 的两套标识不要混淆**：
+
+| | 用途 | 键 | 存储 |
+|---|---|---|---|
+| 日志聚合 | 「这台设备被用过几次」 | 广播名 `name:LUMEN-XXXX` | `usage_logs.device_key` |
+| 设备实体 | 「这是哪台设备」 | 蓝牙 MAC 全地址 `AA:BB:CC:DD:EE:FF` | `devices.hardware_id` |
+
+MAC 全地址是 48 位、跨手机一致、无碰撞，所以 v3 的设备登记用它当主键。日志侧**没有改**：
+`usage_logs` 的聚合口径与 API 行为保持 v2 原样，`POST /api/v1/usage-logs` 完全不变。
+
 ---
 
 ## 5. 配置真相源（问题 4）
@@ -231,7 +302,9 @@ wx.setStorageSync("lumen.usage.config.v1", JSON.stringify({
   读回真实配置，State 是权威（`docs/protocol.md` §7：「设备是状态权威」）。
 - 后端存副本会立刻产生第二个真相源和一致性问题，而 v2 没有任何「换手机恢复配置」的需求
   （用户故事里也没有）。换手机后重新连上同一台设备，配置本来就在设备上。
-- **本票实现为零**：没有配置表、没有配置接口、没有同步任务。#34 也不需要它。
+- **v3 的设备登记也不例外**：`devices.led_counts` / `devices.firmware_ver` 只是
+  **明确标注非权威**的离线提示，不能当作「设备当前配置」展示；写入走
+  `POST /api/v1/devices/:id/seen`，读回真相永远走 BLE 上的 `QueryStrip`/`QueryScript`。
 
 这条结论的副作用：后端挂了不影响任何配置与控制——这正是 #34 的验收项「后端不可达时不影响
 小程序的控制功能」。
@@ -274,14 +347,15 @@ wx.setStorageSync("lumen.usage.config.v1", JSON.stringify({
 ```ts
 // src/schema.ts
 export const MIGRATIONS = [
-  { version: 2, sql: `ALTER TABLE usage_logs ADD COLUMN firmware_version TEXT;` },
+  // v2 已被设备登记表占用；新加列从 3 起
+  { version: 3, sql: `ALTER TABLE usage_logs ADD COLUMN firmware_version TEXT;` },
 ];
 ```
 
 `openDatabase()` 会按 `PRAGMA user_version` 自动补齐未执行的迁移，包在事务里，
 失败回滚。迁移只追加、不改历史条目。`tests/schema-migration.test.ts` 是护栏。
 
-两张表都用了 `STRICT`：SQLite 默认是动态类型，`INTEGER` 列能存进字符串且不报错，
+四张表都用了 `STRICT`：SQLite 默认是动态类型，`INTEGER` 列能存进字符串且不报错，
 `STRICT` 让类型检查真正生效。
 
 ### 环境变量
@@ -294,8 +368,11 @@ export const MIGRATIONS = [
 | `PORT` | 否 | `8787` | |
 | `HOST` | 否 | `127.0.0.1` | 默认只听本机，由反代对外 |
 | `DB_PATH` | 否 | `./data/lumen.db` | 目录不存在会自动创建 |
+| `WX_APPID` | 否 | — | 小程序 AppID。与 `WX_SECRET` **同时**配或同时留空 |
+| `WX_SECRET` | 否 | — | 小程序 AppSecret。都配了才走 `code2session`，否则回落 `local-<hex>` |
 
 三个秘密都**没有默认值**：缺任何一个进程直接拒绝启动，避免「默认口令上线」。
+微信凭据只配一半也会**启动失败**：否则外部只能看到「登录永远 502」，看不出原因。
 
 ### 本地跑
 
@@ -319,17 +396,19 @@ npm test          # vitest，离线，不监听端口、不联网（fastify.inje
 npm run typecheck # tsc --noEmit
 ```
 
-57 条用例，覆盖本票要求的四类：
+133 条用例：
 
 | 文件 | 覆盖 |
 |---|---|
 | `tests/api.test.ts` | 日志写入落库、幂等补报、会话自动收尾、token 缺失/错误 401、请求体校验 400、表里不含控制列；后台鉴权（匿名/错密码/错用户名/坏 header 全 401） |
 | `tests/aggregation.test.ts` | **跨手机聚合**（Android MAC 与 iOS UUID → 同一 `device_key`）、广播名撞车的 `mac_count`、`hardwareId` 优先、`raw` 兜底、会话计数、`last_seen_at` 取 ended/started 较大者；`resolveDeviceKey` 优先级单测 |
-| `tests/readonly.test.ts` | 看板两页内容；HTML 无表单/输入/按钮；28 条 `POST/PUT/PATCH/DELETE × 7 个路径` 全部 `405`；带凭据的写方法也改不动数据；`/health` 免鉴权 |
+| `tests/devices.test.ts` | 设备登记/列表/改名/解除关联/seen；`hardwareId` 归一与 400；幂等登记；**按 user 隔离**（列表与备注名）；超长/空白名 400；HTML 原样入库、看板转义；表结构无灯光列；`/admin/registry` |
+| `tests/session.test.ts` | local 回落（`identityKind: "local"`）与幂等；code → openid（fake fetch，参数正确）；`errcode 40029` → 401；系统繁忙/网络失败/HTTP 500/无 openid → 502；`readEnv` 成对校验 |
+| `tests/readonly.test.ts` | 看板三页内容；HTML 无表单/输入/按钮；36 条 `POST/PUT/PATCH/DELETE × 9 个路径` 全部 `405`；带凭据的写方法也改不动数据；`/health` 免鉴权 |
 
 ---
 
 ## 9. 本票没有做、也不该做
 
 不存实时控制通道 · 不做归属 · 不做共享 · 不做角色权限 · 不做业务处理 · 后台只读 ·
-不做 `code2session` · 不做配置同步 · 不做迁移框架 · 不做 OTA。
+不做签名会话令牌 · 不做访问控制 · 不存灯光配置 · 不做配置同步 · 不做迁移框架 · 不做 OTA。

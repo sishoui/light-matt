@@ -37,6 +37,7 @@ import type { HttpFetch, HttpRequest, HttpResponse } from "../utils/usage/http";
 import { UsageLogger, MAX_SENDS_PER_FLUSH } from "../utils/usage/logger";
 import { UsageQueue, USAGE_QUEUE_MAX } from "../utils/usage/queue";
 import { createMemoryUsageStorage, type UsageStorage } from "../utils/usage/storage";
+import { baseState } from "./helpers/state";
 
 const TOKEN = "test-app-token";
 
@@ -559,18 +560,7 @@ describe("#34 发送", () => {
 // 假传输：只实现 ControlSession 用到的部分
 // ---------------------------------------------------------------------------
 
-function baseState(overrides: Partial<DeviceState> = {}): DeviceState {
-  return {
-    power: 1,
-    brightness: 128,
-    r: 255,
-    g: 180,
-    b: 120,
-    ledCount: 30,
-    maxBrightness: 255,
-    ...overrides,
-  };
-}
+/* v3 的 37 字节 State 夹具集中在 tests/helpers/state.ts（含派生字段一致性）。 */
 
 class FakeTransport {
   linkState: LinkState = "ready";

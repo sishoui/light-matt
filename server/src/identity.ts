@@ -50,6 +50,24 @@ function normalizeRawDeviceId(raw: string | null | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+/**
+ * 蓝牙 MAC 全地址归一化，输出 `AA:BB:CC:DD:EE:FF`。
+ *
+ * 与 `normalizeHardwareId` 不是一回事：那个是日志聚合键的一部分（小写、加 `hw:` 前缀），
+ * 这里要的是**设备实体的天然主键**（大写冒号、人类可读、跨手机一致）。
+ *
+ * 接受：`AA:BB:CC:DD:EE:FF` / `aa-bb-cc-dd-ee-ff` / `aabbccddeeff` / 可选 `0x` 前缀。
+ * 其余一律返回 null —— 宁可 400，也不要拿脏数据当主键（UNIQUE 一旦被污染无法回滚）。
+ */
+export function normalizeMacAddress(raw: string | null | undefined): string | null {
+  if (typeof raw !== "string") return null;
+  const compressed = raw.trim().toLowerCase().replace(/^0x/, "").replace(/[:\-\s]/g, "");
+  if (!/^[0-9a-f]{12}$/.test(compressed)) return null;
+  const pairs = compressed.match(/.{2}/g);
+  if (pairs === null) return null;
+  return pairs.join(":").toUpperCase();
+}
+
 export function resolveDeviceKey(input: DeviceIdentityInput): ResolvedDeviceKey {
   const name = normalizeBroadcastName(input.deviceName);
   const hardwareId = normalizeHardwareId(input.hardwareId);
