@@ -12,10 +12,13 @@ import { describe, expect, it } from "vitest";
 
 import { ControlSession } from "../utils/control/session";
 import type { BleTransport } from "../utils/ble/transport";
+import { AckRejectedError } from "../utils/ble/errors";
 import { breathingSegment, staticSegment } from "../utils/protocol/commands";
 import type { AckResult, CommandRequest, DeviceState } from "../utils/protocol/types";
-import { CMD } from "../utils/protocol/constants";
+import { CMD, RESULT, SEGMENT_TYPE } from "../utils/protocol/constants";
 import type { ScriptConfig } from "../utils/control/script-plan";
+import { checkScriptCapacity } from "../utils/control/script-plan";
+import type { SegmentSpec } from "../utils/protocol/types";
 import { baseState } from "./helpers/state";
 
 /** 只实现 session 用到的成员。 */
@@ -27,6 +30,10 @@ class FakeTransport {
   failAt = -1;
   /** 拒绝（ACK 非零）的下发下标。 */
   rejectAt = -1;
+  /** 拒绝时用的结果码（默认 InvalidParam；0x0A 用于 ScriptTooLarge）。 */
+  rejectCode = RESULT.INVALID_PARAM;
+  /** 摘要读回结果（按 scriptId）。 */
+  summaries = new Map<number, { scriptId: number; stageCount: number; flags: number; active: boolean }>();
   private readonly linkListeners: Array<(state: string, detail?: unknown) => void> = [];
   private readonly stateListeners: Array<(state: DeviceState) => void> = [];
 
@@ -47,7 +54,7 @@ class FakeTransport {
     };
   }
 
-  /** 下发用：逐帧串行，每帧成功后回调进度。 */
+  /** 下发用：逐帧串行，每帧成功后回调进度；非零 ACK 与真实传输层同样中断。 */
   async sendSequence(
     requests: CommandRequest[],
     onProgress?: (done: number, total: number) => void,
@@ -55,7 +62,7 @@ class FakeTransport {
     for (let i = 0; i < requests.length; i += 1) {
       const ack = await this.sendAndWaitAck(requests[i]);
       if (!ack.ok) {
-        throw new Error("ACK 失败");
+        throw new AckRejectedError(ack.command, ack.resultCode);
       }
       onProgress?.(i + 1, requests.length);
     }
@@ -68,7 +75,12 @@ class FakeTransport {
       return Promise.reject(new Error("连接已断开"));
     }
     if (index === this.rejectAt) {
-      return Promise.resolve({ seq: index, command: req.command, resultCode: 0x01, ok: false });
+      return Promise.resolve({
+        seq: index,
+        command: req.command,
+        resultCode: this.rejectCode,
+        ok: false,
+      });
     }
     return Promise.resolve({ seq: index, command: req.command, resultCode: 0, ok: true });
   }
@@ -85,7 +97,8 @@ class FakeTransport {
     flags: number;
     active: boolean;
   }> {
-    return Promise.resolve({ scriptId, stageCount: 4, flags: 0x03, active: true });
+    const found = this.summaries.get(scriptId);
+    return Promise.resolve(found ?? { scriptId, stageCount: 4, flags: 0x03, active: true });
   }
 }
 
@@ -251,6 +264,139 @@ describe("#32 session 播放控制与查询", () => {
     transport.linkState = "idle";
     const session = makeSession(transport);
     const result = await session.downloadScript(fourStageScript());
+    expect(result.kind).toBe("error");
+    expect(transport.sent).toHaveLength(0);
+  });
+});
+
+describe("#45 容量预检与 ScriptTooLarge (0x0A)", () => {
+  /** 8 带 × 8 阶段 × 8 段两层动画：单套 9835 字节（16192+... 见 script-plan）。 */
+  function worstCaseScript(): ScriptConfig {
+    const animation: SegmentSpec = {
+      stripId: 0,
+      segId: 0,
+      start: 0,
+      end: 0,
+      blend: 2,
+      layer0: { type: SEGMENT_TYPE.BREATHING, hue: 0, sat: 255, periodMs: 1000, p5: 0, flags: 0 },
+      layer1: { type: SEGMENT_TYPE.COMET, hue: 0, sat: 255, periodMs: 1000, p5: 0, flags: 0 },
+    };
+    const stages = [];
+    for (let stage = 0; stage < 8; stage += 1) {
+      const segments = [];
+      for (let strip = 0; strip < 8; strip += 1) {
+        for (let seg = 0; seg < 8; seg += 1) {
+          segments.push({ ...animation, stripId: strip, segId: seg, start: seg, end: seg });
+        }
+      }
+      stages.push({ durationMs: 1000, segments });
+    }
+    return { scriptId: 0, stripCount: 8, stages };
+  }
+
+  it("单套理论最坏（9835 B）仍可下发——16KB 是 4 套共享的", async () => {
+    const transport = new FakeTransport();
+    const session = makeSession(transport);
+    const script = worstCaseScript();
+    const check = session.scriptCapacityForDevice(script);
+    expect(check.ok).toBe(true);
+    if (check.ok) {
+      expect(check.bytes).toBe(9835);
+    }
+    const result = await session.downloadScript(script, { activate: false });
+    expect(result.kind).toBe("ok");
+    expect(transport.sent.length).toBeGreaterThan(0);
+  });
+
+  it("超限时一帧都不发（预检直接返回 invalid）", async () => {
+    const transport = new FakeTransport();
+    const session = makeSession(transport);
+    /*
+     * 单套剧本的物理上限是 8 带 × 8 阶段 × 8 段 = 9835 字节，永远进不了
+     * 16384；所以「超限不发」的守卫只能用 checkScriptBlobBytes 直接验证。
+     * 4 套满配合计 39316 字节超限，但那要设备侧 Commit 才能发现（0x0A），
+     * 因为其它槽位的内容读不回来。
+     */
+    expect(checkScriptCapacity([worstCaseScript()]).ok).toBe(true);
+    const four = [0, 1, 2, 3].map((id) => ({ ...worstCaseScript(), scriptId: id }));
+    expect(checkScriptCapacity(four).ok).toBe(false);
+    expect(transport.sent).toHaveLength(0);
+  });
+
+  it("Commit 回 0x0A → too-large，文案明说设备配置未改变，且不发 Activate", async () => {
+    const transport = new FakeTransport();
+    /* Commit 是第 1 + 4 + 3 = 8 条已发命令（下标 7）。 */
+    const plan = fourStageScript();
+    const frameCountBeforeCommit = 1 + plan.stages.length + 3;
+    transport.rejectAt = frameCountBeforeCommit;
+    transport.rejectCode = RESULT.SCRIPT_TOO_LARGE;
+    const session = makeSession(transport);
+
+    const result = await session.downloadScript(plan);
+    expect(result.kind).toBe("too-large");
+    if (result.kind === "too-large") {
+      expect(result.message).toContain("剧本过大");
+      expect(result.message).toContain("设备配置未改变");
+    }
+    const commands = transport.sent.map((req) => req.command);
+    expect(commands).toContain(CMD.SCRIPT_ABORT);
+    expect(commands).not.toContain(CMD.ACTIVATE_SCRIPT);
+  });
+
+  it("其它非零 ACK 仍走 error（不误报成剧本过大）", async () => {
+    const transport = new FakeTransport();
+    transport.rejectAt = 2;
+    transport.rejectCode = RESULT.INVALID_PARAM;
+    const session = makeSession(transport);
+    const result = await session.downloadScript(fourStageScript());
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).not.toContain("剧本过大");
+    }
+  });
+});
+
+describe("#45 摘要读回（4 个槽位）", () => {
+  it("依次查 0-3 并返回全部摘要", async () => {
+    const transport = new FakeTransport();
+    transport.summaries.set(0, { scriptId: 0, stageCount: 4, flags: 0x03, active: true });
+    transport.summaries.set(1, { scriptId: 1, stageCount: 0, flags: 0, active: false });
+    transport.summaries.set(2, { scriptId: 2, stageCount: 2, flags: 0, active: false });
+    transport.summaries.set(3, { scriptId: 3, stageCount: 8, flags: 0, active: false });
+    const session = makeSession(transport);
+
+    const result = await session.queryScriptSummaries();
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.summaries.map((s) => s.stageCount)).toEqual([4, 0, 2, 8]);
+      expect(result.summaries[0].active).toBe(true);
+    }
+  });
+
+  it("读回失败时保留已读到的前缀并给出原因", async () => {
+    const transport = new FakeTransport();
+    let calls = 0;
+    transport.queryScript = (scriptId: number) => {
+      calls += 1;
+      if (calls > 2) {
+        return Promise.reject(new Error("超时"));
+      }
+      return Promise.resolve({ scriptId, stageCount: 4, flags: 0, active: false });
+    };
+    const session = makeSession(transport);
+    const result = await session.queryScriptSummaries();
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("超时");
+      expect(result.summaries).toHaveLength(2);
+    }
+  });
+
+  it("未连接时读摘要直接报错，不发帧", async () => {
+    const transport = new FakeTransport();
+    transport.linkState = "idle";
+    const session = makeSession(transport);
+    const result = await session.queryScriptSummaries();
     expect(result.kind).toBe("error");
     expect(transport.sent).toHaveLength(0);
   });

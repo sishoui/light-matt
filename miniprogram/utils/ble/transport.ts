@@ -57,7 +57,7 @@ import type {
   StripConfig,
 } from "../protocol/types";
 import { AckWaiters } from "./ack-waiters";
-import { errorText, iosStateText, resultText, triage } from "./errors";
+import { AckRejectedError, errorText, iosStateText, resultText, triage } from "./errors";
 import {
   describeStateReadBytes,
   describeTx,
@@ -834,6 +834,10 @@ export class BleTransport {
    * 剧本下发是「一帧一条命令」的批量流程，用 sendAndWaitAck 逐帧串行即可：
    * 顺序是协议要求（Begin → Stage/Segment → Commit），不能并发。
    * 回调在每帧确认后报告进度（done 是**已确认**的帧数）。
+   *
+   * **非零 ACK 必须中断**：剧本的 Commit 回 `ScriptTooLarge (0x0A)` 时设备
+   * 不提交，继续发后面的 Activate 会得到一条误导性的成功。所以这里把非零
+   * ACK 折成 `AckRejectedError` 抛出，由会话层决定 Abort 与提示文案。
    */
   async sendSequence(
     requests: CommandRequest[],
@@ -842,7 +846,10 @@ export class BleTransport {
   ): Promise<void> {
     const total = requests.length;
     for (let i = 0; i < total; i += 1) {
-      await this.sendAndWaitAck(requests[i], opts);
+      const ack = await this.sendAndWaitAck(requests[i], opts);
+      if (!ack.ok) {
+        throw new AckRejectedError(ack.command, ack.resultCode);
+      }
       onProgress?.(i + 1, total);
     }
   }
