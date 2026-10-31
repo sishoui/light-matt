@@ -1,16 +1,24 @@
 /**
- * 设备页（tab 1）：扫描 / 最近连过 / 连接 / 备注名 / 隐藏灯带 / 协议日志。
+ * 设备页（tab 1）：本地优先的设备列表 + 异步后端同步。
  *
- * 这一页只有「设备」这一个维度，所以它不关心当前是第几条灯带；连接成功后
- * 直接 `switchTab` 到灯光页（票面验收：连上后自动跳到灯光）。
+ * ## 本地优先（#44 的核心约束）
  *
- * 状态纪律（#41 引入，所有页都遵守）：
+ * 首屏**只读本地**：`loadRecentDevices` + `loadRegistry` 立即渲染「我的设备」，
+ * 一个网络字节都不等。网络只在后台补两件事：
+ *  1. `POST /api/v1/session` 换取身份（`identityKind === "local"` 时提示「仅本机可见」）；
+ *  2. `GET /api/v1/devices` 合并到列表（按 hardwareId 去重，**本地备注名赢**）。
+ * 后端不可达时列表一行不少，只多一条顶部提示「离线，仅显示本机记录」。
+ *
+ * ## 同步永不阻塞控制
+ *
+ * 连接 / 备注 / 删除都先改本地，再 fire-and-forget 同步。任何 `{ok:false}`
+ * 只会让离线提示出现，不会回滚本地、不会弹「失败」、不会影响 BLE。
+ *
+ * ## 状态纪律（#41 引入，所有页都遵守）
+ *
  *  - 会话是 App 级单例（`getSession()`），页面**从不** destroy 它；
  *  - 监听在 `onShow` 订阅、`onHide` 退订（tab 页永不 unload）；
- *  - 设备是权威：连接后所有设备级数值都来自 State / Query*，不用本地缓存覆盖。
- *
- * #44 的落点：设备列表的后端同步（`POST /devices/register` 等）与 hardwareId
- * 去重都在这页展开；当前只做纯本地（device-history + device-registry）。
+ *  - 设备是权威：连接后所有设备级数值都来自 State / Query*，不用缓存覆盖。
  */
 
 import { errorText } from "../../utils/ble/errors";
@@ -21,7 +29,6 @@ import { getSession } from "../../utils/control/session-singleton";
 import { statusView } from "../../utils/control/status-view";
 import {
   loadRegistry,
-  recordSeen,
   removeDevice,
   setRemark,
   setStripEnabled,
@@ -29,19 +36,44 @@ import {
   type DeviceRegistry,
 } from "../../utils/control/device-registry";
 import { createWxStorage } from "../../utils/control/device-cache";
+import {
+  buildMyDevices,
+  buildNearby,
+  type MyDeviceRow,
+  type NearbyDeviceRow,
+} from "../../utils/control/device-list";
+import type { SyncedDevice } from "../../utils/control/device-api";
+import { DeviceSync, syncApiOf } from "../../utils/control/device-sync";
+import { getDeviceApi } from "../../utils/control/device-api-singleton";
 import { LogPanelView } from "../../utils/control/log-panel-view";
 import { MAX_STRIPS } from "../../utils/protocol/constants";
 import type { DeviceState, DiscoveredDevice, LinkState } from "../../utils/protocol/types";
 import { TAB_ROUTES, PAGE_ROUTES, pushTo, switchTabTo } from "../../utils/control/routes";
 
+/** 「我的设备」的视图行 = 合并模型的展示投影（名字 / 灯带数 / 时间 / 可连性）。 */
 interface DeviceRowView {
+  /** 列表 key（hardwareId 优先），wx:key 用它——deviceId 在 iOS 上会变。 */
+  key: string;
   deviceId: string;
-  /** 显示名：备注名 > 广播名 > deviceId。 */
+  hardwareId: string;
+  /** 显示名（备注 > 广播名 > hwId）。 */
   label: string;
-  /** 副标题：deviceId / RSSI / 硬件号 / 最近连接时间。 */
+  /** 副标题：身份 / 灯带数 / 最近连接时间。 */
   meta: string;
+  /** 灯带数文本（带「上次 / 缓存」标注）。 */
+  stripsText: string;
   /** 是否当前连接的这台。 */
   current: boolean;
+  /** 只有后端记录：本机没连过，需要先扫到才能连。 */
+  remoteOnly: boolean;
+  /** 后端是否有这一行（决定是否显示「删除（解除关联）」）。 */
+  linked: boolean;
+  /** 灯带数来自缓存而非设备（UI 显示为弱化色）。 */
+  cached: boolean;
+}
+
+interface NearbyRowView extends NearbyDeviceRow {
+  rssiText: string;
 }
 
 /** 连接成功后的自动跳转：只跳一次，避免每次 onShow 都抢用户导航。 */
@@ -55,14 +87,20 @@ Page({
     linkClass: "link-idle",
     ready: false,
 
-    // 设备列表
+    // 列表
     currentDeviceId: "",
     currentDeviceName: "",
-    recentDevices: [] as DeviceRowView[],
-    nearbyDevices: [] as DeviceRowView[],
+    myDevices: [] as DeviceRowView[],
+    nearbyDevices: [] as NearbyRowView[],
+    /** 「附近设备」空态文案：区分「没扫到」与「扫到的都在我的设备里」。 */
+    nearbyEmptyText: "点「扫描」开始查找",
     scanHint: "",
     scanning: false,
     switchBusy: false,
+
+    // 同步状态（#44）
+    syncHint: "",
+    identityHint: "",
 
     // 备注名
     remarkInput: "",
@@ -83,6 +121,13 @@ Page({
   session: null as ControlSession | null,
   logView: null as LogPanelView | null,
   registry: null as DeviceRegistry | null,
+  sync: null as DeviceSync | null,
+  /** 后端列表（最近一次成功拉取；失败时保留上一次成功的，不清空）。 */
+  remoteDevices: [] as SyncedDevice[],
+  /** 实时扫描结果（原始，派生视图每次重算）。 */
+  discovered: [] as DiscoveredDevice[],
+  /** 后端同步进行中：避免 onShow + 连接完成叠成两次并发。 */
+  syncing: false,
   unsubscribers: [] as Array<() => void>,
 
   onLoad() {
@@ -91,7 +136,12 @@ Page({
     this.logView = new LogPanelView(session.log, {
       setData: (patch) => this.setData(patch),
     });
-    this.refreshRegistry();
+    /* 同步层：未配置后端时为 null（功能关闭，不是错误）。 */
+    this.sync = new DeviceSync({
+      api: syncApiOf(getDeviceApi()),
+      storage: createWxStorage(),
+    });
+    this.refreshLocal();
     console.log(
       `[lumen] 设备页就绪（开发版日志 ${detectDevMode() ? "开启" : "关闭"}）`,
     );
@@ -100,7 +150,9 @@ Page({
   onShow() {
     this.subscribe();
     this.syncStatus();
-    this.refreshRegistry();
+    /* 先渲染本地（同步函数，不等待），再后台同步。 */
+    this.refreshLocal();
+    void this.syncFromBackend();
   },
 
   onHide() {
@@ -126,6 +178,14 @@ Page({
       session.onDevices((devices) => this.applyDevices(devices)),
       session.onScanHint((hint) => this.setData({ scanHint: hint ?? "" })),
       session.onState((state) => this.applyDeviceState(state)),
+      /* 设备增强信息（hwId / 固件）读完：列表要刷新「上次」快照，
+       * 并且此时才具备登记条件（后端主键是 hwId）。 */
+      session.onDeviceConfig(() => {
+        this.refreshLocal();
+        if (session.linkState === "ready") {
+          void this.syncConnected();
+        }
+      }),
       session.log.onAppend(() => this.logView?.onAppend()),
     ];
   },
@@ -172,9 +232,14 @@ Page({
         autoJumpedOnce = true;
         switchTabTo(TAB_ROUTES.light);
       }
+      /* 连上就同步一次：登记 + seen（幂等，失败只置离线提示）。 */
+      void this.syncConnected();
+      this.refreshLocal();
     } else {
       /* 断线后允许下一次连接再次自动跳转。 */
       autoJumpedOnce = false;
+      /* 扫描状态影响「附近设备」的空态文案。 */
+      this.applyListViews();
     }
   },
 
@@ -204,7 +269,9 @@ Page({
     if (session === null) {
       return;
     }
-    this.setData({ scanHint: "", nearbyDevices: [] });
+    this.setData({ scanHint: "" });
+    this.discovered = [];
+    this.applyListViews();
     try {
       await session.scan();
     } catch (err) {
@@ -221,35 +288,25 @@ Page({
   },
 
   applyDevices(devices: DiscoveredDevice[]) {
-    const registry = this.registry;
-    const current = this.data.currentDeviceId;
-    this.setData({
-      nearbyDevices: devices.map((device) => ({
-        deviceId: device.deviceId,
-        label: this.labelOf(registry, device.deviceId, device.name),
-        meta: `${device.deviceId} · ${device.rssi} dBm`,
-        current: device.deviceId === current,
-      })),
-    });
+    this.discovered = devices;
+    this.applyListViews();
   },
 
-  labelOf(registry: DeviceRegistry | null, deviceId: string, fallback: string): string {
-    const entry = registry?.devices.find((item) => item.deviceId === deviceId);
-    if (entry?.remark !== undefined && entry.remark.length > 0) {
-      return entry.remark;
-    }
-    return fallback.length > 0 ? fallback : deviceId;
-  },
-
-  /** 点列表 = 连接；已连着别的设备时是**切换**（先断后连，失败不回滚）。 */
+  /** 点「我的设备」一行 = 连接（已连着别的设备时是切换）。 */
   async onDeviceTap(e: WechatMiniprogram.TouchEvent) {
     const session = this.session;
     if (session === null || this.data.switchBusy) {
       return;
     }
     const deviceId = String(e.currentTarget.dataset.deviceId ?? "");
+    const remoteOnly = e.currentTarget.dataset.remoteOnly === "1";
     const name = String(e.currentTarget.dataset.name ?? "");
     if (!deviceId) {
+      if (remoteOnly) {
+        /* 只有后端记录：本机没见过它的 BLE deviceId，只能先扫描。 */
+        wx.showToast({ title: "先扫描一次这台设备", icon: "none" });
+        await this.startScan();
+      }
       return;
     }
     const switching =
@@ -262,8 +319,8 @@ Page({
         await session.connect(deviceId, name);
       }
       await session.stopScan().catch(() => undefined);
-      this.recordConnection(deviceId);
       this.setData({ currentDeviceId: deviceId, currentDeviceName: name });
+      this.refreshLocal();
     } catch (err) {
       this.setData({ scanHint: errorText(err) });
     } finally {
@@ -271,83 +328,99 @@ Page({
     }
   },
 
-  /**
-   * 连上后记一次「见过」。
-   *
-   * 只更新时间戳：**不**把广播名写进备注名——广播名（`Lumen-XXXX`）不是用户
-   * 起的名，写进去会让「用户改过名没有」这个判断失真，还会在设备改名后留下
-   * 一条陈旧记录。备注名只由用户在输入框里设置。
-   */
-  recordConnection(deviceId: string) {
-    try {
-      const storage = createWxStorage();
-      this.refreshRegistryFrom(recordSeen(storage, deviceId, Date.now()));
-    } catch (err) {
-      console.warn(`[lumen] 记录设备失败：${errorText(err)}`);
-    }
-  },
+  // ---------------- 本地列表 ----------------
 
-  remarkOf(deviceId: string): string | null {
-    const entry = this.registry?.devices.find((item) => item.deviceId === deviceId);
-    return entry?.remark ?? null;
-  },
-
-  // ---------------- 备注名 ----------------
-
-  onRemarkInput(e: WechatMiniprogram.Input) {
-    this.setData({ remarkInput: String(e.detail.value ?? "") });
-  },
-
-  async onSaveRemark() {
-    const deviceId = this.data.currentDeviceId;
-    if (!deviceId) {
-      wx.showToast({ title: "先连接一台设备", icon: "none" });
-      return;
-    }
-    try {
-      const storage = createWxStorage();
-      const registry = setRemark(storage, deviceId, this.data.remarkInput);
-      this.refreshRegistryFrom(registry);
-      this.setData({ currentDeviceName: this.data.remarkInput.trim() });
-      wx.showToast({ title: "备注名已保存", icon: "none" });
-    } catch (err) {
-      wx.showToast({ title: errorText(err), icon: "none" });
-    }
-  },
-
-  // ---------------- 灯带启用掩码（App 本地） ----------------
-
-  /**
-   * 本地偏好，**永不下发**：WS2812B 无法回报物理接线，设备判断不了某条带
-   * 是否真的插着。隐藏只从切换器里去掉，设备上的段配置一个字节都不动。
-   */
-  async onTrimStrip(e: WechatMiniprogram.SwitchChange) {
-    const deviceId = this.data.currentDeviceId;
-    const stripId = Number(e.currentTarget.dataset.stripId ?? -1);
-    if (!deviceId || stripId < 0) {
-      return;
-    }
-    try {
-      const storage = createWxStorage();
-      const registry = setStripEnabled(storage, deviceId, stripId, Boolean(e.detail.value));
-      this.refreshRegistryFrom(registry);
-    } catch (err) {
-      wx.showToast({ title: errorText(err), icon: "none" });
-    }
-  },
-
-  refreshRegistryFrom(registry: DeviceRegistry) {
-    this.registry = registry;
-    this.applyRegistryView();
-  },
-
-  refreshRegistry() {
+  refreshLocal() {
     try {
       this.registry = loadRegistry(createWxStorage());
     } catch {
       this.registry = { devices: [] };
     }
+    this.applyListViews();
     this.applyRegistryView();
+  },
+
+  refreshLocalFrom(registry: DeviceRegistry) {
+    this.registry = registry;
+    this.applyListViews();
+    this.applyRegistryView();
+  },
+
+  /** 设备页看到的实时事实：只有**当前已连接**那一台有 State。 */
+  liveFacts(): { deviceId: string; stripCount: number; firmwareVer: number | null } | null {
+    const session = this.session;
+    const deviceId = session?.transport.currentDeviceId ?? "";
+    const state = session?.deviceState ?? null;
+    if (session === null || deviceId.length === 0 || state === null) {
+      return null;
+    }
+    return {
+      deviceId,
+      stripCount: state.stripCount,
+      firmwareVer: session.deviceInfo?.firmwareVersion ?? null,
+    };
+  },
+
+  /** 合并本地 + 后端 → 「我的设备」；派生「附近设备」。 */
+  applyListViews() {
+    const session = this.session;
+    const registry = this.registry ?? { devices: [] };
+    const mine = buildMyDevices({
+      recent: session?.recentDevices ?? [],
+      registry: registry.devices,
+      backend: this.remoteDevices.length > 0 ? this.remoteDevices : null,
+      live: this.liveFacts(),
+    });
+    const current = session?.transport.currentDeviceId ?? this.data.currentDeviceId;
+    const myDevices = mine.map((row) => this.toRowView(row, current));
+    const nearby = buildNearby({
+      discovered: this.discovered,
+      mine,
+      currentDeviceId: current,
+    })
+      /* 与本机记录是同一台（deviceId 精确命中）：上面已有可点的行，不重复列。 */
+      .filter((row) => !row.duplicate)
+      /* 按信号强度降序：附近列表里最强的通常就是用户要找的那台。 */
+      .sort((a, b) => b.rssi - a.rssi)
+      .map((row) => ({ ...row, rssiText: `${row.rssi} dBm` }));
+
+    /* 空态要区分「没扫到任何东西」和「扫到的都是我的设备」（后者不该显示
+     * 「点扫描开始查找」——用户明明刚扫过）。 */
+    const nearbyEmptyText =
+      this.discovered.length > 0
+        ? "附近扫到的都是已登记设备（见上方）"
+        : this.data.scanning
+          ? "扫描中…"
+          : "点「扫描」开始查找";
+
+    this.setData({ myDevices, nearbyDevices: nearby, nearbyEmptyText });
+  },
+
+  toRowView(row: MyDeviceRow, current: string): DeviceRowView {
+    const cached = row.stripCountSource !== "device";
+    const stripsText =
+      row.stripCount === null ? "灯带数未知" : `灯带 ${row.stripCount} 条`;
+    const sourceTag =
+      row.stripCountSource === "backend-cache"
+        ? " · 缓存"
+        : row.stripCountSource === "last-session"
+          ? " · 上次"
+          : "";
+    const identity =
+      row.hardwareId !== null ? row.hardwareId : row.deviceId !== null ? row.deviceId : "—";
+    const when = row.lastSeenAt > 0 ? formatWhen(new Date(row.lastSeenAt)) : "未连接";
+    return {
+      key: row.key,
+      deviceId: row.deviceId ?? "",
+      hardwareId: row.hardwareId ?? "",
+      label: row.name,
+      meta: `${identity} · ${when}`,
+      stripsText: `${stripsText}${sourceTag}`,
+      current: row.deviceId !== null && row.deviceId === current,
+      remoteOnly: row.remoteOnly,
+      linked: row.backendId !== null,
+      cached,
+    };
   },
 
   applyRegistryView() {
@@ -369,51 +442,230 @@ Page({
     this.setData({
       stripRows,
       remarkInput: deviceId.length > 0 ? this.remarkOf(deviceId) ?? "" : "",
-      recentDevices: this.buildRecentRows(registry),
     });
   },
 
-  /** 「最近连过」来自 device-history（会话已按时间排序）；显示名叠加备注名。 */
-  buildRecentRows(registry: DeviceRegistry): DeviceRowView[] {
-    const session = this.session;
-    const current = this.data.currentDeviceId;
-    return (session?.recentDevices ?? []).map((entry) => {
-      const meta = registry.devices.find((item) => item.deviceId === entry.deviceId);
-      const when = new Date(entry.lastConnectedAt);
-      return {
-        deviceId: entry.deviceId,
-        label: this.labelOf(registry, entry.deviceId, entry.name ?? ""),
-        meta: `${entry.deviceId} · ${formatWhen(when)}${
-          meta?.hardwareId !== undefined ? ` · ${meta.hardwareId}` : ""
-        }`,
-        current: entry.deviceId === current,
-      };
-    });
+  remarkOf(deviceId: string): string | null {
+    const entry = this.registry?.devices.find((item) => item.deviceId === deviceId);
+    return entry?.remark ?? null;
   },
 
-  async onForgetDevice(e: WechatMiniprogram.TouchEvent) {
-    const deviceId = String(e.currentTarget.dataset.deviceId ?? "");
-    if (!deviceId) {
+  // ---------------- 后端同步（#44） ----------------
+
+  /**
+   * 后台同步：换身份 → 拉列表 → 重画。
+   *
+   * 一进页面就跑，但**不阻塞**任何本地行为：`refreshLocal` 已经在它之前
+   * 把本地列表画好了。
+   */
+  async syncFromBackend() {
+    const sync = this.sync;
+    if (sync === null || !sync.enabled || this.syncing) {
+      this.updateSyncHint();
       return;
     }
-    const confirmed = await showConfirm("忘记这台设备？", "只会删除本机记录，不影响设备上的灯光配置。");
-    if (!confirmed) {
+    this.syncing = true;
+    try {
+      const kind = await sync.ensureIdentity();
+      this.setData({ identityHint: kind === "local" ? "仅本机可见" : "" });
+      const devices = await sync.refreshRemote();
+      if (devices !== null) {
+        this.remoteDevices = devices;
+        /* 后端可能带着别的手机设置的备注名 / 上次看见时间。 */
+        this.applyListViews();
+      }
+    } finally {
+      this.syncing = false;
+      this.updateSyncHint();
+    }
+  },
+
+  /** 连接成功：登记 + seen（fire-and-forget，失败只置提示）。 */
+  async syncConnected() {
+    const sync = this.sync;
+    const session = this.session;
+    if (sync === null || !sync.enabled || session === null) {
+      this.updateSyncHint();
+      return;
+    }
+    const deviceId = session.transport.currentDeviceId;
+    const info = session.deviceInfo;
+    const state = session.deviceState;
+    if (deviceId === null || info === null) {
+      /* 还没读到 hwId：等 onDeviceConfig 之后再来一次。 */
+      return;
+    }
+    const remark = this.remarkOf(deviceId);
+    await sync.noteConnected({
+      deviceId,
+      hardwareId: info.hwId,
+      displayName: remark,
+      stripCount: state?.stripCount,
+      ledCounts:
+        state === null ? null : state.stripCounts.slice(0, Math.max(1, state.stripCount)),
+      firmwareVer: info.firmwareVersion,
+    });
+    this.updateSyncHint();
+  },
+
+  /**
+   * 顶部提示：离线 / 未配置 / 仅本机可见。
+   *
+   * 优先级：同步功能关闭 > 离线 > 仅本机可见。前两条都是「信息不全」，
+   * 只有一次提示、不弹窗、不阻塞。
+   */
+  updateSyncHint() {
+    const sync = this.sync;
+    if (sync === null || !sync.enabled) {
+      this.setData({ syncHint: "" });
+      return;
+    }
+    this.setData({
+      syncHint: sync.offline ? "离线，仅显示本机记录" : "",
+      identityHint: sync.identityKind === "local" ? "仅本机可见" : "",
+    });
+  },
+
+  /** 手动重试同步（点顶部提示）。 */
+  async onSyncRetry() {
+    const sync = this.sync;
+    if (sync === null) {
+      return;
+    }
+    sync.clearOffline();
+    this.setData({ syncHint: "" });
+    await this.syncFromBackend();
+    if (this.session?.linkState === "ready") {
+      await this.syncConnected();
+    }
+  },
+
+  // ---------------- 备注名 ----------------
+
+  onRemarkInput(e: WechatMiniprogram.Input) {
+    this.setData({ remarkInput: String(e.detail.value ?? "") });
+  },
+
+  /**
+   * 保存备注名：**先落本地**，再同步。
+   *
+   * 本地写入绝不会失败到影响用户（storage 异常只打日志），后端失败也不回滚
+   * ——用户在这台手机上看到的名字就是他要的名字。
+   */
+  async onSaveRemark() {
+    const deviceId = this.data.currentDeviceId;
+    if (!deviceId) {
+      wx.showToast({ title: "先连接一台设备", icon: "none" });
       return;
     }
     try {
-      this.refreshRegistryFrom(removeDevice(createWxStorage(), deviceId));
+      const storage = createWxStorage();
+      const registry = setRemark(storage, deviceId, this.data.remarkInput);
+      this.refreshLocalFrom(registry);
+      this.setData({ currentDeviceName: this.data.remarkInput.trim() });
+      wx.showToast({ title: "备注名已保存", icon: "none" });
+
+      /* 同步是旁路：不 await、不提示失败（离线提示在顶部）。 */
+      const hardwareId = this.hardwareIdOf(deviceId);
+      if (hardwareId !== null) {
+        void this.sync?.pushRemark({ deviceId, hardwareId }).then(() => this.updateSyncHint());
+      }
     } catch (err) {
       wx.showToast({ title: errorText(err), icon: "none" });
     }
   },
 
-  // ---------------- 设备状态（只用于显示当前连接与灯珠数） ----------------
+  hardwareIdOf(deviceId: string): string | null {
+    const registry = this.registry ?? loadRegistry(createWxStorage());
+    const entry = registry.devices.find((item) => item.deviceId === deviceId);
+    if (entry?.hardwareId !== undefined && entry.hardwareId.length > 0) {
+      return entry.hardwareId;
+    }
+    /* 回退：本次连接的 DeviceInfo（可能还没写进登记表）。 */
+    const session = this.session;
+    if (session !== null && session.transport.currentDeviceId === deviceId) {
+      return session.deviceInfo?.hwId ?? null;
+    }
+    return null;
+  },
+
+  // ---------------- 灯带启用掩码（App 本地） ----------------
+
+  /**
+   * 本地偏好，**永不下发**：WS2812B 无法回报物理接线，设备判断不了某条带
+   * 是否真的插着。隐藏只从切换器里去掉，设备上的段配置一个字节都不动。
+   */
+  async onTrimStrip(e: WechatMiniprogram.SwitchChange) {
+    const deviceId = this.data.currentDeviceId;
+    const stripId = Number(e.currentTarget.dataset.stripId ?? -1);
+    if (!deviceId || stripId < 0) {
+      return;
+    }
+    try {
+      const storage = createWxStorage();
+      const registry = setStripEnabled(storage, deviceId, stripId, Boolean(e.detail.value));
+      this.refreshLocalFrom(registry);
+    } catch (err) {
+      wx.showToast({ title: errorText(err), icon: "none" });
+    }
+  },
+
+  // ---------------- 设备状态 ----------------
 
   applyDeviceState(state: DeviceState) {
     /* 设备页不展示具体灯光，只更新「当前设备 / 条数」派生视图。 */
     void state;
     this.setData({ ready: true });
+    this.applyListViews();
     this.applyRegistryView();
+  },
+
+  // ---------------- 删除（只解除关联） ----------------
+
+  /**
+   * 删除设备：解除后端关联 + 删本机记录。
+   *
+   * 设备本体不受任何影响（票面验收第 7 条）：它仍会出现在扫描结果里，
+   * 点一下就能重新连上并重新登记。
+   */
+  async onDeleteDevice(e: WechatMiniprogram.TouchEvent) {
+    const key = String(e.currentTarget.dataset.key ?? "");
+    const row = this.data.myDevices.find((item) => item.key === key);
+    if (row === undefined) {
+      return;
+    }
+    const confirmed = await showConfirm(
+      "删除这台设备？",
+      "只解除本机与后端的登记关系，设备上的灯光配置不受影响；重新扫描仍能连上。",
+    );
+    if (!confirmed) {
+      return;
+    }
+    /* 后端 id 必须在删本地记录之前取：删完就查不到了。 */
+    const backendId =
+      this.registry?.devices.find((item) => item.deviceId === row.deviceId)?.backendId ?? null;
+
+    /* 先本地：删除后列表立刻不再显示它（会话的「最近连过」是列表的数据源，
+     * 只删登记表不够——列表仍会从 recent 里把它画出来）。 */
+    try {
+      const hardwareId = row.hardwareId.length > 0 ? row.hardwareId : undefined;
+      if (row.deviceId.length > 0) {
+        this.refreshLocalFrom(removeDevice(createWxStorage(), row.deviceId));
+      }
+      this.session?.forgetRecent(row.deviceId, hardwareId);
+    } catch (err) {
+      wx.showToast({ title: errorText(err), icon: "none" });
+      return;
+    }
+    /* 后端列表也摘掉这一行（只有后端记录时上面没有本地记录可删）。 */
+    this.remoteDevices = this.remoteDevices.filter(
+      (item) => item.hardwareId !== row.hardwareId,
+    );
+    this.refreshLocal();
+
+    /* 同步是旁路：失败只意味着下次拉列表它又出现（后端还在）。 */
+    void this.sync?.unlink(backendId).then(() => this.updateSyncHint());
+    wx.showToast({ title: "已删除", icon: "none" });
   },
 
   onOpenDeviceInfo() {

@@ -8,8 +8,10 @@
 
 import { describe, expect, it } from "vitest";
 
-import { ControlSession } from "../utils/control/session";
+import { ControlSession, type SessionStorage } from "../utils/control/session";
 import type { BleTransport } from "../utils/ble/transport";
+import { loadRegistry } from "../utils/control/device-registry";
+import { loadRecentDevices } from "../utils/control/device-history";
 import type {
   AckResult,
   CommandRequest,
@@ -42,6 +44,7 @@ const REPORT_STATIC: SegmentReport = {
 
 class FakeTransport {
   linkState: LinkState = "ready";
+  currentDeviceId: string | null = "DEV-A";
   writes: CommandRequest[] = [];
   stripQueries: number[] = [];
   reports: SegmentReport[] = [REPORT_STATIC];
@@ -79,6 +82,13 @@ class FakeTransport {
 
   readState(): Promise<DeviceState> {
     return Promise.resolve(baseState());
+  }
+
+  /** 连接成功但**不广播** ready：由用例决定何时发（#44 的身份补写时机）。 */
+  async connect(deviceId: string): Promise<DeviceState> {
+    this.currentDeviceId = deviceId;
+    this.linkState = "ready";
+    return baseState();
   }
 
   async queryStrip(stripId: number): Promise<{ reports: SegmentReport[]; end: SegmentListEnd }> {
@@ -134,6 +144,19 @@ function makeSession(transport: FakeTransport): ControlSession {
     devMode: false,
     transportOverride: transport as unknown as BleTransport,
   });
+}
+
+function memoryStorage(seed: Record<string, string> = {}): SessionStorage {
+  const map = new Map(Object.entries(seed));
+  return {
+    get: (key) => map.get(key) ?? null,
+    set: (key, value) => {
+      map.set(key, value);
+    },
+    remove: (key) => {
+      map.delete(key);
+    },
+  };
 }
 
 async function settle(rounds = 12): Promise<void> {
@@ -250,5 +273,137 @@ describe("#41 连接后重建（protocol-v3 §9.1）", () => {
     transport.emitLink("ready");
     await settle();
     expect(calls).toBe(2);
+  });
+});
+
+describe("#44 设备身份与切换清理", () => {
+  it("ready 后读到的 hwId 同时写进登记表与最近连过（合并，不新增记录）", async () => {
+    const transport = new FakeTransport();
+    transport.currentDeviceId = "DEV-A";
+    const storage = memoryStorage();
+    const session = new ControlSession({
+      platform: "other",
+      devMode: false,
+      transportOverride: transport as unknown as BleTransport,
+      storage,
+    });
+
+    /* 连接成功先记一条（hwId 未知）。 */
+    await session.connect("DEV-A", "Lumen-A");
+    expect(loadRecentDevices(storage)).toHaveLength(1);
+    expect(loadRecentDevices(storage)[0].hardwareId).toBeUndefined();
+
+    transport.emitLink("ready");
+    await settle();
+
+    expect(loadRegistry(storage).devices.find((e) => e.deviceId === "DEV-A")?.hardwareId).toBe(
+      "AA:BB:CC:DD:EE:FF",
+    );
+    const recent = loadRecentDevices(storage);
+    expect(recent).toHaveLength(1);
+    expect(recent[0]).toMatchObject({
+      deviceId: "DEV-A",
+      hardwareId: "AA:BB:CC:DD:EE:FF",
+    });
+  });
+
+  it("切换设备清空逐带段缓存与设备身份（无残留）", async () => {
+    const transport = new FakeTransport();
+    transport.currentDeviceId = "DEV-A";
+    const session = new ControlSession({
+      platform: "other",
+      devMode: false,
+      transportOverride: transport as unknown as BleTransport,
+      storage: memoryStorage(),
+    });
+
+    /* 先连 A，读一条段，并让 ready 补上 hwId。 */
+    await session.connect("DEV-A", "Lumen-A");
+    await session.queryStrip(1);
+    expect(session.segmentsOf(1)).toHaveLength(1);
+    transport.emitLink("ready");
+    await settle();
+    expect(session.deviceInfo?.hwId).toBe("AA:BB:CC:DD:EE:FF");
+
+    /* 切到 B：FakeTransport 的 connect 不会重置 linkState，先回 idle 模拟真实链路。 */
+    transport.reports = [];
+    transport.currentDeviceId = "DEV-B";
+    transport.emitLink("idle");
+    await session.switchTo("DEV-B", "Lumen-B");
+
+    /* 段缓存必须空：它描述的是 A。 */
+    expect(session.segmentsOf(1)).toEqual([]);
+    expect(session.segmentsOf(0)).toEqual([]);
+    /* 引脚表 / 身份缓存也属于上一台。 */
+    expect(session.stripConfigs).toBeNull();
+    expect(session.deviceInfo).toBeNull();
+  });
+
+  it("switchTo 断开阶段即使 disconnect 抛错也清空段缓存", async () => {
+    const transport = new FakeTransport();
+    transport.currentDeviceId = "DEV-A";
+    const session = new ControlSession({
+      platform: "other",
+      devMode: false,
+      transportOverride: transport as unknown as BleTransport,
+      storage: memoryStorage(),
+    });
+    await session.connect("DEV-A", "Lumen-A");
+    await session.queryStrip(0);
+    expect(session.segmentsOf(0)).toHaveLength(1);
+
+    transport.disconnect = async () => {
+      throw new Error("close 失败");
+    };
+    transport.currentDeviceId = "DEV-B";
+    await session.switchTo("DEV-B", "Lumen-B");
+
+    expect(session.segmentsOf(0)).toEqual([]);
+  });
+
+  it("最近连过里已有 hardId 时，连接成功就用它记（不等 0x88）", async () => {
+    const transport = new FakeTransport();
+    transport.currentDeviceId = "DEV-A";
+    const storage = memoryStorage({
+      "lumen.recentDevices.v2": JSON.stringify([
+        { deviceId: "DEV-A", hardwareId: "AA:BB:CC:DD:EE:FF", lastConnectedAt: 1000 },
+      ]),
+    });
+    const session = new ControlSession({
+      platform: "other",
+      devMode: false,
+      transportOverride: transport as unknown as BleTransport,
+      storage,
+    });
+    await session.connect("DEV-A", "Lumen-A");
+    const recent = loadRecentDevices(storage);
+    expect(recent).toHaveLength(1);
+    expect(recent[0].hardwareId).toBe("AA:BB:CC:DD:EE:FF");
+  });
+});
+
+describe("#44 未连接时显示的「上次」快照", () => {
+  it("ready 后把 State.stripCount 与固件版本写进最近连过（只是快照，不是权威）", async () => {
+    const transport = new FakeTransport();
+    transport.currentDeviceId = "DEV-A";
+    const storage = memoryStorage();
+    const session = new ControlSession({
+      platform: "other",
+      devMode: false,
+      transportOverride: transport as unknown as BleTransport,
+      storage,
+    });
+    await session.connect("DEV-A", "Lumen-A");
+    transport.emitState(baseState({ stripCount: 3, stripCounts: [10, 20, 30, 0, 0, 0, 0, 0] }));
+    transport.emitLink("ready");
+    await settle();
+
+    const entry = loadRecentDevices(storage)[0];
+    expect(entry).toMatchObject({
+      deviceId: "DEV-A",
+      hardwareId: "AA:BB:CC:DD:EE:FF",
+      stripCount: 3,
+      firmwareVer: 0x0300,
+    });
   });
 });

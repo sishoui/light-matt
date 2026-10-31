@@ -91,12 +91,35 @@
       disabled="{{!ready || selfTestBusy}}"
       bindtap="onSelfTest"
     >{{selfTestBusy ? '自检中…' : '自检（红→绿→蓝→白）'}}</button>
+
+    <!-- 改名：本地先写，后端异步同步（失败只影响别的手机可见性） -->
+    <view class="section-head">
+      <text class="section-title small">备注名</text>
+      <text wx:if="{{identityHint}}" class="section-hint inline">{{identityHint}}</text>
+    </view>
+    <view class="remark-row">
+      <input
+        class="range-input"
+        value="{{remarkInput}}"
+        maxlength="20"
+        placeholder="备注名"
+        disabled="{{remarkBusy}}"
+        bindinput="onRemarkInput"
+      />
+      <button class="range-apply" disabled="{{remarkBusy}}" bindtap="onRename">保存</button>
+    </view>
+
     <button
       class="btn danger"
       disabled="{{!ready || disconnectBusy}}"
       bindtap="onDisconnect"
     >{{disconnectBusy ? '断开中…' : '断开连接'}}</button>
-    <button class="btn ghost" bindtap="onForget">忘记这台设备（删本机记录）</button>
+    <button class="btn danger" disabled="{{deleteBusy}}" bindtap="onDelete">
+      {{deleteBusy ? '删除中…' : '删除这台设备（解除关联）'}}
+    </button>
+    <text class="section-hint">
+      删除只解除登记关系：设备上的灯光配置不变，重新扫描仍能连上。
+    </text>
     <text class="section-hint">{{hint}}</text>
   </view>
 </view>

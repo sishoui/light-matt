@@ -18,12 +18,15 @@ import {
   DEVICE_REGISTRY_KEY,
   enabledStripIds,
   findEntry,
+  findEntryByHardwareId,
   loadRegistry,
   recordSeen,
   removeDevice,
+  resolveEntry,
   setHardwareId,
   setRemark,
   setStripEnabled,
+  storageKeyOf,
   stripEnabled,
 } from "../utils/control/device-registry";
 
@@ -173,5 +176,41 @@ describe("#41 启用掩码", () => {
     const storage = memoryStorage();
     expect(() => setStripEnabled(storage, "DEV-A", 8, false)).toThrow(RangeError);
     expect(() => setStripEnabled(storage, "DEV-A", -1, false)).toThrow(RangeError);
+  });
+});
+
+describe("#44 按 hardwareId 定位（只有后端记录的设备）", () => {
+  it("findEntryByHardwareId 命中带 hwId 的记录；空串不匹配任何东西", () => {
+    const storage = memoryStorage();
+    setRemark(storage, "DEV-A", "书桌");
+    setHardwareId(storage, "DEV-A", "AA:BB:CC:DD:EE:FF");
+    const registry = loadRegistry(storage);
+
+    expect(findEntryByHardwareId(registry, "AA:BB:CC:DD:EE:FF")?.deviceId).toBe("DEV-A");
+    expect(findEntryByHardwareId(registry, "AA:BB:CC:DD:EE:00")).toBeNull();
+    expect(findEntryByHardwareId(registry, "")).toBeNull();
+  });
+
+  it("resolveEntry 先按 deviceId 再按 hwId（本机连过的 deviceId 一定可用）", () => {
+    const storage = memoryStorage();
+    setRemark(storage, "DEV-A", "书桌");
+    setHardwareId(storage, "DEV-A", "AA:BB:CC:DD:EE:FF");
+    const registry = loadRegistry(storage);
+
+    expect(resolveEntry(registry, { deviceId: "DEV-A" })?.remark).toBe("书桌");
+    expect(resolveEntry(registry, { hardwareId: "AA:BB:CC:DD:EE:FF" })?.remark).toBe("书桌");
+    /* deviceId 找不到时退回 hwId。 */
+    expect(
+      resolveEntry(registry, { deviceId: "STALE-UUID", hardwareId: "AA:BB:CC:DD:EE:FF" })?.deviceId,
+    ).toBe("DEV-A");
+    expect(resolveEntry(registry, { deviceId: "NOPE" })).toBeNull();
+    expect(resolveEntry(registry, {})).toBeNull();
+  });
+
+  it("只有后端记录的设备（无 deviceId）没有本地可写的备注槽位", () => {
+    const registry = loadRegistry(memoryStorage());
+    /* hwId 不能当行键：备注名走后端 PATCH，本地不建空壳记录。 */
+    expect(storageKeyOf(registry, { hardwareId: "AA:BB:CC:DD:EE:FF" })).toBeNull();
+    expect(storageKeyOf(registry, { deviceId: "DEV-A" })).toBe("DEV-A");
   });
 });

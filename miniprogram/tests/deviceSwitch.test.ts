@@ -25,9 +25,11 @@ import {
 import {
   MAX_RECENT_DEVICES,
   RECENT_DEVICES_KEY,
+  RECENT_DEVICES_KEY_V1,
   forgetDevice,
   loadRecentDevices,
   recordConnection,
+  updateHardwareId,
 } from "../utils/control/device-history";
 import { ControlSession, type SessionStorage } from "../utils/control/session";
 import { WxCallError } from "../utils/ble/wx-promise";
@@ -337,6 +339,100 @@ describe("#33 最近连过列表", () => {
     const after = forgetDevice(storage, "A");
     expect(after.map((d) => d.deviceId)).toEqual(["B"]);
     expect(loadRecentDevices(storage).map((d) => d.deviceId)).toEqual(["B"]);
+  });
+});
+
+// ------------------------------------------------------------------
+// 2b. #44：hardwareId 身份 / 上限 20 / v1 不静默迁移
+// ------------------------------------------------------------------
+
+describe("#44 最近连过：hardwareId 身份与上限", () => {
+  it("上限是 20（v3 的设备页要装下跨手机同步的结果）", () => {
+    expect(MAX_RECENT_DEVICES).toBe(20);
+    const storage = memoryStorage();
+    for (let i = 0; i < MAX_RECENT_DEVICES + 5; i += 1) {
+      recordConnection(storage, `DEV-${i}`, `Lumen-${i}`, 1000 + i);
+    }
+    const list = loadRecentDevices(storage);
+    expect(list).toHaveLength(MAX_RECENT_DEVICES);
+    expect(list[0].deviceId).toBe(`DEV-${MAX_RECENT_DEVICES + 4}`);
+  });
+
+  it("读 v1 键：不静默迁移（v1 没有 hardwareId，按 deviceId 迁移会在 iOS 上分叉）", () => {
+    const storage = memoryStorage({
+      [RECENT_DEVICES_KEY_V1]: JSON.stringify([
+        { deviceId: "OLD-DEVICE", name: "Lumen-OLD", lastConnectedAt: 5000 },
+      ]),
+    });
+    expect(loadRecentDevices(storage)).toEqual([]);
+    /* 也不会把 v1 的值抄进 v2。 */
+    expect(storage.get(RECENT_DEVICES_KEY)).toBeNull();
+  });
+
+  it("同一 hardwareId 重复连接只保留一条，时间与名字更新", () => {
+    const storage = memoryStorage();
+    recordConnection(storage, "UUID-1", "Lumen-1A2B", 1000, "AA:BB:CC:DD:1A:2B");
+    const list = recordConnection(storage, "UUID-2", "Lumen-1A2B", 2000, "AA:BB:CC:DD:1A:2B");
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({
+      deviceId: "UUID-2",
+      hardwareId: "AA:BB:CC:DD:1A:2B",
+      lastConnectedAt: 2000,
+    });
+  });
+
+  it("updateHardwareId 把「只有 deviceId」的记录升级成 hardwareId 身份，保留时间与广播名", () => {
+    const storage = memoryStorage();
+    recordConnection(storage, "DEV-A", "Lumen-A", 1000);
+
+    const after = updateHardwareId(storage, "DEV-A", "AA:BB:CC:DD:EE:FF");
+    expect(after).toHaveLength(1);
+    expect(after[0]).toMatchObject({
+      deviceId: "DEV-A",
+      hardwareId: "AA:BB:CC:DD:EE:FF",
+      name: "Lumen-A",
+      lastConnectedAt: 1000,
+    });
+    /* 落盘后同构。 */
+    expect(loadRecentDevices(storage)).toEqual(after);
+  });
+
+  it("updateHardwareId 与已知 hardwareId 的旧记录合并（保留较新时间，不产生两条）", () => {
+    const storage = memoryStorage();
+    /* 之前用另一台手机的 UUID 连过，已知 hwId。 */
+    recordConnection(storage, "OLD-UUID", "Lumen-1A2B", 3000, "AA:BB:CC:DD:1A:2B");
+    /* 这次换了 UUID，记录先只有 deviceId。 */
+    recordConnection(storage, "NEW-UUID", "Lumen-1A2B", 9000);
+
+    const after = updateHardwareId(storage, "NEW-UUID", "AA:BB:CC:DD:1A:2B");
+    expect(after).toHaveLength(1);
+    expect(after[0]).toMatchObject({
+      deviceId: "NEW-UUID",
+      hardwareId: "AA:BB:CC:DD:1A:2B",
+      lastConnectedAt: 9000,
+    });
+  });
+
+  it("updateHardwareId 找不到该 deviceId 时不凭空造记录", () => {
+    const storage = memoryStorage();
+    recordConnection(storage, "DEV-A", "Lumen-A", 1000);
+    const after = updateHardwareId(storage, "NEVER-CONNECTED", "AA:BB:CC:DD:EE:FF");
+    expect(after.map((d) => d.deviceId)).toEqual(["DEV-A"]);
+    expect(after[0].hardwareId).toBeUndefined();
+  });
+
+  it("forgetDevice 按 hardwareId 删除（iOS 换了 UUID 后仍能定位同一条）", () => {
+    const storage = memoryStorage();
+    recordConnection(storage, "OLD-UUID", "Lumen-A", 1000, "AA:BB:CC:DD:EE:FF");
+    const after = forgetDevice(storage, "CURRENT-UUID", "AA:BB:CC:DD:EE:FF");
+    expect(after).toEqual([]);
+  });
+
+  it("损坏的 hardwareId（空串）不写入，键退回 deviceId", () => {
+    const storage = memoryStorage();
+    const list = recordConnection(storage, "DEV-A", "Lumen-A", 1000, "");
+    expect(list[0].hardwareId).toBeUndefined();
+    expect(loadRecentDevices(storage)[0].hardwareId).toBeUndefined();
   });
 });
 

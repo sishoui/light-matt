@@ -45,3 +45,121 @@
   font-size: 24rpx;
   color: #d8d8e0;
 }
+
+/* ---------------- 同步提示（#44） ---------------- */
+
+.sync-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+  margin: 12rpx 24rpx 0;
+  padding: 14rpx 18rpx;
+  border-radius: 12rpx;
+  background: #2a2418;
+  border: 1rpx solid #4a3a1c;
+}
+
+.sync-text {
+  font-size: 22rpx;
+  color: #e8c07a;
+}
+
+.sync-action {
+  font-size: 22rpx;
+  color: #ffb478;
+}
+
+.identity-hint {
+  display: block;
+  margin: 10rpx 24rpx 0;
+  font-size: 20rpx;
+  color: #7e7e8a;
+}
+
+/* ---------------- 我的设备行 ---------------- */
+
+.device-item {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1rpx solid #22222a;
+}
+
+.device-item:last-child {
+  border-bottom: none;
+}
+
+.device-item .device-row {
+  flex: 1;
+  border-bottom: none;
+  /* 页内行是「左名称 / 右灯带数」两栏，覆盖 app.wxss 的纵向布局。 */
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+}
+
+.device-main {
+  display: flex;
+  flex-direction: column;
+  gap: 6rpx;
+  min-width: 0;
+}
+
+.device-name {
+  font-size: 28rpx;
+  color: #f5f5f5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.device-meta {
+  font-size: 20rpx;
+  color: #9a9aa5;
+  font-family: Menlo, Consolas, monospace;
+  word-break: break-all;
+}
+
+.device-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6rpx;
+  flex: 0 0 auto;
+}
+
+.device-strips {
+  font-size: 22rpx;
+  color: #d8d8e0;
+}
+
+/* 缓存 / 上次：不是设备当前配置，弱化处理。 */
+.device-strips.cached {
+  color: #6f6f7a;
+}
+
+.device-badge {
+  font-size: 18rpx;
+  color: #ffb478;
+  padding: 2rpx 10rpx;
+  border-radius: 8rpx;
+  background: #2a2418;
+}
+
+.device-badge.ghost {
+  color: #8a8a96;
+  background: #23232b;
+}
+
+.device-delete {
+  flex: 0 0 auto;
+  width: 96rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22rpx;
+  color: #b06060;
+  background: #17171c;
+  border-left: 1rpx solid #22222a;
+}
