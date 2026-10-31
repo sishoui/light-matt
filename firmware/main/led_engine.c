@@ -263,6 +263,7 @@ static void persist_snapshot_locked(lumen_persist_t *out)
  * 播放位置不在快照里，所以播放/暂停不会改变持久化内容（loop 会）。
  */
 static uint8_t s_script_persist_blob[LUMEN_SCRIPT_BLOB_MAX];
+static size_t s_script_persist_len;
 
 static void persist_scripts_locked(void)
 {
@@ -270,8 +271,11 @@ static void persist_scripts_locked(void)
                                           s_script_persist_blob,
                                           sizeof(s_script_persist_blob));
     if (len == 0) {
-        /* 极端组合超出 4KB（8 条灯带 × 8 阶段 × 8 段 × 4 套）：跳过本次持久化，
-         * RAM 状态仍然有效，断电后回到上一次成功保存的剧本。 */
+        /*
+         * 只有「已提交的剧本合起来超过 16KB」会走到这里（激活/loop 变更时的重新
+         * 持久化路径）。提交阶段的尺寸预检已经挡住了新提交，所以这是历史数据的
+         * 退化情形：RAM 仍然有效，NVS 保留上一次成功保存的内容。
+         */
         ESP_LOGW(TAG, "剧本 blob 超出 %u 字节，跳过本次持久化",
                  (unsigned)sizeof(s_script_persist_blob));
         return;
@@ -1496,10 +1500,10 @@ uint8_t lumen_led_engine_script_begin(uint8_t script_id, uint8_t stage_count,
 }
 
 uint8_t lumen_led_engine_script_stage(uint8_t script_id, uint8_t stage_index,
-                                     uint16_t duration_ms)
+                                     uint16_t duration_ms, uint16_t fade_ms)
 {
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    bool ok = lumen_script_stage(&s_scripts, script_id, stage_index, duration_ms);
+    bool ok = lumen_script_stage(&s_scripts, script_id, stage_index, duration_ms, fade_ms);
     xSemaphoreGive(s_state_lock);
     if (!ok) {
         /* 最常见原因：没有对应 id 的 ScriptBegin，或 stage_index 超出本次声明。 */
@@ -1533,22 +1537,33 @@ uint8_t lumen_led_engine_script_commit(uint8_t script_id)
 {
     uint16_t counts[LUMEN_MAX_STRIPS];
     uint8_t stage_count = 0;
-    bool ok;
+    lumen_script_commit_result_t result;
 
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
     strip_counts_locked(counts);
-    ok = lumen_script_commit(&s_scripts, script_id, counts);
-    if (ok) {
+    /*
+     * commit 内部先整份校验，再把候选剧本试编码到 s_script_persist_blob 量尺寸。
+     * 超限 → TOO_LARGE，此时 committed 槽位与 NVS 都没动过（「能提交的一定能
+     * 持久化」的不变式）。成功时 blob 已在缓冲里，直接排队保存，不重复编码。
+     */
+    result = lumen_script_commit(&s_scripts, script_id, counts, s_script_persist_blob,
+                                 sizeof(s_script_persist_blob), &s_script_persist_len);
+    if (result == LUMEN_SCRIPT_COMMIT_OK) {
         /*
          * commit 成功就持久化：已提交剧本必须能跨断电存活（「设备存多套剧本」
          * 的前提）。播放位置仍然不写。
          */
-        persist_scripts_locked();
+        lumen_state_store_request_script_save(s_script_persist_blob, s_script_persist_len);
         stage_count = lumen_script_stage_count(&s_scripts, script_id);
     }
     xSemaphoreGive(s_state_lock);
 
-    if (!ok) {
+    if (result == LUMEN_SCRIPT_COMMIT_TOO_LARGE) {
+        ESP_LOGW(TAG, "ScriptCommit id=%u 编码后超过 %u 字节：拒签，配置未改变", script_id,
+                 (unsigned)sizeof(s_script_persist_blob));
+        return LUMEN_RESULT_SCRIPT_TOO_LARGE;
+    }
+    if (result != LUMEN_SCRIPT_COMMIT_OK) {
         /*
          * 失败：暂存已丢弃、已提交剧本原样保留（验收点）。
          * 调用方另发 Event 0x02（detail = script_id）让小程序看到具体是哪个失败。

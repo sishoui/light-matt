@@ -1,5 +1,7 @@
 #include "script_store.h"
 
+#include "script_blob.h"
+
 #include <stddef.h>
 #include <string.h>
 
@@ -13,6 +15,19 @@
  *  - 暂停不是「停表再重开」，而是把暂停时长累进 pause_offset_ms，
  *    因此 script_time 在暂停期间不前进、恢复后从原位置继续。
  */
+
+/* 释放暂存区的一个段槽位，并记一次下发帧。 */
+static void lumen_script_clear_slot_impl(lumen_script_store_t *store, uint8_t stage_index,
+                                         uint8_t strip_id, uint8_t seg_id,
+                                         uint16_t *frames_written)
+{
+    memset(&store->staging.stages[stage_index].segments[strip_id][seg_id], 0,
+           sizeof(lumen_segment_t));
+    ++store->frames_written;
+    if (frames_written != NULL) {
+        *frames_written = store->frames_written;
+    }
+}
 
 /* 段配置的静态形状校验（不做区间/重叠，那些在 commit 做）。 */
 static bool segment_shape_ok(const lumen_segment_t *seg)
@@ -101,7 +116,7 @@ bool lumen_script_begin(lumen_script_store_t *store, uint8_t script_id, uint8_t 
 }
 
 bool lumen_script_stage(lumen_script_store_t *store, uint8_t script_id, uint8_t stage_index,
-                        uint16_t duration_ms)
+                        uint16_t duration_ms, uint16_t fade_ms)
 {
     if (store == NULL || !store->staging_active || script_id != store->staging_script_id) {
         return false;
@@ -114,6 +129,11 @@ bool lumen_script_stage(lumen_script_store_t *store, uint8_t script_id, uint8_t 
         return false;
     }
     store->staging.stages[stage_index].duration_ms = duration_ms;
+    /*
+     * fade_ms 只存储不生效（§9.6 格式预留）：非 0 值照收，播放仍是硬切。
+     * 不在这里拒非 0，否则将来启用过渡又要改协议行为。
+     */
+    store->staging.stages[stage_index].fade_ms = fade_ms;
     return true;
 }
 
@@ -130,7 +150,21 @@ bool lumen_script_segment(lumen_script_store_t *store, uint8_t script_id, uint8_
     if (strip_id >= store->staging.strip_count || strip_id >= LUMEN_MAX_STRIPS) {
         return false;
     }
-    if (seg_id >= LUMEN_MAX_SEGMENTS || !segment_shape_ok(segment)) {
+    if (seg_id >= LUMEN_MAX_SEGMENTS) {
+        return false;
+    }
+
+    /*
+     * 「两层都空」= 清空该槽位（docs/protocol-v3.md §9.6）。命令层把这种
+     * 情况表示成一个非活动段的零值，这里认它——**不能**无条件把 active 置真，
+     * 否则清空操作会退化成「写入一个空段」，槽位反而永远留着。
+     */
+    if (!segment->active) {
+        lumen_script_clear_slot_impl(store, stage_index, strip_id, seg_id, frames_written);
+        return true;
+    }
+
+    if (!segment_shape_ok(segment)) {
         return false;
     }
 
@@ -149,14 +183,16 @@ bool lumen_script_segment(lumen_script_store_t *store, uint8_t script_id, uint8_
     return true;
 }
 
-bool lumen_script_commit(lumen_script_store_t *store, uint8_t script_id,
-                         const uint16_t strip_counts[LUMEN_MAX_STRIPS])
+lumen_script_commit_result_t lumen_script_commit(lumen_script_store_t *store, uint8_t script_id,
+                                                 const uint16_t strip_counts[LUMEN_MAX_STRIPS],
+                                                 uint8_t *blob_out, size_t blob_cap,
+                                                 size_t *blob_len)
 {
     if (store == NULL || script_id >= LUMEN_MAX_SCRIPTS) {
-        return false;
+        return LUMEN_SCRIPT_COMMIT_INVALID;
     }
     if (!store->staging_active || script_id != store->staging_script_id) {
-        return false;
+        return LUMEN_SCRIPT_COMMIT_INVALID;
     }
 
     lumen_script_t *candidate = &store->staging;
@@ -212,7 +248,34 @@ bool lumen_script_commit(lumen_script_store_t *store, uint8_t script_id,
         store->staging_active = false;
         store->staging_script_id = LUMEN_NO_SCRIPT;
         store->frames_written = 0;
-        return false;
+        return LUMEN_SCRIPT_COMMIT_INVALID;
+    }
+
+    /*
+     * 尺寸预检（§10.4 不变式）：先把**候选**剧本试编码进调用方缓冲，
+     * 量出持久化尺寸。超限就直接拒签——此时还没写 RAM 的 committed 槽位，
+     * 也没有任何 NVS 写入，所以 RAM 里不会出现「已提交但存不下」的剧本。
+     *
+     * 做法：临时把候选放进 committed[id] 再编码，然后立刻还原。这段全程在
+     * 调用方锁内、没有可观察的中间态；还原用 memcpy 而不是再取一次指针，
+     * 免得编译器把两次读取合并。
+     */
+    size_t encoded = 0;
+    if (blob_out != NULL) {
+        lumen_script_t saved = store->committed[script_id];
+        lumen_script_t probe = store->staging;
+        probe.committed = true;
+        store->committed[script_id] = probe;
+        /* 激活 id / loop 只占 header 两个字节，不影响尺寸，这里传中性值。 */
+        encoded = lumen_script_blob_encode(store, LUMEN_NO_SCRIPT, false, blob_out, blob_cap);
+        store->committed[script_id] = saved;
+        if (encoded == 0) {
+            memset(&store->staging, 0, sizeof(store->staging));
+            store->staging_active = false;
+            store->staging_script_id = LUMEN_NO_SCRIPT;
+            store->frames_written = 0;
+            return LUMEN_SCRIPT_COMMIT_TOO_LARGE;
+        }
     }
 
     /*
@@ -226,7 +289,11 @@ bool lumen_script_commit(lumen_script_store_t *store, uint8_t script_id,
     memset(&store->staging, 0, sizeof(store->staging));
     store->staging_active = false;
     store->staging_script_id = LUMEN_NO_SCRIPT;
-    return true;
+
+    if (blob_len != NULL) {
+        *blob_len = encoded;
+    }
+    return LUMEN_SCRIPT_COMMIT_OK;
 }
 
 void lumen_script_abort(lumen_script_store_t *store, uint8_t script_id)

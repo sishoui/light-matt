@@ -580,7 +580,7 @@ static bool apply_prior_script(lumen_script_store_t *store, const char *spec)
         case LUMEN_CMD_SCRIPT_STAGE: {
             uint16_t duration = (uint16_t)(payload[2] | ((uint16_t)payload[3] << 8));
             if ((len != 4 && len != 6) ||
-                !lumen_script_stage(store, payload[0], payload[1], duration)) {
+                !lumen_script_stage(store, payload[0], payload[1], duration, 0)) {
                 return false;
             }
             break;
@@ -617,7 +617,9 @@ static bool apply_prior_script(lumen_script_store_t *store, const char *spec)
         }
         case LUMEN_CMD_SCRIPT_COMMIT: {
             uint16_t counts[LUMEN_MAX_STRIPS] = {64, 64, 64, 64, 64, 64, 64, 64};
-            if (len != 1 || !lumen_script_commit(store, payload[0], counts)) {
+            if (len != 1 ||
+                lumen_script_commit(store, payload[0], counts, NULL, 0, NULL) !=
+                    LUMEN_SCRIPT_COMMIT_OK) {
                 return false;
             }
             break;
@@ -648,7 +650,7 @@ static uint8_t apply_script_op(lumen_script_store_t *store,
                    : LUMEN_RESULT_INVALID_PARAM;
     case LUMEN_SCRIPT_OP_STAGE:
         return lumen_script_stage(store, outcome->script_id, outcome->script_stage_index,
-                                  outcome->script_duration_ms)
+                                  outcome->script_duration_ms, 0)
                    ? LUMEN_RESULT_OK
                    : LUMEN_RESULT_INVALID_PARAM;
     case LUMEN_SCRIPT_OP_SEGMENT:
@@ -659,7 +661,9 @@ static uint8_t apply_script_op(lumen_script_store_t *store,
                    : LUMEN_RESULT_INVALID_PARAM;
     case LUMEN_SCRIPT_OP_COMMIT: {
         uint16_t counts[LUMEN_MAX_STRIPS] = {30, 0, 0, 0, 0, 0, 0, 0};
-        return lumen_script_commit(store, outcome->script_id, counts) ? LUMEN_RESULT_OK
+        return lumen_script_commit(store, outcome->script_id, counts, NULL, 0, NULL) ==
+                       LUMEN_SCRIPT_COMMIT_OK
+                   ? LUMEN_RESULT_OK
                                                                      : LUMEN_RESULT_INVALID_PARAM;
     }
     case LUMEN_SCRIPT_OP_ABORT:
@@ -5131,7 +5135,7 @@ static bool script_download(lumen_script_store_t *store, uint8_t script_id, uint
         return false;
     }
     for (uint8_t st = 0; st < stages; ++st) {
-        if (!lumen_script_stage(store, script_id, st, duration_ms)) {
+        if (!lumen_script_stage(store, script_id, st, duration_ms, 0)) {
             return false;
         }
         lumen_segment_t seg = make_static(0, 9, (uint16_t)(st * 4096u), 255);
@@ -5140,7 +5144,8 @@ static bool script_download(lumen_script_store_t *store, uint8_t script_id, uint
         }
     }
     uint16_t counts[LUMEN_MAX_STRIPS] = {30, 0, 0, 0, 0, 0, 0, 0};
-    return lumen_script_commit(store, script_id, counts);
+    return lumen_script_commit(store, script_id, counts, NULL, 0, NULL) ==
+           LUMEN_SCRIPT_COMMIT_OK;
 }
 
 static void test_script_store_download(void)
@@ -5153,10 +5158,10 @@ static void test_script_store_download(void)
 
     /* 4 阶段剧本：每阶段各自的时长与各段灯效。 */
     CHECK(lumen_script_begin(&store, 0, 4, 1));
-    CHECK(lumen_script_stage(&store, 0, 0, 1000));
-    CHECK(lumen_script_stage(&store, 0, 1, 2000));
-    CHECK(lumen_script_stage(&store, 0, 2, 1500));
-    CHECK(lumen_script_stage(&store, 0, 3, 2500));
+    CHECK(lumen_script_stage(&store, 0, 0, 1000, 0));
+    CHECK(lumen_script_stage(&store, 0, 1, 2000, 0));
+    CHECK(lumen_script_stage(&store, 0, 2, 1500, 0));
+    CHECK(lumen_script_stage(&store, 0, 3, 2500, 0));
     for (uint8_t st = 0; st < 4; ++st) {
         lumen_segment_t seg = make_static(0, 29, (uint16_t)(st * 5000u), 255);
         uint16_t written = 0;
@@ -5165,7 +5170,7 @@ static void test_script_store_download(void)
         CHECK(written == (uint16_t)(st + 1u));
     }
     uint16_t counts[LUMEN_MAX_STRIPS] = {30, 0, 0, 0, 0, 0, 0, 0};
-    CHECK(lumen_script_commit(&store, 0, counts));
+    CHECK(lumen_script_commit(&store, 0, counts, NULL, 0, NULL) == LUMEN_SCRIPT_COMMIT_OK);
 
     const lumen_script_t *script = lumen_script_get(&store, 0);
     CHECK(script != NULL);
@@ -5185,9 +5190,9 @@ static void test_script_store_download(void)
     CHECK(!lumen_script_begin(&store, 0, 4, 0));
     CHECK(!lumen_script_begin(&store, 0, 4, LUMEN_MAX_STRIPS + 1));
     CHECK(lumen_script_begin(&store, 0, 2, 1));
-    CHECK(!lumen_script_stage(&store, 0, 2, 100));   /* 超出 stage_count */
-    CHECK(!lumen_script_stage(&store, 0, 0, 0));     /* 时长 0 */
-    CHECK(!lumen_script_stage(&store, 1, 0, 100));   /* 不是本次暂存的 id */
+    CHECK(!lumen_script_stage(&store, 0, 2, 100, 0));   /* 超出 stage_count */
+    CHECK(!lumen_script_stage(&store, 0, 0, 0, 0));     /* 时长 0 */
+    CHECK(!lumen_script_stage(&store, 1, 0, 100, 0));   /* 不是本次暂存的 id */
     lumen_segment_t seg = make_static(0, 9, 0, 255);
     CHECK(!lumen_script_segment(&store, 0, 0, 1, 0, &seg, NULL)); /* strip 越界 */
     CHECK(!lumen_script_segment(&store, 0, 0, 0, LUMEN_MAX_SEGMENTS, &seg, NULL));
@@ -5232,11 +5237,12 @@ static void test_script_commit_failure_keeps_previous(void)
 
     /* (a) 缺阶段时长为 0 → commit 失败，旧剧本完整。 */
     CHECK(lumen_script_begin(&store, 0, 3, 1));
-    CHECK(lumen_script_stage(&store, 0, 0, 800));
-    CHECK(lumen_script_stage(&store, 0, 1, 800));
+    CHECK(lumen_script_stage(&store, 0, 0, 800, 0));
+    CHECK(lumen_script_stage(&store, 0, 1, 800, 0));
     /* stage 2 不写时长 */
     CHECK(lumen_script_segment(&store, 0, 0, 0, 0, &before, NULL));
-    CHECK(!lumen_script_commit(&store, 0, counts));
+    CHECK(lumen_script_commit(&store, 0, counts, NULL, 0, NULL) ==
+          LUMEN_SCRIPT_COMMIT_INVALID);
     CHECK(store.staging_active == false);
     CHECK(lumen_script_get(&store, 0) != NULL);
     CHECK(lumen_script_stage_count(&store, 0) == 2);
@@ -5247,28 +5253,31 @@ static void test_script_commit_failure_keeps_previous(void)
 
     /* (b) 段越界（end >= 该灯带灯珠数）→ 失败，旧剧本完整。 */
     CHECK(lumen_script_begin(&store, 0, 1, 1));
-    CHECK(lumen_script_stage(&store, 0, 0, 800));
+    CHECK(lumen_script_stage(&store, 0, 0, 800, 0));
     lumen_segment_t out_of_range = make_static(0, 40, 0, 255); /* 30 灯 */
     CHECK(lumen_script_segment(&store, 0, 0, 0, 0, &out_of_range, NULL));
-    CHECK(!lumen_script_commit(&store, 0, counts));
+    CHECK(lumen_script_commit(&store, 0, counts, NULL, 0, NULL) ==
+          LUMEN_SCRIPT_COMMIT_INVALID);
     CHECK(lumen_script_stage_count(&store, 0) == 2);
 
     /* (c) 同灯带段重叠 → 失败，旧剧本完整。 */
     CHECK(lumen_script_begin(&store, 0, 1, 1));
-    CHECK(lumen_script_stage(&store, 0, 0, 800));
+    CHECK(lumen_script_stage(&store, 0, 0, 800, 0));
     lumen_segment_t first = make_static(0, 15, 0, 255);
     lumen_segment_t second = make_static(10, 20, 0, 255);
     CHECK(lumen_script_segment(&store, 0, 0, 0, 0, &first, NULL));
     CHECK(lumen_script_segment(&store, 0, 0, 0, 1, &second, NULL));
-    CHECK(!lumen_script_commit(&store, 0, counts));
+    CHECK(lumen_script_commit(&store, 0, counts, NULL, 0, NULL) ==
+          LUMEN_SCRIPT_COMMIT_INVALID);
     CHECK(lumen_script_stage_count(&store, 0) == 2);
 
     /* (d) stage_count 越界（begin 就拒）与 strip_counts 全 0 → 失败。 */
     CHECK(!lumen_script_begin(&store, 0, 0, 1));
     CHECK(lumen_script_begin(&store, 0, 1, 1));
-    CHECK(lumen_script_stage(&store, 0, 0, 800));
+    CHECK(lumen_script_stage(&store, 0, 0, 800, 0));
     uint16_t no_counts[LUMEN_MAX_STRIPS] = {0};
-    CHECK(!lumen_script_commit(&store, 0, no_counts));
+    CHECK(lumen_script_commit(&store, 0, no_counts, NULL, 0, NULL) ==
+          LUMEN_SCRIPT_COMMIT_INVALID);
     CHECK(lumen_script_stage_count(&store, 0) == 2);
 
     /* 失败之后重新下一次好剧本仍然成功（暂存已清，可以重来）。 */
@@ -5490,6 +5499,250 @@ static void test_script_playback_hold_during_selftest(void)
     CHECK(lumen_script_playback_time(&pb, 9000) == before);
 }
 
+/* ---------------- #39：剧本 fade / 两层持久化 / 容量预检 ---------------- */
+
+/*
+ * fade_ms：非 0 能存能读，且播放行为仍是硬切（这里只断言存储，硬切由
+ * 「阶段切换不读 fade」的结构保证——播放时间轴只吃 duration_ms）。
+ */
+static void test_script_fade_roundtrip(void)
+{
+    uint16_t counts[LUMEN_MAX_STRIPS] = {30, 0, 0, 0, 0, 0, 0, 0};
+
+    lumen_script_store_t store;
+    lumen_script_store_init(&store);
+    CHECK(lumen_script_begin(&store, 0, 2, 1));
+    CHECK(lumen_script_stage(&store, 0, 0, 1000, 0));
+    CHECK(lumen_script_stage(&store, 0, 1, 2000, 350)); /* 非 0 fade：接受 */
+    lumen_segment_t seg = make_static(0, 9, 100, 255);
+    CHECK(lumen_script_segment(&store, 0, 0, 0, 0, &seg, NULL));
+    CHECK(lumen_script_segment(&store, 0, 1, 0, 0, &seg, NULL));
+    CHECK(lumen_script_commit(&store, 0, counts, NULL, 0, NULL) == LUMEN_SCRIPT_COMMIT_OK);
+
+    uint8_t blob[LUMEN_SCRIPT_BLOB_MAX];
+    size_t len = lumen_script_blob_encode(&store, 0, false, blob, sizeof(blob));
+    CHECK(len > 8);
+
+    lumen_script_store_t restored;
+    lumen_script_store_init(&restored);
+    uint8_t active = LUMEN_NO_SCRIPT;
+    bool loop = true;
+    CHECK(lumen_script_blob_decode(blob, len, counts, &restored, &active, &loop));
+    const lumen_script_t *sc = lumen_script_get(&restored, 0);
+    CHECK(sc != NULL);
+    if (sc != NULL) {
+        CHECK(sc->stages[0].fade_ms == 0);
+        CHECK(sc->stages[1].fade_ms == 350);
+        CHECK(sc->stages[1].duration_ms == 2000);
+    }
+}
+
+/*
+ * 两层段必须**完整**持久化：layer1 的类型与参数、blend 都要回来。
+ * 这正是 #37 显式降级、#39 补上的缺口。
+ */
+static void test_script_two_layer_persist(void)
+{
+    uint16_t counts[LUMEN_MAX_STRIPS] = {30, 0, 0, 0, 0, 0, 0, 0};
+
+    lumen_segment_t seg = make_static(0, 9, 1234, 200);
+    seg.layer[1].type = LUMEN_EFFECT_BREATHING;
+    layer_set_period(&seg.layer[1], 1500);
+    layer_set_p5(&seg.layer[1], 0x20);
+    layer_set_flags(&seg.layer[1], 0x02);
+    seg.blend = LUMEN_BLEND_MULTIPLY;
+
+    lumen_script_store_t store;
+    lumen_script_store_init(&store);
+    CHECK(lumen_script_begin(&store, 0, 1, 1));
+    CHECK(lumen_script_stage(&store, 0, 0, 1000, 0));
+    CHECK(lumen_script_segment(&store, 0, 0, 0, 0, &seg, NULL));
+    CHECK(lumen_script_commit(&store, 0, counts, NULL, 0, NULL) == LUMEN_SCRIPT_COMMIT_OK);
+
+    uint8_t blob[LUMEN_SCRIPT_BLOB_MAX];
+    size_t len = lumen_script_blob_encode(&store, 0, false, blob, sizeof(blob));
+    CHECK(len > 8);
+
+    lumen_script_store_t restored;
+    lumen_script_store_init(&restored);
+    uint8_t active = LUMEN_NO_SCRIPT;
+    bool loop = true;
+    CHECK(lumen_script_blob_decode(blob, len, counts, &restored, &active, &loop));
+    const lumen_script_t *sc = lumen_script_get(&restored, 0);
+    CHECK(sc != NULL);
+    if (sc != NULL) {
+        const lumen_segment_t *out = &sc->stages[0].segments[0][0];
+        CHECK(out->active);
+        CHECK(out->blend == LUMEN_BLEND_MULTIPLY);
+        CHECK(out->layer[0].type == LUMEN_EFFECT_STATIC);
+        CHECK(layer_hue(&out->layer[0]) == 1234);
+        CHECK(out->layer[1].type == LUMEN_EFFECT_BREATHING);
+        CHECK(lumen_layer_period_ms(&out->layer[1]) == 1500);
+    }
+}
+
+/*
+ * 两层都空 = 清空该槽位（§9.6）。命令层交出一个非活动段，引擎释放槽位；
+ * 这里验证剧本层对「非活动段」的处理不会把它当成有效段持久化。
+ */
+static void test_script_clear_slot(void)
+{
+    uint16_t counts[LUMEN_MAX_STRIPS] = {30, 0, 0, 0, 0, 0, 0, 0};
+
+    lumen_script_store_t store;
+    lumen_script_store_init(&store);
+    CHECK(lumen_script_begin(&store, 0, 1, 1));
+    CHECK(lumen_script_stage(&store, 0, 0, 1000, 0));
+    lumen_segment_t seg = make_static(0, 9, 100, 255);
+    CHECK(lumen_script_segment(&store, 0, 0, 0, 0, &seg, NULL));
+
+    /* 清空：非活动段写回同一槽位。 */
+    lumen_segment_t empty;
+    memset(&empty, 0, sizeof(empty));
+    CHECK(lumen_script_segment(&store, 0, 0, 0, 0, &empty, NULL));
+
+    CHECK(lumen_script_commit(&store, 0, counts, NULL, 0, NULL) == LUMEN_SCRIPT_COMMIT_OK);
+    const lumen_script_t *sc = lumen_script_get(&store, 0);
+    CHECK(sc != NULL);
+    if (sc != NULL) {
+        CHECK(!sc->stages[0].segments[0][0].active);
+    }
+}
+
+/*
+ * 容量预检：构造 8 带 × 8 阶段 × 8 段 × 两层动画的剧本（理论最坏），
+ * 断言 commit 回 TOO_LARGE、**不提交**、已提交的上一套原样保留、
+ * 暂存区被丢弃（RAM 里不存在「已提交但存不下」的剧本）。
+ */
+static void test_script_commit_too_large(void)
+{
+    uint16_t counts[LUMEN_MAX_STRIPS] = {64, 64, 64, 64, 64, 64, 64, 64};
+
+    /* 两层动画段，宽度最大（记录 19 字节）。 */
+    lumen_segment_t heavy;
+    memset(&heavy, 0, sizeof(heavy));
+    heavy.active = true;
+    heavy.start = 0;
+    heavy.end = 0; /* 每段一颗灯，避免重叠 */
+    heavy.blend = LUMEN_BLEND_ADD;
+    heavy.layer[0].type = LUMEN_EFFECT_BREATHING;
+    layer_set_period(&heavy.layer[0], 1000);
+    heavy.layer[1].type = LUMEN_EFFECT_COMET;
+    layer_set_period(&heavy.layer[1], 1000);
+
+    lumen_script_store_t store;
+    lumen_script_store_init(&store);
+
+    /* 先提交一套小的，作为「上一套必须保留」的锚点。 */
+    CHECK(lumen_script_begin(&store, 0, 1, 1));
+    CHECK(lumen_script_stage(&store, 0, 0, 1000, 0));
+    lumen_segment_t small = make_static(0, 9, 100, 255);
+    CHECK(lumen_script_segment(&store, 0, 0, 0, 0, &small, NULL));
+    CHECK(lumen_script_commit(&store, 0, counts, NULL, 0, NULL) == LUMEN_SCRIPT_COMMIT_OK);
+
+    /*
+     * 单套满配（8 带 × 8 阶段 × 8 段 × 两层动画）= 9792 字节，**装得下**；
+     * 4 套合计 39176 字节才超 16KB。所以先提交一套满配进 0 号槽位，
+     * 再提交第二套——两份合起来就撞线。
+     */
+    for (uint8_t id = 1; id <= 2; ++id) {
+        CHECK(lumen_script_begin(&store, id, 8, 8));
+        for (uint8_t st = 0; st < 8; ++st) {
+            CHECK(lumen_script_stage(&store, id, st, 1000, 0));
+            for (uint8_t strip = 0; strip < 8; ++strip) {
+                for (uint8_t seg = 0; seg < 8; ++seg) {
+                    lumen_segment_t seg_cfg = heavy;
+                    seg_cfg.start = seg;
+                    seg_cfg.end = seg;
+                    CHECK(lumen_script_segment(&store, id, st, strip, seg, &seg_cfg, NULL));
+                }
+            }
+        }
+
+        uint8_t blob[LUMEN_SCRIPT_BLOB_MAX];
+        size_t len = 0;
+        lumen_script_commit_result_t r =
+            lumen_script_commit(&store, id, counts, blob, sizeof(blob), &len);
+        if (id == 1) {
+            /* 第一套满配仍在 16KB 内。 */
+            CHECK(r == LUMEN_SCRIPT_COMMIT_OK);
+            CHECK(len > 9000);
+        } else {
+            /* 第二套把总量推过 16384 → 拒签，且**不提交**。 */
+            CHECK(r == LUMEN_SCRIPT_COMMIT_TOO_LARGE);
+            CHECK(!lumen_script_is_committed(&store, 2));
+            CHECK(!store.staging_active);
+        }
+    }
+
+    /* 已提交的 0 号小剧本与 1 号满配剧本都还在。 */
+    CHECK(lumen_script_is_committed(&store, 0));
+    CHECK(lumen_script_is_committed(&store, 1));
+
+    /* 暂存被丢弃：同一 id 再 Begin 必须能从头开始。 */
+    CHECK(lumen_script_begin(&store, 2, 1, 1));
+}
+
+/*
+ * 不变式「能 commit 的一定能持久化」：对一组不同规模的剧本，凡 commit 成功
+ * 的，encode 必须成功且 ≤ 16KB。这是 #39 修掉的 v2 缺陷的回归护栏。
+ */
+static void test_script_commit_implies_persistable(void)
+{
+    static const struct {
+        uint8_t stages;
+        uint8_t strips;
+        uint8_t segs;
+    } cases[] = {
+        {4, 1, 3},
+        {4, 2, 4},
+        {8, 2, 4},
+        {4, 4, 4},
+        {8, 8, 8},
+    };
+
+    uint16_t counts[LUMEN_MAX_STRIPS] = {64, 64, 64, 64, 64, 64, 64, 64};
+    uint8_t blob[LUMEN_SCRIPT_BLOB_MAX];
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        lumen_script_store_t store;
+        lumen_script_store_init(&store);
+        CHECK(lumen_script_begin(&store, 0, cases[i].stages, cases[i].strips));
+
+        for (uint8_t st = 0; st < cases[i].stages; ++st) {
+            CHECK(lumen_script_stage(&store, 0, st, 1000, 0));
+            for (uint8_t strip = 0; strip < cases[i].strips; ++strip) {
+                for (uint8_t seg = 0; seg < cases[i].segs; ++seg) {
+                    lumen_segment_t cfg = make_static(seg, seg, 100, 255);
+                    /* 交替动画层，把记录撑到最宽。 */
+                    if ((seg % 2u) == 0u) {
+                        cfg.layer[1].type = LUMEN_EFFECT_BREATHING;
+                        layer_set_period(&cfg.layer[1], 1000);
+                        cfg.blend = LUMEN_BLEND_MULTIPLY;
+                    }
+                    CHECK(lumen_script_segment(&store, 0, st, strip, seg, &cfg, NULL));
+                }
+            }
+        }
+
+        size_t len = 0;
+        lumen_script_commit_result_t r =
+            lumen_script_commit(&store, 0, counts, blob, sizeof(blob), &len);
+        if (r == LUMEN_SCRIPT_COMMIT_OK) {
+            /* 不变式的正方向：commit 成功 ⇒ 一定能编码进 16KB。 */
+            CHECK(len > 8);
+            CHECK(len <= LUMEN_SCRIPT_BLOB_MAX);
+            lumen_script_store_t replay;
+            lumen_script_store_init(&replay);
+            CHECK(lumen_script_blob_decode(blob, len, counts, &replay, NULL, NULL));
+        } else {
+            /* 反方向：拒签必须是 TOO_LARGE，且没有半套状态。 */
+            CHECK(r == LUMEN_SCRIPT_COMMIT_TOO_LARGE);
+            CHECK(!lumen_script_is_committed(&store, 0));
+        }
+    }
+}
+
 static void test_script_blob_roundtrip(void)
 {
     uint16_t counts[LUMEN_MAX_STRIPS] = {30, 12, 0, 0, 0, 0, 0, 0};
@@ -5500,7 +5753,7 @@ static void test_script_blob_roundtrip(void)
     /* 1 号剧本：2 条灯带、每阶段两条灯带各一个段，含动画段。 */
     CHECK(lumen_script_begin(&store, 1, 2, 2));
     for (uint8_t st = 0; st < 2; ++st) {
-        CHECK(lumen_script_stage(&store, 1, st, (uint16_t)(700 + st * 100)));
+        CHECK(lumen_script_stage(&store, 1, st, (uint16_t)(700 + st * 100), 0));
         lumen_segment_t a = make_static(0, 9, 1234, 200);
         lumen_segment_t b = make_static(0, 5, 0, 255);
         b.layer[0].type = LUMEN_EFFECT_BREATHING;
@@ -5510,7 +5763,7 @@ static void test_script_blob_roundtrip(void)
         CHECK(lumen_script_segment(&store, 1, st, 0, 0, &a, NULL));
         CHECK(lumen_script_segment(&store, 1, st, 1, 3, &b, NULL));
     }
-    CHECK(lumen_script_commit(&store, 1, counts));
+    CHECK(lumen_script_commit(&store, 1, counts, NULL, 0, NULL) == LUMEN_SCRIPT_COMMIT_OK);
 
     uint8_t blob[LUMEN_SCRIPT_BLOB_MAX];
     size_t len = lumen_script_blob_encode(&store, 1, true, blob, sizeof(blob));
@@ -6350,6 +6603,11 @@ int main(int argc, char **argv)
     test_script_playback_pause_resume();
     test_script_playback_hold_during_selftest();
     test_script_blob_roundtrip();
+    test_script_fade_roundtrip();
+    test_script_two_layer_persist();
+    test_script_clear_slot();
+    test_script_commit_too_large();
+    test_script_commit_implies_persistable();
     test_planar_parse_list();
     test_planar_init_validation();
     test_planar_round_robin();
