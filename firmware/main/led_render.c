@@ -111,11 +111,20 @@ static uint16_t compose_frame(const lumen_state_t *snapshot,
         }
     }
 
-    /* ② 逐颗过 gamma + 亮度。关灯时 brightness 为 0，整帧归零（保留状态值）。 */
+    /*
+     * ② 逐颗过 gamma + 亮度，并截掉「色相已丢失」的那一档。
+     *
+     * 判定与理由集中在 lumen_gamma_apply_pixel()（纯函数、host 可测）：
+     * 极暗处 8bit 装不下色相，橙色会先丢 G 只剩 R，看起来是「闪一下红」。
+     * 那里直接把这类像素归零，呼吸谷底就是干净的熄灭。
+     */
     for (uint16_t i = 0; i < count; ++i) {
-        frame[i * 3u + 0] = lumen_gamma_apply(frame[i * 3u + 0], brightness);
-        frame[i * 3u + 1] = lumen_gamma_apply(frame[i * 3u + 1], brightness);
-        frame[i * 3u + 2] = lumen_gamma_apply(frame[i * 3u + 2], brightness);
+        uint8_t in[3] = {frame[i * 3u + 0], frame[i * 3u + 1], frame[i * 3u + 2]};
+        uint8_t out[3];
+        lumen_gamma_apply_pixel(in, brightness, out);
+        frame[i * 3u + 0] = out[0];
+        frame[i * 3u + 1] = out[1];
+        frame[i * 3u + 2] = out[2];
     }
     return count;
 }

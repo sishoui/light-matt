@@ -20,3 +20,14 @@ CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=4096
 
 # 日志
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# 8 路 TDM 验收（#29）：一条灯带依次接 8 个脚，验证每路独立。
+# 全部避开 strapping(GPIO2/8/9) 与 flash/USB/UART 脚：
+#   GPIO3/10/0/1 = 安全普通 IO；GPIO4-7 = JTAG，可作普通 IO。
+# 注意 build-firmware.cmd 会删掉生成的 sdkconfig 重新应用默认值，
+# 所以这里改的是默认值，改完直接重构建即可生效。
+CONFIG_LUMEN_STRIP_PINS="3,10,0,1,4,5,6,7"
+
+# 动画帧率 20fps（8 路 × 64 灯占 42% RMT 带宽，留余量给 BLE 抢占）。
+# 等待量 = 帧周期 − 上一帧耗时，所以这是真实帧率。
+CONFIG_LUMEN_ANIM_FPS=20

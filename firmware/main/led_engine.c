@@ -74,6 +74,14 @@ static lumen_persist_t s_render_persist;
 static lumen_segment_store_t s_render_segments;
 
 /*
+ * 上一帧的实际渲染耗时（微秒）。帧循环用它做前馈：
+ * 等待量 = 目标帧周期 − 上一帧耗时，这样「配置 20fps」才会真的得到 20fps，
+ * 而不是「等 50ms 再花 20ms 渲染」得到的 14fps。
+ * 只被渲染任务读写，静态区即可。
+ */
+static uint32_t s_last_frame_us;
+
+/*
  * BLE 回调路径（commit / set_segment / ...）也要构造持久化快照。
  * 单独一份，**不能**与 s_render_persist 共用：commit 在 NimBLE 主机任务里跑，
  * 渲染任务也在读自己那份，共用会撕裂。
@@ -698,14 +706,27 @@ static void render_task(void *arg)
         } else if (lumen_segment_store_needs_frames(&s_segments, s_state.strip_count) ||
                    lumen_script_playback_active(&s_playback)) {
             /*
-             * 动画模式：按帧率超时等待。取较短的 tick 数防止 FPS 上限
-             * （30fps ≈ 33ms）在某些 tick 率下四舍五入成 0（0 = 不等待，
-             * 会变成忙循环）。至少 1 tick。
+             * 动画模式：按帧率超时等待。
+             *
+             * **等待量 = 帧周期 − 上一帧耗时**，不是直接等一个完整周期。
+             * 早先写成「等 1000/fps」是错的：100ms 是两次渲染之间要空等的时间，
+             * 而实际周期还要加上渲染本身（8 路 × 64 灯实测 20.8ms），
+             * 于是配 10fps 实际只有 8.3fps。真机实测 120ms 周期与
+             * 「100ms 等待 + 20.8ms 渲染」完全吻合，确认是这个原因。
+             *
+             * 用上一帧的实际耗时做前馈：帧周期 = max(1 tick, 目标周期 − 上一帧耗时)。
+             * 帧耗时包含 TDM 轮询（或单灯带 refresh），已由渲染路径记在 s_last_frame_us。
+             *
+             * 至少 1 tick：0 表示不等待，会变成忙循环（100Hz tick 下 20fps 只剩 5 tick，
+             * 若目标帧率再高就必须靠这个下限兜住）。
              *
              * 剧本在播放**或暂停**时同样进入这一模式：暂停要保持画面响应
              * （State read / 亮度变化仍能重绘），只是时间轴不前进。
              */
-            TickType_t anim_ticks = pdMS_TO_TICKS(1000u / (uint32_t)CONFIG_LUMEN_ANIM_FPS);
+            uint32_t target_us = 1000000u / (uint32_t)CONFIG_LUMEN_ANIM_FPS;
+            uint32_t spent_us = s_last_frame_us;
+            uint32_t wait_us = target_us > spent_us ? target_us - spent_us : 0;
+            TickType_t anim_ticks = pdMS_TO_TICKS((wait_us + 999u) / 1000u);
             wait = anim_ticks > 0 ? anim_ticks : 1;
             anim_mode = true;
         }
@@ -857,12 +878,18 @@ static void render_task(void *arg)
          * 单灯带：走 v1 路径（逐字节行为不变）。
          * 多灯带（#29）：一轮 TDM 把所有可用条刷一遍；某条画面没变就跳过，
          * 所以静态条不会因为别人的动画而空转刷帧。 */
+        int64_t frame_t0 = esp_timer_get_time();
         if (s_planar.strip_count > 1) {
             tdm_run_round(&snapshot, &s_render_segments, &selftest, force_round, render_now);
         } else {
             lumen_led_render_snapshot(lumen_led_strip_owner_get(), &snapshot, &s_render_segments,
                                       &selftest, max_brightness(), render_now);
         }
+        /*
+         * 记这一帧的实际耗时，供下一轮的帧周期前馈使用（见上面的等待计算）。
+         * 包含 TDM 轮询 / refresh；不含等待，所以它就是「渲染本身有多重」。
+         */
+        s_last_frame_us = (uint32_t)(esp_timer_get_time() - frame_t0);
     }
 }
 

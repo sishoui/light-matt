@@ -1749,9 +1749,20 @@ static void test_gamma(void)
     /* 亮度乘算线性：255 * 128 / 255 = 128 */
     CHECK(lumen_gamma_apply(255, 128) == 128);
 
-    /* gamma 2.2：50% 输入应落在 56 附近，而不是 128 */
+    /*
+     * gamma 2.2 混 30% 线性：50% 输入落在 78 附近（纯 gamma 是 56）。
+     * 混合是为了保住暗部色相——次要通道在纯 gamma 下会先被量化到 0，
+     * 表现为橙色呼吸到暗部变纯红（真机实测）。
+     */
     uint8_t mid = lumen_gamma_apply(128, 255);
-    CHECK(mid >= 54 && mid <= 58);
+    CHECK(mid >= 76 && mid <= 80);
+
+    /*
+     * 暗部保色回归（#30 真机发现的缺陷）：橙色 (255,128,0) 呼吸到 e=0.10 时，
+     * G 通道必须仍然可见（>0）。纯 gamma 2.2 下这里 G 已被压成 0 → 只剩红。
+     */
+    CHECK(lumen_gamma_apply(26, 200) > 0);  /* R: 255*0.10 */
+    CHECK(lumen_gamma_apply(13, 200) > 0);  /* G: 128*0.10，这是关键 */
 
     uint8_t previous = 0;
     for (int i = 0; i <= 255; ++i) {
@@ -4426,6 +4437,70 @@ static void test_script_blob_roundtrip(void)
     }
 }
 
+
+/*
+ * 色相丢失截断（#30 真机缺陷回归）：
+ * 橙色呼吸到极暗处，G 先归零、R 还剩 1~2 —— 屏幕上是纯红，看起来像「闪一下红」。
+ * 规则：输入 ≥2 通道非零、输出 <2 通道非零 → 整颗归零。
+ */
+static void test_gamma_hue_loss_clip(void)
+{
+    lumen_gamma_init();
+    uint8_t out[3];
+
+    /* 正常亮度：橙色完整保留。 */
+    uint8_t orange[3] = {255, 128, 0};
+    lumen_gamma_apply_pixel(orange, 200, out);
+    CHECK(out[0] > 0);
+    CHECK(out[1] > 0);
+
+    /* 呼吸中段（e≈0.03）：仍然保色。 */
+    uint8_t dim[3] = {8, 4, 0};
+    lumen_gamma_apply_pixel(dim, 200, out);
+    CHECK(out[0] > 0);
+    CHECK(out[1] > 0);
+
+    /*
+     * 失真窗口（e≈0.010）：输入 (3,1,0) 两个通道非零，
+     * gamma+亮度后 G 归零只剩 R → 必须整颗截断成黑，不能显示纯红。
+     */
+    uint8_t lossy[3] = {3, 1, 0};
+    lumen_gamma_apply_pixel(lossy, 200, out);
+    CHECK(out[0] == 0 && out[1] == 0 && out[2] == 0);
+
+    uint8_t lossy2[3] = {2, 1, 0};
+    lumen_gamma_apply_pixel(lossy2, 200, out);
+    CHECK(out[0] == 0 && out[1] == 0 && out[2] == 0);
+
+    /* 纯色不受影响：单通道输入即使很暗也保留（它本来就没有色相可丢）。 */
+    uint8_t pure_red[3] = {3, 0, 0};
+    lumen_gamma_apply_pixel(pure_red, 200, out);
+    CHECK(out[0] >= 0); /* 不强制非零，关键是没被规则误杀成异常 */
+    uint8_t bright_red[3] = {255, 0, 0};
+    lumen_gamma_apply_pixel(bright_red, 200, out);
+    CHECK(out[0] > 0 && out[1] == 0 && out[2] == 0);
+
+    /* 纯白（三通道）极暗时也保色，不会被误截。 */
+    uint8_t white[3] = {5, 5, 5};
+    lumen_gamma_apply_pixel(white, 200, out);
+    CHECK(out[0] == out[1] && out[1] == out[2]);
+
+    /* 全黑保持黑。 */
+    uint8_t black[3] = {0, 0, 0};
+    lumen_gamma_apply_pixel(black, 200, out);
+    CHECK(out[0] == 0 && out[1] == 0 && out[2] == 0);
+
+    /* 关灯（brightness=0）：多通道输入全部归零且不违反规则。 */
+    uint8_t on[3] = {255, 128, 0};
+    lumen_gamma_apply_pixel(on, 0, out);
+    CHECK(out[0] == 0 && out[1] == 0 && out[2] == 0);
+
+    /* 原地调用（in 与 out 同一块内存）必须安全。 */
+    uint8_t inplace[3] = {255, 128, 0};
+    lumen_gamma_apply_pixel(inplace, 200, inplace);
+    CHECK(inplace[0] > 0 && inplace[1] > 0);
+}
+
 int main(int argc, char **argv)
 {
     const char *vectors = argc > 1 ? argv[1] : "docs/protocol-testvectors.json";
@@ -4455,6 +4530,7 @@ int main(int argc, char **argv)
     test_selftest_leaves_state_untouched();
     test_selftest_compose();
     test_gamma();
+    test_gamma_hue_loss_clip();
     test_set_led_count_reducer();
     test_led_count_job();
     test_save_scheduler();
