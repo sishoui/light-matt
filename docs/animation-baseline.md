@@ -432,3 +432,30 @@ python scripts/analyze-board-video.py baseline.mp4
 | `scripts/record-board.py` | 锁曝光录像（DSHOW+YUY2），元数据写同名 .json |
 | `scripts/analyze-board-video.py` | 按标定矫正后 8×8 逐帧判定错色/熄灭/变暗/变亮 |
 | `scripts/ble-stress.py` | 新增 `--fill`（整板同色）、`--leds-list`（指定灯号，标定用） |
+
+### 7.8.7 修复：`CONFIG_LUMEN_FORCE_REFRESH` 关闭时编译不过
+
+把产品默认值改回 `n` 时发现一个**从未在关闭状态下编译过**的缺陷：
+
+```
+led_engine.c:590: error: 'CONFIG_LUMEN_FORCE_REFRESH' undeclared
+led_engine.c:714: error: 'CONFIG_LUMEN_FORCE_REFRESH' undeclared
+```
+
+Kconfig 的 `bool` 项在**关闭时根本不定义宏**，而代码直接写了
+`!CONFIG_LUMEN_FORCE_REFRESH` —— 于是这个开关只能一直是 `y`，从来没验证过
+关闭路径。修法是改用 `#ifdef` 判定并定义 `LUMEN_SKIP_DEDUP`：
+
+```c
+#ifdef CONFIG_LUMEN_FORCE_REFRESH
+#define LUMEN_SKIP_DEDUP true
+#else
+#define LUMEN_SKIP_DEDUP false
+#endif
+```
+
+`led_engine.c` 与 `led_render.c` 两处同样处理。**两种配置现在都能编译**，
+产品默认值已改为 `n`（实验时改回 `y` 重新构建即可）。
+
+修复后实测确认：静态画面下串口不再输出 TDM 轮次日志 —— 说明逐帧去重生效，
+静态场景不再持续占用 RMT 带宽（这正是 §7.8 里会放大 BLE 抢占问题的那个开销）。

@@ -120,6 +120,18 @@ static bool s_tdm_rendered_valid[LUMEN_MAX_STRIPS];
 static uint16_t s_tdm_rendered_count[LUMEN_MAX_STRIPS];
 static uint8_t s_tdm_rendered_frame[LUMEN_MAX_STRIPS][LUMEN_MAX_LEDS * 3];
 
+/*
+ * #20 错色实验开关：开启时跳过逐帧去重，静态画面也持续刷帧。
+ * 必须用 #ifdef —— Kconfig 的 bool 关闭时**不定义宏**，直接写
+ * `!CONFIG_LUMEN_FORCE_REFRESH` 在关闭状态下编译不过（实测踩过）。
+ * 产品默认关闭；复现实验时把 sdkconfig.defaults 里改成 y。
+ */
+#ifdef CONFIG_LUMEN_FORCE_REFRESH
+#define LUMEN_SKIP_DEDUP true
+#else
+#define LUMEN_SKIP_DEDUP false
+#endif
+
 static uint8_t max_brightness(void)
 {
     /* 0 表示不限制，按 255 处理。 */
@@ -586,8 +598,10 @@ static bool tdm_push_strip(uint8_t strip_id, const lumen_state_t *snapshot,
      * CONFIG_LUMEN_FORCE_REFRESH 下**跳过**去重——#20 的错色实验要求
      * 「画面恒定 + 持续刷帧」：画面恒定才能逐帧比对基线，持续刷帧才能
      * 让 BLE 抢占 RMT 中断的机会出现。那时必须每轮都真的发一帧。
+     *
+     * 用 LUMEN_SKIP_DEDUP 而非直接引用宏：Kconfig 的 bool 关闭时不定义宏。
      */
-    if (!CONFIG_LUMEN_FORCE_REFRESH && !force && s_tdm_rendered_valid[strip_id] &&
+    if (!LUMEN_SKIP_DEDUP && !force && s_tdm_rendered_valid[strip_id] &&
         s_tdm_rendered_count[strip_id] == n &&
         memcmp(frame, s_tdm_rendered_frame[strip_id], (size_t)n * 3u) == 0) {
         lumen_led_render_note_skipped(); /* 该条画面没变：不切引脚、不刷，省一整帧 RMT */
@@ -711,7 +725,7 @@ static void render_task(void *arg)
                     ? pdMS_TO_TICKS((uint32_t)((remaining_us + 999) / 1000))
                     : 1;
             wait = ticks > 0 ? ticks : 1;
-        } else if (CONFIG_LUMEN_FORCE_REFRESH ||
+        } else if (LUMEN_SKIP_DEDUP ||
                    lumen_segment_store_needs_frames(&s_segments, s_state.strip_count) ||
                    lumen_script_playback_active(&s_playback)) {
             /*

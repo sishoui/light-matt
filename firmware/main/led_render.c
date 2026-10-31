@@ -184,8 +184,15 @@ void lumen_led_render_snapshot(led_strip_handle_t strip, const lumen_state_t *sn
     bool segmented = (selftest == NULL || !lumen_selftest_active(selftest)) && segments != NULL &&
                      lumen_segment_store_any_active(segments, 0) && snapshot->power != 0;
 
-    /* CONFIG_LUMEN_FORCE_REFRESH：错色实验要求画面恒定但持续刷帧，跳过整帧去重。 */
-    if (!CONFIG_LUMEN_FORCE_REFRESH && s_rendered_valid && count == s_rendered_count &&
+    /* CONFIG_LUMEN_FORCE_REFRESH：错色实验要求画面恒定但持续刷帧，跳过整帧去重。
+     * 必须用 #ifdef：Kconfig 的 bool 关闭时**不定义宏**，直接写
+     * `!CONFIG_LUMEN_FORCE_REFRESH` 在关闭状态下编译不过（实测）。 */
+#ifdef CONFIG_LUMEN_FORCE_REFRESH
+    const bool skip_dedup = true;
+#else
+    const bool skip_dedup = false;
+#endif
+    if (!skip_dedup && s_rendered_valid && count == s_rendered_count &&
         memcmp(frame, s_rendered_frame, (size_t)count * 3u) == 0) {
         ++s_frames_skipped;
         /* docs/v2-effects-engine.md §3.2：跳过打 DEBUG，真刷打 INFO 带帧号。
