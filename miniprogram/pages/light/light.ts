@@ -46,7 +46,7 @@ import { getSession } from "../../utils/control/session-singleton";
 import { PAGE_ROUTES, TAB_ROUTES, pushTo, switchTabTo } from "../../utils/control/routes";
 import { statusView } from "../../utils/control/status-view";
 import { hsvForWheel, PRESETS, rgbToHex, segmentHueSatToRgb } from "../../utils/color/hsv";
-import { MAX_SEGMENTS, MAX_STRIPS } from "../../utils/protocol/constants";
+import { MAX_SEGMENTS, MAX_STRIPS, NO_EFFECT } from "../../utils/protocol/constants";
 import type {
   DeviceState,
   LinkState,
@@ -191,6 +191,12 @@ Page({
        * 不用固定延时猜 GPIO 什么时候到。 */
       session.onDeviceConfig(() => {
         void this.refreshStripChips();
+      }),
+      /* #48：节流通道读不回完整 spec 时不会下发，但也没有 await 结果可看；
+       * 会话用这条通道把原因送过来，本页弹一次提示（不假装改色成功）。 */
+      session.onSegmentHint((message) => {
+        this.setData({ colorHintText: message });
+        wx.showToast({ title: message, icon: "none" });
       }),
     ];
   },
@@ -531,12 +537,18 @@ Page({
     if (report !== undefined) {
       const rgb = segmentHueSatToRgb(report.hue, report.sat);
       const hsv = this.wheelView?.assign(rgb) ?? hsvForWheel(rgb, INITIAL_HSV.h);
+      /* #48：两层段要明确告诉用户「改色只改第 1 层、第 2 层与 blend 保留」，
+       * 否则用户会怕点一下颜色把辛苦配好的第二层弄丢。 */
+      const layered =
+        report.layer1.type !== NO_EFFECT
+          ? `（两层段：改色只改第 1 层颜色，第 2 层与混合方式保留）`
+          : "";
       this.setData({
         segmentRows: rows,
         colorHex: rgbToHex(rgb),
         colorHue: hsv.h,
         colorSaturation: Math.round(hsv.s * 100),
-        colorHintText: `正在编辑 段 ${report.segId}（灯珠 ${report.start}-${report.end}）`,
+        colorHintText: `正在编辑 段 ${report.segId}（灯珠 ${report.start}-${report.end}）${layered}`,
       });
       this.wheelView?.redraw();
     } else {

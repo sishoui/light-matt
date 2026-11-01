@@ -17,6 +17,7 @@ import { createDefaultDeviceApi, type DeviceApi } from "./device-api";
 import { createWxHttpFetch } from "../usage/http";
 import { createWxUsageStorage } from "../usage/storage";
 import { getOrCreateLocalUserKey } from "../usage/event";
+import { createWxLoginCode } from "./wx-login";
 
 let api: DeviceApi | null | undefined;
 
@@ -34,6 +35,9 @@ export function getDeviceApi(): DeviceApi | null {
       /* 本地身份与使用日志共用同一个键（`lumen.usage.userkey.v1`）：
        * 同一安装、同一个人，没有理由生成两个。 */
       localUserKey: () => getOrCreateLocalUserKey(createWxUsageStorage()),
+      /* #47：会话来带 `wx.login` 的 code。后端没配 AppSecret 时会忽略它，
+       * 所以这里不必知道后端配置——配置了就能拿到 openid，没配也不影响。 */
+      loginCode: createWxLoginCode(),
     });
   }
   return api;

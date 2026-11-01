@@ -13,13 +13,14 @@
  * 假件只替换 HTTP 接缝与存储后端——不碰 wx、不碰 BLE。
  */
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   DeviceApi,
   IDENTITY_STORAGE_KEY,
   type DeviceApiOptions,
 } from "../utils/control/device-api";
+import { createWxLoginCode } from "../utils/control/wx-login";
 import { createMemoryUsageStorage, type UsageStorage } from "../utils/usage/storage";
 import type { HttpFetch, HttpRequest, HttpResponse } from "../utils/usage/http";
 import type { UsageConfig } from "../utils/usage/config";
@@ -418,5 +419,342 @@ describe("#44 单例模块的 import 安全性", () => {
     const { getDeviceApi } = await import("../utils/control/device-api-singleton");
     /* storage 是 wx 的空实现 → 配置读不到 → 功能关闭。 */
     expect(getDeviceApi()).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #47 微信登录（code2session）
+// ---------------------------------------------------------------------------
+
+/** 会话路由：配了 AppSecret 的后端（没有 code 就 400）。 */
+function wxSessionRoute(openid = "openid-from-code") {
+  return {
+    method: "POST",
+    path: "/api/v1/session",
+    response: () =>
+      json(200, { userKey: openid, identityKind: "openid", trusted: true }),
+  };
+}
+
+/** 后端在「已配 AppSecret 但没有 code」时回的形状（见 server/src/app.ts:183）。 */
+function missingCode() {
+  return json(400, {
+    error: "invalid_payload",
+    details: [{ field: "code", message: "已配置微信登录，code 必填" }],
+  });
+}
+
+function makeApiWithLogin(
+  script: Script,
+  loginCode: () => Promise<string | null>,
+  storage: UsageStorage = createMemoryUsageStorage(),
+): { api: DeviceApi; calls: HttpRequest[]; storage: UsageStorage } {
+  return makeApi(script, { loginCode }, storage);
+}
+
+describe("#47 会话携带 code", () => {
+  it("拿到 code 时随会话请求一起发，后端回 openid 身份", async () => {
+    const { api, calls } = makeApiWithLogin({ routes: [wxSessionRoute()] }, () =>
+      Promise.resolve("the-one-time-code"),
+    );
+
+    const result = await api.ensureIdentity();
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toMatchObject({
+        userKey: "openid-from-code",
+        identityKind: "openid",
+        trusted: true,
+        backendBacked: true,
+        fallback: null,
+      });
+    }
+
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0].body as string)).toEqual({
+      userKey: LOCAL_KEY,
+      code: "the-one-time-code",
+    });
+  });
+
+  it("openid 身份可用于设备接口（带后端 userKey 而不是本地键）", async () => {
+    const { api, calls } = makeApiWithLogin(
+      {
+        routes: [
+          wxSessionRoute(),
+          { method: "GET", path: "/api/v1/devices", response: () => json(200, { devices: [] }) },
+        ],
+      },
+      () => Promise.resolve("code-1"),
+    );
+
+    expect((await api.listDevices()).ok).toBe(true);
+    /* 只有身份请求带 code；设备请求仍只带 userKey 头。 */
+    expect(JSON.parse(calls[0].body as string)).toHaveProperty("code", "code-1");
+    expect(calls[1].headers["x-lumen-user-key"]).toBe("openid-from-code");
+    expect(calls[1].body).toBeUndefined();
+  });
+
+  it("未注入登录接缝（未配 AppSecret 环境）时请求体仍只有 userKey", async () => {
+    const { api, calls } = makeApi({ routes: [sessionRoute()] });
+
+    const result = await api.ensureIdentity();
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toMatchObject({
+        identityKind: "local",
+        backendBacked: true,
+        fallback: null,
+      });
+    }
+    expect(JSON.parse(calls[0].body as string)).toEqual({ userKey: LOCAL_KEY });
+  });
+
+  it("后端没配 AppSecret（忽略 code）时照常拿 local 身份", async () => {
+    const { api, calls } = makeApiWithLogin({ routes: [sessionRoute()] }, () =>
+      Promise.resolve("ignored-code"),
+    );
+
+    const result = await api.ensureIdentity();
+    expect(result.ok && result.value.identityKind).toBe("local");
+    expect(result.ok && result.value.backendBacked).toBe(true);
+    /* code 仍然发出去了，只是后端不用它。 */
+    expect(JSON.parse(calls[0].body as string)).toHaveProperty("code", "ignored-code");
+  });
+});
+
+describe("#47 wx.login 失败 → 回落 local", () => {
+  it("拿不到 code 且后端要求 code：显式回落，不再打设备接口", async () => {
+    const { api, calls } = makeApiWithLogin(
+      {
+        routes: [{ method: "POST", path: "/api/v1/session", response: missingCode }],
+      },
+      () => Promise.resolve(null),
+    );
+
+    const identity = await api.ensureIdentity();
+    expect(identity.ok).toBe(true);
+    if (identity.ok) {
+      expect(identity.value).toMatchObject({
+        userKey: LOCAL_KEY,
+        identityKind: "local",
+        trusted: false,
+        backendBacked: false,
+        fallback: "login_failed",
+      });
+    }
+
+    const list = await api.listDevices();
+    expect(list.ok).toBe(false);
+    if (!list.ok) expect(list.reason).toBe("login_failed");
+    /* 只有那一次 session：回落身份不会再撞设备接口。 */
+    expect(calls.map((c) => c.method)).toEqual(["POST"]);
+  });
+
+  it("loginCode 抛错也按「拿不到 code」处理，不抛给调用方", async () => {
+    const { api } = makeApiWithLogin(
+      { routes: [{ method: "POST", path: "/api/v1/session", response: missingCode }] },
+      () => Promise.reject(new Error("wx.login 崩了")),
+    );
+
+    const identity = await api.ensureIdentity();
+    expect(identity.ok && identity.value.fallback).toBe("login_failed");
+  });
+
+  it("回落身份不落盘：下次启动还会再试登录", async () => {
+    const storage = createMemoryUsageStorage();
+    const { api } = makeApiWithLogin(
+      { routes: [{ method: "POST", path: "/api/v1/session", response: missingCode }] },
+      () => Promise.resolve(null),
+      storage,
+    );
+
+    await api.ensureIdentity();
+    expect(storage.get(IDENTITY_STORAGE_KEY)).toBeNull();
+  });
+
+  it("回落身份只在内存复用：连续设备调用不会每次都重新 wx.login", async () => {
+    let logins = 0;
+    const { api, calls } = makeApiWithLogin(
+      { routes: [{ method: "POST", path: "/api/v1/session", response: missingCode }] },
+      () => {
+        logins += 1;
+        return Promise.resolve(null);
+      },
+    );
+
+    await api.listDevices();
+    await api.listDevices();
+    expect(logins).toBe(1);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("后端未配 AppSecret 时拿不到 code 也没关系：仍按 userKey 拿 local 身份", async () => {
+    const { api, calls } = makeApiWithLogin({ routes: [sessionRoute()] }, () =>
+      Promise.resolve(null),
+    );
+
+    const result = await api.ensureIdentity();
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toMatchObject({
+        userKey: LOCAL_KEY,
+        identityKind: "local",
+        backendBacked: true,
+        fallback: null,
+      });
+    }
+    /* 没 code 就不带这个字段（不是空串）。 */
+    expect(JSON.parse(calls[0].body as string)).toEqual({ userKey: LOCAL_KEY });
+  });
+
+  it("缓存里的 local 身份会被重新登录升级成 openid（每个进程只试一次）", async () => {
+    const storage = createMemoryUsageStorage({
+      /* 上一版本留下的 local 缓存：没有 code 时的身份。 */
+      [IDENTITY_STORAGE_KEY]: JSON.stringify({
+        userKey: LOCAL_KEY,
+        identityKind: "local",
+        trusted: false,
+      }),
+    });
+    const { api, calls } = makeApiWithLogin({ routes: [wxSessionRoute()] }, () =>
+      Promise.resolve("fresh-code"),
+    );
+
+    const first = await api.ensureIdentity();
+    expect(first.ok && first.value.identityKind).toBe("openid");
+    expect(calls).toHaveLength(1);
+
+    /* 已经升级：第二次直接用缓存，不再打 session。 */
+    await api.ensureIdentity();
+    expect(calls).toHaveLength(1);
+  });
+
+  it("没有登录接缝时旧 local 缓存直接复用（未配 AppSecret 路径行为不变）", async () => {
+    const storage = createMemoryUsageStorage({
+      [IDENTITY_STORAGE_KEY]: JSON.stringify({
+        userKey: LOCAL_KEY,
+        identityKind: "local",
+        trusted: false,
+      }),
+    });
+    const { api, calls } = makeApi({ routes: [sessionRoute()] }, {}, storage);
+
+    const result = await api.ensureIdentity();
+    expect(result.ok && result.value.userKey).toBe(LOCAL_KEY);
+    expect(result.ok && result.value.backendBacked).toBe(true);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("#47 invalid_code → 回落 local", () => {
+  it("后端 401 invalid_code：回落并给出可读原因，不当作 unauthorized", async () => {
+    const { api, calls } = makeApiWithLogin(
+      {
+        routes: [
+          {
+            method: "POST",
+            path: "/api/v1/session",
+            response: () =>
+              json(401, { error: "invalid_code", message: "wx.login 的 code 无效或已过期" }),
+          },
+        ],
+      },
+      () => Promise.resolve("expired-code"),
+    );
+
+    const identity = await api.ensureIdentity();
+    expect(identity.ok).toBe(true);
+    if (identity.ok) {
+      expect(identity.value).toMatchObject({
+        identityKind: "local",
+        backendBacked: false,
+        fallback: "invalid_code",
+      });
+    }
+
+    const list = await api.listDevices();
+    expect(list.ok).toBe(false);
+    if (!list.ok) expect(list.reason).toBe("invalid_code");
+    expect(calls.map((c) => c.method)).toEqual(["POST"]);
+  });
+
+  it("真 401（app token 错）仍按 unauthorized 返回，不被误判成登录问题", async () => {
+    const { api } = makeApiWithLogin(
+      {
+        routes: [
+          { method: "POST", path: "/api/v1/session", response: () => json(401, { error: "unauthorized" }) },
+        ],
+      },
+      () => Promise.resolve("some-code"),
+    );
+
+    const identity = await api.ensureIdentity();
+    expect(identity.ok).toBe(false);
+    if (!identity.ok) expect(identity.reason).toBe("unauthorized");
+  });
+
+  it("forgetIdentity 后重新登录成功：从回落身份升级为 openid", async () => {
+    let code: string | null = null;
+    const { api } = makeApiWithLogin(
+      {
+        routes: [
+          {
+            method: "POST",
+            path: "/api/v1/session",
+            response: () =>
+              code === null ? missingCode() : json(200, { userKey: "openid-2", identityKind: "openid", trusted: true }),
+          },
+        ],
+      },
+      () => Promise.resolve(code),
+    );
+
+    expect((await api.ensureIdentity()).ok).toBe(true);
+    expect(api.currentIdentity?.fallback).toBe("login_failed");
+
+    code = "fresh-code";
+    api.forgetIdentity();
+    const retried = await api.ensureIdentity();
+    expect(retried.ok && retried.value.identityKind).toBe("openid");
+    expect(retried.ok && retried.value.backendBacked).toBe(true);
+  });
+});
+
+describe("#47 wx.login 适配器（utils/control/wx-login.ts）", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("成功时把 code 带回来（去空白）", async () => {
+    vi.stubGlobal("wx", {
+      login: (opts: { success: (res: { code: string }) => void }) => opts.success({ code: "  abc123  " }),
+    });
+    expect(await createWxLoginCode()()).toBe("abc123");
+  });
+
+  it("fail 回调 → null（用户取消 / 网络失败都走这里）", async () => {
+    vi.stubGlobal("wx", { login: (opts: { fail: () => void }) => opts.fail() });
+    expect(await createWxLoginCode()()).toBeNull();
+  });
+
+  it("空 code → null（后端会把空串当无效 code）", async () => {
+    vi.stubGlobal("wx", {
+      login: (opts: { success: (res: { code: string }) => void }) => opts.success({ code: "" }),
+    });
+    expect(await createWxLoginCode()()).toBeNull();
+  });
+
+  it("wx.login 同步抛错 → null，不把异常冒给会话层", async () => {
+    vi.stubGlobal("wx", {
+      login: () => {
+        throw new Error("基础库不支持");
+      },
+    });
+    expect(await createWxLoginCode()()).toBeNull();
+  });
+
+  it("没有 wx（node 环境）→ null", async () => {
+    expect(await createWxLoginCode()()).toBeNull();
   });
 });

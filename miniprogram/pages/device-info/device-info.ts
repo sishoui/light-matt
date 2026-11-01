@@ -354,9 +354,8 @@ Page({
       this.setData({ identityHint: "" });
       return;
     }
-    this.setData({
-      identityHint: sync.identityKind === "local" ? "仅本机可见" : "",
-    });
+    /* #47：文案由同步层给（含「微信登录失败 / 登录已过期」的可读原因）。 */
+    this.setData({ identityHint: sync.identityHint });
   },
 
   // ---------------- 断开 / 删除 ----------------

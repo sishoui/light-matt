@@ -39,7 +39,16 @@ function memoryStorage(seed: Record<string, string> = {}): SessionStorage {
 const HW = "AA:BB:CC:DD:EE:FF";
 
 type IdentityResult =
-  | { ok: true; value: { userKey: string; identityKind: IdentityKind; trusted: boolean } }
+  | {
+      ok: true;
+      value: {
+        userKey: string;
+        identityKind: IdentityKind;
+        trusted: boolean;
+        backendBacked?: boolean;
+        fallback?: "login_failed" | "invalid_code" | null;
+      };
+    }
   | { ok: false; reason: string };
 
 /** 可编排的假 api：记录调用顺序，按用例设定成败。 */
@@ -52,6 +61,11 @@ class FakeApi implements DeviceSyncApi {
   renameOk = true;
   deleteOk = true;
   seenOk = true;
+  /** #47：后端是否认这份身份（回落身份为 false）。 */
+  backendBacked = true;
+  fallback: "login_failed" | "invalid_code" | null = null;
+  /** #47：记录 forgetIdentity 调用。 */
+  forgot = 0;
 
   calls: string[] = [];
   registered: Array<{ hardwareId: string; displayName: string | null | undefined }> = [];
@@ -73,8 +87,14 @@ class FakeApi implements DeviceSyncApi {
         userKey: "local-0123456789abcdef",
         identityKind: this.identityKind,
         trusted: this.identityKind === "openid",
+        backendBacked: this.backendBacked,
+        fallback: this.fallback,
       },
     });
+  }
+
+  forgetIdentity(): void {
+    this.forgot += 1;
   }
 
   listDevices() {
@@ -330,5 +350,79 @@ describe("#44 seen 的上报体约束", () => {
     const sync = new DeviceSync({ api, storage: memoryStorage() });
     await sync.noteConnected(facts({ ledCounts: [0, 0] }));
     expect(api.seen[0].body).toEqual({ ledCounts: null, firmwareVer: 0x300 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #47 身份回落（wx.login 失败 / invalid_code）
+// ---------------------------------------------------------------------------
+
+describe("#47 回落身份的设备页提示", () => {
+  it("正常 local 身份 → 提示「仅本机可见」", async () => {
+    const api = new FakeApi();
+    api.identityKind = "local";
+    const sync = new DeviceSync({ api, storage: memoryStorage() });
+    await sync.ensureIdentity();
+    expect(sync.identityHint).toBe("仅本机可见");
+    expect(sync.identityBackendBacked).toBe(true);
+  });
+
+  it("openid 身份 → 不提示", async () => {
+    const api = new FakeApi();
+    api.identityKind = "openid";
+    const sync = new DeviceSync({ api, storage: memoryStorage() });
+    await sync.ensureIdentity();
+    expect(sync.identityHint).toBe("");
+  });
+
+  it("wx.login 失败 → 提示带原因，且不再打后端设备接口", async () => {
+    const api = new FakeApi();
+    api.backendBacked = false;
+    api.fallback = "login_failed";
+    const sync = new DeviceSync({ api, storage: memoryStorage() });
+
+    await sync.ensureIdentity();
+    expect(sync.identityHint).toContain("微信登录失败");
+    expect(sync.fallbackReason).toBe("login_failed");
+    expect(sync.identityBackendBacked).toBe(false);
+
+    expect(await sync.refreshRemote()).toBeNull();
+    expect(api.calls).toEqual(["session"]);
+    /* 不是离线：后端根本没被问过设备，不该显示「离线」。 */
+    expect(sync.offline).toBe(false);
+  });
+
+  it("invalid_code → 提示可重试，且登记 / 改名 / 删除都不打后端", async () => {
+    const api = new FakeApi();
+    api.backendBacked = false;
+    api.fallback = "invalid_code";
+    const sync = new DeviceSync({ api, storage: memoryStorage() });
+
+    await sync.ensureIdentity();
+    expect(sync.identityHint).toContain("登录已过期");
+
+    await sync.noteConnected(facts());
+    expect(await sync.pushRemark({ deviceId: "DEV-A", hardwareId: HW })).toBe(false);
+    expect(await sync.unlink(7)).toBe(false);
+
+    /* 只有换身份那一次请求，没有任何设备调用。 */
+    expect(api.calls).toEqual(["session"]);
+    expect(sync.offline).toBe(false);
+  });
+
+  it("forgetIdentity 清掉回落状态并通知 api 重新登录", async () => {
+    const api = new FakeApi();
+    api.backendBacked = false;
+    api.fallback = "invalid_code";
+    const sync = new DeviceSync({ api, storage: memoryStorage() });
+
+    await sync.ensureIdentity();
+    sync.forgetIdentity();
+
+    expect(api.forgot).toBe(1);
+    expect(sync.identityKind).toBeNull();
+    expect(sync.identityHint).toBe("");
+    expect(sync.identityBackendBacked).toBe(true);
+    expect(sync.fallbackReason).toBeNull();
   });
 });

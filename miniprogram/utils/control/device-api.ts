@@ -17,7 +17,15 @@
  * 4xx 是确定性拒绝，重试只会重复撞墙。`404 unknown_user` 是特例：后端库被
  * 重置后旧 userKey 失效，重建一次会话再试一次（仍然只多一次请求）。
  *
- * 纯逻辑 + 注入 `HttpFetch` / storage / 计时器：node 单测里零 wx 依赖。
+ * ## 微信身份（#47）
+ *
+ * 会话请求在**拿到 code 时**把它一起发出去：后端配置了 `WX_APPID` / `WX_SECRET`
+ * 就用 code 换 openid，没配置则忽略 code（`validateSessionPayload` 允许它存在）。
+ * 拿不到 code 或后端回 `invalid_code` 时**显式**降级：返回
+ * `login_failed` / `invalid_code`，由同步层回落成 `local` 身份并在设备页提示
+ * 「仅本机可见」，而不是静默失败。
+ *
+ * 纯逻辑 + 注入 `HttpFetch` / storage / 计时器 / 登录接缝：node 单测里零 wx 依赖。
  */
 
 import { loadUsageConfig, type UsageConfig } from "../usage/config";
@@ -37,12 +45,32 @@ export const IDENTITY_STORAGE_KEY = "lumen.identity.v1";
 /** 后端明示的身份种类：`local` = 仅本机可见，`openid` = 跨设备同步。 */
 export type IdentityKind = "local" | "openid";
 
+/** 回落到 local 身份的原因（#47）：页面据此给出可读提示，不静默失败。 */
+export type IdentityFallback = "login_failed" | "invalid_code";
+
 export interface DeviceIdentity {
   /** 后端认的 key；openid 模式下**不是**本地生成的 `local-...`。 */
   readonly userKey: string;
   readonly identityKind: IdentityKind;
   /** 后端给的提示位（不是权限开关）。 */
   readonly trusted: boolean;
+  /**
+   * 后端是否认这份身份（#47）。
+   *
+   * `false` = 纯本地回落（`wx.login` 失败 / 后端回 `invalid_code` / 后端要求 code
+   * 而我们没有）：设备接口不会再被调用，因为后端根本没有这个用户。
+   */
+  readonly backendBacked: boolean;
+  /** 回落到 local 的原因；身份正常时为 `null`。 */
+  readonly fallback: IdentityFallback | null;
+  /**
+   * 换这份身份时是否已经尝试过带 code（#47）。
+   *
+   * 旧版本留下的 local 缓存没有这个字段（按 `false` 读），值得重换一次争取升级
+   * 成 openid；之后无论结果如何都不会重复打 session——后端没配 AppSecret 时
+   * 会一直回 local，每次重试都是白发一轮请求。想重新登录请走 `forgetIdentity()`。
+   */
+  readonly loginTried: boolean;
 }
 
 /** GET /api/v1/devices 的一行。缓存字段见上：非权威。 */
@@ -85,7 +113,14 @@ export type ApiFailureReason =
   /** 401/403：app token 错或身份被拒。 */
   | "unauthorized"
   /** 其它 4xx（400 参数非法 / 404 设备不在列表里 / 409 …）。 */
-  | "rejected";
+  | "rejected"
+  /**
+   * 后端配置了微信登录（要求 code），但 `wx.login` 没拿到 code（#47）。
+   * 不是网络问题：调用方应显式回落到 local 身份并提示。
+   */
+  | "login_failed"
+  /** 后端把 code 判为无效 / 过期（401 `invalid_code`，#47）。 */
+  | "invalid_code";
 
 export type ApiResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -95,6 +130,15 @@ interface ApiTimer {
   setTimeout: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
   clearTimeout: (handle: ReturnType<typeof setTimeout>) => void;
 }
+
+/**
+ * `wx.login` 接缝：返回一次性 code；拿不到（未授权 / 网络 / 平台不支持）返回 null。
+ *
+ * 单独做类型而不是直接调 wx：node 单测注入假实现，生产由 `createWxLoginCode()`
+ * 提供——`exchangeSession` 因此仍然零 wx 依赖。**约定永不抛错**（实现自带守卫），
+ * 这里仍包一层 try，避免注入方违约打断会话。
+ */
+export type LoginCodeFetcher = () => Promise<string | null>;
 
 export interface DeviceApiOptions {
   readonly config: UsageConfig;
@@ -106,6 +150,11 @@ export interface DeviceApiOptions {
    * 以后端返回的为准（openid 模式下完全不同）。
    */
   readonly localUserKey: () => string;
+  /**
+   * 微信登录 code 来源（#47）。未注入 = 不发 code（等价于未配 AppSecret 的旧路径）。
+   * 后端未配置 AppSecret 时会忽略 code；配置了则必须靠它换 openid。
+   */
+  readonly loginCode?: LoginCodeFetcher;
   readonly timer?: ApiTimer;
 }
 
@@ -141,6 +190,14 @@ function parseJson(body: string): unknown {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** 后端 400 是否在抱怨「缺 code」（说明它配了 AppSecret，要求走微信登录）。 */
+function complainsAboutCode(payload: unknown): boolean {
+  if (!isRecord(payload) || !Array.isArray(payload.details)) {
+    return false;
+  }
+  return payload.details.some((item) => isRecord(item) && item.field === "code");
 }
 
 function numberOrNull(value: unknown): number | null {
@@ -190,6 +247,7 @@ export class DeviceApi {
   private readonly fetchImpl: HttpFetch;
   private readonly storage: UsageStorage;
   private readonly localUserKey: () => string;
+  private readonly loginCode: LoginCodeFetcher | null;
   private readonly timer: ApiTimer;
   private readonly active: boolean;
   /** 进程内缓存（storage 是持久化；这里避免每次调用都反序列化）。 */
@@ -202,6 +260,7 @@ export class DeviceApi {
     this.fetchImpl = opts.fetch;
     this.storage = opts.storage;
     this.localUserKey = opts.localUserKey;
+    this.loginCode = opts.loginCode ?? null;
     this.timer = opts.timer ?? defaultTimer;
     this.active =
       opts.config.enabled &&
@@ -228,12 +287,14 @@ export class DeviceApi {
    * 取身份：命中缓存直接用，否则 `POST /api/v1/session`。
    *
    * 失败**不**缓存：下次调用还有机会（后端恢复后自然成功）。
+   * 回落身份只在内存里（不落盘），但同一进程内会复用，避免每次设备调用都
+   * 重打一轮 `wx.login`；页面「重试」走 `forgetIdentity()` 再问一次。
    */
   async ensureIdentity(): Promise<ApiResult<DeviceIdentity>> {
     if (!this.active) {
       return { ok: false, reason: "disabled" };
     }
-    if (this.identity !== null) {
+    if (this.identity !== null && !this.needsLoginUpgrade(this.identity)) {
       return { ok: true, value: this.identity };
     }
     if (this.identityPending !== null) {
@@ -245,18 +306,52 @@ export class DeviceApi {
     return this.identityPending;
   }
 
+  /**
+   * 旧缓存是 local，而这次有机会带 code：重换一次，争取升级成 openid（#47）。
+   *
+   * 只看身份自身记录的 `loginTried`，所以未配微信的部署（没有登录接缝，
+   * 缓存里也不会有 code 记录）与旧单测行为完全不变。
+   */
+  private needsLoginUpgrade(identity: DeviceIdentity): boolean {
+    return (
+      this.loginCode !== null &&
+      identity.identityKind === "local" &&
+      !identity.loginTried
+    );
+  }
+
   /** 重新换一次身份（后端 404 unknown_user 后调用；忽略缓存）。 */
   private async forceIdentity(): Promise<ApiResult<DeviceIdentity>> {
     if (!this.active) {
       return { ok: false, reason: "disabled" };
     }
-    this.identity = null;
-    this.storage.remove(IDENTITY_STORAGE_KEY);
+    this.forgetIdentity();
     return this.exchangeSession();
   }
 
+  /**
+   * 丢掉内存与持久化的身份，下一次 `ensureIdentity` 重新换（页面手动重试用）。
+   *
+   * 回落身份本来就不落盘，这里主要是让「上次 `wx.login` 失败」不会粘住整个
+   * 进程：点一次「重试」就能重新尝试升级成 openid（#47）。
+   */
+  forgetIdentity(): void {
+    this.identity = null;
+    this.storage.remove(IDENTITY_STORAGE_KEY);
+  }
+
+  /**
+   * 换会话：`userKey` 一直带，拿到 `wx.login` 的 code 时一并带上（#47）。
+   *
+   * 后端配了 AppSecret 时必须靠 code 换 openid；没配则忽略 code、仍按
+   * `userKey` 回 local。两种情况都不需要客户端知道后端配置。
+   */
   private async exchangeSession(): Promise<ApiResult<DeviceIdentity>> {
-    const body = { userKey: this.localUserKey() };
+    const code = await this.requestLoginCode();
+    const body: Record<string, string> = { userKey: this.localUserKey() };
+    if (code !== null) {
+      body.code = code;
+    }
     let response: HttpResponse;
     try {
       response = await this.withTimeout(
@@ -276,17 +371,28 @@ export class DeviceApi {
       return { ok: false, reason: "offline" };
     }
 
+    const payload = parseJson(response.body);
+
     if (response.status === 401 || response.status === 403) {
+      /* `invalid_code` 与 app token 错都是 401，靠 error 字段区分：
+       * 前者是「这张 code 废了」（重新 wx.login 还能好），后者是部署配置问题。 */
+      if (isRecord(payload) && payload.error === "invalid_code") {
+        return this.localFallback("invalid_code");
+      }
       return { ok: false, reason: "unauthorized" };
     }
     if (response.status >= 500) {
       return { ok: false, reason: "server" };
     }
+    if (response.status === 400 && complainsAboutCode(payload)) {
+      /* 后端配了 AppSecret，而我们没有 code（wx.login 失败 / 未接登录）：
+       * 显式回落到 local，让页面显示「仅本机可见」而不是一直转圈。 */
+      return this.localFallback("login_failed");
+    }
     if (response.status < 200 || response.status >= 300) {
       return { ok: false, reason: "rejected" };
     }
 
-    const payload = parseJson(response.body);
     if (!isRecord(payload)) {
       return { ok: false, reason: "server" };
     }
@@ -299,10 +405,50 @@ export class DeviceApi {
       userKey,
       identityKind: kind,
       trusted: payload.trusted === true,
+      /* 后端明确接受了这份身份（local 也罢），设备接口可用。 */
+      backendBacked: true,
+      fallback: null,
+      /* 这次问过微信了：后端没配 AppSecret 时不必下次再问。 */
+      loginTried: this.loginCode !== null,
     };
     this.identity = identity;
     this.storeIdentity(identity);
     return { ok: true, value: identity };
+  }
+
+  /**
+   * 回落身份：只在内存里，**不落盘**（下次启动 / 手动重试还有机会升级）。
+   *
+   * `backendBacked: false` 让 `call()` 直接放弃设备接口——后端根本没有这个用户，
+   * 打过去也只会 404，反而把「登录失败」误报成「离线」。
+   */
+  private localFallback(fallback: IdentityFallback): ApiResult<DeviceIdentity> {
+    const identity: DeviceIdentity = {
+      userKey: this.localUserKey(),
+      identityKind: "local",
+      trusted: false,
+      backendBacked: false,
+      fallback,
+      /* 同一进程内复用这份回落身份：不在每次设备调用里重打 wx.login。
+       * 页面「重试」会调 `forgetIdentity()` 再走一遍。 */
+      loginTried: true,
+    };
+    this.identity = identity;
+    return { ok: true, value: identity };
+  }
+
+  /** 取 `wx.login` 的 code；没有接缝 / 调用失败一律 null（回落路径不报错）。 */
+  private async requestLoginCode(): Promise<string | null> {
+    if (this.loginCode === null) {
+      return null;
+    }
+    try {
+      const code = await this.loginCode();
+      return typeof code === "string" && code.trim().length > 0 ? code.trim() : null;
+    } catch {
+      /* 注入方违约抛错也只当「没拿到 code」：登录失败永远不该炸掉同步旁路。 */
+      return null;
+    }
   }
 
   private loadStoredIdentity(): DeviceIdentity | null {
@@ -318,10 +464,16 @@ export class DeviceApi {
     if (userKey === null) {
       return null;
     }
+    /* 只有后端确认过的身份才会落盘，所以 `backendBacked` 恒为 true
+     * （旧版本缓存里没有这个字段，同样按 true 读）。 */
     return {
       userKey,
       identityKind: parsed.identityKind === "openid" ? "openid" : "local",
       trusted: parsed.trusted === true,
+      backendBacked: true,
+      fallback: null,
+      /* 旧版本缓存没有这个字段 → false：值得重换一次争取升级成 openid。 */
+      loginTried: parsed.loginTried === true,
     };
   }
 
@@ -481,6 +633,11 @@ export class DeviceApi {
     if (!first.ok) {
       return first;
     }
+    if (!first.value.backendBacked) {
+      /* 回落身份：后端没有这个用户，设备接口一定 404。直接返回原因，
+       * 避免把「登录失败」误报成「离线」（#47）。 */
+      return { ok: false, reason: first.value.fallback ?? "login_failed" };
+    }
     let identity = first.value;
     let outcome = await run(identity);
 
@@ -489,6 +646,10 @@ export class DeviceApi {
       const rebuilt = await this.forceIdentity();
       if (!rebuilt.ok) {
         return rebuilt;
+      }
+      if (!rebuilt.value.backendBacked) {
+        /* 重建时登录照样失败：按回落原因返回，不当作「离线」。 */
+        return { ok: false, reason: rebuilt.value.fallback ?? "login_failed" };
       }
       identity = rebuilt.value;
       outcome = await run(identity);
@@ -604,6 +765,8 @@ export function createDefaultDeviceApi(options: {
   storage: UsageStorage;
   fetch: HttpFetch;
   localUserKey: () => string;
+  /** #47：`wx.login` 的 code 来源；不传 = 不发 code（旧路径行为不变）。 */
+  loginCode?: LoginCodeFetcher;
 }): DeviceApi | null {
   const config = loadUsageConfig(options.storage);
   if (!config.enabled) {
@@ -614,5 +777,6 @@ export function createDefaultDeviceApi(options: {
     fetch: options.fetch,
     storage: options.storage,
     localUserKey: options.localUserKey,
+    ...(options.loginCode !== undefined ? { loginCode: options.loginCode } : {}),
   });
 }

@@ -10,6 +10,12 @@ set "OUT=%TEMP%\lumen-host-tests"
 set "VECTORS=%~dp0..\..\docs\protocol-testvectors-v3.json"
 if not exist "%OUT%" mkdir "%OUT%"
 
+REM #49 note on the source list below:
+REM   led_engine.c needs FreeRTOS semaphores, esp_timer and ESP-IDF headers, so it
+REM   cannot be compiled for the host. The pure part that walks segment slots and
+REM   reports the REAL slot id for SegmentReport (spec-v3 4.2 fix 3) was therefore
+REM   split out into led_engine_slots.c, which is plain C and is listed below.
+REM   firmware/test/test_skeleton.c::test_segment_real_slots() guards that behavior.
 gcc -std=c11 -Wall -Wextra -Werror -I"%MAIN%" ^
     "%~dp0test_skeleton.c" ^
     "%MAIN%\protocol.c" ^
@@ -24,6 +30,7 @@ gcc -std=c11 -Wall -Wextra -Werror -I"%MAIN%" ^
     "%MAIN%\state.c" ^
     "%MAIN%\gamma.c" ^
     "%MAIN%\selftest.c" ^
+    "%MAIN%\led_engine_slots.c" ^
     "%MAIN%\led_count_job.c" ^
     "%MAIN%\save_scheduler.c" ^
     "%MAIN%\state_blob.c" ^

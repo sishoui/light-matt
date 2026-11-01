@@ -13,6 +13,7 @@
 #include "effects.h"
 #include "gamma.h"
 #include "led_count_job.h"
+#include "led_engine_slots.h"
 #include "led_render.h"
 #include "led_stress.h"
 #include "led_strip_owner.h"
@@ -1335,21 +1336,14 @@ uint8_t lumen_led_engine_segments(uint8_t strip_id, lumen_segment_t *out, uint8_
     if (out == NULL || cap == 0 || strip_id >= LUMEN_MAX_STRIPS) {
         return 0;
     }
-    uint8_t written = 0;
+    /*
+     * 槽位枚举在 led_engine_slots.c（纯逻辑、无 RTOS 依赖，host 可测）。
+     * 这里只保留「进锁 → 枚举 → 出锁」：枚举期间 s_segments 不会变，
+     * 与抽取前在同一临界区里遍历的结果完全一致（#49）。
+     */
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    for (uint8_t slot = 0; slot < LUMEN_MAX_SEGMENTS && written < cap; ++slot) {
-        const lumen_segment_t *seg = &s_segments.slot[strip_id][slot];
-        if (!seg->active) {
-            continue;
-        }
-        out[written] = *seg;
-        /* spec-v3 §4.2 第 3 处缺陷：SegmentReport 必须报**真实槽位**，
-         * 不是压缩后的序号——小程序要按 seg_id 精确对应到可编辑的槽位。 */
-        if (out_slots != NULL) {
-            out_slots[written] = slot;
-        }
-        ++written;
-    }
+    uint8_t written =
+        lumen_led_engine_collect_segments(&s_segments, strip_id, out, out_slots, cap);
     xSemaphoreGive(s_state_lock);
     return written;
 }
