@@ -173,11 +173,15 @@ export function buildUsageEvent(input: {
  * 与后端 `normalizeMacAddress` 同一口径：协议层 `parseDeviceInfoReport` 已经
  * 给出这个形式，这里只是防御——脏值（长度不对 / 非 hex）一律视为「不知道」，
  * 宁可退化为按广播名聚合，也不把脏数据当聚合键。
+ *
+ * **全零 MAC 同样视为「不知道」**：固件 `esp_read_mac` 失败时会上报
+ * `00:00:00:00:00:00`，那不是身份，上报它只会把所有故障设备并成一行。
  */
 export function normalizeHardwareId(raw: string | null | undefined): string | null {
   if (typeof raw !== "string") return null;
   const compressed = raw.trim().toLowerCase().replace(/^0x/, "").replace(/[:\-\s]/g, "");
   if (!/^[0-9a-f]{12}$/.test(compressed)) return null;
+  if (compressed === "000000000000") return null;
   const pairs = compressed.match(/.{2}/g);
   if (pairs === null) return null;
   return pairs.join(":").toUpperCase();

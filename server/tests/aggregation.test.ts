@@ -313,6 +313,19 @@ describe("resolveDeviceKey 单元规则", () => {
     }
   });
 
+  it("#50 全零 MAC 视为「不知道」，退化为按广播名聚合", () => {
+    /* 固件 esp_read_mac 失败会上报 00:00:00:00:00:00。放行会让所有故障设备
+     * 挤进同一行 hw:00:00…，而 devices.hardware_id 有 UNIQUE 约束，
+     * 第二台直接撞约束。 */
+    expect(
+      resolveDeviceKey({
+        hardwareId: "00:00:00:00:00:00",
+        deviceName: "Lumen-1A2B",
+        platform: "android",
+      }),
+    ).toEqual({ key: "name:LUMEN-1A2B", kind: "name", name: "LUMEN-1A2B" });
+  });
+
   it("#50 非 MAC 的 hardwareId（历史 / 测试短 id）仍按小写原样聚合，不丢数据", () => {
     expect(
       resolveDeviceKey({ hardwareId: " AB:CD ", deviceName: null, platform: "unknown" }),

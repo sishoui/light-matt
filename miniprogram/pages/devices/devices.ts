@@ -535,11 +535,16 @@ Page({
       return;
     }
     sync.clearOffline();
-    /* #47：上次 wx.login 失败 / code 过期时，重试要重新走一遍登录，
-     * 否则会一直拿着回落身份不再尝试。 */
-    if (!sync.identityBackendBacked) {
-      sync.forgetIdentity();
-    }
+    /* #47：重试必须**无条件**丢掉身份缓存再走一遍轮换。
+     *
+     * 曾经只在 `!backendBacked` 时 forget，那是错的：用户点重试的典型场景是
+     * 「后端后补了 AppSecret，想升级成 openid」，而那时本地持有的是**正常落盘的
+     * local 身份**（backendBacked === true、loginTried === true）—— 不 forget 的话
+     * `ensureIdentity()` 直接命中缓存，永远发不出带 code 的请求，
+     * 提示可点但点了没用。
+     *
+     * 代价只是一次 session 请求；后端对同一 userKey 是 upsert，幂等。 */
+    sync.forgetIdentity();
     this.setData({ syncHint: "" });
     await this.syncFromBackend();
     if (this.session?.linkState === "ready") {

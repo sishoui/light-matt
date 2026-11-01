@@ -245,7 +245,7 @@ wx.setStorageSync("lumen.usage.config.v1", JSON.stringify({
 - 连接后的 `deviceId` 由操作系统给：**Android 是 MAC，iOS 是每台手机各自不同的 UUID**。
   它既不能跨手机对齐，iOS 上换手机后还会变。**它不能作为聚合键**，这是本票的技术难点。
 
-### 4.2 结论：按广播名归一，不按 deviceId
+### 4.2 结论：按 BT MAC 归一（v3），广播名兜底，从不按 deviceId
 
 日志的聚合键 `device_key` 按以下**固定优先级**生成（唯一实现：`src/identity.ts` 的
 `resolveDeviceKey`）：

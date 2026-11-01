@@ -51,12 +51,19 @@ export function normalizeBroadcastName(raw: string | null | undefined): string |
  *
  * 不是合法 MAC 的字符串（历史客户端 / 测试夹具里的短 id）仍按原样小写处理：
  * 聚合是日志口径，不因为格式不认识就丢数据。
+ *
+ * **但全零 MAC 是例外**：它是「读到 MAC 但值是坏的」这一确定事实，不是历史短 id。
+ * 放行会让所有读 MAC 失败的设备挤进同一行（`hw:00:00:00:00:00:00`），
+ * 与「格式不认识就保留」的初衷相反。所以它按「不知道」处理，退化为广播名聚合。
  */
 function normalizeHardwareId(raw: string | null | undefined): string | null {
   if (typeof raw !== "string") return null;
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed.replace(/[:\-\s]/g, "").replace(/^0x/, "") === "000000000000") {
+    return null;
+  }
   const mac = normalizeMacAddress(raw);
   if (mac !== null) return mac.toLowerCase();
-  const trimmed = raw.trim().toLowerCase();
   return trimmed.length > 0 ? trimmed : null;
 }
 
@@ -74,11 +81,18 @@ function normalizeRawDeviceId(raw: string | null | undefined): string | null {
  *
  * 接受：`AA:BB:CC:DD:EE:FF` / `aa-bb-cc-dd-ee-ff` / `aabbccddeeff` / 可选 `0x` 前缀。
  * 其余一律返回 null —— 宁可 400，也不要拿脏数据当主键（UNIQUE 一旦被污染无法回滚）。
+ *
+ * **全零 MAC 也返回 null。** 固件在 `esp_read_mac` 失败时会上报
+ * `00:00:00:00:00:00`（`ble-link` 只打一条 WARN 就继续）。若放行：
+ * 所有这类设备的日志会挤进同一行 `hw:00:00…`（比旧的广播名兜底更糟，
+ * 旧逻辑至少能按 `LUMEN-XXXX` 分开），而 `devices.hardware_id` 有 UNIQUE
+ * 约束，第二台直接撞约束。
  */
 export function normalizeMacAddress(raw: string | null | undefined): string | null {
   if (typeof raw !== "string") return null;
   const compressed = raw.trim().toLowerCase().replace(/^0x/, "").replace(/[:\-\s]/g, "");
   if (!/^[0-9a-f]{12}$/.test(compressed)) return null;
+  if (compressed === "000000000000") return null;
   const pairs = compressed.match(/.{2}/g);
   if (pairs === null) return null;
   return pairs.join(":").toUpperCase();

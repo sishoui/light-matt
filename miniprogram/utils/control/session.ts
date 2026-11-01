@@ -1958,8 +1958,19 @@ export class ControlSession {
     if (logger === null) {
       return;
     }
-    /* `deviceInfoCache` 只属于本次连接（断开即清），因此不会是上一台的 hw_id。 */
-    const hardwareId = this.deviceInfoCache?.hwId ?? null;
+    /* 优先用本次连接读回的 hw_id（`deviceInfoCache` 只属于本次连接，断开即清，
+     * 不会是上一台的）。
+     *
+     * 读不到时**必须**退到已知身份：0x88 的 ACK 超时是 600ms，弱信号下很常见。
+     * 若此时直接记成「无 hardwareId」，这条日志会落到 `name:LUMEN-XXXX`，
+     * 与这台设备历史的所有 `hw:` 行分裂 —— 正是 #50 要消灭的症状，
+     * 而且会随每次超时反复制造。
+     *
+     * 用 `knownHardwareIdOf(pending.deviceId)` 不会串号：deviceId 是本次会话的
+     * 快照，断线/切换时已随 pendingUsage 一起钉住。 */
+    const hardwareId =
+      this.deviceInfoCache?.hwId ??
+      (pending.deviceId === null ? null : this.knownHardwareIdOf(pending.deviceId));
     try {
       logger.recordConnection({
         ...(hardwareId !== null && hardwareId.length > 0 ? { hardwareId } : {}),

@@ -305,6 +305,32 @@ export function setBackendId(
 }
 
 /**
+ * 清掉所有后端 id，保留备注名与启用掩码（#47）。
+ *
+ * 用在「身份种类变了」的时候（local → openid）：后端换了一条 `users` 行，
+ * 旧 `backendId` 属于上一个用户，继续用会打到 404 并被误显示成「离线」。
+ * 备注名和启用掩码是本地用户资产，与后端归属无关，必须保留。
+ */
+export function clearBackendIds(storage: SessionStorage): DeviceRegistry {
+  const registry = loadRegistry(storage);
+  let changed = false;
+  const devices = registry.devices.map((entry: DeviceRegistryEntry) => {
+    if (entry.backendId === undefined) {
+      return entry;
+    }
+    changed = true;
+    const { backendId: _drop, ...rest } = entry;
+    return rest as DeviceRegistryEntry;
+  });
+  if (!changed) {
+    return registry;
+  }
+  const next: DeviceRegistry = { devices };
+  writeRegistry(storage, next);
+  return next;
+}
+
+/**
  * 删除一台设备的全部本地决定（备注 / 掩码 / 身份）。
  */
 export function removeDevice(storage: SessionStorage, deviceId: string): DeviceRegistry {

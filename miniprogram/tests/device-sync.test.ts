@@ -14,7 +14,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { SessionStorage } from "../utils/control/device-cache";
-import { loadRegistry, setHardwareId, setRemark } from "../utils/control/device-registry";
+import { loadRegistry, setBackendId, setHardwareId, setRemark } from "../utils/control/device-registry";
 import {
   DeviceSync,
   type DeviceSyncApi,
@@ -419,10 +419,53 @@ describe("#47 回落身份的设备页提示", () => {
     await sync.ensureIdentity();
     sync.forgetIdentity();
 
+
     expect(api.forgot).toBe(1);
     expect(sync.identityKind).toBeNull();
     expect(sync.identityHint).toBe("");
     expect(sync.identityBackendBacked).toBe(true);
     expect(sync.fallbackReason).toBeNull();
+  });
+});
+
+describe("#47 身份种类变化时清掉过期的后端 id", () => {
+  /** 预置一条带 backendId 的登记记录（走真实写入路径，不碰内部结构）。 */
+  function seed(storage: SessionStorage): void {
+    setRemark(storage, "DEV-A", "客厅");
+    setBackendId(storage, { deviceId: "DEV-A", hardwareId: HW }, 42);
+  }
+
+  it("local → openid 后 backendId 被清掉，备注名与掩码保留", async () => {
+    const api = new FakeApi();
+    api.identityKind = "local";
+    const storage = memoryStorage();
+    seed(storage);
+    const sync = new DeviceSync({ api, storage });
+
+    await sync.ensureIdentity();
+    /* 首次是 local，不算「变化」，缓存应当保留。 */
+    expect(loadRegistry(storage).devices[0].backendId).toBe(42);
+
+    api.identityKind = "openid";
+    await sync.ensureIdentity();
+
+    const entry = loadRegistry(storage).devices[0];
+    expect(entry.backendId).toBeUndefined();
+    /* 本地用户资产不能被顺手清掉。 */
+    expect(entry.remark).toBe("客厅");
+    expect(entry.stripMask).toBe(0xff);
+  });
+
+  it("身份种类不变时不动缓存（避免每次连上都重新登记）", async () => {
+    const api = new FakeApi();
+    api.identityKind = "openid";
+    const storage = memoryStorage();
+    seed(storage);
+    const sync = new DeviceSync({ api, storage });
+
+    await sync.ensureIdentity();
+    await sync.ensureIdentity();
+
+    expect(loadRegistry(storage).devices[0].backendId).toBe(42);
   });
 });

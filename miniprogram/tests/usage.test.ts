@@ -357,6 +357,14 @@ describe("#50 hardwareId 上报（与设备登记表同一主键）", () => {
       expect(normalizeHardwareId(raw), raw).toBe("AA:BB:CC:DD:EE:FF");
     }
   });
+
+  it("normalizeHardwareId 拒掉全零 MAC（固件读 MAC 失败时的上报值）", () => {
+    /* 固件 esp_read_mac 失败时上报 00:00:00:00:00:00。若当成身份，
+     * 所有故障设备会并成一行——比按广播名聚合更糟。 */
+    for (const raw of ["00:00:00:00:00:00", "000000000000", "0x000000000000"]) {
+      expect(normalizeHardwareId(raw), raw).toBeNull();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

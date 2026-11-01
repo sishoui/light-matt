@@ -21,7 +21,7 @@ import type {
   IdentityKind,
   SyncedDevice,
 } from "./device-api";
-import { loadRegistry, resolveEntry, setBackendId, type DeviceRegistry } from "./device-registry";
+import { clearBackendIds, loadRegistry, resolveEntry, setBackendId, type DeviceRegistry } from "./device-registry";
 import type { SessionStorage } from "./device-cache";
 
 /** 本层真正用到的 api 子集；`DeviceApi` 结构上满足它，测试用小桩即可。 */
@@ -152,6 +152,7 @@ export class DeviceSync {
     if (this.api === null || !this.api.enabled) {
       return null;
     }
+    const before = this.identity;
     const result = await this.api.ensureIdentity();
     if (!result.ok) {
       this.lastOffline = true;
@@ -161,6 +162,12 @@ export class DeviceSync {
     this.identity = result.value.identityKind;
     this.fallback = result.value.fallback ?? null;
     this.backendBacked = result.value.backendBacked !== false;
+    /* #47：身份种类变了（local → openid）意味着后端换了 `users` 行，
+     * 登记表里缓存的 backendId 属于**上一个用户**了。不清掉的话
+     * markSeen / 改名 / 解绑会打到 404，被误显示成「离线」。 */
+    if (before !== null && before !== this.identity) {
+      clearBackendIds(this.storage);
+    }
     return this.identity;
   }
 
