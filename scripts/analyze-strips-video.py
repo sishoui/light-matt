@@ -59,6 +59,9 @@ LIT_MIN = 18.0
 HUE_TOL_DEG = 28.0
 # 串带判定要求「离另一条带比离自己近这么多」，避免边界误判
 CROSSTALK_MARGIN_DEG = 12.0
+# 基线色相噪声超过这个值的带**不参与判定**：它的采样点本身不稳，
+# 无论怎么调容差都只会产生假事件或漏检。必须先在标定阶段解决才可用。
+NOISY_STRIP_DEG = 10.0
 # 亮度相对期望的容许范围
 DIM_RATIO = 0.45
 BRIGHT_RATIO = 2.2
@@ -187,8 +190,14 @@ def load_layout(path=LAYOUT_PATH):
     return layout
 
 
-def sample_segment(img32, seg, n=120, normal_offsets=(-2.0, 0.0, 2.0)):
-    """沿一条带区间均匀采样，返回每个采样点的色度余量最大响应。"""
+def sample_segment(img32, seg, n=120, normal_offsets=(-6.0, -3.0, 0.0, 3.0, 6.0)):
+    """沿一条带区间均匀采样，返回每个采样点的最大响应。
+
+    法向搜索范围必须覆盖灯带光晕的**半宽**。实测标定线常常只穿过灯珠
+    边缘：法向只搜 ±2px 时，沿线 V 在 49/1/83/136/18/1 之间剧烈跳变
+    （穿过多颗灯之间的暗隙），色相读数随帧乱跳（噪声 128°）。
+    灯带光晕在 1080p 下约 ±6px，取到 ±6 就能稳定落在灯珠上。
+    """
     p0 = np.array(seg["p0"], np.float64)
     p1 = np.array(seg["p1"], np.float64)
     v = p1 - p0
@@ -276,7 +285,13 @@ def classify(stats, ref, meta):
         if math.isnan(st["hue_deg"]):
             continue
         d_own = hue_dist(st["hue_deg"], expect_hue[k])
-        tol = max(HUE_TOL_DEG, r.get("noise_deg", 0.0) * 2.0 + 8.0)
+        noise = float(r.get("noise_deg", 0.0))
+        # 基线自己就不稳定的带，判据没有意义：把它排除，而不是硬判。
+        # 实测某些带的采样点落在光晕上，色相在 ±150° 内跳（噪声 128°），
+        # 用宽容差判会漏掉真错色，用严容差判会刷满假事件。
+        if noise > NOISY_STRIP_DEG:
+            continue
+        tol = max(HUE_TOL_DEG, noise * 2.0 + 8.0)
         if d_own <= tol:
             ratio = st["strength"] / max(r["strength"], 1e-6)
             if ratio < DIM_RATIO:

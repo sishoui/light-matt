@@ -158,10 +158,34 @@ def fit_segment(mask, weight):
     # 画面里常有孤立的彩色噪点（开发板电源灯、反光碎片）。实测某个 56 像素
     # 的小点把 1654 像素灯带的 PCA 主轴从 −25° 拉到了 −60°，
     # 于是「8 条平行」的校验直接失败。按面积只留最大的几个块。
-    n_lab, lab, stats, _cents = cv2.connectedComponentsWithStats(mask, 8)
+    # 用**最大连通块定方向**，再把「离这条线足够近」的块收回来。
+    #
+    # 三种失败都试过：
+    #   - 绝对面积阈值（≥250）：暗带的灯珠彼此不连通（实测 15~39 像素），全被删光；
+    #   - 纯相对阈值：把远端杂波也纳入，角度从 −29° 变成 −59°；
+    #   - 圆形「半径」过滤：干扰块恰好落在半径内。
+    # 最大块一定属于目标灯带，用它定出的直线是可靠的；随后按**到直线的
+    # 垂距**收块，才真正对应「是不是同一条带上的灯」。
+    n_lab, lab, stats, cents = cv2.connectedComponentsWithStats(mask, 8)
     if n_lab > 1:
         areas = sorted(((stats[i][4], i) for i in range(1, n_lab)), reverse=True)
-        keep = {i for a, i in areas if a >= max(MIN_MASK_PX, areas[0][0] * 0.25)}
+        main_i = areas[0][1]
+        core = (lab == main_i).astype(np.uint8)
+        cy, cx = np.nonzero(core)
+        pcore = np.column_stack([cx, cy]).astype(np.float64)
+        mc = pcore.mean(axis=0)
+        _, _, vt = np.linalg.svd(pcore - mc, full_matrices=False)
+        d0 = vt[0]
+        if d0[0] < 0:
+            d0 = -d0
+        nvec = np.array([-d0[1], d0[0]])
+        span = float(np.ptp((pcore - mc) @ d0)) if len(pcore) > 1 else 40.0
+        tol = max(25.0, span * 0.18)
+        keep = {main_i}
+        for a, i in areas[1:]:
+            ccy, ccx = cents[i][1], cents[i][0]
+            if abs(float((np.array([ccx, ccy]) - mc) @ nvec)) <= tol:
+                keep.add(i)
         mask = np.isin(lab, list(keep)).astype(np.uint8)
 
     ys, xs = np.nonzero(mask)
