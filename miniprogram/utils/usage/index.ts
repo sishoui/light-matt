@@ -14,7 +14,12 @@ import { createWxUsageStorage } from "./storage";
 export { loadUsageConfig, type UsageConfig } from "./config";
 export { UsageQueue, USAGE_QUEUE_MAX } from "./queue";
 export { UsageLogger, type UsageLogSink } from "./logger";
-export { getOrCreateLocalUserKey, createClientEventId, toUsagePlatform } from "./event";
+export {
+  getOrCreateLocalUserKey,
+  createClientEventId,
+  toUsagePlatform,
+  normalizeHardwareId,
+} from "./event";
 export type { ConnectionIdentity, UsageEvent } from "./event";
 export { createWxUsageStorage, createMemoryUsageStorage, type UsageStorage } from "./storage";
 export type { HttpFetch, HttpResponse, HttpRequest } from "./http";
