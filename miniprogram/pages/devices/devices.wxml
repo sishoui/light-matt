@@ -14,7 +14,10 @@
     <text class="sync-text">{{syncHint}}</text>
     <text class="sync-action">重试</text>
   </view>
-  <text wx:if="{{identityHint}}" class="identity-hint">{{identityHint}}</text>
+  <!-- 身份提示（#47）：local / 登录失败 / code 过期都显示可读原因，点它重新登录 -->
+  <view wx:if="{{identityHint}}" class="identity-hint" bindtap="onSyncRetry">
+    <text>{{identityHint}}</text>
+  </view>
 
   <!-- 当前设备：备注名 + 详情入口 + 灯带启用掩码（App 本地偏好） -->
   <view class="section" wx:if="{{ready}}">

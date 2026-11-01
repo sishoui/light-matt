@@ -15,7 +15,12 @@
  * 纯逻辑 + 注入 api / storage：node 单测直接跑，不碰 wx。
  */
 
-import type { DeviceApi, IdentityKind, SyncedDevice } from "./device-api";
+import type {
+  DeviceApi,
+  IdentityFallback,
+  IdentityKind,
+  SyncedDevice,
+} from "./device-api";
 import { loadRegistry, resolveEntry, setBackendId, type DeviceRegistry } from "./device-registry";
 import type { SessionStorage } from "./device-cache";
 
@@ -23,9 +28,21 @@ import type { SessionStorage } from "./device-cache";
 export interface DeviceSyncApi {
   readonly enabled: boolean;
   ensureIdentity(): Promise<
-    | { ok: true; value: { userKey: string; identityKind: IdentityKind; trusted: boolean } }
+    | {
+        ok: true;
+        value: {
+          userKey: string;
+          identityKind: IdentityKind;
+          trusted: boolean;
+          /** 后端是否真的认这份身份（#47 回落身份为 false）。 */
+          backendBacked?: boolean;
+          fallback?: IdentityFallback | null;
+        };
+      }
     | { ok: false; reason: string }
   >;
+  /** 丢掉缓存身份，下次 `ensureIdentity` 重新 `wx.login`（#47 手动重试用）。 */
+  forgetIdentity?(): void;
   listDevices(): Promise<
     { ok: true; value: SyncedDevice[] } | { ok: false; reason: string }
   >;
@@ -67,6 +84,10 @@ export class DeviceSync {
   private readonly storage: SessionStorage;
   /** 后端明示的身份种类；null = 还没换到 session / 未配置。 */
   private identity: IdentityKind | null = null;
+  /** 回落到 local 的原因（#47）；正常身份为 null。 */
+  private fallback: IdentityFallback | null = null;
+  /** 后端是否认这份身份；回落身份为 false（设备接口直接跳过）。 */
+  private backendBacked = true;
   /** 最近一次同步是否因网络/后端不可达失败。 */
   private lastOffline = false;
 
@@ -86,6 +107,35 @@ export class DeviceSync {
    */
   get identityKind(): IdentityKind | null {
     return this.identity;
+  }
+
+  /**
+   * 设备页顶部的身份提示（#47）。空串 = 正常（openid 或还没换到身份）。
+   *
+   * 回落路径必须给**可读原因**：`wx.login` 失败与 `invalid_code` 都是
+   * 「仅本机可见」，但后者要提示可以点重试重新登录——静默失败才是票面要修的病。
+   */
+  get identityHint(): string {
+    if (this.identity === null) {
+      return "";
+    }
+    if (this.fallback === "login_failed") {
+      return "微信登录失败，仅本机可见";
+    }
+    if (this.fallback === "invalid_code") {
+      return "登录已过期，仅本机可见（点重试重新登录）";
+    }
+    return this.identity === "local" ? "仅本机可见" : "";
+  }
+
+  /** 回落原因（测试与页面诊断用）；正常身份为 null。 */
+  get fallbackReason(): IdentityFallback | null {
+    return this.fallback;
+  }
+
+  /** 后端是否认这份身份（`false` = 回落身份，所有后端调用都被跳过）。 */
+  get identityBackendBacked(): boolean {
+    return this.backendBacked;
   }
 
   /** 最近一次同步是否离线（页面据此显示顶部提示）。 */
@@ -109,7 +159,21 @@ export class DeviceSync {
     }
     this.lastOffline = false;
     this.identity = result.value.identityKind;
+    this.fallback = result.value.fallback ?? null;
+    this.backendBacked = result.value.backendBacked !== false;
     return this.identity;
+  }
+
+  /**
+   * 忘掉本次身份，下一次 `ensureIdentity` 重新 `wx.login`（#47）。
+   *
+   * 页面「重试」用：上次登录失败 / code 过期时，重新走一遍才有机会升级成 openid。
+   */
+  forgetIdentity(): void {
+    this.identity = null;
+    this.fallback = null;
+    this.backendBacked = true;
+    this.api?.forgetIdentity?.();
   }
 
   /**
@@ -127,6 +191,10 @@ export class DeviceSync {
       if (kind === null) {
         return null;
       }
+    }
+    if (!this.backendBacked) {
+      /* 回落身份：后端没有这个用户，打过去只会 404。不是离线，不打请求。 */
+      return null;
     }
     const result = await this.api.listDevices();
     if (!result.ok) {
@@ -184,6 +252,16 @@ export class DeviceSync {
     if (remark === undefined || remark.length === 0) {
       return false;
     }
+    if (this.identity === null) {
+      /* 先确认身份：回落身份时后端没有这个用户，PATCH 只会 404。 */
+      if ((await this.ensureIdentity()) === null) {
+        return false;
+      }
+    }
+    if (!this.backendBacked) {
+      /* 本地备注早已落盘，这里只是「别的手机看不看得到」。 */
+      return false;
+    }
     const backendId =
       entry?.backendId ?? (await this.ensureRegistered({ ...facts, displayName: remark }));
     if (backendId === null) {
@@ -207,6 +285,15 @@ export class DeviceSync {
     if (api === null || !api.enabled || backendId === null) {
       return false;
     }
+    if (this.identity === null) {
+      /* 先确认身份：回落身份时 DELETE 也只会 404。 */
+      if ((await this.ensureIdentity()) === null) {
+        return false;
+      }
+    }
+    if (!this.backendBacked) {
+      return false;
+    }
     const result = await api.deleteDevice(backendId);
     this.lastOffline = !result.ok;
     return result.ok;
@@ -221,22 +308,26 @@ export class DeviceSync {
   // 内部
   // ------------------------------------------------------------------
 
-  /** 返回后端 id：先查本地映射，没有再 register（幂等）。 */
+  /** 返回后端 id：先确认身份，再查本地映射，没有再 register（幂等）。 */
   private async ensureRegistered(facts: ConnectedFacts): Promise<number | null> {
     const api = this.api;
     if (api === null) {
       return null;
-    }
-    const registry = loadRegistry(this.storage);
-    const cached = resolveEntry(registry, facts)?.backendId;
-    if (cached !== undefined) {
-      return cached;
     }
     if (this.identity === null) {
       const kind = await this.ensureIdentity();
       if (kind === null) {
         return null;
       }
+    }
+    if (!this.backendBacked) {
+      /* 回落身份：后端没有这个用户，register 也一定失败。不是离线。 */
+      return null;
+    }
+    const registry = loadRegistry(this.storage);
+    const cached = resolveEntry(registry, facts)?.backendId;
+    if (cached !== undefined) {
+      return cached;
     }
     const result = await api.registerDevice(facts.hardwareId, facts.displayName ?? null);
     if (!result.ok) {

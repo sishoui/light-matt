@@ -466,8 +466,10 @@ Page({
     }
     this.syncing = true;
     try {
-      const kind = await sync.ensureIdentity();
-      this.setData({ identityHint: kind === "local" ? "仅本机可见" : "" });
+      /* #47：身份提示由同步层给（含「微信登录失败 / 登录已过期」的原因），
+       * 页面不再自己把 kind 翻译成文案。 */
+      await sync.ensureIdentity();
+      this.updateSyncHint();
       const devices = await sync.refreshRemote();
       if (devices !== null) {
         this.remoteDevices = devices;
@@ -509,20 +511,20 @@ Page({
   },
 
   /**
-   * 顶部提示：离线 / 未配置 / 仅本机可见。
+   * 顶部提示：离线 / 未配置 / 仅本机可见（含 #47 的登录回落原因）。
    *
-   * 优先级：同步功能关闭 > 离线 > 仅本机可见。前两条都是「信息不全」，
+   * 优先级：同步功能关闭 > 离线 > 身份提示。前两条都是「信息不全」，
    * 只有一次提示、不弹窗、不阻塞。
    */
   updateSyncHint() {
     const sync = this.sync;
     if (sync === null || !sync.enabled) {
-      this.setData({ syncHint: "" });
+      this.setData({ syncHint: "", identityHint: "" });
       return;
     }
     this.setData({
       syncHint: sync.offline ? "离线，仅显示本机记录" : "",
-      identityHint: sync.identityKind === "local" ? "仅本机可见" : "",
+      identityHint: sync.identityHint,
     });
   },
 
@@ -533,6 +535,11 @@ Page({
       return;
     }
     sync.clearOffline();
+    /* #47：上次 wx.login 失败 / code 过期时，重试要重新走一遍登录，
+     * 否则会一直拿着回落身份不再尝试。 */
+    if (!sync.identityBackendBacked) {
+      sync.forgetIdentity();
+    }
     this.setData({ syncHint: "" });
     await this.syncFromBackend();
     if (this.session?.linkState === "ready") {
