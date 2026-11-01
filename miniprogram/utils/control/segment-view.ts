@@ -10,7 +10,7 @@
  *    空闲槽位；空闲与否以设备最近一次 QueryStrip 的 seg_mask 为准。
  */
 
-import { MAX_SEGMENTS, SEGMENT_TYPE, WAVEFORM_NAMES } from "../protocol/constants";
+import { MAX_SEGMENTS, NO_EFFECT, SEGMENT_TYPE, WAVEFORM_NAMES } from "../protocol/constants";
 import { breathingWaveform, segmentReverse } from "../protocol/commands";
 import type { RGB, SegmentReport, SegmentTarget } from "../protocol/types";
 import { rgbToHex } from "../color/hsv";
@@ -39,6 +39,16 @@ export interface SegmentRow {
    * 周期 / span|tail / 方向。静态段为空串。供列表副标题使用。
    */
   paramText: string;
+  /**
+   * 该段是否有第二层（#48）。
+   *
+   * 为什么必须在灯光页标出来：本页的快捷改色只改 **layer0 的颜色**，
+   * 第二层与 blend 会保留。用户看不到「这是两层段」就会误以为改色会把
+   * 整段重建成单色——标出来才能放心点。
+   */
+  twoLayer: boolean;
+  /** 层数徽标文本（"双层" / 空串）。 */
+  layerText: string;
 }
 
 export interface RangeInputResult {
@@ -148,6 +158,8 @@ export function buildSegmentRows(
       switch (report.type) {
         case SEGMENT_TYPE.BREATHING: {
           const label = breathingLabel(report);
+          /* #48：第二层徽标与其它类型一致（呼吸只是 layer0 的类型）。 */
+          const twoLayer = report.layer1.type !== NO_EFFECT;
           return {
             segId: report.segId,
             start: report.start,
@@ -160,6 +172,8 @@ export function buildSegmentRows(
             animated: true,
             breathText: label,
             paramText: label,
+            twoLayer,
+            layerText: twoLayer ? "双层" : "",
           };
         }
         case SEGMENT_TYPE.RAINBOW:
@@ -180,6 +194,8 @@ function baseRow(
   typeText: string,
   animated: boolean,
 ): SegmentRow {
+  /* #48：第二层存在时要让用户看见，否则他会以为改色会把整段改成单色。 */
+  const twoLayer = report.layer1.type !== NO_EFFECT;
   return {
     segId: report.segId,
     start: report.start,
@@ -192,6 +208,8 @@ function baseRow(
     animated,
     breathText: "",
     paramText: "",
+    twoLayer,
+    layerText: twoLayer ? "双层" : "",
   };
 }
 

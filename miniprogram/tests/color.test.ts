@@ -38,7 +38,13 @@ import { ControlSession } from "../utils/control/session";
 import { bytesToCompactHex } from "../utils/protocol/hex";
 import { encodeFrame } from "../utils/protocol/frame";
 import type { BleTransport } from "../utils/ble/transport";
-import type { CommandRequest, DeviceState } from "../utils/protocol/types";
+import type {
+  CommandRequest,
+  DeviceState,
+  SegmentListEnd,
+  SegmentReport,
+} from "../utils/protocol/types";
+import { EMPTY_EFFECT } from "../utils/protocol/types";
 import { baseState } from "./helpers/state";
 
 const CMD_SET_BRIGHTNESS = 0x02;
@@ -116,6 +122,33 @@ class FakeTransport {
   writes: CommandRequest[] = [];
   writeTimes: number[] = [];
   failNextWrites = 0;
+  /**
+   * #48 起改色要先读回完整 spec：这里模拟「设备上已有的段」。
+   * 缺省是单层静态段（layer1 空、blend 覆盖），区间与旧用例的期望一致。
+   */
+  reports: SegmentReport[] = [
+    ["0-15", 0],
+    ["0-15", 1],
+    ["40-63", 2],
+  ].map(([range, segId]) => {
+    const [start, end] = String(range).split("-").map(Number);
+    return {
+      stripId: 0,
+      segId: Number(segId),
+      start,
+      end,
+      blend: 0 as const,
+      layer0: { type: 0, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0 },
+      layer1: { ...EMPTY_EFFECT },
+      type: 0,
+      hue: 0,
+      sat: 255,
+      periodMs: 0,
+      p5: 0,
+      flags: 0,
+    };
+  });
+  stripQueries: number[] = [];
 
   private readonly stateListeners: Array<(state: DeviceState) => void> = [];
   private readonly linkListeners: Array<(state: string, detail?: unknown) => void> = [];
@@ -167,6 +200,17 @@ class FakeTransport {
     return Promise.resolve({ seq, command: req.command, resultCode: 0, ok: true });
   }
 
+  /** #48：改色前读回设备权威的段列表。 */
+  async queryStrip(
+    stripId: number,
+  ): Promise<{ reports: SegmentReport[]; end: SegmentListEnd }> {
+    this.stripQueries.push(stripId);
+    return {
+      reports: this.reports.map((report) => ({ ...report })),
+      end: { stripId, segMask: 0xff },
+    };
+  }
+
   async disconnect(): Promise<void> {
     /* 测试里不做连接清理 */
   }
@@ -195,9 +239,17 @@ function makeSession(): SessionHarness {
   return { session, transport, clock };
 }
 
-async function settle(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
+/**
+ * 把微任务队列跑空。
+ *
+ * #48 起颜色帧要先 await 一次 `queryStrip`（读回完整 spec），一次 emit 的
+ * Promise 链比之前长；2 个 tick 不够，会让写时间戳落在下一拍、把 20Hz 的
+ * 间隔断言测成 40ms 的假失败。这里放宽到 40 个 tick（仍是纯微任务）。
+ */
+async function settle(rounds = 40): Promise<void> {
+  for (let i = 0; i < rounds; i += 1) {
+    await Promise.resolve();
+  }
 }
 
 describe("HSV → 用户空间 RGB（不做 gamma）", () => {

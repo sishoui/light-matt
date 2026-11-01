@@ -416,6 +416,12 @@ page {
   background: #1a2438;
 }
 
+/* #48：两层段徽标。与动效标签区分开（绿）——它是「结构」不是「效果」。 */
+.seg-tag.layers {
+  color: #8fe0b0;
+  background: #14261d;
+}
+
 .seg-delete {
   font-size: 22rpx;
   color: #ff8a8a;

@@ -109,6 +109,8 @@
           <text wx:if="{{item.paramText}}" class="seg-param">{{item.paramText}}</text>
         </view>
         <text class="seg-tag {{item.animated ? 'anim' : ''}}">{{item.typeText}}</text>
+        <!-- #48：两层段的徽标。改色只改第 1 层颜色，第 2 层与 blend 保留。 -->
+        <text wx:if="{{item.twoLayer}}" class="seg-tag layers">{{item.layerText}}</text>
         <text
           class="seg-edit"
           data-seg-id="{{item.segId}}"

@@ -80,9 +80,9 @@ import {
   cmdSetStripPower,
   cometSegment,
   rainbowSegment,
-  staticSegment,
   type ScriptSummary,
 } from "../protocol/commands";
+import { specFromReport, toFlat } from "../protocol/segment-shapes";
 import { rgbToHsv } from "../color/hsv";
 import {
   buildAbort,
@@ -135,6 +135,16 @@ export type { CachedDevice, SessionStorage };
 export type ContinuousUpdate =
   | { kind: "brightness"; value: number }
   | { kind: "color"; target: SegmentTarget; hue: number; sat: number };
+
+/**
+ * 「改色」用的已读回段 spec（#48）。
+ *
+ * 为什么需要：段是**两层 + blend** 的线上形状，只改颜色的局部修改必须基于
+ * 设备读回的完整 `SegmentSpec`。拿不到就报错，**绝不用扁平默认 spec 覆盖**。
+ */
+type SpecResolve =
+  | { kind: "ok"; spec: SegmentSpec }
+  | { kind: "error"; message: string };
 
 /**
  * 段命令的专用结果。段配置不在 State 里，所以成功时不返回 DeviceState，
@@ -269,6 +279,23 @@ function applyStripPower(state: DeviceState, stripId: number, on: boolean): Devi
   return { ...state, stripPowerMask: mask };
 }
 
+/**
+ * 改色的纯函数核心（#48）：拿已读回的完整 spec，**只换 layer0 的 hue / sat**。
+ *
+ * 明确保留：layer0 的 type / periodMs / p5 / flags、layer1 的整个对象、
+ * blend 字节。这正是本票要锁住的不变量——把「彩虹 × 呼吸（相乘）」改成任意
+ * 颜色后，第二层与混合模式必须字节级不变。
+ *
+ * 层对象一律返回新副本：spec 会被反复读写，共享引用会引入别名 bug。
+ */
+function recolorLayer0(spec: SegmentSpec, hue: number, sat: number): SegmentSpec {
+  return {
+    ...spec,
+    layer0: { ...spec.layer0, hue, sat },
+    layer1: { ...spec.layer1 },
+  };
+}
+
 const defaultTimer: TimerApi = {
   setTimeout: (fn, ms) => setTimeout(fn, ms),
   clearTimeout: (handle) => clearTimeout(handle),
@@ -315,6 +342,15 @@ export class ControlSession {
    * 页面收到后自己读 `stripConfigs` / `deviceInfo`。
    */
   private readonly deviceConfigListeners: Array<() => void> = [];
+  /**
+   * 「改色读回失败」的提示订阅者（#48）。
+   *
+   * 节流通道是 fire-and-forget，没有可 await 的结果，页面只能靠这条通知弹出
+   * 「读不回段配置，未下发」——绝不让一次失败的改色看起来像成功。
+   */
+  private readonly segmentHintListeners: Array<(message: string) => void> = [];
+  /** 上一次已提示的段提示文案（同一句不重复刷屏）。 */
+  private lastSegmentHint: string | null = null;
 
   private readonly retryAfterGapMs: number;
   /** 10008 间隔重试的计时器：与回连退避共用同一个注入实例。 */
@@ -402,25 +438,17 @@ export class ControlSession {
      */
     this.throttle = new LatestWinsThrottle<ContinuousUpdate>(
       (update) => {
-        const req: CommandRequest =
-          update.kind === "brightness"
-            ? cmdSetBrightness(update.value)
-            : cmdSetSegment(
-                staticSegment(
-                  update.target.stripId,
-                  update.target.segId,
-                  update.target.start,
-                  update.target.end,
-                  update.hue,
-                  update.sat,
-                ),
-              );
-        return this.transport.write(req).then(
-          () => undefined,
-          (err) => {
-            this.reconnect.handleCommandFailure(err);
-          },
-        );
+        if (update.kind === "brightness") {
+          return this.transport.write(cmdSetBrightness(update.value)).then(
+            () => undefined,
+            (err) => {
+              this.reconnect.handleCommandFailure(err);
+            },
+          );
+        }
+        /* #48：颜色帧也必须走「读回的完整 spec + 只改 layer0 色相/饱和度」，
+         * 否则连续拖动会把两层的段降级成单层。 */
+        return this.writeRecoloredFrame(update.target, update.hue, update.sat);
       },
       opts.throttleTimer !== undefined ? { timer: opts.throttleTimer } : {},
     );
@@ -1280,15 +1308,18 @@ export class ControlSession {
   /**
    * 把选中段改成 rgb 并等 ACK——页面与预设共用的一条路径。
    * 返回 ACK 结果（InvalidParam 表示设备拒绝了区间或与其它段重叠）。
+   *
+   * #48：**基于已读回的完整 spec 做局部修改**，只换 layer0 的 hue/sat；
+   * layer1 与 blend 原样保留（见 `recolorLayer0`）。
    */
   async setSegmentColor(target: SegmentTarget, rgb: RGB): Promise<SegmentResult> {
     // 色环给的是 RGB；协议的静态参数是 hue+sat。用 HSV 反推（V 恒为 1）。
     const [hue, sat] = this.segmentHueSat(rgb);
-    return this.sendSegmentAwaitingAck(
-      target,
-      staticSegment(target.stripId, target.segId, target.start, target.end, hue, sat),
-      {},
-    );
+    const resolved = await this.resolveSpec(target);
+    if (resolved.kind !== "ok") {
+      return { kind: "error", message: resolved.message };
+    }
+    return this.sendSegmentAwaitingAck(target, recolorLayer0(resolved.spec, hue, sat), {});
   }
 
   /**
@@ -1452,6 +1483,160 @@ export class ControlSession {
     });
     if (commit) {
       this.throttle.flush();
+    }
+  }
+
+  /* ---------------- #48 改色的「读-改-写」 ---------------- */
+
+  /**
+   * 订阅「读回失败 / 目标段不存在」的提示（#48）。
+   *
+   * 为什么要有这条通道：节流通道（`queueColor` / `commitColor`）是 fire-and-forget
+   * 的连续量路径，没有 await 的结果可返回。读不回完整 spec 时既不能下发，也不能
+   * 静默吞掉——页面据此弹一次提示，避免用户以为改色生效了。
+   */
+  onSegmentHint(fn: (message: string) => void): () => void {
+    this.segmentHintListeners.push(fn);
+    return () => {
+      const index = this.segmentHintListeners.indexOf(fn);
+      if (index >= 0) {
+        this.segmentHintListeners.splice(index, 1);
+      }
+    };
+  }
+
+  /**
+   * 取目标段**设备权威的完整两层 spec**（#48 的读-改-写前置）。
+   *
+   * 顺序：本地已读回的段列表 → 没有就地 `QueryStrip` 一次。
+   * 读不回来或设备上没有这个槽位都返回 error（调用方**不下发**）——
+   * 这正是本票要消灭的「用默认值覆盖」。
+   */
+  private async resolveSpec(target: SegmentTarget): Promise<SpecResolve> {
+    const cached = this.findCachedReport(target);
+    if (cached !== null) {
+      return { kind: "ok", spec: specFromReport(cached) };
+    }
+    if (this.transport.linkState !== "ready") {
+      return { kind: "error", message: "设备未连接" };
+    }
+    const result = await this.queryStrip(target.stripId);
+    if (result.kind === "stale") {
+      return { kind: "error", message: "连接已变化，请重试" };
+    }
+    if (result.kind !== "ok") {
+      /* ACK 拒绝（设备侧 InvalidParam）与传输异常都归成「读不回来」。 */
+      const message =
+        result.kind === "error"
+          ? result.message
+          : resultText(result.ack.resultCode);
+      return { kind: "error", message: `读取段配置失败：${message}` };
+    }
+    const fresh = this.findCachedReport(target);
+    if (fresh === null) {
+      return {
+        kind: "error",
+        message: `设备上没有段 ${target.segId}（请先刷新段列表）`,
+      };
+    }
+    return { kind: "ok", spec: specFromReport(fresh) };
+  }
+
+  /**
+   * 在本地已读回的段列表里找目标段。
+   *
+   * **要求区间也一致**：同 segId 但区间不同的缓存说明设备上这个槽位早已重配，
+   * 拿它去改色会写回一个用户没选中的区间——宁可当作「没有」再读一次。
+   */
+  private findCachedReport(target: SegmentTarget): SegmentReport | null {
+    const cached = this.segmentsByStrip[target.stripId];
+    if (cached === undefined) {
+      return null;
+    }
+    const found = cached.find((report) => report.segId === target.segId);
+    if (found === undefined) {
+      return null;
+    }
+    if (found.start !== target.start || found.end !== target.end) {
+      return null;
+    }
+    return found;
+  }
+
+  /**
+   * 节流通道的颜色帧（#48）：读回完整 spec → 只换 layer0 色相/饱和度 → 裸写。
+   *
+   * 裸写（`transport.write`）而不是 `setSegment`：连续量不等 ACK，也不清段缓存
+   * （见 `setSegment` 成功后清缓存的行为）；缓存由 `cacheRecolored` 就地更新。
+   *
+   * 已缓存时**同步**取 spec：拖动是 20Hz 连续量，多一层 `await` 会让写时刻
+   * 落后于节流窗口，把稳定的 50ms 间隔抖成 40/60ms。只有首次（需要 QueryStrip）
+   * 才走异步分支。
+   */
+  private async writeRecoloredFrame(
+    target: SegmentTarget,
+    hue: number,
+    sat: number,
+  ): Promise<void> {
+    const cached = this.findCachedReport(target);
+    const spec = cached === null ? null : specFromReport(cached);
+    if (spec !== null) {
+      try {
+        await this.transport.write(cmdSetSegment(recolorLayer0(spec, hue, sat)));
+        this.cacheRecolored(target, hue, sat);
+        /* 成功一次就把「上一句提示」作废，下一次失败仍要说得出来。 */
+        this.lastSegmentHint = null;
+      } catch (err) {
+        this.reconnect.handleCommandFailure(err);
+      }
+      return;
+    }
+    const resolved = await this.resolveSpec(target);
+    if (resolved.kind !== "ok") {
+      this.notifySegmentHint(resolved.message);
+      return;
+    }
+    try {
+      await this.transport.write(cmdSetSegment(recolorLayer0(resolved.spec, hue, sat)));
+      this.cacheRecolored(target, hue, sat);
+      this.lastSegmentHint = null;
+    } catch (err) {
+      this.reconnect.handleCommandFailure(err);
+    }
+  }
+
+  /** 改色成功后同步本地镜像，后续帧不必再读回（它只改了 layer0 的两个字节）。 */
+  private cacheRecolored(target: SegmentTarget, hue: number, sat: number): void {
+    const cached = this.segmentsByStrip[target.stripId];
+    if (cached === undefined) {
+      return;
+    }
+    const index = cached.findIndex((report) => report.segId === target.segId);
+    if (index < 0) {
+      return;
+    }
+    const report = cached[index];
+    const layer0 = { ...report.layer0, hue, sat };
+    cached[index] = {
+      ...report,
+      layer0,
+      /* 扁平投影是 layer0 的镜像，必须一起更新（#41 之前的读法）。 */
+      ...toFlat({ ...report, layer0 }),
+    };
+  }
+
+  /** 提示一次给页面；同一句不重复刷屏（拖动失败会连续重试）。 */
+  private notifySegmentHint(message: string): void {
+    if (this.lastSegmentHint === message) {
+      return;
+    }
+    this.lastSegmentHint = message;
+    for (const fn of this.segmentHintListeners.slice()) {
+      try {
+        fn(message);
+      } catch (err) {
+        console.warn(`[lumen] 段提示监听失败：${errorText(err)}`);
+      }
     }
   }
 
