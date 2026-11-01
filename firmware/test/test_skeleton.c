@@ -28,6 +28,7 @@
 #include "effects.h"
 #include "gamma.h"
 #include "led_count_job.h"
+#include "led_engine_slots.h"
 #include "protocol.h"
 #include "save_scheduler.h"
 #include "script_blob.h"
@@ -3680,6 +3681,119 @@ static void test_segment_store_needs_frames(void)
     CHECK(!lumen_segment_store_needs_frames(NULL, 1));
 }
 
+/* ---------------- #49：SegmentReport 真实槽位回归 ----------------
+ *
+ * spec-v3 §4.2 第 3 处缺陷：QueryStrip 的 SegmentReport 必须报**真实槽位**，
+ * 不是压缩序号。修复落在 led_engine_slots.c（从 led_engine.c 抽出的纯逻辑，
+ * 因为 led_engine.c 依赖 FreeRTOS，进不了 host 测试）。
+ *
+ * 三条用例正是 issue #49 要求的三类场景；如果谁把 out_slots[written] = slot
+ * 改回 out_slots[written] = written，下面会立刻变红。
+ */
+
+static void test_segment_real_slots(void)
+{
+    lumen_segment_t out[LUMEN_MAX_SEGMENTS];
+    uint8_t slots[LUMEN_MAX_SEGMENTS];
+
+    /* 1) 非 0 槽位：段在槽位 5 / 7，必须报 5 / 7 而不是 0 / 1。 */
+    lumen_segment_store_t store;
+    lumen_segment_store_init(&store);
+    lumen_segment_t a = make_static(0, 9, 0, 255);
+    lumen_segment_t b = make_static(20, 29, 21845, 255);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 5, 64, &a) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 7, 64, &b) == LUMEN_RESULT_OK);
+
+    memset(slots, 0xEE, sizeof(slots));
+    CHECK(lumen_led_engine_collect_segments(&store, 0, out, slots, LUMEN_MAX_SEGMENTS) == 2);
+    CHECK(slots[0] == 5);
+    CHECK(slots[1] == 7);
+    /* 段内容与槽位一一对应（不是把槽位 0 的内容顶上来）。 */
+    CHECK(out[0].start == 0 && out[0].end == 9);
+    CHECK(out[1].start == 20 && out[1].end == 29);
+
+    /*
+     * 与真正上线的编码路径对齐：ble_link.c 直接把 slots[i] 传给
+     * lumen_protocol_encode_segment_report，所以帧内偏移 7（payload 第 2 字节）
+     * 必须就是 5 / 7。这条断言把「枚举」和「线上字节」钉在一起。
+     */
+    uint8_t frame[LUMEN_MAX_FRAME];
+    uint8_t layer0[8];
+    uint8_t layer1[8];
+    lumen_layer_encode(&out[0].layer[0], layer0);
+    lumen_layer_encode(&out[0].layer[1], layer1);
+    size_t len = lumen_protocol_encode_segment_report(0x1D, 0x00, slots[0], out[0].start,
+                                                      out[0].end, out[0].blend, layer0, layer1,
+                                                      frame, sizeof(frame));
+    CHECK(len == 21 + LUMEN_FRAME_OVERHEAD);
+    CHECK(frame[7] == 5);
+    lumen_layer_encode(&out[1].layer[0], layer0);
+    lumen_layer_encode(&out[1].layer[1], layer1);
+    len = lumen_protocol_encode_segment_report(0x1D, 0x00, slots[1], out[1].start, out[1].end,
+                                               out[1].blend, layer0, layer1, frame,
+                                               sizeof(frame));
+    CHECK(len == 21 + LUMEN_FRAME_OVERHEAD);
+    CHECK(frame[7] == 7);
+
+    /* 2) 有空洞：段在槽位 1 / 3，槽位 2 为空——序号与槽位不能错位。 */
+    lumen_segment_store_init(&store);
+    lumen_segment_t s1 = make_static(0, 9, 0, 255);
+    lumen_segment_t s3 = make_static(10, 19, 43690, 255);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 1, 64, &s1) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 3, 64, &s3) == LUMEN_RESULT_OK);
+    CHECK(!lumen_segment_store_get(&store, 0, 2)->active);
+
+    memset(slots, 0xEE, sizeof(slots));
+    CHECK(lumen_led_engine_collect_segments(&store, 0, out, slots, LUMEN_MAX_SEGMENTS) == 2);
+    CHECK(slots[0] == 1);
+    CHECK(slots[1] == 3);
+    CHECK(out[0].start == 0);
+    CHECK(out[1].start == 10);
+
+    /* 空洞再挖深一点：只留槽位 3 一个段时，序号 0 对应的槽位仍是 3。 */
+    CHECK(lumen_segment_store_clear(&store, 0, 1));
+    CHECK(lumen_led_engine_collect_segments(&store, 0, out, slots, LUMEN_MAX_SEGMENTS) == 1);
+    CHECK(slots[0] == 3);
+
+    /* 3) 满 8 槽：顺序稳定（槽位升序），且槽位号逐个等于下标。 */
+    lumen_segment_store_init(&store);
+    for (uint8_t i = 0; i < LUMEN_MAX_SEGMENTS; ++i) {
+        /* 故意倒序插入：输出顺序必须由槽位决定，不受插入顺序影响。 */
+        uint8_t slot = (uint8_t)(LUMEN_MAX_SEGMENTS - 1 - i);
+        lumen_segment_t seg = make_static((uint8_t)(slot * 8), (uint8_t)(slot * 8 + 7), 0, 255);
+        CHECK(lumen_segment_store_set(&store, 0, 1, slot, 64, &seg) == LUMEN_RESULT_OK);
+    }
+    CHECK(lumen_segment_store_count(&store, 0) == LUMEN_MAX_SEGMENTS);
+    memset(slots, 0xEE, sizeof(slots));
+    CHECK(lumen_led_engine_collect_segments(&store, 0, out, slots, LUMEN_MAX_SEGMENTS) ==
+          LUMEN_MAX_SEGMENTS);
+    for (uint8_t i = 0; i < LUMEN_MAX_SEGMENTS; ++i) {
+        CHECK(slots[i] == i);
+        CHECK(out[i].start == (uint8_t)(i * 8));
+    }
+
+    /* 参数防御与 cap 截断：截断时槽位仍取自真实槽位。 */
+    CHECK(lumen_led_engine_collect_segments(&store, 0, out, slots, 3) == 3);
+    CHECK(slots[0] == 0 && slots[1] == 1 && slots[2] == 2);
+    CHECK(lumen_led_engine_collect_segments(&store, 0, out, slots, 0) == 0);
+    CHECK(lumen_led_engine_collect_segments(&store, 0, NULL, slots, LUMEN_MAX_SEGMENTS) == 0);
+    CHECK(lumen_led_engine_collect_segments(NULL, 0, out, slots, LUMEN_MAX_SEGMENTS) == 0);
+    CHECK(lumen_led_engine_collect_segments(&store, LUMEN_MAX_STRIPS, out, slots,
+                                            LUMEN_MAX_SEGMENTS) == 0);
+    /* out_slots 可选：传 NULL 不影响段拷贝。 */
+    CHECK(lumen_led_engine_collect_segments(&store, 0, out, NULL, LUMEN_MAX_SEGMENTS) ==
+          LUMEN_MAX_SEGMENTS);
+    CHECK(out[3].start == 24);
+
+    /* 空灯带 / 其它灯带的段不计入。 */
+    lumen_segment_store_init(&store);
+    lumen_segment_t other = make_static(0, 9, 0, 255);
+    CHECK(lumen_segment_store_set(&store, 1, 2, 4, 64, &other) == LUMEN_RESULT_OK);
+    CHECK(lumen_led_engine_collect_segments(&store, 0, out, slots, LUMEN_MAX_SEGMENTS) == 0);
+    CHECK(lumen_led_engine_collect_segments(&store, 1, out, slots, LUMEN_MAX_SEGMENTS) == 1);
+    CHECK(slots[0] == 4);
+}
+
 /* 灯珠数量减少时裁剪越界段（不自动缩短区间）。 */
 static void test_segment_store_prune(void)
 {
@@ -6570,6 +6684,7 @@ int main(int argc, char **argv)
     test_segment_store_state_summary();
     test_segment_store_prune();
     test_segment_store_needs_frames();
+    test_segment_real_slots();
     test_segment_commands();
     test_encode_segment_reports();
     test_encode_strip_config_report();

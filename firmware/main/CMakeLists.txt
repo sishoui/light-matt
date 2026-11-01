@@ -11,6 +11,7 @@ idf_component_register(
         "strip_planar.c"
         "strip_power.c"
         "led_engine.c"
+        "led_engine_slots.c"
         "led_render.c"
         "led_stress.c"
         "led_strip_owner.c"
