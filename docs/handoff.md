@@ -14,9 +14,9 @@
 
 | 端 | 测试基线 |
 |---|---|
-| 固件 host | `cmd.exe //c "firmware\test\run-tests.cmd"` → **10993 项断言**，58 条 v3 向量 |
-| 小程序 | `cd miniprogram && npx vitest run` → **553 用例**；`npx tsc --noEmit` 干净 |
-| 后端 | `cd server && npm test` → **133 用例**；`npm run typecheck` 干净 |
+| 固件 host | `cmd.exe //c "firmware\test\run-tests.cmd"` → **11053 项断言**，58 条 v3 向量 |
+| 小程序 | `cd miniprogram && npx vitest run` → **601 用例**；`npx tsc --noEmit` 干净 |
+| 后端 | `cd server && npm test` → **139 用例**；`npm run typecheck` 干净 |
 
 **已完成（不需再做）**
 
@@ -95,6 +95,28 @@ python scripts/ble-stress.py show                  # 读设备状态/引脚表
 **不可信就报错**（形状不细长 / 8 条不平行 / 分辨率不匹配都会拒绝），所以不会
 产出错误布局 —— `analyze-strips-video.py` 也会因此拒绝判定。**下一步是先把
 相机固定到能看清灯带的位置，再重跑 `--isolate`。**
+
+### 0.00b 2026-11-01 夜：spec-v3 实现缺口补完（#47–#50）
+
+**票全 CLOSED ≠ 功能完整。** 对照 `spec-v3.md` 逐章审计三端代码后，找出 4 处
+「规格要求了、代码只做了一半」并已全部修复（分支 `integration/lumen-v3-gaps`）：
+
+| 票 | 问题 | 修复 |
+|---|---|---|
+| **#48** | **数据丢失**：灯光页改色/预设走扁平草稿，`toSpec()` 写死 `blend=OVER` + 空 layer1，**把两层段静默降级成单层**，设备上不可撤销 | 改为基于已读回的 `SegmentSpec` 只换 layer0 的 hue/sat；无缓存先 `QueryStrip`；UI 加两层徽标 |
+| **#47** | **静默失效**：小程序从不调 `wx.login`，而配了 AppSecret 的后端对缺 `code` 直接 400 → 用户只看到「同步不上」 | 接 `createWxLoginCode()`；`wx.login` 失败/`invalid_code` 显式回落 local 并给可读文案；未配 AppSecret 路径**逐字节不变**（有严格断言） |
+| **#50** | 设备身份两条路径不统一：登记表用 MAC、使用日志用广播名，同一设备可能聚合成两行 | `ConnectionIdentity` 加 `hardwareId`，从 `DeviceInfoReport` 的 hw_id 取值；上报时机改为 0x88 往返后（加 pendingUsage 快照 + epoch 防串号）；后端归一化并按 MAC 聚合 |
+| **#49** | §4.2 第三处修复（真实槽位）**修对了但守不住**：`led_engine.c` 根本不在 host 测试编译清单里 | 抽出纯逻辑到 `led_engine_slots.c`（无 RTOS 依赖）并纳入 host 测试，+60 项断言 |
+
+**新基线**：固件 **11053** 项 + 58 向量 / 小程序 **601** 用例 / 后端 **139** 用例，
+`tsc` 与 `typecheck` 均干净。
+
+> **验证方式值得沿用**：我对 #49 与 #48 都做了**变异测试** —— 把修复改回缺陷版本，
+> 确认断言真的会红（#49 红 8 项、#48 红 7 项），再还原。这比「测试通过」可靠得多。
+
+**已知遗留（未修，已登记）**：`setSegmentBreathing` / `setSegmentRainbow` /
+`setSegmentComet` 仍走扁平草稿路径，与 #48 是同类陷阱。段编辑页直接用
+`setSegment(spec)`，所以当前没有调用点；**将来给它们接 UI 时必须一起改**。
 
 ### 0.00 复制这段话开新会话
 

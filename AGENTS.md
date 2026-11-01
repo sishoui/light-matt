@@ -25,10 +25,10 @@
 ## 测试基线（改代码后必须保持）
 
 ```bash
-cmd.exe //c "firmware\\test\\run-tests.cmd"   # 10993 项断言 + 58 条 v3 向量
-cd miniprogram && npx vitest run              # 553 用例
+cmd.exe //c "firmware\\test\\run-tests.cmd"   # 11053 项断言 + 58 条 v3 向量
+cd miniprogram && npx vitest run              # 601 用例
 cd miniprogram && npx tsc --noEmit            # 必须干净
-cd server && npm test                         # 133 用例
+cd server && npm test                         # 139 用例
 cd server && npm run typecheck                # 必须干净
 ```
 
