@@ -23,3 +23,9 @@ __pycache__/
 .board-homography.json
 .board-calib-check.png
 .runs/
+
+# 逐带标定产物：绑相机机位与分辨率，换机位必须重跑
+.strip-layout.json
+.strip-colorize.png
+.layout-shots/
+.scratch/ticket-*.md

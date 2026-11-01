@@ -1,34 +1,38 @@
 #!/usr/bin/env python
-"""#20 错色实验的 PC 侧驱动：当 BLE central，配置灯带 + 并发高频写入。
+"""v3 错色实验的 PC 侧驱动：当 BLE central，配置画面 + 制造压力。
 
-为什么需要它：错色判定的前提是「画面恒定 + 持续刷帧 + BLE 并发写入」。
-前两条由固件的 CONFIG_LUMEN_FORCE_REFRESH 保证，第三条必须由 PC 制造
-（小程序不方便做 20Hz 持续写 30 分钟）。判定本身由
-scripts/analyze-strip-video.py 逐帧比对录像完成。
+**这是 v3 版本。** 旧版写的是 v2 帧（magic 0xA5 / version 0x02 / 无分片头），
+v3 固件收到会直接丢弃且不回 ACK —— 表现为「脚本一路静默失败、最后在格式化
+None 时崩」。改动点：
 
-用法（仓库根目录；设备空闲时；先把小程序退到后台，它会抢连接）：
+  - magic 0xA5 → 0xA6，version 0x02 → 0x03
+  - 校验从 1 字节取反和 → CRC16-CCITT
+  - 长度从 1 字节 → 2 字节小端
+  - **每帧必须带 1 字节分片头**（ctrl，bit7 FIRST / bit6 LAST / bit5..0 序号）
+  - 段载荷从「type + 变长参数」→ 固定 21 字节（两层各 8 字节定宽）
 
-    # 1) 配置：只点亮指定灯带上的 8 颗对角灯（画面恒定，便于判定）
-    python scripts/ble-stress.py setup --strip 6
+为什么驱动要单独一个进程：`opencv` 与 `bleak` 不能同进程（opencv 会把线程设成
+Windows GUI，之后 bleak 报 "Thread is configured for Windows GUI"）。所以
+「配置」在这里，「取帧/标定/判定」在其他脚本。
 
-    # 2) 基线录像期间什么都不写（人为保持画面恒定）
-    #    然后用 analyze-strip-video.py --grid 8x8 分析
+用法（仓库根目录；设备空闲，小程序退到后台）：
 
-    # 3) 高频写入段：以 20Hz 连续发 SetBrightness，持续 N 秒
-    python scripts/ble-stress.py flood --seconds 180 --hz 20
+    # 逐带隔离：只开第 k 条、其余全关，该条上铺满静态红（测物理颗数用）
+    python scripts/ble-stress.py isolate 3
 
-    # 4) 收尾：恢复默认（全黑、亮度 128）
+    # 逐带专属色：8 条各一种色相（45° 一档），用于标定与串带检测
+    python scripts/ble-stress.py colorize
+
+    # 压力：以 hz 频率连续写 SetBrightness
+    python scripts/ble-stress.py flood --seconds 400 --hz 20 --brightness 60
+
+    # 恢复
     python scripts/ble-stress.py reset
-
-约定：
-- **引脚 → strip_id 的映射**由固件 Kconfig 的 LUMEN_STRIP_PINS 决定。
-  当前默认 "3,10,0,1,4,5,6,7"，所以 GPIO6 = strip_id 6。
-- 灯板只接一条数据线时，只有它对应的 strip_id 会驱动它；其余条发到悬空引脚。
-- 所有命令都走真实协议帧（checksum、seq 回显），与小程序同一条链路。
 """
 
 import argparse
 import asyncio
+import struct
 import sys
 import time
 
@@ -37,165 +41,332 @@ try:
 except ImportError:
     sys.exit("需要 bleak：python -m pip install bleak")
 
-MAGIC = 0xA5
-VERSION = 0x02
-
+MAGIC = 0xA6
+VERSION = 0x03
+SERVICE = "6c756d65-6e00-4b1e-9a3c-000000000001"
 RX = "6c756d65-6e00-4b1e-9a3c-000000000002"
 TX = "6c756d65-6e00-4b1e-9a3c-000000000003"
-STATE = "6c756d65-6e00-4b1e-9a3c-000000000004"
+STATE_CHAR = "6c756d65-6e00-4b1e-9a3c-000000000004"
 
 CMD_SET_POWER = 0x01
 CMD_SET_BRIGHTNESS = 0x02
+CMD_SET_LED_COUNT = 0x06
 CMD_SET_SEGMENT = 0x10
 CMD_CLEAR_SEGMENT = 0x11
+CMD_QUERY_STRIP = 0x12
+CMD_SET_STRIP_POWER = 0x1B
+CMD_QUERY_STRIP_CONFIG = 0x1C
+CMD_QUERY_DEVICE_INFO = 0x1D
 
 TYPE_STATIC = 0x00
+LAYER_EMPTY = 0xFF
+BLEND_OVERWRITE = 0x00
+
+STRIP_COUNT = 8
+SLOT_COUNT = 8
+# 铺设到固件上报的灯珠数上限。物理上更短的带，多出来的像素被 WS2812B
+# 静默丢弃，协议层看不出差别 —— 所以「物理颗数」必须靠录像测。
+FULL_RANGE_END = 29
 
 
-def frame(cmd, seq, payload=b""):
-    body = bytes([MAGIC, VERSION, cmd, seq, len(payload)]) + payload
-    return body + bytes([(~sum(body)) & 0xFF])
+def crc16(data: bytes) -> int:
+    crc = 0xFFFF
+    for b in data:
+        crc ^= b << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if (crc & 0x8000) else (crc << 1) & 0xFFFF
+    return crc
+
+
+def encode(cmd: int, seq: int, payload: bytes = b"") -> bytes:
+    body = bytes([MAGIC, VERSION, cmd, seq]) + struct.pack("<H", len(payload)) + payload
+    return body + struct.pack("<H", crc16(body))
+
+
+def decode(buf: bytes):
+    if len(buf) < 8 or buf[0] != MAGIC or buf[1] != VERSION:
+        return None
+    cmd, seq = buf[2], buf[3]
+    (length,) = struct.unpack("<H", buf[4:6])
+    if len(buf) != 8 + length:
+        return None
+    if struct.unpack("<H", buf[6 + length:8 + length])[0] != crc16(buf[:6 + length]):
+        return None
+    return cmd, seq, buf[6:6 + length]
+
+
+def layer_static(hue: int, sat: int = 255) -> bytes:
+    """8 字节定宽层：type(1) + param(7)。静态 = hue(2 LE) + sat(1) + 保留 4 字节 0。"""
+    return bytes([TYPE_STATIC]) + struct.pack("<H", hue & 0xFFFF) + bytes([sat & 0xFF]) + bytes(4)
+
+
+def layer_empty() -> bytes:
+    return bytes([LAYER_EMPTY]) + bytes(7)
+
+
+def segment_payload(strip, seg, start, end, blend, layer0: bytes, layer1: bytes) -> bytes:
+    assert len(layer0) == 8 and len(layer1) == 8
+    return bytes([strip, seg, start, end, blend]) + layer0 + layer1
+
+
+def hue_for_strip(strip: int) -> int:
+    """第 i 条带 → 色相 i*45°。
+
+    45° 一档是因为 8 条正好铺满一圈，任意两条至少相差 45°，而「串带」会让
+    某条跳到别人的色相上，在色度空间里区分度极高。
+    """
+    return int(round(strip * 65536.0 / 8.0)) & 0xFFFF
 
 
 class Rig:
-    """最小协议客户端：只实现实验需要的几条命令。"""
+    """v3 分片收发 + ACK 等待。"""
 
     def __init__(self, client):
         self.client = client
+        mtu = getattr(client, "mtu_size", 23) or 23
+        self.cap = min(max(mtu - 3, 20), 180)
+        self.data_cap = self.cap - 1
+        self.rx = bytearray()
+        self.frames = []
         self.seq = 0
-        self.acks = []
 
     async def start(self):
         await self.client.start_notify(TX, self._on_notify)
 
-    async def _on_notify(self, _handle, data):
-        b = bytes(data)
-        # ACK 帧：A5 02 80 seq len=02 orig_cmd result cksum
-        if b[2] == 0x80 and len(b) >= 8 and b[4] == 2:
-            self.acks.append((b[3], b[5], b[6]))
+    def _on_notify(self, _char, data):
+        raw = bytes(data)
+        if not raw:
+            return
+        ctrl = raw[0]
+        if ctrl & 0x80:
+            self.rx = bytearray()
+        self.rx += raw[1:]
+        if ctrl & 0x40:
+            f = decode(bytes(self.rx))
+            if f:
+                self.frames.append(f)
+            self.rx = bytearray()
 
-    async def send(self, cmd, payload=b"", wait=0.25):
-        self.seq = (self.seq + 1) & 0xFF or 1
-        await self.client.write_gatt_char(RX, frame(cmd, self.seq, payload), response=False)
-        await asyncio.sleep(wait)
-        return self.acks[-1][2] if self.acks else None
+    async def write(self, cmd: int, payload: bytes = b"") -> int:
+        self.seq = (self.seq % 0xFF) + 1
+        frame = encode(cmd, self.seq, payload)
+        chunks = [frame[i:i + self.data_cap] for i in range(0, len(frame), self.data_cap)]
+        for i, ch in enumerate(chunks):
+            ctrl = (0x80 if i == 0 else 0) | (0x40 if i == len(chunks) - 1 else 0) | (i & 0x3F)
+            await self.client.write_gatt_char(RX, bytes([ctrl]) + ch, response=False)
+        return self.seq
 
-    async def state(self):
-        return await self.client.read_gatt_char(STATE)
+    async def ack(self, seq: int, timeout: float = 2.0, timeout_is_ok: bool = False):
+        """等 seq 对应的 ACK；返回 (orig_cmd, result)，超时返回 None。
+
+        timeout_is_ok=True 用于 flood：那条路径故意不逐个等 ACK。
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            while self.frames:
+                f = self.frames.pop(0)
+                if f[0] == 0x80 and f[1] == seq and len(f[2]) >= 2:
+                    return f[2][0], f[2][1]
+            await asyncio.sleep(0.005)
+        return None
+
+    async def send(self, cmd: int, payload: bytes = b"", wait: float = 2.0):
+        seq = await self.write(cmd, payload)
+        return await self.ack(seq, wait)
+
+    async def state(self) -> bytes:
+        return bytes(await self.client.read_gatt_char(STATE_CHAR))
 
 
-async def find_device(timeout=15):
+async def find_device(timeout=20):
     dev = await BleakScanner.find_device_by_filter(
-        lambda d, a: (a.local_name or "").startswith("Lumen"), timeout=timeout
-    )
+        lambda d, a: (a.local_name or "").startswith("Lumen"), timeout=timeout)
     if not dev:
-        raise SystemExit("未找到 Lumen 设备（确认已上电、没被小程序占着）")
+        raise SystemExit("未找到 Lumen 设备（确认已上电、没被小程序占着；"
+                         "协议是单连接，断开才重新广播）")
     return dev
 
 
-async def clear_all(rig, strips=8, slots=8):
-    """清空所有条的所有段槽。"""
-    for strip in range(strips):
-        for seg in range(slots):
-            await rig.send(CMD_CLEAR_SEGMENT, bytes([strip, seg]), wait=0.03)
+async def open_rig():
+    dev = await find_device()
+    client = BleakClient(dev)
+    await client.connect()
+    rig = Rig(client)
+    await rig.start()
+    return client, rig
 
 
-async def cmd_setup(rig, strip, brightness, leds, fill, indices=None):
-    await clear_all(rig)
-    await rig.send(CMD_SET_BRIGHTNESS, bytes([brightness]), wait=0.2)
-    await rig.send(CMD_SET_POWER, bytes([1]), wait=0.3)
-    if fill:
-        # 整板同色：一个段覆盖 0..63。二维方阵用这个比分散点更稳 ——
-        # 相邻格同色时，网格稍微歪一点也不会把邻灯的颜色算进来。
-        payload = bytes([strip, 0, 0, 63, TYPE_STATIC, 0x00, 0x00, 255])
-        result = await rig.send(CMD_SET_SEGMENT, payload, wait=0.2)
-        print(f"  段0 strip={strip} LED[0..63] 全红 -> 0x{result:02X}")
-    else:
-        if indices is None:
-            # 默认沿对角线分散 —— 孤立的点便于逐颗判定，互不粘连。
-            indices = ([round(i * 63 / (leds - 1)) for i in range(leds)]
-                       if leds > 1 else [0])
-        # 显式给序号时用于标定（例如四个角 0/7/56/63 可精确确定网格）
-        for seg, idx in enumerate(indices):
-            payload = bytes([strip, seg, idx, idx, TYPE_STATIC, 0x00, 0x00, 255])
-            result = await rig.send(CMD_SET_SEGMENT, payload, wait=0.18)
-            print(f"  段{seg} strip={strip} LED[{idx}] -> 0x{result:02X}")
-    st = await rig.state()
-    print(f"\nState: power={st[0]} brightness={st[1]} strip_count={st[8]} seg_count={st[9]}")
-    print("预期：整板红色（1 段覆盖 64 灯）" if fill
-          else f"预期：{leds} 颗红灯（strip {strip} 上），其余全黑")
+def parse_state(st: bytes) -> dict:
+    if len(st) != 37:
+        raise SystemExit(f"State 长度应为 37，实际 {len(st)}（协议不匹配？）")
+    return {
+        "power": st[0], "brightness": st[1], "rgb": tuple(st[2:5]),
+        "max_brightness": st[5], "strip_count": st[6], "script_id": st[7],
+        "stage_index": st[8], "playback_state": st[9], "flags": st[10],
+        "strip_power_mask": st[11], "strip_anim_mask": st[12],
+        "strip_counts": [int.from_bytes(st[13 + 2 * i:15 + 2 * i], "little") for i in range(8)],
+        "strip_seg_counts": list(st[29:37]),
+    }
+
+
+def describe(st: bytes) -> str:
+    d = parse_state(st)
+    return (f"power={d['power']} bright={d['brightness']} rgb={d['rgb']} "
+            f"pmask={d['strip_power_mask']:#04x} amask={d['strip_anim_mask']:#04x} "
+            f"counts={d['strip_counts']} segs={d['strip_seg_counts']}")
+
+
+async def clear_segments(rig, strips=range(STRIP_COUNT), slots=range(SLOT_COUNT)):
+    for s in strips:
+        for seg in slots:
+            await rig.send(CMD_CLEAR_SEGMENT, bytes([s, seg]), wait=0.5)
+
+
+async def set_strip_power(rig, mask: int):
+    for s in range(STRIP_COUNT):
+        await rig.send(CMD_SET_STRIP_POWER, bytes([s, 1 if (mask >> s) & 1 else 0]), wait=0.5)
+
+
+async def cmd_isolate(rig, strip: int, brightness: int, end: int, hue: int):
+    """只开第 strip 条、其余全关；该条上铺一个 0..end 的静态段。
+
+    **必须关掉其余带**：没有活动段的带会走 v1 单色回退，被全局色刷亮 ——
+    那会让「只点亮一条」的观察彻底失效（踩过：pmask 只留最后一条，
+    导致前面几次测量全部误读）。
+    """
+    await clear_segments(rig)
+    await rig.send(CMD_SET_BRIGHTNESS, bytes([brightness]), wait=0.5)
+    await rig.send(CMD_SET_POWER, bytes([1]), wait=0.5)
+    await set_strip_power(rig, 1 << strip)
+    r = await rig.send(CMD_SET_SEGMENT,
+                       segment_payload(strip, 0, 0, end, BLEND_OVERWRITE,
+                                       layer_static(hue), layer_empty()), wait=1.0)
+    code = "OK" if r and r[1] == 0 else (f"result=0x{r[1]:02X}" if r else "NO ACK")
+    print(f"  isolate strip={strip} hue={hue} LED[0..{end}] -> {code}")
+    print("  " + describe(await rig.state()))
+
+
+async def cmd_colorize(rig, brightness: int, end: int):
+    """8 条各铺一个专属色相的静态段，全开。
+
+    这是标定信号源：色相唯一，所以从一帧里能同时
+    (a) 认出每条带在画面里的位置，(b) 数出它的物理颗数，
+    (c) 之后用它检测「串带」（某条显示成了别人的色相）。
+    """
+    await clear_segments(rig)
+    await rig.send(CMD_SET_BRIGHTNESS, bytes([brightness]), wait=0.5)
+    await rig.send(CMD_SET_POWER, bytes([1]), wait=0.5)
+    for s in range(STRIP_COUNT):
+        r = await rig.send(CMD_SET_SEGMENT,
+                           segment_payload(s, 0, 0, end, BLEND_OVERWRITE,
+                                           layer_static(hue_for_strip(s)), layer_empty()),
+                           wait=0.8)
+        code = "OK" if r and r[1] == 0 else (f"result=0x{r[1]:02X}" if r else "NO ACK")
+        print(f"  strip {s}: hue={hue_for_strip(s):5d} ({s * 45:3d}°) LED[0..{end}] -> {code}")
+    await set_strip_power(rig, 0xFF)
+    print("  " + describe(await rig.state()))
 
 
 async def cmd_flood(rig, seconds, hz, brightness):
-    """以 hz 频率连续发 SetBrightness —— 制造 BLE 抢占 RMT 中断的压力。"""
+    """以 hz 频率连续发 SetBrightness —— 制造 BLE 抢占 RMT 中断的压力。
+
+    **不等 ACK**：等 ACK 会把节奏锁死在往返时延上，达不到目标频率（旧版用
+    `await asyncio.sleep(wait)` 固定等待，实测远低于目标 hz）。发送期间不解析
+    接收缓冲，结束时统一统计 ACK 数量与非 0 结果。
+    """
     period = 1.0 / hz
     levels = [brightness, max(1, brightness - 1)]
     sent = 0
     t0 = time.monotonic()
-    print(f"开始 {hz}Hz 写入，持续 {seconds}s（画面应当不变，亮度在 {levels} 间微调）")
-    print("提示：这会让画面亮度轻微变化，判定基线要能容忍这一档")
-    while time.monotonic() - t0 < seconds:
-        level = levels[sent % len(levels)]
-        await rig.send(CMD_SET_BRIGHTNESS, bytes([level]), wait=0)
+    print(f"开始 {hz}Hz 写入，持续 {seconds}s（画面亮度在 {levels} 间微调）")
+    while True:
+        now = time.monotonic()
+        if now - t0 >= seconds:
+            break
+        await rig.write(CMD_SET_BRIGHTNESS, bytes([levels[sent % len(levels)]]))
         sent += 1
-        # 用绝对时间对齐，避免累积漂移
-        target = t0 + sent * period
-        delay = target - time.monotonic()
+        delay = (t0 + sent * period) - time.monotonic()
         if delay > 0:
             await asyncio.sleep(delay)
     elapsed = time.monotonic() - t0
-    print(f"完成：{sent} 帧 / {elapsed:.1f}s = {sent/elapsed:.1f} Hz")
-    print("若固件有 ACK 丢失或断连，串口会出现提示；录像用 analyze-strip-video.py 判定")
+    acks = bad = 0
+    while rig.frames:
+        f = rig.frames.pop(0)
+        if f[0] == 0x80 and len(f[2]) >= 2:
+            acks += 1
+            if f[2][1] != 0:
+                bad += 1
+    print(f"完成：{sent} 帧 / {elapsed:.1f}s = {sent / elapsed:.1f} Hz")
+    print(f"回收 ACK {acks} / 非 0 {bad}（发送期间未逐个等待，这是预期值）")
 
 
 async def cmd_reset(rig):
-    await clear_all(rig)
-    await rig.send(CMD_SET_BRIGHTNESS, bytes([128]), wait=0.2)
-    await rig.send(CMD_SET_POWER, bytes([0]), wait=0.3)
-    print("已恢复：无段、亮度 128、关灯")
+    await clear_segments(rig)
+    await set_strip_power(rig, 0xFF)
+    await rig.send(CMD_SET_BRIGHTNESS, bytes([128]), wait=0.5)
+    await rig.send(CMD_SET_POWER, bytes([0]), wait=0.5)
+    print("已恢复：无段、8 带全开、亮度 128、关灯")
+    print("  " + describe(await rig.state()))
+
+
+async def cmd_show(rig):
+    print("  " + describe(await rig.state()))
+    seq = await rig.write(CMD_QUERY_STRIP_CONFIG)
+    await asyncio.sleep(0.6)
+    for f in rig.frames:
+        if f[0] == 0x87 and len(f[2]) >= 24:
+            pl = f[2]
+            recs = [(pl[3 * i], pl[3 * i + 1], pl[3 * i + 2]) for i in range(8)]
+            print("  StripConfig (strip_id, gpio, flags):")
+            for sid, gpio, flags in recs:
+                print(f"    strip {sid}: gpio={0xFF if gpio == 0xFF else gpio:>3} "
+                      f"assigned={(flags >> 0) & 1}")
+    rig.frames.clear()
+    ack = await rig.ack(seq, 1.0)
+    print(f"  QueryStripConfig ACK = {ack}")
 
 
 async def main():
-    ap = argparse.ArgumentParser(description="#20 错色实验的 PC 侧 BLE 驱动")
+    ap = argparse.ArgumentParser(description="v3 错色实验的 PC 侧 BLE 驱动")
+    ap.add_argument("--brightness", type=int, default=60,
+                    help="配置画面用的全局亮度（flood 请用 --flood-brightness）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p_setup = sub.add_parser("setup", help="配置静态画面（恒定，便于逐帧判定）")
-    p_setup.add_argument("--strip", type=int, default=6,
-                         help="目标 strip_id（默认 6 = GPIO6，见 LUMEN_STRIP_PINS）")
-    p_setup.add_argument("--brightness", type=int, default=60)
-    p_setup.add_argument("--leds", type=int, default=8,
-                         help="点亮几颗灯（沿对焦线分散，默认 8）")
-    p_setup.add_argument("--fill", action="store_true",
-                         help="整板同色（一个段覆盖全部灯珠）；二维方阵推荐")
-    p_setup.add_argument("--leds-list",
-                         help="显式灯珠序号，逗号分隔（如 0,7,56,63 用于标定四角）")
+    p_iso = sub.add_parser("isolate", help="只开一条带并铺满静态色（测物理颗数用）")
+    p_iso.add_argument("strip", type=int)
+    p_iso.add_argument("--hue", type=int, default=0)
+    p_iso.add_argument("--end", type=int, default=FULL_RANGE_END)
 
-    p_flood = sub.add_parser("flood", help="高频写入制造 BLE 压力")
-    p_flood.add_argument("--seconds", type=float, default=180)
-    p_flood.add_argument("--hz", type=float, default=20)
-    p_flood.add_argument("--brightness", type=int, default=60)
+    p_col = sub.add_parser("colorize", help="8 条各一种专属色相（标定 + 串带检测）")
+    p_col.add_argument("--end", type=int, default=FULL_RANGE_END)
 
+    p_fl = sub.add_parser("flood", help="高频写入制造 BLE 压力")
+    p_fl.add_argument("--seconds", type=float, default=400)
+    p_fl.add_argument("--hz", type=float, default=20)
+    p_fl.add_argument("--brightness", type=int, default=60)
+
+    sub.add_parser("show", help="打印 State 与 StripConfig")
     sub.add_parser("reset", help="恢复默认状态")
 
     args = ap.parse_args()
-    dev = await find_device()
-    print(f"连接 {dev.name} ({dev.address})")
-    async with BleakClient(dev) as client:
-        rig = Rig(client)
-        await rig.start()
-        if args.cmd == "setup":
-            indices = None
-            if args.leds_list:
-                indices = [int(v) for v in args.leds_list.split(",") if v.strip()]
-            await cmd_setup(rig, args.strip, args.brightness, args.leds, args.fill, indices)
+    client, rig = await open_rig()
+    try:
+        if args.cmd == "isolate":
+            await cmd_isolate(rig, args.strip, args.brightness, args.end, args.hue)
+        elif args.cmd == "colorize":
+            await cmd_colorize(rig, args.brightness, args.end)
         elif args.cmd == "flood":
             await cmd_flood(rig, args.seconds, args.hz, args.brightness)
-        else:
+        elif args.cmd == "show":
+            await cmd_show(rig)
+        elif args.cmd == "reset":
             await cmd_reset(rig)
+    finally:
+        await client.disconnect()
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n已中断")
+        pass
