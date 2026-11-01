@@ -90,11 +90,40 @@ python scripts/analyze-strips-video.py --selftest  # 判定逻辑（含合成注
 python scripts/ble-stress.py show                  # 读设备状态/引脚表
 ```
 
-**当前卡点**：相机机位在调整补光灯后变了（俯拍、距离远、灯板只占画面中间
-一小块），`strip-layout.py --isolate` 只能标定出 4/8 条。它的设计是
-**不可信就报错**（形状不细长 / 8 条不平行 / 分辨率不匹配都会拒绝），所以不会
-产出错误布局 —— `analyze-strips-video.py` 也会因此拒绝判定。**下一步是先把
-相机固定到能看清灯带的位置，再重跑 `--isolate`。**
+**相机标定：已跑通一半，参数和限制如下（2026-11-02 实测）**
+
+正确的相机参数（换补光/换机位都要重新确认）：
+
+```
+曝光 -11、增益 0、DSHOW + YUY2（不设 FOURCC）、1920×1080
+LED 亮度 150（**但不能对所有带都用同一个值**，见下）
+```
+
+**三个必须知道的实测事实**：
+
+1. **每条带照亮环境的能力差异极大。** 品红 30 颗在 brightness=150 时把整个
+   房间照亮（高饱和像素占 87%），而短带几乎看不见。所以 `--isolate` 现在
+   **逐带自适应亮度**：从 150 起试拍，高饱和占比超 0.5% 就逐级下调。
+2. **strip 1（最上面那条）只有 2 颗灯，物理上定不出方向。** 两个孤立光点
+   无法构成线段，任何算法都救不了。工具会把它标为失败并**逐条降级**——
+   其余各条照常判定，不是整份拒绝。
+3. **640×480 下自适应亮度失效**（光晕糊成一片，高饱和占比失真），
+   目前只能在 1080p 标定。而 1080p 实测只有 2.5~5fps（640×480 能到 30fps）。
+   **这是当前最大的方法论短板**：分辨率够用但帧率不足，帧率够用但标不出来。
+
+**当前可用结果**：6/8 条标定成功，角度全部落在 −23.9°~−29.7°（平行性
+最大偏离 5.4°，通过）。端到端验证：40s 基线录像 0 事件、判定「通过」。
+
+```bash
+# 标定（约 10 分钟，会逐带改设备状态）
+python scripts/strip-layout.py --isolate .layout-shots --exposure -11 --brightness 150
+python scripts/strip-layout.py --show
+
+# 录像 + 判定
+python scripts/ble-stress.py --brightness 60 colorize
+python scripts/record-board.py base.mp4 --seconds 40 --width 1920 --height 1080 --exposure -11
+python scripts/analyze-strips-video.py base.mp4
+```
 
 ### 0.00b 2026-11-01 夜：spec-v3 实现缺口补完（#47–#50）
 
