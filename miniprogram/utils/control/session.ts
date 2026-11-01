@@ -337,6 +337,18 @@ export class ControlSession {
    * 保证一次连接会话一条记录。
    */
   private usageArmed = false;
+  /**
+   * #50：本次连接待入队的使用日志身份（`ready` 时快照）。
+   *
+   * 为什么不在 `ready` 里直接记：聚合键首选 `hw_id`，而它只有 `0x88` 才下发，
+   * `ready` 那一刻还没有。先快照身份，等 `QueryDeviceInfo` 回来再入队；
+   * 同时用 epoch 钉住快照，跨连接的结果一律作废。
+   */
+  private pendingUsage: {
+    epoch: number;
+    deviceId: string | null;
+    deviceName: string | null;
+  } | null = null;
   private readonly reconnect: ReconnectSupervisor;
   /** #33 设备切换状态机（主动切换，与上面的自动回连完全分开）。 */
   private switchState: SwitchState = initialSwitchState();
@@ -426,16 +438,23 @@ export class ControlSession {
     );
 
     // 内部监听必须早于页面注册，保证断线时先清本地状态再通知 UI。
-    // #34：同一条 ready 事件上先记使用日志（成功的连接会话），再交回监督者。
     this.transport.onLink((state, detail) => {
-      if (state === "ready") {
-        this.noteUsageOnce();
+      /* #50：会话结束（断线 / 适配器关闭 / 连接失败）时会话日志可能还没等到
+       * 0x88 回来。这里先补记——按当时已知的身份（通常没有 hw_id），绝不能
+       * 因为设备信息查询没完成就把一次成功会话漏掉。必须在 handleLinkChange
+       * 之前：它会递增 epoch，之后这份快照就属于「上一次连接」了。 */
+      if (state !== "ready") {
+        this.flushPendingUsage();
       }
       this.reconnect.handleLinkChange(state, detail);
       /* #41：每次进入 ready（首次连接 / 自动回连 / 切换设备）都补一次
        * §9.1 的第 2、3 步。State 已由 transport.connect 的初始化流水线读过，
-       * 这里不再重读，避免把「回连读一次 State」的既有约定改掉。 */
+       * 这里不再重读，避免把「回连读一次 State」的既有约定改掉。
+       *
+       * #50：使用日志也挂在这次重建的末尾——`hw_id` 只有 0x88 才给，
+       * 等它回来再记，日志与设备登记表才会用同一个聚合键。 */
       if (state === "ready") {
+        this.captureUsageOnce();
         void this.rebuildDeviceConfig();
       }
     });
@@ -652,16 +671,32 @@ export class ControlSession {
    * 两条查询都是界面增强信息：失败只让缓存保持为 null，绝不把一次成功的
    * 连接降级成失败（旧固件不支持 0x1C/0x1D 时页面上只是看不到 GPIO）。
    * `QueryStrip(i)` 不在这里做——它属于页面（按需、逐带），见 `queryStrip`。
+   *
+   * #50：使用日志在这条流水线的末尾写。`hw_id` 由 0x88 下发，ready 事件
+   * 本身还拿不到它；等重建结束再记，一次会话仍然只记一条，只是入队晚了
+   * 一次查询往返。两次查询失败也照样记（不带 hardwareId 的旧格式），
+   * 界面增强信息拿不到不能连带丢日志。
+   *
+   * 这条流水线不认 epoch 就没法防住「旧连接的重建跑完时新连接已经 ready」，
+   * 所以下面用 `isStale` 把跨连接的迟到结果整体丢掉（设备信息与日志一起丢）。
    */
   private async rebuildDeviceConfig(): Promise<void> {
     if (this.transport.linkState !== "ready") {
       return;
     }
+    /* 上一次连接的重建可能拖到这里才回来：跨连接的设备信息不能写给新连接，
+     * 也不该替新会话补一条日志。epoch 只在连接身份变化时递增。 */
+    const epoch = this.reconnect.epoch;
     await this.queryStripConfig().catch(() => undefined);
     await this.queryDeviceInfo().catch(() => undefined);
+    if (this.reconnect.isStale(epoch) || this.transport.linkState !== "ready") {
+      return;
+    }
     /* #44：hwId 是设备的稳定身份，读到后立刻补进本地两层存储
      * （登记表 + 最近连过），后续去重、删除、同步都按它走。失败不影响连接。 */
     this.attachHardwareId();
+    /* #50：hw_id 已就位，此刻记的使用日志才能与设备登记表用同一个键。 */
+    this.flushPendingUsage();
     /* 通知页面「设备增强信息已就绪」（GPIO / hwId）。失败也要通知：
      * 页面据此把「GPIO ?」收敛成「—」，不必自己猜什么时候该重画。 */
     this.notifyDeviceConfig();
@@ -1672,6 +1707,8 @@ export class ControlSession {
   }
 
   destroy(): void {
+    /* #50：页面卸载时这一轮的日志可能还等在 0x88 上；销毁前补记，别丢会话。 */
+    this.flushPendingUsage();
     this.reconnect.destroy();
     this.throttle.cancel();
     this.deviceConfigListeners.length = 0;
@@ -1689,6 +1726,10 @@ export class ControlSession {
    * **上一台设备**，留着会让重连后的页面显示错误的 GPIO 与 hwId。
    */
   private clearDeviceState(): void {
+    /* #50：断线时兜底——这一轮的日志若还没入队（0x88 没回来），先按已知身份
+     * 补记，再清缓存（`deviceInfoCache` 一清就拿不到 hw_id 了）。
+     * 正常路径在 onLink 里已经 flush 过，走到这里通常是空操作。 */
+    this.flushPendingUsage();
     this.latestState = null;
     this.throttle.cancel();
     /* 断开后没有可写的段：颜色控件应回到禁用态。 */
@@ -1701,33 +1742,69 @@ export class ControlSession {
   }
 
   /**
-   * #34：一次成功的连接会话记一条使用日志。
+   * #34 / #50：一次成功的连接会话记一条使用日志。
    *
    * 三条纪律，全部体现在这里：
    *  1. **只记成功**：`usageArmed` 只在发起一次 connect 时置位（手动 / 自动回连
    *     走同一条 ready 事件），失败不置位、也不记录；
-   *  2. **一次会话一条**：ready 消费该标记，同一次连接不会写第二条；
+   *  2. **一次会话一条**：`ready` 时快照成 `pendingUsage`，入队后清空；
    *  3. **同步、吞异常、不 await**：日志落点是 fire-and-forget 的旁路，
    *     BLE 连接与控制绝不等待它，后端挂了也感知不到。
+   *
+   * #50：`hardwareId` 取本次连接读到的 `hw_id`（设备登记表的同一个主键）。
+   * 读不到（旧固件 / 查询失败 / 断线太快）就不带这个字段——后端退化为按
+   * 广播名聚合，与老客户端的上报体完全一致。
    */
-  private noteUsageOnce(): void {
-    if (!this.usageArmed) {
+  private flushPendingUsage(): void {
+    const pending = this.pendingUsage;
+    if (pending === null) {
       return;
     }
-    this.usageArmed = false;
+    /* 会话已换了一轮：这份快照属于上一次连接，但此刻 `deviceInfoCache` 描述的
+     * 已经是新连接，带上它的 hw_id 就是张冠李戴。丢弃而不是补记——正常路径
+     * 在 link 非 ready 时已经 flush 过，走到这里说明身份已不可靠。 */
+    if (pending.epoch !== this.reconnect.epoch) {
+      this.pendingUsage = null;
+      return;
+    }
+    this.pendingUsage = null;
 
     const logger = this.usageLogger;
     if (logger === null) {
       return;
     }
-    const device = this.activeDevice;
-    const deviceId = device?.deviceId ?? this.transport.currentDeviceId ?? null;
-    const deviceName = device?.name ?? null;
+    /* `deviceInfoCache` 只属于本次连接（断开即清），因此不会是上一台的 hw_id。 */
+    const hardwareId = this.deviceInfoCache?.hwId ?? null;
     try {
-      logger.recordConnection({ deviceName, deviceId, platform: this.platform });
+      logger.recordConnection({
+        ...(hardwareId !== null && hardwareId.length > 0 ? { hardwareId } : {}),
+        deviceName: pending.deviceName,
+        deviceId: pending.deviceId,
+        platform: this.platform,
+      });
     } catch {
       // 日志是旁路：任何异常都不能冒泡到连接状态机。
     }
+  }
+
+  /**
+   * #50：`ready` 时快照这次会话的身份（一次会话最多一份）。
+   *
+   * 不在这里直接入队：聚合键首选 `hw_id`，而它只有 `0x88` 才下发；
+   * 入队推迟到 `rebuildDeviceConfig` 末尾（或断线清理时兜底）。
+   */
+  private captureUsageOnce(): void {
+    if (!this.usageArmed) {
+      return;
+    }
+    this.usageArmed = false;
+
+    const device = this.activeDevice;
+    this.pendingUsage = {
+      epoch: this.reconnect.epoch,
+      deviceId: device?.deviceId ?? this.transport.currentDeviceId ?? null,
+      deviceName: device?.name ?? null,
+    };
   }
 
   /** 发起一次连接：记下身份并置位「下一个 ready 要记一条使用日志」。 */

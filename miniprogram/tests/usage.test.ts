@@ -15,7 +15,9 @@ import { describe, expect, it } from "vitest";
 
 import { ControlSession } from "../utils/control/session";
 import type { BleTransport, LinkDetail } from "../utils/ble/transport";
-import type { CommandRequest, DeviceState, LinkState } from "../utils/protocol/types";
+import { parseDeviceInfoReport } from "../utils/protocol/commands";
+import { hexToBytes } from "../utils/protocol/hex";
+import type { CommandRequest, DeviceInfo, DeviceState, LinkState } from "../utils/protocol/types";
 import {
   USAGE_LOGS_PATH,
   loadUsageConfig,
@@ -28,6 +30,7 @@ import {
   createClientEventId,
   createLocalUserKey,
   getOrCreateLocalUserKey,
+  normalizeHardwareId,
   toUsagePlatform,
   LOCAL_USER_KEY_STORAGE_KEY,
   type ConnectionIdentity,
@@ -146,6 +149,11 @@ const IDENTITY: ConnectionIdentity = {
   deviceId: "AA:BB:CC:DD:1A:2B",
   platform: "android",
 };
+
+/** #50：0x88 的 DeviceInfoReport 夹具（hw_id = AA:BB:CC:DD:EE:FF）。 */
+const DEVICE_INFO: DeviceInfo = parseDeviceInfoReport(
+  hexToBytes("0300AABBCCDDEEFF40080808040100") as Uint8Array,
+);
 
 // ---------------------------------------------------------------------------
 // 配置：唯一真相源，缺失时优雅降级
@@ -289,6 +297,65 @@ describe("#34 记录内容不含实时控制数据", () => {
       device: { deviceName: "  ", deviceId: "", platform: "ios" },
     });
     expect(event.device).toEqual({ deviceName: null, deviceId: null, platform: "ios" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #50：hardwareId（6 字节 MAC）进上报体
+// ---------------------------------------------------------------------------
+
+describe("#50 hardwareId 上报（与设备登记表同一主键）", () => {
+  const base = { userKey: "u", startedAt: 1, clientEventId: "c" } as const;
+
+  it("有 hardwareId 时进入 device，并保持 MAC 规范形式", () => {
+    const event = buildUsageEvent({
+      ...base,
+      device: {
+        hardwareId: "aa:bb:cc:dd:ee:ff",
+        deviceName: "Lumen-1A2B",
+        deviceId: "uuid",
+        platform: "ios",
+      },
+    });
+    expect(event.device).toEqual({
+      hardwareId: "AA:BB:CC:DD:EE:FF",
+      deviceName: "Lumen-1A2B",
+      deviceId: "uuid",
+      platform: "ios",
+    });
+  });
+
+  it("没有 hardwareId 时字段**不出现**（老客户端上报体逐字节不变）", () => {
+    for (const device of [
+      { deviceName: "Lumen-1A2B", deviceId: "uuid", platform: "ios" as const },
+      { hardwareId: null, deviceName: "Lumen-1A2B", deviceId: "uuid", platform: "ios" as const },
+      { hardwareId: "", deviceName: "Lumen-1A2B", deviceId: "uuid", platform: "ios" as const },
+      { hardwareId: "  ", deviceName: "Lumen-1A2B", deviceId: "uuid", platform: "ios" as const },
+    ]) {
+      const event = buildUsageEvent({ ...base, device });
+      expect(Object.keys(event.device).sort()).toEqual(["deviceId", "deviceName", "platform"]);
+    }
+  });
+
+  it("脏 hardwareId（长度不对 / 非 hex）视为不知道，不落进聚合键", () => {
+    for (const raw of ["not-a-mac", "AA:BB:CC:DD:EE", "AA:BB:CC:DD:EE:FF:00", "ZZ:BB:CC:DD:EE:FF"]) {
+      const event = buildUsageEvent({
+        ...base,
+        device: { hardwareId: raw, deviceName: "Lumen-1A2B", deviceId: null, platform: "android" },
+      });
+      expect(event.device, raw).not.toHaveProperty("hardwareId");
+    }
+  });
+
+  it("normalizeHardwareId 接受冒号 / 短横线 / 无分隔 / 0x 前缀", () => {
+    for (const raw of [
+      "AA:BB:CC:DD:EE:FF",
+      "aa-bb-cc-dd-ee-ff",
+      "aabbccddeeff",
+      "  0xAABBCCDDEEFF  ",
+    ]) {
+      expect(normalizeHardwareId(raw), raw).toBe("AA:BB:CC:DD:EE:FF");
+    }
   });
 });
 
@@ -567,6 +634,11 @@ class FakeTransport {
   connectResult: DeviceState | Error = baseState();
   writes: CommandRequest[] = [];
   ackCalls: CommandRequest[] = [];
+  /**
+   * #50：0x88 的结果。默认 null = 模拟「旧固件不支持 QueryDeviceInfo」，
+   * 会话读不到 hw_id，上报体与 #34 时期逐字节一致。
+   */
+  deviceInfoResult: DeviceInfo | null = null;
   private deviceId: string | null = null;
 
   private readonly linkListeners: Array<(state: LinkState, detail?: LinkDetail) => void> = [];
@@ -599,6 +671,19 @@ class FakeTransport {
     }
     this.emitLink("ready", { deviceName: name });
     return this.connectResult;
+  }
+
+  /** v3 §9.1 第 2 步：与旧固件一致地失败（本用例不关心引脚表）。 */
+  async queryStripConfig(): Promise<never> {
+    throw new Error("旧固件不支持 QueryStripConfig");
+  }
+
+  /** v3 §9.1 第 3 步：未注入 DeviceInfo 时按「读不到 hw_id」处理。 */
+  async queryDeviceInfo(): Promise<DeviceInfo> {
+    if (this.deviceInfoResult === null) {
+      throw new Error("旧固件不支持 QueryDeviceInfo");
+    }
+    return this.deviceInfoResult;
   }
 
   readState(): Promise<DeviceState> {
@@ -656,6 +741,8 @@ describe("#34 后端不可达不影响控制", () => {
     const state = await session.connect("DEV-1", "Lumen-1A2B");
     expect(state.brightness).toBe(128);
     expect(session.linkState).toBe("ready");
+    /* #50：日志在 0x88 回来之后入队（这里 0x88 立即失败），跑完微任务即可见。 */
+    await settle();
     expect(logger.pending).toBe(1);
 
     // 关键断言 2：日志请求还挂在黑洞里，控制命令照常走通。
@@ -745,29 +832,66 @@ describe("#34 连接时记录（session 接线）", () => {
   it("手动连接成功记录一条，带广播名 / deviceId / 平台", async () => {
     const h = makeHooked("android");
     await h.session.connect("AA:BB:CC:DD:1A:2B", "Lumen-1A2B");
+    /* #50：日志等 0x88 回来后入队，不是 ready 当拍。 */
+    await settle();
 
     expect(h.events).toEqual([
       { deviceName: "Lumen-1A2B", deviceId: "AA:BB:CC:DD:1A:2B", platform: "android" },
     ]);
   });
 
+  it("#50 读到 hw_id 时上报带 hardwareId（与设备登记表同一主键）", async () => {
+    const h = makeHooked("android");
+    h.transport.deviceInfoResult = DEVICE_INFO;
+    await h.session.connect("AA:BB:CC:DD:1A:2B", "Lumen-1A2B");
+    await settle();
+
+    expect(h.events).toEqual([
+      {
+        hardwareId: "AA:BB:CC:DD:EE:FF",
+        deviceName: "Lumen-1A2B",
+        deviceId: "AA:BB:CC:DD:1A:2B",
+        platform: "android",
+      },
+    ]);
+  });
+
+  it("#50 读不到 0x88（旧固件）时上报体不带 hardwareId，行为与老版本一致", async () => {
+    const h = makeHooked("ios");
+    h.transport.deviceInfoResult = null;
+    await h.session.connect("IOS-UUID-1", "Lumen-4D5E");
+    await settle();
+
+    expect(h.events).toHaveLength(1);
+    expect(h.events[0]).not.toHaveProperty("hardwareId");
+    expect(h.events[0]).toEqual({
+      deviceName: "Lumen-4D5E",
+      deviceId: "IOS-UUID-1",
+      platform: "ios",
+    });
+  });
+
   it("失败连接不记录", async () => {
     const h = makeHooked();
     h.transport.connectResult = new Error("设备不在附近");
     await expect(h.session.connect("DEV-1", "Lumen-1A2B")).rejects.toThrow("设备不在附近");
+    await settle();
     expect(h.events).toHaveLength(0);
   });
 
   it("对已连接的同一台设备重复 connect（只重读 State）不重复记录", async () => {
     const h = makeHooked();
     await h.session.connect("DEV-1", "Lumen-1A2B");
+    await settle();
     await h.session.connect("DEV-1", "Lumen-1A2B");
+    await settle();
     expect(h.events).toHaveLength(1);
   });
 
   it("非主动断线后自动回连成功 → 再记一条（每次会话一条）", async () => {
     const h = makeHooked();
     await h.session.connect("DEV-1", "Lumen-1A2B");
+    await settle();
     expect(h.events).toHaveLength(1);
 
     h.transport.emitLink("idle", { reconnectable: true });
@@ -782,9 +906,23 @@ describe("#34 连接时记录（session 接线）", () => {
     });
   });
 
+  it("#50 会话在 0x88 回来之前就断了：仍记一条（不带 hardwareId），不丢会话", async () => {
+    const h = makeHooked();
+    /* 旧固件：0x88 永远失败，于是 ready 后立刻断线等于「没等到 hw_id」。 */
+    h.transport.deviceInfoResult = null;
+    await h.session.connect("DEV-1", "Lumen-1A2B");
+    /* 不 settle：让 rebuildDeviceConfig 还挂在查询上时就断线。 */
+    h.transport.emitLink("idle", { reconnectable: true });
+    await settle();
+
+    expect(h.events).toHaveLength(1);
+    expect(h.events[0]).not.toHaveProperty("hardwareId");
+  });
+
   it("自动回连失败不记录", async () => {
     const h = makeHooked();
     await h.session.connect("DEV-1", "Lumen-1A2B");
+    await settle();
     h.transport.connectResult = new Error("设备不在附近");
 
     h.transport.emitLink("idle", { reconnectable: true });
@@ -857,5 +995,37 @@ describe("#34 组装后的完整链路（假后端）", () => {
     expect(logger.pending).toBe(0);
     expect(received).toHaveLength(2);
     expect(received[0].clientEventId).not.toBe(received[1].clientEventId);
+  });
+
+  it("#50 读到 hw_id 时请求体带 hardwareId；读不到时请求体与老版本一致", async () => {
+    async function oneSession(withDeviceInfo: boolean): Promise<Record<string, unknown>> {
+      const { fetch: f, calls } = recordingFetch(() => okResponse(201));
+      const { logger } = makeLogger({ fetch: f });
+      const transport = new FakeTransport();
+      transport.deviceInfoResult = withDeviceInfo ? DEVICE_INFO : null;
+      const session = new ControlSession({
+        platform: "ios",
+        devMode: false,
+        transportOverride: transport as unknown as BleTransport,
+        storage: createMemoryUsageStorage(),
+        usageLogger: logger,
+      });
+      await session.connect("IOS-UUID-1", "Lumen-4D5E");
+      await settle();
+      expect(calls).toHaveLength(1);
+      return (JSON.parse(calls[0].body) as UsageEvent).device as unknown as Record<string, unknown>;
+    }
+
+    expect(await oneSession(true)).toEqual({
+      hardwareId: "AA:BB:CC:DD:EE:FF",
+      deviceName: "Lumen-4D5E",
+      deviceId: "IOS-UUID-1",
+      platform: "ios",
+    });
+    expect(await oneSession(false)).toEqual({
+      deviceName: "Lumen-4D5E",
+      deviceId: "IOS-UUID-1",
+      platform: "ios",
+    });
   });
 });

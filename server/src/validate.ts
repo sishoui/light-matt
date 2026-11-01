@@ -66,6 +66,21 @@ function requiredTimestamp(value: unknown, field: string, errors: ValidationErro
   return value;
 }
 
+/**
+ * 设备自报的硬件 id（#50）：归一化成 `AA:BB:CC:DD:EE:FF`。
+ *
+ * 归一化而不是报错：使用日志是旁路，一个诊断字段写格式不对就整条 400，
+ * 会把「谁在什么时候用了哪台设备」这条事实丢掉。无法解析一律当作**没带**
+ * （之后按广播名 / deviceId 的旧逻辑聚合），老客户端的行为因此完全不变。
+ *
+ * 与 `validateRegisterPayload` 的 hardwareId 同一口径（`normalizeMacAddress`），
+ * 这样日志聚合键与 `devices.hardware_id` 是同一串字符。
+ */
+function optionalHardwareId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  return normalizeMacAddress(value);
+}
+
 export function validateLogPayload(body: unknown): { ok: true; value: Validated } | { ok: false; errors: ValidationError[] } {
   const errors: ValidationError[] = [];
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
@@ -103,7 +118,8 @@ export function validateLogPayload(body: unknown): { ok: true; value: Validated 
     errors.push({ field: "device", message: "必填，且必须是对象" });
   } else {
     const d = rawDevice as DevicePayload;
-    device.hardwareId = optionalString(d.hardwareId, "device.hardwareId", errors);
+    /* #50：hardwareId 可选；格式不对就当作没带，不 400（见 optionalHardwareId）。 */
+    device.hardwareId = optionalHardwareId(d.hardwareId);
     device.deviceName = optionalString(d.deviceName, "device.deviceName", errors);
     device.deviceId = optionalString(d.deviceId, "device.deviceId", errors);
     if (d.platform !== undefined) {

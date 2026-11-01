@@ -11,7 +11,12 @@
  *   "userKey": "local-...",
  *   "startedAt": 1760000000000,
  *   "clientEventId": "...",
- *   "device": { "deviceName": "Lumen-1A2B", "deviceId": "AA:BB:...", "platform": "android" }
+ *   "device": {
+ *     "hardwareId": "AA:BB:CC:DD:EE:FF",
+ *     "deviceName": "Lumen-1A2B",
+ *     "deviceId": "AA:BB:...",
+ *     "platform": "android"
+ *   }
  * }
  * ```
  *
@@ -31,8 +36,12 @@
  *
  * ## 设备身份如实上报
  *
- * `deviceName` 是广播名（后端据此跨手机聚合），`deviceId` 是平台原始 id
- * （Android=MAC，iOS=UUID），只作诊断证据。两端都照实上报，不在小程序里
+ * `hardwareId` 是设备自报的 6 字节 BT MAC（`DeviceInfoReport 0x88` 的 hw_id，
+ * #50）——它是 v3 的设备真身份，后端聚合键首选它；读不到时如实为 null，
+ * 后端退化为按广播名聚合，绝不拿 `deviceId` 或广播名冒充。
+ *
+ * `deviceName` 是广播名（老客户端唯一的跨手机标识），`deviceId` 是平台原始 id
+ * （Android=MAC，iOS=UUID），只作诊断证据。三者都照实上报，不在小程序里
  * 做归一或猜测。
  */
 
@@ -40,6 +49,14 @@
 export type UsagePlatform = "android" | "ios" | "devtools" | "unknown";
 
 export interface UsageDevice {
+  /**
+   * 设备自报的 6 字节 BT MAC（`AA:BB:CC:DD:EE:FF`）。
+   *
+   * 可选：`QueryDeviceInfo` 还没读回时（或老固件不支持 0x1D）就没有它。
+   * 未知时**整个字段不出现**（不是 null）——老客户端上报体因此与新客户端
+   * 「读不到 hw_id」时逐字节一致，后端只需按可选字段处理。
+   */
+  hardwareId?: string;
   deviceName: string | null;
   deviceId: string | null;
   platform: UsagePlatform;
@@ -55,6 +72,8 @@ export interface UsageEvent {
 
 /** 一次成功连接的身份信息（session 在 ready 时提供）。 */
 export interface ConnectionIdentity {
+  /** 6 字节 BT MAC；未读到（或固件不支持 0x1D）时为 null / 省略。 */
+  hardwareId?: string | null;
   deviceName: string | null;
   deviceId: string | null;
   platform: "android" | "ios" | "other";
@@ -133,14 +152,33 @@ export function buildUsageEvent(input: {
     input.device.deviceId !== null && input.device.deviceId.trim().length > 0
       ? input.device.deviceId.trim()
       : null;
+  const hardwareId = normalizeHardwareId(input.device.hardwareId);
   return {
     userKey: input.userKey,
     startedAt: input.startedAt,
     clientEventId: input.clientEventId,
     device: {
+      /* 未知时省略字段而不是写 null：老客户端的上报体保持逐字节不变。 */
+      ...(hardwareId !== null ? { hardwareId } : {}),
       deviceName: name,
       deviceId: id,
       platform: toUsagePlatform(input.device.platform),
     },
   };
+}
+
+/**
+ * 归一化设备自报的硬件 id，输出 `AA:BB:CC:DD:EE:FF`（大写冒号形式）。
+ *
+ * 与后端 `normalizeMacAddress` 同一口径：协议层 `parseDeviceInfoReport` 已经
+ * 给出这个形式，这里只是防御——脏值（长度不对 / 非 hex）一律视为「不知道」，
+ * 宁可退化为按广播名聚合，也不把脏数据当聚合键。
+ */
+export function normalizeHardwareId(raw: string | null | undefined): string | null {
+  if (typeof raw !== "string") return null;
+  const compressed = raw.trim().toLowerCase().replace(/^0x/, "").replace(/[:\-\s]/g, "");
+  if (!/^[0-9a-f]{12}$/.test(compressed)) return null;
+  const pairs = compressed.match(/.{2}/g);
+  if (pairs === null) return null;
+  return pairs.join(":").toUpperCase();
 }

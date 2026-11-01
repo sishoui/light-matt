@@ -136,6 +136,7 @@ ORM、没有迁移框架、没有定时任务。
   "endedAt": null,
   "clientEventId": "2f1c9d3a-...",
   "device": {
+    "hardwareId": "AA:BB:CC:DD:EE:FF",
     "deviceName": "Lumen-1A2B",
     "deviceId": "AA:BB:CC:DD:1A:2B",
     "platform": "android"
@@ -146,8 +147,9 @@ ORM、没有迁移框架、没有定时任务。
 - `startedAt` / `endedAt` 是**客户端毫秒时间戳**。服务端不信任顺序，只做 `endedAt >= startedAt` 校验；
   `reported_at` 单独记录服务端收到的时间，两者一起能看出补报延迟。
 - `clientEventId` 必填。重复提交返回 `200 {duplicate: true}`，小程序可以无脑重试。
-- `device` 里 `hardwareId`（可选，设备自报的稳定硬件 id）、`deviceName`、`deviceId`
+- `device` 里 `hardwareId`（可选，设备自报的 6 字节 BT MAC）、`deviceName`、`deviceId`
   至少给一个，否则 `400`。
+  `hardwareId` **格式不认时当作没带**，不 `400`（见 §4.2）；老客户端完全不传它时行为不变。
 - 响应：`{ id, duplicate, deviceKey, deviceKeyKind }`。`deviceKeyKind` 是 `hardware|name|raw`，
   让小程序端能自己看出这条日志落到了哪一档归一规则。
 
@@ -254,20 +256,26 @@ wx.setStorageSync("lumen.usage.config.v1", JSON.stringify({
 | 2 | 有广播名 | `name:<大写广播名>` | `name` |
 | 3 | 只有 `deviceId` | `raw:<platform>:<小写deviceId>` | `raw` |
 
-**当前落地的是第 2 档**：`device_key = name:LUMEN-XXXX`。理由：
+**#50 起第 1 档真正落地**：小程序在 `QueryDeviceInfo`（0x88）读到 `hw_id` 后，
+把它作为 `device.hardwareId` 上报，于是 `device_key = hw:aa:bb:cc:dd:ee:ff`，
+与 `devices.hardware_id` 是**同一个 MAC 的两串写法**（只差大小写与 `hw:` 前缀）。
+同一台设备因此不再出现「登记表一行 + 日志看板另一行」。
 
-1. 它是目前**唯一同时满足「跨手机一致」和「不需要改固件」**的标识。`Lumen-XXXX` 由设备端
-   从自己的蓝牙 MAC 算出，Android 与 iOS 断言的广播名是同一个值，所以同一台物理设备在
-   两部手机上的日志会落进同一个 `device_key`——聚合成立。
-2. 第 1 档 `hardwareId` 是更正确的方案（芯片 MAC 或 eFuse 派生的完整 id，通过新增一条只读
-   命令或在 State 里加字段下发），但需要改 `docs/protocol.md`、固件、小程序三处，超出本票
-   范围。协议一旦扩展，只需小程序在 `device.hardwareId` 里多传一个字段，**后端和
-   `device_key` 优先级表都不用改**——第 1 档已经预留在代码里。
+第 2 档仍是老客户端 / 读不到 `hw_id` 时的路径（旧固件没有 0x1D），行为与 v2 完全一致：
+
+1. 广播名 `Lumen-XXXX` 由设备端从自己的蓝牙 MAC 算出，Android 与 iOS 断言同一个值，
+   所以同一台物理设备在两部手机上的日志会落进同一个 `device_key`——聚合成立。
+2. 第 1 档是更正确的方案，但旧固件不支持 0x1D 时拿不到 `hw_id`，需要靠广播名兜底。
 3. 第 3 档是兜底：没有广播名（例如只拿到扫描结果的边缘情况）时仍要落库，宁可分组分裂也不丢数据。
+
+`hardwareId` 的归一化在**两处**都做（小程序 `normalizeHardwareId`、后端
+`resolveDeviceKey` → `normalizeMacAddress`）：日志是旁路，不能指望客户端一定守规矩；
+同一个 MAC 以 `AA-BB-CC-DD-EE-FF` / `aabbccddeeff` 等形态到达也必须聚成一行。
+格式不认时**当作没带**，不 `400`——丢一条使用事实比多一行分组更糟。
 
 ### 4.3 已知代价与看板上的处理
 
-**接受「同名设备会被合并成一台」。** 这是有意识的取舍，不是待修的 bug：
+**接受「同名设备会被合并成一台」（仅第 2 档有这个问题）。** 这是有意识的取舍，不是待修的 bug：
 
 - `v_devices.mac_count` 统计该 `device_key` 下出现过的不同 MAC 形态 `device_id`。
   `mac_count > 1` 就是在提示「这个广播名可能撞车了」。看板把它作为一列直接显示。
@@ -278,19 +286,21 @@ wx.setStorageSync("lumen.usage.config.v1", JSON.stringify({
 
 ### 4.4 明确写下来的聚合口径（一句话版）
 
-> **一台设备 = 一个 `device_key` = 一个大写广播名 `LUMEN-XXXX`（未来有硬件 id 时改为硬件 id）。
+> **一台设备 = 一个 `device_key` = 设备自报的 MAC（`hw:aa:bb:cc:dd:ee:ff`，v3 客户端）；
+> 读不到 `hw_id` 时退化为一个大写广播名 `LUMEN-XXXX`（老客户端）。
 > 不同手机上的 `deviceId` 只作为原始证据存档，不参与分组。同一广播名下的多台设备会被合并，
 > 用 `mac_count` 观察。使用次数 = 连接会话数，不是心跳数。**
 
-**v3 的两套标识不要混淆**：
+**v3 的两套标识（#50 起已经统一到同一串 MAC）**：
 
 | | 用途 | 键 | 存储 |
 |---|---|---|---|
-| 日志聚合 | 「这台设备被用过几次」 | 广播名 `name:LUMEN-XXXX` | `usage_logs.device_key` |
+| 日志聚合 | 「这台设备被用过几次」 | `hw:<小写 MAC>`（旧客户端 `name:LUMEN-XXXX`） | `usage_logs.device_key` |
 | 设备实体 | 「这是哪台设备」 | 蓝牙 MAC 全地址 `AA:BB:CC:DD:EE:FF` | `devices.hardware_id` |
 
-MAC 全地址是 48 位、跨手机一致、无碰撞，所以 v3 的设备登记用它当主键。日志侧**没有改**：
-`usage_logs` 的聚合口径与 API 行为保持 v2 原样，`POST /api/v1/usage-logs` 完全不变。
+MAC 全地址是 48 位、跨手机一致、无碰撞，所以 v3 的设备登记用它当主键；
+日志聚合在 #50 也改用同一个 MAC（`devices.hardware_id.toLowerCase()` 加 `hw:` 前缀）。
+`POST /api/v1/usage-logs` 的请求体只多了一个可选字段，老客户端不受影响。
 
 ---
 
@@ -401,7 +411,7 @@ npm run typecheck # tsc --noEmit
 | 文件 | 覆盖 |
 |---|---|
 | `tests/api.test.ts` | 日志写入落库、幂等补报、会话自动收尾、token 缺失/错误 401、请求体校验 400、表里不含控制列；后台鉴权（匿名/错密码/错用户名/坏 header 全 401） |
-| `tests/aggregation.test.ts` | **跨手机聚合**（Android MAC 与 iOS UUID → 同一 `device_key`）、广播名撞车的 `mac_count`、`hardwareId` 优先、`raw` 兜底、会话计数、`last_seen_at` 取 ended/started 较大者；`resolveDeviceKey` 优先级单测 |
+| `tests/aggregation.test.ts` | **跨手机聚合**（Android MAC 与 iOS UUID → 同一 `device_key`）、广播名撞车的 `mac_count`、`hardwareId` 优先、`raw` 兜底、会话计数、`last_seen_at` 取 ended/started 较大者；`resolveDeviceKey` 优先级单测；**#50**：MAC 三种书写形态归一成一个键、`hw:` 键与 `devices.hardware_id` 对齐、不带/坏 `hardwareId` 不 400 且退化为广播名 |
 | `tests/devices.test.ts` | 设备登记/列表/改名/解除关联/seen；`hardwareId` 归一与 400；幂等登记；**按 user 隔离**（列表与备注名）；超长/空白名 400；HTML 原样入库、看板转义；表结构无灯光列；`/admin/registry` |
 | `tests/session.test.ts` | local 回落（`identityKind: "local"`）与幂等；code → openid（fake fetch，参数正确）；`errcode 40029` → 401；系统繁忙/网络失败/HTTP 500/无 openid → 502；`readEnv` 成对校验 |
 | `tests/readonly.test.ts` | 看板三页内容；HTML 无表单/输入/按钮；36 条 `POST/PUT/PATCH/DELETE × 9 个路径` 全部 `405`；带凭据的写方法也改不动数据；`/health` 免鉴权 |

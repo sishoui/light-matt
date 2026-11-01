@@ -7,8 +7,10 @@
  * UUID —— 它既不稳定也不跨手机一致，**不能**当聚合键。
  *
  * 因此聚合键的优先级是：
- *   1. `hardwareId`（设备自报的稳定硬件 id，例如芯片 MAC）—— 唯一真相。
- *   2. 广播名 `name:LUMEN-XXXX` —— 当前唯一同时「跨手机一致 + 无需改固件」的标识。
+ *   1. `hardwareId`（设备自报的 6 字节 BT MAC，即 `DeviceInfoReport` 的 hw_id）
+ *      —— 唯一真相，也是设备登记表 `devices.hardware_id` 的同一个值（#50）。
+ *   2. 广播名 `name:LUMEN-XXXX` —— 老客户端 / 旧固件读不到 hw_id 时的路径；
+ *      「跨手机一致 + 无需改固件」，但只有 16 bit，会撞名。
  *   3. `raw:<platform>:<deviceId>` —— 兜底（没有广播名时），分组会按手机分裂，
  *      只保证「不是丢数据」，不保证聚合正确。
  */
@@ -38,8 +40,22 @@ export function normalizeBroadcastName(raw: string | null | undefined): string |
   return trimmed.length > 0 ? trimmed : null;
 }
 
+/**
+ * 日志聚合键里的硬件 id 片段。
+ *
+ * #50：小程序现在上报的是 `hw_id`（6 字节 BT MAC），所以这里**先按 MAC 归一化**
+ * （`AA:BB:CC:DD:EE:FF` → `aa:bb:cc:dd:ee:ff`），再落到 `hw:` 前缀上。
+ * 这一步不能省：同一个 MAC 可能以 `aabbccddeeff` / `AA-BB-...` / `aa:bb:...`
+ * 三种形态到达，不归一就会把同一台设备拆成三行——而 #50 要解决的正是
+ * 「同一台设备出现两行」。
+ *
+ * 不是合法 MAC 的字符串（历史客户端 / 测试夹具里的短 id）仍按原样小写处理：
+ * 聚合是日志口径，不因为格式不认识就丢数据。
+ */
 function normalizeHardwareId(raw: string | null | undefined): string | null {
   if (typeof raw !== "string") return null;
+  const mac = normalizeMacAddress(raw);
+  if (mac !== null) return mac.toLowerCase();
   const trimmed = raw.trim().toLowerCase();
   return trimmed.length > 0 ? trimmed : null;
 }

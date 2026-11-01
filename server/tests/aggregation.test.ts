@@ -113,6 +113,119 @@ describe("设备聚合（跨手机归一）", () => {
     expect(rows).toEqual([{ device_key: "hw:24:6f:28:aa:bb:cc", use_count: 2 }]);
   });
 
+  // ---------------------------------------------------------------- #50
+  // 设备登记表用 BT MAC 当主键，使用日志也必须用它聚合，否则同一台设备两行。
+
+  it("#50 同一 MAC 的三种书写形态（冒号 / 短横线 / 无分隔）→ 同一个 device_key", async () => {
+    for (const [i, hardwareId] of [
+      "AA:BB:CC:DD:EE:FF",
+      "aa-bb-cc-dd-ee-ff",
+      "aabbccddeeff",
+    ].entries()) {
+      await post(
+        logBody({
+          clientEventId: `mac-form-${i}`,
+          startedAt: 1_000 + i,
+          device: {
+            hardwareId,
+            deviceName: "Lumen-1A2B",
+            deviceId: i === 0 ? "AA:BB:CC:DD:1A:2B" : i === 1 ? "IOS-UUID" : null,
+            platform: i === 1 ? "ios" : "android",
+          },
+        }),
+      );
+    }
+
+    const rows = h.db.prepare("SELECT device_key, use_count, user_count FROM v_devices").all();
+    expect(rows).toEqual([{ device_key: "hw:aa:bb:cc:dd:ee:ff", use_count: 3, user_count: 1 }]);
+  });
+
+  it("#50 带 hardwareId 的上报落到 hw: 键，与设备登记表的 MAC 是同一串字符", async () => {
+    const res = await h.app.inject({
+      method: "POST",
+      url: "/api/v1/usage-logs",
+      headers: { "x-lumen-app-token": APP_TOKEN },
+      payload: logBody({
+        clientEventId: "hw-registry-aligned",
+        device: {
+          hardwareId: "AA:BB:CC:DD:EE:FF",
+          deviceName: "Lumen-1A2B",
+          deviceId: "AA:BB:CC:DD:1A:2B",
+          platform: "android",
+        },
+      }),
+    });
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toMatchObject({
+      deviceKey: "hw:aa:bb:cc:dd:ee:ff",
+      deviceKeyKind: "hardware",
+    });
+
+    /* 登记表主键是大写冒号形式；去掉前缀后两者逐字符一致。
+     * 设备路由只认已存在的 user_key，先走一次会话建用户（同 devices.test.ts）。 */
+    const userKey = "local-aaaaaaaaaaaaaaaa";
+    const session = await h.app.inject({
+      method: "POST",
+      url: "/api/v1/session",
+      headers: { "x-lumen-app-token": APP_TOKEN },
+      payload: { userKey },
+    });
+    expect(session.statusCode).toBe(200);
+
+    const registered = await h.app.inject({
+      method: "POST",
+      url: "/api/v1/devices/register",
+      headers: {
+        "x-lumen-app-token": APP_TOKEN,
+        "x-lumen-user-key": userKey,
+      },
+      payload: { hardwareId: "AA:BB:CC:DD:EE:FF" },
+    });
+    expect(registered.statusCode).toBe(201);
+    const stored = h.db.prepare("SELECT hardware_id FROM devices").get() as { hardware_id: string };
+    const usageKey = h.db.prepare("SELECT device_key FROM usage_logs").get() as { device_key: string };
+    expect(usageKey.device_key).toBe(`hw:${stored.hardware_id.toLowerCase()}`);
+  });
+
+  it("#50 老客户端不带 hardwareId：行为与 v2 完全一致（按广播名聚合，仍入库）", async () => {
+    const res = await h.app.inject({
+      method: "POST",
+      url: "/api/v1/usage-logs",
+      headers: { "x-lumen-app-token": APP_TOKEN },
+      payload: logBody({
+        clientEventId: "legacy-no-hw",
+        device: { deviceName: "Lumen-1A2B", deviceId: "AA:BB:CC:DD:1A:2B", platform: "android" },
+      }),
+    });
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toMatchObject({ deviceKey: "name:LUMEN-1A2B", deviceKeyKind: "name" });
+  });
+
+  it("#50 hardwareId 格式不认（NULL / 非字符串 / 脏串）→ 不 400，退化为广播名聚合", async () => {
+    for (const [i, hardwareId] of [
+      null,
+      42,
+      "not-a-mac",
+      "",
+      "AA:BB:CC:DD:EE",
+    ].entries()) {
+      const res = await h.app.inject({
+        method: "POST",
+        url: "/api/v1/usage-logs",
+        headers: { "x-lumen-app-token": APP_TOKEN },
+        payload: logBody({
+          clientEventId: `bad-hw-${i}`,
+          device: { hardwareId, deviceName: "Lumen-1A2B", platform: "android" },
+        }),
+      });
+      expect(res.statusCode, `hardwareId=${String(hardwareId)}`).toBe(201);
+      expect(res.json()).toMatchObject({ deviceKeyKind: "name" });
+    }
+
+    const rows = h.db.prepare("SELECT device_key, use_count FROM v_devices").all();
+    expect(rows).toEqual([{ device_key: "name:LUMEN-1A2B", use_count: 5 }]);
+  });
+
   it("没有广播名时按 platform+deviceId 兜底，分组按手机分裂但数据不丢", async () => {
     await post(
       logBody({
@@ -181,5 +294,28 @@ describe("resolveDeviceKey 单元规则", () => {
     expect(() =>
       resolveDeviceKey({ hardwareId: "", deviceName: "   ", deviceId: null, platform: "unknown" }),
     ).toThrow(/hardwareId/);
+  });
+
+  // #50：MAC 归一化在聚合键里完成，不是只在小程序侧。
+  it("#50 hardwareId 按 MAC 归一化后才进 device_key（同一 MAC 不拆成多行）", () => {
+    const expected = { key: "hw:aa:bb:cc:dd:ee:ff", kind: "hardware", name: "LUMEN-1A2B" };
+    for (const hardwareId of [
+      "AA:BB:CC:DD:EE:FF",
+      "aa-bb-cc-dd-ee-ff",
+      "aabbccddeeff",
+      "0xAABBCCDDEEFF",
+      " AA:BB:CC:DD:EE:FF ",
+    ]) {
+      expect(
+        resolveDeviceKey({ hardwareId, deviceName: "Lumen-1A2B", platform: "android" }),
+        hardwareId,
+      ).toEqual(expected);
+    }
+  });
+
+  it("#50 非 MAC 的 hardwareId（历史 / 测试短 id）仍按小写原样聚合，不丢数据", () => {
+    expect(
+      resolveDeviceKey({ hardwareId: " AB:CD ", deviceName: null, platform: "unknown" }),
+    ).toEqual({ key: "hw:ab:cd", kind: "hardware", name: null });
   });
 });

@@ -77,8 +77,8 @@ ${rows
   .join("\n")}
 </tbody>
 </table>
-<p class="hint">聚合口径见 <code>server/README.md</code>：同一台设备按广播名归一，
-MAC 数 &gt; 1 表示广播名撞车。使用次数 = 连接会话数，不是心跳数。</p>`;
+<p class="hint">聚合口径见 <code>server/README.md</code>：v3 客户端按设备自报的 MAC 归一（<code>hw:</code> 前缀），
+老客户端按广播名归一，MAC 数 &gt; 1 表示广播名撞车。使用次数 = 连接会话数，不是心跳数。</p>`;
 
   return layout(
     "设备",
