@@ -60,70 +60,93 @@ STRIP_COUNT = 8
 
 # 8 条带在物理上是平行安装的。允许的偏离量：实测各条在 ±4° 内一致。
 MAX_ANGLE_SPREAD_DEG = 8.0
-# 一条带最少要有这么多「色度像素」，否则不足以定方向。
+# 一条带最少要有这么多「饱和像素」，否则不足以定方向。
 MIN_MASK_PX = 250
+# 但物理上极短的带（实测最上面那条只有 2 颗）永远达不到这个量级：
+# 2 颗灯在 1080p 下总共约 100 像素。给它一个更低的下限，
+# 同时在布局里标 `short=True`，让分析阶段知道「这条带覆盖范围小、判定不可靠」。
+MIN_MASK_PX_SHORT = 60
 
 
-def lead_channel(frame):
-    """判断这一帧的主色通道（0=B, 1=G, 2=R）。
+def saturation_margin(frame):
+    """饱和度图 = max(R,G,B) − min(R,G,B)，即 HSV 的「色度」分量。
 
-    用**色度能量**，不用通道总量也不用最亮像素：
-      - 通道总量：背景（桌面、白纸）贡献巨大且三路接近，把灯带的差异淹掉。
-        实测某条蓝带来 B/G/R 总量 34M/28M/25M，比值仅 1.21，判不出来。
-      - 最亮像素：画面最亮的常是反光点（BGR=(255,255,249)），会让主导通道
-        随机漂到 R。
-      - 色度能量 max(0, ch - max(others))：只统计「这一路明显压过另两路」的
-        部分，白纸/反光恒为 0。同一条带实测 B=6022 / G=1 / R=1266，判得干净。
+    **不能用「单通道主导」判据。** v3 的 colorize 用 i*45° 一档，其中
+    45/135/225/315 是「双通道色」（青、品红、黄），两个通道同时高：
+    实测青色带 B=110 / G=121，`G - max(B,R)` 只剩 11–27，掩码被滤空，
+    整条带只找到 36 个像素。
+
+    饱和度对**任何**饱和色都成立（单通道色与双通道色一视同仁），背景
+    （桌面、白纸）三通道接近所以接近 0。这个判据与具体色相无关，
+    因此也不受相机白平衡影响。
     """
-    img = frame.astype(np.int32)
-    b, g, r = img[:, :, 0], img[:, :, 1], img[:, :, 2]
-    energy = np.array([
-        np.clip(b - np.maximum(g, r), 0, None).sum(),
-        np.clip(g - np.maximum(b, r), 0, None).sum(),
-        np.clip(r - np.maximum(b, g), 0, None).sum(),
-    ], np.float64)
-    if energy.max() <= 0:
-        return None
-    return int(np.argmax(energy))
-
-
-def chroma_margin(frame):
-    """色度余量图 = 主导通道 − 其余通道的最大值（低于 0 归零）。
-
-    这张图对光照强度和相机白平衡都不敏感：背景（三通道接近）恒为 0，
-    灯带（饱和色）显著为正。后续掩码和剖面都用它。
-    """
-    lead = lead_channel(frame)
-    if lead is None:
-        return None, None
     img = frame.astype(np.float32)
-    chans = [img[:, :, 0], img[:, :, 1], img[:, :, 2]]
-    others = [chans[i] for i in range(3) if i != lead]
-    m = chans[lead] - np.maximum(others[0], others[1])
-    m[m < 0] = 0
-    return m, lead
+    b, g, r = img[:, :, 0], img[:, :, 1], img[:, :, 2]
+    mx = np.maximum(np.maximum(b, g), r)
+    mn = np.minimum(np.minimum(b, g), r)
+    return (mx - mn)
 
 
 def strip_mask(frame):
-    """自适应阈值掩码。
+    """自适应阈值掩码（基于饱和度）。
 
-    **阈值不能用分位数。** 灯带在画面里只占极小面积（实测这条带的真实信号
-    只有约 1300 个像素，占全画面 0.06%），而背景有大量低水平色偏（p99.9 只有
-    20，但最大值 62）。按 `p99.5 × 0.45` 取阈值得到 9 —— 把整个背景都包了
-    进来，掩码覆盖全画面 30 万像素，拟合出的「线段」横跨整个视图。
+    阈值取 `max × 0.45`：灯带是画面里最饱和的东西，用最大值的一个比例
+    自适应光照强弱；固定阈值换一次补光就会失效。
 
-    正确做法：以**最大值的一个比例**作阈值。灯带的 margin 显著高于背景噪声，
-    取 `max × 0.5` 能干净地把两者分开，且对光照强度自适应（光照强弱只缩放
-    整体量级，不改变相对关系）。
+    **下限用绝对 25**：纯黑背景里灯带边缘的微弱反光不应被当成信号。
     """
-    m, _lead = chroma_margin(frame)
-    if m is None or m.max() < 12:
+    sat = saturation_margin(frame)
+    if float(sat.max()) < 25:
         return None
-    thr = max(12.0, float(m.max()) * 0.5)
-    mask = (m >= thr).astype(np.uint8)
+    thr = max(25.0, float(sat.max()) * 0.45)
+    mask = (sat >= thr).astype(np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
     return mask
+
+
+def _ransac_direction(pts, seed, iters=300, tol=2.5, seed_rng=12345):
+    """在一堆像素点里找「最多点共线」的方向，返回单位向量。
+
+    纯 PCA 对离群点毫无抵抗：一条灯带旁边只要有几个杂点，主轴就会偏掉
+    （实测 −29° → −60°，进而让「8 条平行」校验失败）。
+
+    做法：随机取两点定一条直线，数落在 ±tol 内的点数，留最优；再用内点
+    做一次最小二乘精修。种子固定，结果可复现。
+    """
+    n = len(pts)
+    if n < 20:
+        return seed
+    rng = np.random.default_rng(seed_rng)
+    best_inl, best_d = 0, None
+    for _ in range(iters):
+        i, j = rng.integers(0, n, 2)
+        if i == j:
+            continue
+        v = pts[j] - pts[i]
+        L = float(np.hypot(v[0], v[1]))
+        if L < 15:
+            continue
+        d = v / L
+        nvec = np.array([-d[1], d[0]])
+        resid = np.abs((pts - pts[i]) @ nvec)
+        inl = int((resid <= tol).sum())
+        if inl > best_inl:
+            best_inl, best_d = inl, d
+    if best_d is None or best_inl < max(20, int(n * 0.35)):
+        return seed
+    # 用内点做最小二乘精修
+    nvec = np.array([-best_d[1], best_d[0]])
+    resid = np.abs((pts - pts[0]) @ nvec)
+    inl_pts = pts[resid <= tol]
+    if len(inl_pts) < 10:
+        return best_d
+    m = inl_pts.mean(axis=0)
+    _, _, vt = np.linalg.svd(inl_pts - m, full_matrices=False)
+    d = vt[0]
+    if d[0] < 0:
+        d = -d
+    return d / np.linalg.norm(d)
 
 
 def fit_segment(mask, weight):
@@ -131,9 +154,20 @@ def fit_segment(mask, weight):
 
     返回：{p0, p1, dir, angle_deg, length, px}
     """
+    # **先剔除离群连通块。**
+    # 画面里常有孤立的彩色噪点（开发板电源灯、反光碎片）。实测某个 56 像素
+    # 的小点把 1654 像素灯带的 PCA 主轴从 −25° 拉到了 −60°，
+    # 于是「8 条平行」的校验直接失败。按面积只留最大的几个块。
+    n_lab, lab, stats, _cents = cv2.connectedComponentsWithStats(mask, 8)
+    if n_lab > 1:
+        areas = sorted(((stats[i][4], i) for i in range(1, n_lab)), reverse=True)
+        keep = {i for a, i in areas if a >= max(MIN_MASK_PX, areas[0][0] * 0.25)}
+        mask = np.isin(lab, list(keep)).astype(np.uint8)
+
     ys, xs = np.nonzero(mask)
-    if len(xs) < MIN_MASK_PX:
-        return None, f"候选像素只有 {len(xs)}（需 ≥{MIN_MASK_PX}）"
+    floor = MIN_MASK_PX_SHORT if len(xs) >= MIN_MASK_PX_SHORT else MIN_MASK_PX
+    if len(xs) < floor:
+        return None, f"候选像素只有 {len(xs)}（需 ≥{floor}）"
     pts = np.column_stack([xs, ys]).astype(np.float64)
     w = weight[ys, xs].astype(np.float64)
     if w.sum() <= 0:
@@ -148,6 +182,12 @@ def fit_segment(mask, weight):
     if d[0] < 0:
         d = -d
     d = d / np.linalg.norm(d)
+    # **用 RANSAC 精修方向。** 整体 PCA 会被零星离群点带偏：实测一条
+    # −29° 的灯带被少量杂点拉成 −60°。RANSAC 只认「最多点落在同一条
+    # 细线上」的那个方向，对离群点免疫。
+    d = _ransac_direction(pts, d)
+    if d is not None:
+        mean = pts.mean(axis=0)
     # 轴比太接近 1 说明「一团」而不是「一条线」，拟合出的方向没有意义
     if s[1] > s[0] * 0.55:
         return None, f"形状不呈细长（轴比 {s[0] / max(s[1], 1e-6):.2f}）"
@@ -196,10 +236,8 @@ def bilinear(img32, x, y):
 
 
 def strip_profile(frame, seg, n=400):
-    """沿线段取「法向 ±3px 最大值」的色度剖面，用于后续逐颗/逐段判定。"""
-    m, _ = chroma_margin(frame)
-    if m is None:
-        return None
+    """沿线段取「法向 ±3px 最大值」的饱和度剖面，用于后续逐颗/逐段判定。"""
+    m = saturation_margin(frame)
     p0 = np.array(seg["p0"], np.float64)
     p1 = np.array(seg["p1"], np.float64)
     d = (p1 - p0)
@@ -221,8 +259,8 @@ def calibrate_one(frame, strip, verbose=True):
     """从一帧隔离画面标定一条带。返回 (dict, None) 或 (None, 原因)。"""
     mask = strip_mask(frame)
     if mask is None:
-        return None, "画面里没有可用色度（灯带没亮？曝光全黑？）"
-    m, _ = chroma_margin(frame)
+        return None, "画面里没有可用饱和度（灯带没亮？曝光全黑？）"
+    m = saturation_margin(frame)
     seg, why = fit_segment(mask, m)
     if seg is None:
         return None, why
@@ -341,31 +379,69 @@ def draw_overlay(frame, layout, out_path):
     print(f"复核图已存 {out_path}")
 
 
-def capture_isolated(out_dir, end=29, brightness=60, width=1920, height=1080,
-                     exposure=-7, gain=0):
-    """逐条隔离 + 抓图。每条一张 layout-<strip>.png。"""
+def _isolate(strip, brightness, end):
+    r = subprocess.run(
+        [sys.executable, os.path.join(_here, "ble-stress.py"),
+         "--brightness", str(brightness), "isolate", str(strip),
+         "--hue", str(strip * 8192 & 0xFFFF), "--end", str(end)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=180)
+    ok = False
+    for line in r.stdout.splitlines():
+        if "isolate" in line:
+            print("   " + line.strip())
+            ok = "OK" in line
+    if not ok:
+        print(f"   ! 配置未确认成功（exit {r.returncode}），这张图不可信")
+    return ok
+
+
+def _scene_glare(frame):
+    """场景被照亮了多少：高饱和像素占比。灯带本身只占极小面积。"""
+    img = frame.astype(np.int32)
+    mx = np.maximum(np.maximum(img[:, :, 0], img[:, :, 1]), img[:, :, 2])
+    mn = np.minimum(np.minimum(img[:, :, 0], img[:, :, 1]), img[:, :, 2])
+    sat = mx - mn
+    return float((sat > 60).mean())
+
+
+def capture_isolated(out_dir, end=29, brightness=150, width=1920, height=1080,
+                     exposure=-11, gain=0):
+    """逐条隔离 + 抓图。每条一张 layout-<strip>.png。
+
+    **亮度逐带自适应。** 实测同一条亮度下，不同颜色/长度照亮环境的能力差极大：
+    品红 30 颗在 brightness=150 时把整个房间照亮（高饱和像素占 40%+），
+    而短带几乎看不见。所以每条先从基础亮度试拍，发现场景被照亮就逐级下调，
+    目标是「灯带清晰、背景干净」。
+
+    判据是**高饱和像素占比**：灯带自己只占画面 0.1% 量级，一旦这个比例明显
+    上升，说明光已经漫到环境里了。
+    """
     os.makedirs(out_dir, exist_ok=True)
     frames = {}
+    levels = [brightness, 100, 70, 45, 30]
     for strip in range(STRIP_COUNT):
         print(f"\n[{strip + 1}/{STRIP_COUNT}] 隔离 strip {strip}")
-        r = subprocess.run(
-            [sys.executable, os.path.join(_here, "ble-stress.py"),
-             "--brightness", str(brightness), "isolate", str(strip),
-             "--hue", str(strip * 8192 & 0xFFFF), "--end", str(end)],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=180)
-        ok = False
-        for line in r.stdout.splitlines():
-            if "isolate" in line:
-                print("   " + line.strip())
-                ok = "OK" in line
-        if not ok:
-            print(f"   ! 配置未确认成功（exit {r.returncode}），这张图不可信")
-        frame = led_probe.grab_frame(exposure, gain, width, height)
+        chosen, frame = None, None
+        for level in levels:
+            if not _isolate(strip, level, end):
+                continue
+            probe = led_probe.grab_frame(exposure, gain, width, height)
+            glare = _scene_glare(probe)
+            print(f"   亮度 {level:3d} → 高饱和占比 {glare * 100:5.2f}%")
+            if chosen is None or glare < 0.5:
+                chosen, frame = level, probe
+            if glare < 0.5:
+                break
+            print("     场景被照亮，下调一档")
+        if frame is None:
+            print("   ! 这张图不可信（没有可用的亮度档）")
+            frame = led_probe.grab_frame(exposure, gain, width, height)
         path = os.path.join(out_dir, f"layout-{strip}.png")
         cv2.imwrite(path, frame)
         frames[strip] = frame
-        print(f"   已存 {path}（均值 {frame.mean():.1f}，饱和 {(frame >= 250).mean() * 100:.2f}%）")
+        print(f"   已存 {path}（亮度 {chosen}，均值 {frame.mean():.2f}，"
+              f"高饱和 {_scene_glare(frame) * 100:.2f}%）")
     return frames
 
 

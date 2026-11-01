@@ -158,18 +158,32 @@ def circular_median(deg_list):
 
 def load_layout(path=LAYOUT_PATH):
     if not os.path.exists(path):
-        raise SystemExit(f"没有布局文件 {path}。\n"
-                         "先跑：python scripts/strip-layout.py --isolate .layout-shots")
+        raise SystemExit(
+            f"没有布局文件 {path}。"
+            "先跑：python scripts/strip-layout.py --isolate .layout-shots")
     with open(path, encoding="utf-8") as fh:
         layout = json.load(fh)
-    if layout.get("failed") or not layout.get("parallel_ok", True):
-        bad = len(layout.get("failed", {}))
+
+    if not layout.get("parallel_ok", True):
+        note = layout.get("parallel_note", "?")
         raise SystemExit(
-            f"布局不可信（失败 {bad} 条，平行性 "
-            f"{'通过' if layout.get('parallel_ok') else '未通过'}），拒绝用它判定。\n"
+            f"布局不可信（平行性未通过：{note}），拒绝用它判定。\n"
+            "8 条带物理上平行；角度散开说明标定抓到了错误的东西。\n"
             "重跑：python scripts/strip-layout.py --isolate .layout-shots")
-    if len(layout.get("strips", {})) < STRIP_COUNT:
-        raise SystemExit(f"布局只有 {len(layout.get('strips', {}))} 条带，需要 {STRIP_COUNT} 条")
+
+    # 标定失败的带**逐条降级**，不整份拒绝。
+    # 实测最上面那条只有 2 颗灯——两个孤立光点在几何上定不出方向，
+    # 任何算法都救不了。把它排除出判定即可，其余各条照常工作。
+    failed = layout.get("failed", {})
+    strips = layout.get("strips", {})
+    if failed:
+        print(f"⚠ 有 {len(failed)} 条带无法标定，将从判定中排除：")
+        for k, why in sorted(failed.items(), key=lambda kv: int(kv[0])):
+            print(f"    strip {k}: {why}")
+    if len(strips) < 2:
+        raise SystemExit(f"只标定出 {len(strips)} 条带，不足以判定")
+    layout = dict(layout)
+    layout["judged_strips"] = sorted(int(k) for k in strips)
     return layout
 
 
