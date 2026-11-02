@@ -36,7 +36,17 @@ import {
 
 /** 一层的最简构造：未给的字段按「静态层」填 0。 */
 function layer(type: number, overrides: Partial<EffectLayer> = {}): EffectLayer {
-  return { type, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, ...overrides };
+  return {
+    type,
+    hue: 0,
+    sat: 0,
+    periodMs: 0,
+    p5: 0,
+    flags: 0,
+    /* 空层的 level 必须为 0；非空层默认满亮。 */
+    level: type === NO_EFFECT ? 0 : 100,
+    ...overrides,
+  };
 }
 
 /** 一台设备的段报告（画面只用 strip/seg/区间/色相，其余按静态填）。 */

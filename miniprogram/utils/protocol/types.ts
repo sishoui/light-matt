@@ -1,4 +1,4 @@
-/** 协议层与界面层共用的数据类型（docs/protocol-v3.md §7）。 */
+/** 协议层与界面层共用的数据类型（docs/protocol-v4.md §7）。 */
 
 export interface RGB {
   r: number;
@@ -7,10 +7,13 @@ export interface RGB {
 }
 
 /**
- * 一个段的一层灯效（§7.1 的 8 字节定宽编码在内存里的形状）。
+ * 一个段的一层灯效（§7.1 的 9 字节定宽编码在内存里的形状）。
  *
  * 参数语义沿用 effects-spec §2：`p5` 按 type 解释为 min_level / span / tail；
  * 静态层的 periodMs / p5 / flags 恒为 0。空层用 `type = NO_EFFECT`（0xFF）。
+ *
+ * v4 新增 `level`（0-100）：本层亮度档位。100 等于 v3 的满亮行为，0 表示这一层
+ * 不出光；呼吸的谷底 = `level × p5%`（§9.3.3）。空层的 `level` 必须为 0。
  */
 export interface EffectLayer {
   /** SEGMENT_TYPE.*，或 NO_EFFECT（0xFF）表示该层为空。 */
@@ -25,9 +28,16 @@ export interface EffectLayer {
   p5: number;
   /** 动画类 flags；静态层恒 0。 */
   flags: number;
+  /** v4：本层亮度档位 0-100（100 满亮、0 不出光）。空层必须为 0。 */
+  level: number;
 }
 
-/** 空层常量。构造器与解析器共用，避免各处手写 0xFF。 */
+/**
+ * 空层常量。构造器与解析器共用，避免各处手写 0xFF。
+ *
+ * 空层的 9 字节编码必须全 0（type 除外），所以 `level` 也是 0——带非零亮度
+ * 的空层会被设备回 `InvalidParam`（§7.1 第 3 步）。
+ */
 export const EMPTY_EFFECT: EffectLayer = {
   type: 0xff,
   hue: 0,
@@ -35,6 +45,7 @@ export const EMPTY_EFFECT: EffectLayer = {
   periodMs: 0,
   p5: 0,
   flags: 0,
+  level: 0,
 };
 
 /** blend：层 1 如何叠加到层 0（§7.2）。0 覆盖 / 1 相乘 / 2 相加。 */

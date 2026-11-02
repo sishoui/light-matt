@@ -112,8 +112,9 @@ function toSpecOf(seed: MockSegmentSeed): SegmentSpec {
       periodMs: 0,
       p5: 0,
       flags: 0,
+      level: 100,
     },
-    layer1: { type: NO_EFFECT, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0 },
+    layer1: { type: NO_EFFECT, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 },
   };
 }
 

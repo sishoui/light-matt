@@ -18,11 +18,11 @@
  * 写成功后重新 `queryStrip`，界面以设备读回值为准（`syncQuickFromDevice`）：
  * 只有「整组一个光区、从 0 覆盖到最后一颗、无叠加层」时才回填成某张卡。
  *
- * ## 亮度滑块的临时状态
+ * ## 亮度滑块
  *
- * 逐光区亮度 `level` 是协议 v4 才有的字段，小程序编解码还没升到 v4（#69）。
- * 所以滑块与草稿照做，但**不下发**，也不映射到设备全局亮度（会串到别的组）；
- * 滑块下方标注「固件更新后可用」。
+ * 逐光区亮度是协议 v4 的层字段 `level`（0-100，票 #69 接通）。滑块松手即写进
+ * 光区草稿并发给设备；它只作用于**这一条灯组的这个光区**，与设备全局亮度无关
+ * （全局亮度会串到别的灯组）。
  */
 
 import { errorText, resultText } from "../../utils/ble/errors";
@@ -127,7 +127,13 @@ import {
 } from "../../utils/control/zone-axis";
 import type { ScriptDraft } from "../../utils/control/script-view";
 import { MAX_LEDS, SEGMENT_TYPE } from "../../utils/protocol/constants";
-import type { DeviceState, LinkState, SegmentReport, SegmentSpec } from "../../utils/protocol/types";
+import type {
+  DeviceState,
+  EffectLayer,
+  LinkState,
+  SegmentReport,
+  SegmentSpec,
+} from "../../utils/protocol/types";
 
 /** 编辑档位：简单（点效果卡）/ 进阶（时间轴 + 光区）。 */
 type StripMode = "simple" | "advanced";
@@ -147,6 +153,24 @@ function firstTouch(e: WechatMiniprogram.TouchEvent): { clientX: number; clientY
     }
   }
   return null;
+}
+
+/**
+ * 面板草稿的默认层（静态、暖白、满亮）。
+ *
+ * 抽成函数而不是字面量：`EffectLayer` 的字段随协议版本增长（v4 多了 `level`），
+ * 页面里四处重复的 6 字段字面量会各漏一个。返回副本，避免共享实例被就地改。
+ */
+function defaultPanelLayer(): EffectLayer {
+  return {
+    type: SEGMENT_TYPE.STATIC,
+    hue: 7281,
+    sat: 255,
+    periodMs: 0,
+    p5: 0,
+    flags: 0,
+    level: 100,
+  };
 }
 
 Page({
@@ -259,7 +283,7 @@ Page({
   quickCardId: null as string | null,
   /** 当前卡片的 HSV 草稿（协议值，不是滑块刻度）。 */
   quickParams: {} as QuickParams,
-  /** 亮度草稿：本票只记录、不下发。 */
+  /** 简单档的亮度草稿（v4 的层亮度 0-100；松手即下发）。 */
   levelDraft: LEVEL_DEFAULT,
   /** 参数松手后的防抖定时器（只发最后一次）。 */
   quickTimer: null as ReturnType<typeof setTimeout> | null,
@@ -304,15 +328,23 @@ Page({
   /** 面板当前的效果类型（同时镜像到 `data.panelType` 给 WXML）。 */
   panelMode: "static" as PanelType,
   /** 面板的本地参数草稿（颜色 / 亮度跨类型保留）。 */
-  panelParams: paramsFromLayer("static", { type: 0, hue: 7281, sat: 255, periodMs: 0, p5: 0, flags: 0 }),
+  panelParams: paramsFromLayer("static", {
+    type: SEGMENT_TYPE.STATIC,
+    hue: 7281,
+    sat: 255,
+    periodMs: 0,
+    p5: 0,
+    flags: 0,
+    level: 100,
+  }),
   /** 面板的一次性反馈（`data.panelHint` 的镜像，换目标时清空）。 */
   panelHintText: "",
   /**
    * 逐光区的亮度草稿（`panelKey → level`）。
    *
-   * `level` 是协议 v4 字段，小程序编解码还没接（#69），所以它没有任何落盘位置。
-   * 用一个小表按「方案:步骤:光区」记住，用户切到另一个光区再切回来时亮度不会被
-   * 悄悄重置成 100%。#69 接上之后整张表可以直接删掉（值改从 `layer0.level` 读）。
+   * v4 起 `level` 有落盘位置（`layer0.level`），所以这张表只剩一个用途：
+   * 记住**用户刚拖过、但还没写进设备**的滑块值，跨「切光区再切回来」不丢。
+   * 一旦落进草稿/设备，`paramsFromLayer` 会从层里读回来，不再依赖这张表。
    */
   panelLevels: {} as Record<string, number>,
 
@@ -348,14 +380,7 @@ Page({
     this.picker = createPickerState(null);
     this.panelKey = "";
     this.panelMode = "static";
-    this.panelParams = paramsFromLayer("static", {
-      type: SEGMENT_TYPE.STATIC,
-      hue: 7281,
-      sat: 255,
-      periodMs: 0,
-      p5: 0,
-      flags: 0,
-    });
+    this.panelParams = paramsFromLayer("static", defaultPanelLayer());
     this.panelHintText = "";
     this.panelLevels = {};
 
@@ -788,8 +813,8 @@ Page({
    * 两件事在这里发生：
    *
    *  1. **换目标时从草稿重新读层**。`panelKey = 方案:步骤:光区`，一变就把那一片
-   *     `layer0` 读成面板草稿；没变就**保留**页面上的草稿——亮度 `level` 协议还
-   *     没有（#69），它只活在面板草稿里，每次重画都从设备读会把它冲掉；
+   *     `layer0`（含 v4 的 `level`）读成面板草稿；没变就**保留**页面上的草稿——
+   *     拖动中的读数不该被一次重画冲掉；
    *  2. **没得编辑时给引导**。方案为空 / 这一步为空 / 有光区但没选中，三种情况
    *     文案不同：一片空白会让人以为界面坏了。
    */
@@ -802,19 +827,12 @@ Page({
       this.panelHintText = "";
       if (zone === null) {
         this.panelMode = "static";
-        this.panelParams = paramsFromLayer("static", {
-          type: SEGMENT_TYPE.STATIC,
-          hue: 7281,
-          sat: 255,
-          periodMs: 0,
-          p5: 0,
-          flags: 0,
-        });
+        this.panelParams = paramsFromLayer("static", defaultPanelLayer());
       } else {
         this.panelMode = panelTypeOf(zone.layer0.type);
         this.panelParams = paramsFromLayer(this.panelMode, zone.layer0);
       }
-      /* 亮度草稿没有落盘位置（协议 v4 才有 level）：按目标记在页面里，切回来还在。 */
+      /* 还没写进草稿的滑块值：按目标记在页面里，切回来还在。 */
       const remembered = this.panelLevels[key];
       if (remembered !== undefined) {
         this.panelParams = { ...this.panelParams, level: remembered };
@@ -863,14 +881,7 @@ Page({
   resetPanel(): void {
     this.panelKey = "";
     this.panelMode = "static";
-    this.panelParams = paramsFromLayer("static", {
-      type: SEGMENT_TYPE.STATIC,
-      hue: 7281,
-      sat: 255,
-      periodMs: 0,
-      p5: 0,
-      flags: 0,
-    });
+    this.panelParams = paramsFromLayer("static", defaultPanelLayer());
     /* 亮度草稿属于「这台设备的这条灯组」：断开后连表一起作废。 */
     this.panelLevels = {};
     this.clearPanelHint();
@@ -1498,8 +1509,9 @@ Page({
       this.quickParams = {};
     } else {
       this.quickCardId = inferred.cardId;
-      /* 只回填颜色（hue / sat 是精确的协议值）；其它档位设备上无法唯一反推。 */
+      /* 只回填颜色与亮度（hue / sat / level 是精确的协议值）；其它档位设备上无法唯一反推。 */
       this.quickParams = { hue: inferred.hue, sat: inferred.sat };
+      this.levelDraft = inferred.level;
     }
     this.renderQuick();
   },
@@ -1538,7 +1550,8 @@ Page({
    * 应用一个参数。
    *
    * 拖动中只改本地草稿（逐帧写设备会连发几十帧）；松手（`commit`）才写。
-   * 亮度只记录草稿：`level` 是协议 v4 字段，本票不下发。
+   * 三个滑块（色相 / 饱和度 / 亮度）松手都立刻下发——亮度是 v4 的层字段
+   * `level`，写的是**这一条灯组**，与全局亮度无关。
    */
   applyParam(key: string, value: number, commit: boolean) {
     if (this.quickCardId === null || this.disabledReason() !== "" || !Number.isFinite(value)) {
@@ -1550,11 +1563,6 @@ Page({
       this.quickParams = { ...this.quickParams, sat: satFromPercent(value) };
     } else if (key === "level") {
       this.levelDraft = clampLevel(value);
-      this.renderQuick();
-      if (commit) {
-        this.setData({ quickHint: "亮度已记下，固件更新后才会生效" });
-      }
-      return;
     } else {
       return;
     }
@@ -1635,7 +1643,8 @@ Page({
       }
 
       const ledCount = this.stripLedCount();
-      const spec = buildQuickSpec(card, this.quickParams, stripId, ledCount);
+      /* v4：亮度是逐光区的层字段，真实写进这一条灯组（不碰全局亮度）。 */
+      const spec = buildQuickSpec(card, this.quickParams, stripId, ledCount, this.levelDraft);
       const ack = await session.setSegment(spec);
       if (!ack.ok) {
         throw new Error(resultText(ack.resultCode));

@@ -17,13 +17,12 @@
  * 页面只把结果塞进 `setData`、把滑块回调交给这里换算，不做算术与判断。
  * 不碰 wx / BLE，可直接单测。
  *
- * ## 亮度的现状（单点集成处）
+ * ## 亮度（v4 起真实生效）
  *
- * `level`（逐光区亮度）是协议 v4 字段。固件侧 v4 编码已经合入（#68），但小程序
- * 编解码还没升到 v4（#69），`EffectLayer` 因此**没有** `level` 字段。本模块照做
- * 滑块与草稿（`EffectParams.level`），编码时**不往字节里塞协议还不认识的字段**；
- * 唯一的转换点是 `panelLayer()`（见那里的注释）。#69 给 `EffectLayer` 加上
- * `level` 后，只需要改那一处。
+ * `level`（逐光区亮度 0-100）是协议 v4 的层字段（#69 接通）。本模块的
+ * `EffectParams.level` 经 `panelLayer()` 写进 `EffectLayer.level`，再由
+ * `zone-model.buildZoneSpec` 归一（空层恒 0、非空层钳到 0-100）后编进 9 字节层。
+ * 滑块松手即落进草稿，写设备仍只走「应用并播放」。
  */
 
 import {
@@ -38,9 +37,10 @@ import type { EffectLayer, SegmentSpec } from "../protocol/types";
 import { rgbToHex, segmentHueSatToRgb } from "../color/hsv";
 import { buildZoneSpec } from "./zone-model";
 import { layerModeOf, WAVEFORM_OPTIONS } from "./effect-view";
-import { percentOf255, spanText, tailText } from "./segment-view";
+import { spanText, tailText } from "./segment-view";
 import {
   clampLevel,
+  clampZoneLevel,
   LEVEL_DEFAULT,
   LEVEL_MAX,
   LEVEL_MIN,
@@ -100,7 +100,12 @@ export interface EffectParams {
   level: number;
   /** 周期毫秒（静态恒 0，由 `panelLayer` 保证）。 */
   periodMs: number;
-  /** 呼吸最低亮的占比 0-255（协议 `p5`）。 */
+  /**
+   * 呼吸最低亮的占比 **0-100 百分比**（协议 `p5`）。
+   *
+   * v4 起呼吸的 p5 是相对百分比（谷底 = 层亮度 × p5%），101-255 会被设备拒绝；
+   * 彩虹的跨度 / 流光的尾长仍是 0-255（`span` / `tail`）。
+   */
   minLevel: number;
   /** 呼吸波形 0-3（正弦 / 三角 / 锯齿 / 方波）。 */
   waveform: number;
@@ -133,7 +138,7 @@ export function defaultParams(type: PanelType): EffectParams {
   };
   switch (type) {
     case "breathing":
-      return { ...base, periodMs: 2000, minLevel: 102 };
+      return { ...base, periodMs: 2000, minLevel: 40 };
     case "rainbow":
       return { ...base, periodMs: 3000, span: 255 };
     case "comet":
@@ -149,9 +154,11 @@ export function normalizeParams(params: Partial<EffectParams>): EffectParams {
   return {
     hue: clampHue(merged.hue),
     sat: clampByte(merged.sat),
-    level: clampLevel(merged.level),
+    /* 0 是协议合法值（这一层不出光）：设备读回的 0 必须原样保留，
+     * 否则「改个颜色」会把用户关掉的光区偷偷点亮。滑块下限只管拖动。 */
+    level: clampZoneLevel(merged.level),
     periodMs: clampPeriodMs(merged.periodMs),
-    minLevel: clampByte(merged.minLevel),
+    minLevel: clampPercent(merged.minLevel),
     waveform: clampWaveform(merged.waveform),
     span: clampByte(merged.span),
     tail: clampByte(merged.tail),
@@ -174,6 +181,14 @@ function clampByte(value: number): number {
     return 0;
   }
   return Math.max(0, Math.min(255, Math.round(value)));
+}
+
+/** 0-100 的百分比字段钳位（呼吸最低亮）。 */
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, Math.round(value)));
 }
 
 /** 周期钳到滑块的区间。静态的 0 也合法（表示「不需要周期」）。 */
@@ -251,7 +266,7 @@ export interface PanelSliderView {
   display: string;
   /** 滑轨是否画彩虹渐变（只有色相）。 */
   rainbow: boolean;
-  /** false = 只改草稿、不下发（逐光区亮度要等 #69 的 v4 编解码）。 */
+  /** 滑块是否真的会改变设备（现存滑块全部为 true）。 */
   sends: boolean;
   /** 不下发时的说明；空串表示正常生效。 */
   note: string;
@@ -284,13 +299,6 @@ export interface EffectPanelView {
   /** 一行摘要（「呼吸 · 2 秒 · 最暗 40% · 正弦」）。 */
   summary: string;
 }
-
-/**
- * 逐光区亮度暂不生效的说明。
- *
- * #69 接通 v4 编解码后这一行与 `PanelSliderView.sends === false` 一起删除。
- */
-export const LEVEL_PENDING_NOTE = "亮度会在固件更新后生效";
 
 /** 四个类型按钮（等宽一排）。 */
 export function buildTypeViews(current: PanelType): PanelTypeView[] {
@@ -365,7 +373,8 @@ export function sliderView(key: PanelSliderKey, params: EffectParams): PanelSlid
       };
     }
     case "level": {
-      const level = clampLevel(params.level);
+      /* 显示真实值（设备可能是 0）；`min` 只限制用户拖动到的下限。 */
+      const level = clampZoneLevel(params.level);
       return {
         key,
         label: "亮度",
@@ -375,8 +384,8 @@ export function sliderView(key: PanelSliderKey, params: EffectParams): PanelSlid
         step: 1,
         display: `${level}%`,
         rainbow: false,
-        sends: false,
-        note: LEVEL_PENDING_NOTE,
+        sends: true,
+        note: "",
       };
     }
     case "period": {
@@ -396,7 +405,8 @@ export function sliderView(key: PanelSliderKey, params: EffectParams): PanelSlid
       };
     }
     case "minLevel": {
-      const percent = p5Percent(params.minLevel);
+      /* v4 起 lowest 就是百分比本身（0-100），不再从 0-255 换算。 */
+      const percent = clampPercent(params.minLevel);
       return {
         key,
         label: "最低亮",
@@ -471,7 +481,7 @@ export function panelSummary(type: PanelType, params: EffectParams): string {
   parts.push(secondsText(Math.max(PERIOD_MIN_MS, clampPeriodMs(params.periodMs))));
   if (type === "breathing") {
     parts.push(
-      `最暗 ${percentOf255(clampByte(params.minLevel))}`,
+      `最暗 ${clampPercent(params.minLevel)}%`,
       WAVEFORM_NAMES[clampWaveform(params.waveform)] ?? "正弦",
     );
   } else if (type === "rainbow") {
@@ -558,7 +568,7 @@ export function applySlider(
       /* 滑块给的是秒；0.5 秒以下一律当成下限，绝不留 0（0 = 静止）。 */
       return { ...params, periodMs: clampPeriodMs(next * 1000) || PERIOD_MIN_MS };
     case "minLevel":
-      return { ...params, minLevel: p5FromPercent(next) };
+      return { ...params, minLevel: clampPercent(next) };
     case "span":
       return { ...params, span: p5FromPercent(next) };
     default:
@@ -600,15 +610,15 @@ export function applyChoice(
 /**
  * 草稿 + 类型 → 协议层（`EffectLayer`）。
  *
- * **这是 `level` 唯一的集成点。** `EffectLayer` 还没有 `level` 字段（#69），所以
- * 这里只写 v3 的六个字段：亮度值留在 `EffectParams.level` 里，不会被编成帧，
- * 也不会让设备因为「多出来一个字节 / 未知字段」回 `InvalidParam`。
- * #69 把 `EffectLayer` 扩到九字节后，在返回对象上补 `level: clampLevel(params.level)` 即可。
+ * **这是 `level` 唯一写进线上形状的地方。** `clampLevel` 把草稿的亮度钳到
+ * 面板的显示区间（5-100），`buildZoneSpec` 再按协议规则归一一次（空层恒 0）。
+ * 两层都经过它，所以「调了亮度却被设备拒」不会在真机上才暴露。
  */
 export function panelLayer(type: PanelType, params: EffectParams): EffectLayer {
   const normalized = normalizeParams(params);
   const hue = normalized.hue;
   const sat = normalized.sat;
+  const level = clampZoneLevel(normalized.level);
   switch (type) {
     case "breathing":
       return {
@@ -616,9 +626,11 @@ export function panelLayer(type: PanelType, params: EffectParams): EffectLayer {
         hue,
         sat,
         periodMs: Math.max(clampPeriodMs(normalized.periodMs) || PERIOD_MIN_MS, BREATHING_MIN_PERIOD_MS),
-        p5: clampByte(normalized.minLevel),
+        /* v4：呼吸的最低亮是百分比 0-100（不是 0-255）。 */
+        p5: clampPercent(normalized.minLevel),
         /* 呼吸只有波形位（bit1-2）；bit0 是保留位，必须为 0。 */
         flags: breathingFlags(clampWaveform(normalized.waveform)),
+        level,
       };
     case "rainbow":
       return {
@@ -628,6 +640,7 @@ export function panelLayer(type: PanelType, params: EffectParams): EffectLayer {
         periodMs: Math.max(clampPeriodMs(normalized.periodMs) || PERIOD_MIN_MS, ANIMATION_MIN_PERIOD_MS),
         p5: clampByte(normalized.span),
         flags: directionFlags(normalized.reverse),
+        level,
       };
     case "comet":
       return {
@@ -637,10 +650,11 @@ export function panelLayer(type: PanelType, params: EffectParams): EffectLayer {
         periodMs: Math.max(clampPeriodMs(normalized.periodMs) || PERIOD_MIN_MS, ANIMATION_MIN_PERIOD_MS),
         p5: clampByte(normalized.tail),
         flags: directionFlags(normalized.reverse),
+        level,
       };
     default:
-      /* 静态层：period / p5 / flags 必须为 0（协议硬约束）。 */
-      return { type: SEGMENT_TYPE.STATIC, hue, sat, periodMs: 0, p5: 0, flags: 0 };
+      /* 静态层：period / p5 / flags 必须为 0（协议硬约束）；level 不受这条约束。 */
+      return { type: SEGMENT_TYPE.STATIC, hue, sat, periodMs: 0, p5: 0, flags: 0, level };
   }
 }
 
@@ -649,18 +663,23 @@ export function panelLayer(type: PanelType, params: EffectParams): EffectLayer {
  *
  * 只取该类型真正用的字段；周期为 0（静止）时退回该类型的默认周期，避免面板上
  * 出现一个「0 秒」的滑块位置。
+ *
+ * v4：`level` 也一起读回——否则用户切到别的光区再切回来，自己调的亮度会被
+ * 悄悄重置成 100%（#69 之前正是靠页面里的一张草稿表救场的）。
  */
 export function paramsFromLayer(type: PanelType, layer: EffectLayer): EffectParams {
   const base = defaultParams(type);
   const period = clampPeriodMs(layer.periodMs);
+  const level = clampZoneLevel(layer.level);
   switch (type) {
     case "breathing":
       return {
         ...base,
         hue: clampHue(layer.hue),
         sat: clampByte(layer.sat),
+        level,
         periodMs: period === 0 ? base.periodMs : period,
-        minLevel: clampByte(layer.p5),
+        minLevel: clampPercent(layer.p5),
         waveform: breathingWaveform(layer.flags),
         reverse: false,
       };
@@ -669,6 +688,7 @@ export function paramsFromLayer(type: PanelType, layer: EffectLayer): EffectPara
         ...base,
         hue: clampHue(layer.hue),
         sat: clampByte(layer.sat),
+        level,
         periodMs: period === 0 ? base.periodMs : period,
         span: clampByte(layer.p5),
         reverse: (layer.flags & 0x01) !== 0,
@@ -678,12 +698,13 @@ export function paramsFromLayer(type: PanelType, layer: EffectLayer): EffectPara
         ...base,
         hue: clampHue(layer.hue),
         sat: clampByte(layer.sat),
+        level,
         periodMs: period === 0 ? base.periodMs : period,
         tail: clampByte(layer.p5),
         reverse: (layer.flags & 0x01) !== 0,
       };
     default:
-      return { ...base, hue: clampHue(layer.hue), sat: clampByte(layer.sat) };
+      return { ...base, hue: clampHue(layer.hue), sat: clampByte(layer.sat), level };
   }
 }
 

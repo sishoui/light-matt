@@ -21,6 +21,7 @@ import {
   ANIMATION_MIN_PERIOD_MS,
   BLEND,
   BREATHING_MIN_PERIOD_MS,
+  LAYER_LEVEL_MAX,
   MAX_LEDS,
   NO_EFFECT,
   SEGMENT_TYPE,
@@ -193,6 +194,9 @@ function validateLayer(layer: EffectLayer, layerIndex: 0 | 1, layerLabel: string
   if (!isByte(layer.flags)) {
     push("layer-value", `${layerLabel}的标志位必须在 0-255`);
   }
+  if (!Number.isInteger(layer.level) || layer.level < 0 || layer.level > LAYER_LEVEL_MAX) {
+    push("layer-value", `${layerLabel}的亮度必须在 0-${LAYER_LEVEL_MAX}`);
+  }
   if (!isUint16(layer.periodMs)) {
     push("layer-value", `${layerLabel}的周期必须在 0-65535ms`);
   }
@@ -334,7 +338,15 @@ export function defaultDraft(stripId: number, ledCount: number): SegmentDraft {
     startText: ledCount > 0 ? "0" : "",
     endText: ledCount > 0 ? String(last) : "",
     blend: BLEND.OVER,
-    layer0: { type: SEGMENT_TYPE.STATIC, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0 },
+    layer0: {
+      type: SEGMENT_TYPE.STATIC,
+      hue: 0,
+      sat: 0,
+      periodMs: 0,
+      p5: 0,
+      flags: 0,
+      level: LAYER_LEVEL_MAX,
+    },
     layer1: emptyLayer(),
   };
 }
@@ -402,7 +414,8 @@ function layerEquals(a: EffectLayer, b: EffectLayer): boolean {
     a.sat === b.sat &&
     a.periodMs === b.periodMs &&
     a.p5 === b.p5 &&
-    a.flags === b.flags
+    a.flags === b.flags &&
+    a.level === b.level
   );
 }
 

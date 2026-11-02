@@ -17,7 +17,7 @@
  * 不碰 wx / BLE。
  */
 
-import { BLEND, MAX_SEGMENTS, NO_EFFECT, SEGMENT_TYPE } from "../protocol/constants";
+import { BLEND, LAYER_LEVEL_MAX, MAX_SEGMENTS, NO_EFFECT, SEGMENT_TYPE } from "../protocol/constants";
 import type { EffectLayer, SegmentReport, SegmentSpec } from "../protocol/types";
 import {
   canAddZone,
@@ -74,7 +74,15 @@ export function cellFromRatio(ratio: number, ledCount: number): number {
  * 黑色在灯珠条上与「未覆盖」不可区分。
  */
 export function defaultZoneLayer(seedHue = 7281): EffectLayer {
-  return { type: SEGMENT_TYPE.STATIC, hue: seedHue, sat: 255, periodMs: 0, p5: 0, flags: 0 };
+  return {
+    type: SEGMENT_TYPE.STATIC,
+    hue: seedHue,
+    sat: 255,
+    periodMs: 0,
+    p5: 0,
+    flags: 0,
+    level: LAYER_LEVEL_MAX,
+  };
 }
 
 /** 新光区的叠加方式：单层必须是覆盖（协议）。 */
@@ -289,7 +297,7 @@ export function draftConflicts(
   return zones.some((zone) => rangesOverlap(range, zone));
 }
 
-/** 空层（叠加效果的「关闭」态）。 */
+/** 空层（叠加效果的「关闭」态）。空层的 level 必须为 0（§7.1 第 3 步）。 */
 export function emptyOverlayLayer(): EffectLayer {
-  return { type: NO_EFFECT, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0 };
+  return { type: NO_EFFECT, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 };
 }

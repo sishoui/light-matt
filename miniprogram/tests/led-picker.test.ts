@@ -39,7 +39,7 @@ function zone(stripId: number, segId: number, start: number, end: number): Segme
     start,
     end,
     blend: BLEND.OVER,
-    layer0: { type: SEGMENT_TYPE.STATIC, hue: 1234, sat: 255, periodMs: 0, p5: 0, flags: 0 },
+    layer0: { type: SEGMENT_TYPE.STATIC, hue: 1234, sat: 255, periodMs: 0, p5: 0, flags: 0, level: 100 },
     layer1: null,
   });
 }

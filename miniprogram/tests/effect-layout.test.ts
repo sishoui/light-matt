@@ -36,7 +36,7 @@ function zones(...ranges: Array<[number, number, number]>): ZoneRange[] {
 
 function report(segId: number, start: number, end: number, hue = 0, sat = 0): SegmentReport {
   const layer0 = { type: 0, hue, sat, periodMs: 0, p5: 0, flags: 0 };
-  const layer1 = { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0 };
+  const layer1 = { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 };
   return {
     stripId: 0,
     segId,

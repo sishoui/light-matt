@@ -23,7 +23,6 @@ import {
   defaultParams,
   HUE_RAMP_GRADIENT,
   isPanelSliderKey,
-  LEVEL_PENDING_NOTE,
   normalizeParams,
   PANEL_EMPTY_PLAN_GUIDE,
   PANEL_EMPTY_STEP_GUIDE,
@@ -35,7 +34,6 @@ import {
   panelTypeOf,
   panelTypeValue,
   paramsFromLayer,
-  p5FromPercent,
   sliderView,
   SLIDER_KEYS,
   switchPanelType,
@@ -51,7 +49,17 @@ function params(overrides: Partial<EffectParams> = {}): EffectParams {
 }
 
 function layer(type: number, overrides: Partial<EffectLayer> = {}): EffectLayer {
-  return { type, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, ...overrides };
+  return {
+    type,
+    hue: 0,
+    sat: 0,
+    periodMs: 0,
+    p5: 0,
+    flags: 0,
+    /* 空层的 level 必须为 0；非空层默认满亮。 */
+    level: type === NO_EFFECT ? 0 : 100,
+    ...overrides,
+  };
 }
 
 function zone(segId: number, overrides: Partial<SegmentSpec> = {}): SegmentSpec {
@@ -241,10 +249,10 @@ describe("滑块刻度 ↔ 协议值", () => {
     expect(sliderView("period", params({ periodMs: 2500 })).display).toBe("2.5 秒");
   });
 
-  it("最低亮 / 跨度 / 尾长：0-100% ↔ 0-255", () => {
-    expect(applySlider(params(), "minLevel", 100).minLevel).toBe(255);
-    expect(p5FromPercent(50)).toBe(128);
-    expect(sliderView("minLevel", params({ minLevel: 128 })).display).toBe("50%");
+  it("最低亮：v4 起就是百分比 0-100；跨度 / 尾长仍是 0-255", () => {
+    /* v4：呼吸的 p5 是相对百分比，滑块值原样写入（不再乘 255）。 */
+    expect(applySlider(params(), "minLevel", 100).minLevel).toBe(100);
+    expect(sliderView("minLevel", params({ minLevel: 50 })).display).toBe("50%");
     expect(sliderView("span", params({ span: 255 })).display).toBe("整圈");
     expect(sliderView("tail", params({ tail: 0 })).display).toBe("无拖尾");
   });
@@ -278,9 +286,18 @@ describe("滑块刻度 ↔ 协议值", () => {
 });
 
 describe("草稿 → 协议层", () => {
-  it("静态层：period / p5 / flags 全部为 0（协议硬约束）", () => {
+  it("静态层：period / p5 / flags 全部为 0（协议硬约束），level 照常写入", () => {
     const built = panelLayer("static", params({ hue: 1234, sat: 200, periodMs: 3000 }));
-    expect(built).toEqual({ type: SEGMENT_TYPE.STATIC, hue: 1234, sat: 200, periodMs: 0, p5: 0, flags: 0 });
+    expect(built).toEqual({
+      type: SEGMENT_TYPE.STATIC,
+      hue: 1234,
+      sat: 200,
+      periodMs: 0,
+      p5: 0,
+      flags: 0,
+      level: 100,
+    });
+    expect(panelLayer("static", params({ level: 30 })).level).toBe(30);
   });
 
   it("呼吸层：波形进 bit1-2，最低亮进 p5，周期不短于协议下限", () => {
@@ -310,19 +327,36 @@ describe("草稿 → 协议层", () => {
     expect(comet.p5).toBe(80);
   });
 
-  it("亮度 level 不写进协议层（EffectLayer 还没有这个字段，#69 才接）", () => {
-    const built = panelLayer("static", params({ level: 30 })) as unknown as Record<string, unknown>;
-    /* 关键：不能出现一个协议还不认识的字段，否则会多发字节 / 被设备拒。 */
-    expect(built.level).toBeUndefined();
-    expect(Object.keys(built).sort()).toEqual(["flags", "hue", "p5", "periodMs", "sat", "type"]);
+  it("亮度 level 写进九字节层（v4），且空层恒 0", () => {
+    const built = panelLayer("static", params({ level: 30 }));
+    expect(built.level).toBe(30);
+    expect(Object.keys(built).sort()).toEqual([
+      "flags",
+      "hue",
+      "level",
+      "p5",
+      "periodMs",
+      "sat",
+      "type",
+    ]);
+    /* 装配后空叠加层的 level 必须是 0（否则设备回 InvalidParam）。 */
+    const spec = buildZoneSpec({
+      stripId: 0,
+      segId: 0,
+      start: 0,
+      end: 9,
+      layer0: built,
+      layer1: null,
+    });
+    expect(spec.layer0.level).toBe(30);
+    expect(spec.layer1.level).toBe(0);
   });
 
-  it("亮度滑块的草稿从设备读回时不会被假装成「已下发」", () => {
+  it("亮度滑块现在真实下发（sends = true、没有待生效标记）", () => {
     const view = buildEffectPanel("static", params({ level: 30 }));
     const level = view.sliders.find((slider) => slider.key === "level");
-    expect(level?.sends).toBe(false);
-    expect(level?.note).toBe(LEVEL_PENDING_NOTE);
-    /* 其余滑块正常生效。 */
+    expect(level?.sends).toBe(true);
+    expect(level?.note).toBe("");
     expect(view.sliders.find((slider) => slider.key === "hue")?.sends).toBe(true);
   });
 
@@ -348,8 +382,12 @@ describe("草稿 → 协议层", () => {
     const next = normalizeParams({ hue: -1, sat: 999, level: 0, minLevel: 999, waveform: 9 });
     expect(next.hue).toBe(0xffff);
     expect(next.sat).toBe(255);
-    expect(next.level).toBe(5);
-    expect(next.minLevel).toBe(255);
+    /* 0 是协议合法值（这一层不出光），归一不能把它抬到滑块下限。 */
+    expect(next.level).toBe(0);
+    expect(normalizeParams({ level: 999 }).level).toBe(100);
+    expect(normalizeParams({ level: -3 }).level).toBe(0);
+    /* v4：呼吸最低亮是百分比，999 钳到 100。 */
+    expect(next.minLevel).toBe(100);
     expect(next.waveform).toBe(WAVEFORM.SQUARE);
   });
 });

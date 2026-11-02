@@ -59,7 +59,7 @@ interface VectorCase {
 }
 
 const vectors = JSON.parse(
-  readFileSync(new URL("../../docs/protocol-testvectors-v3.json", import.meta.url), "utf8"),
+  readFileSync(new URL("../../docs/protocol-testvectors-v4.json", import.meta.url), "utf8"),
 ) as { cases: VectorCase[]; state_read_example_hex: string };
 
 function vector(name: string): VectorCase {
@@ -138,7 +138,7 @@ class FakeTransport {
       start,
       end,
       blend: 0 as const,
-      layer0: { type: 0, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0 },
+      layer0: { type: 0, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0, level: 100 },
       layer1: { ...EMPTY_EFFECT },
       type: 0,
       hue: 0,
@@ -506,10 +506,10 @@ describe("#25：颜色写进选中段（不再是占位）", () => {
     const req = transport.writes[0];
     expect(req.command).toBe(0x10);
     /* strip, seg, start, end, type, hue_lo, hue_hi, sat */
-    /* v3：21 字节两层载荷，单层时 layer1 全 0xFF。 */
-    expect(req.payload.length).toBe(21);
+    /* v4：23 字节两层载荷，单层时 layer1 全 0xFF 且 level 0。 */
+    expect(req.payload.length).toBe(23);
     expect(bytesToCompactHex(req.payload)).toBe(
-      "0002283F00000000FF00000000FF00000000000000",
+      "0002283F00000000FF0000000064FF0000000000000000",
     );
 
     /* 连续拖动：50ms 闸门，只保留最新值。 */
@@ -529,7 +529,7 @@ describe("#25：颜色写进选中段（不再是占位）", () => {
     /* 绿色 hue=120° → 0x5555（21845），sat=255。 */
     const last = transport.writes[transport.writes.length - 1];
     expect(bytesToCompactHex(last.payload)).toBe(
-      "0002283F00005555FF00000000FF00000000000000",
+      "0002283F00005555FF0000000064FF0000000000000000",
     );
 
     vi.restoreAllMocks();
@@ -549,7 +549,7 @@ describe("#25：颜色写进选中段（不再是占位）", () => {
     expect(transport.writes).toHaveLength(1);
     expect(transport.writes[0].command).toBe(0x10);
     expect(bytesToCompactHex(transport.writes[0].payload)).toBe(
-      "0000000F00000000FF00000000FF00000000000000",
+      "0000000F00000000FF0000000064FF0000000000000000",
     );
 
     vi.restoreAllMocks();

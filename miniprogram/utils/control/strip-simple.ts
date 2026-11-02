@@ -5,7 +5,7 @@
  * 「设备/草稿 → 界面视图」的换算，不碰 wx、不碰 BLE，可直接单测：
  *
  *  1. 方案槽位按钮的文案（「方案 ①」+「空白 / N 个步骤」）；
- *  2. HSV 三滑块的取值范围与「能不能下发」标记（亮度要等协议 v4 的 `level`）；
+ *  2. HSV 三滑块的取值范围（亮度是协议 v4 的 `level`，**真实下发**）；
  *  3. 设备读回值 → 「当前是不是某一张卡」（整组一个光区、无叠加层才算）。
  *
  * 卡片表本身在 `quick-effects.ts`（`QUICK_CARDS` / `buildQuickCardViews` /
@@ -30,15 +30,6 @@ export const PLAN_SLOT_COUNT = 4;
 export const LEVEL_MIN = 5;
 export const LEVEL_MAX = 100;
 export const LEVEL_DEFAULT = 100;
-
-/**
- * 亮度滑块的限制说明。
- *
- * `level` 是协议 v4 才有的字段（逐光区亮度）。小程序编解码还没升到 v4
- * （票 #69），所以滑块与草稿照做，但**不下发**——更不能临时映射到设备的
- * 全局亮度（那会串到别的灯组）。
- */
-export const LEVEL_UNAVAILABLE_NOTE = "固件更新后可用";
 
 const CIRCLED = ["①", "②", "③", "④"] as const;
 
@@ -97,12 +88,26 @@ export function satFromPercent(percent: number): number {
   return Math.round((clamped / 100) * 255);
 }
 
-/** 亮度草稿钳到显示区间（越界 / 非有限值都给默认满亮）。 */
+/** 亮度滑块的值钳到显示区间（越界 / 非有限值都给默认满亮）。 */
 export function clampLevel(level: number): number {
   if (!Number.isFinite(level)) {
     return LEVEL_DEFAULT;
   }
   return Math.max(LEVEL_MIN, Math.min(LEVEL_MAX, Math.round(level)));
+}
+
+/**
+ * 亮度钳到**协议合法区间 0-100**（越界 / 非有限值给默认满亮）。
+ *
+ * 与 `clampLevel` 的区别：滑块的显示下限是 5（0 会让整组不出光，不给拖），
+ * 但 **0 在协议里合法**（这一层不出光）。设备读回 0 时必须原样保留，否则
+ * 「读-改-写」会把用户刻意关掉的光区偷偷点亮。
+ */
+export function clampZoneLevel(level: number): number {
+  if (!Number.isFinite(level)) {
+    return LEVEL_DEFAULT;
+  }
+  return Math.max(0, Math.min(LEVEL_MAX, Math.round(level)));
 }
 
 /* ---------------- 参数区视图 ---------------- */
@@ -120,7 +125,7 @@ export interface SimpleSliderView {
   min: number;
   max: number;
   step: number;
-  /** false = 只改草稿、不下发（协议还没有该字段）。 */
+  /** 滑块是否真的会改变设备（现存滑块全部为 true）。 */
   sends: boolean;
   /** 不能下发时的原因；空串表示正常下发。 */
   note: string;
@@ -141,7 +146,7 @@ export interface SimpleParamView {
  * 「只显示该卡支持的控件」的判据来自卡片表自己的 `shows`：
  *  - `shows.color` → 色相（彩虹卡自己循环变色，没有「色相」可言）；
  *  - `shows.color || shows.saturation` → 饱和度（彩虹卡用它调浓淡）；
- *  - 亮度恒在，但带「固件更新后可用」标记。
+ *  - 亮度恒在，**真实下发**（v4 的逐光区 `level`，票 #69 接通）。
  */
 export function buildSimpleParams(
   cardId: string | null,
@@ -188,7 +193,8 @@ export function buildSimpleParams(
       note: "",
     });
   }
-  const brightness = clampLevel(level);
+  /* 读回值可以是 0（该层不出光）：显示真实值，只把滑块下限留给用户拖动。 */
+  const brightness = clampZoneLevel(level);
   sliders.push({
     key: "level",
     label: "亮度",
@@ -197,8 +203,8 @@ export function buildSimpleParams(
     min: LEVEL_MIN,
     max: LEVEL_MAX,
     step: 1,
-    sends: false,
-    note: LEVEL_UNAVAILABLE_NOTE,
+    sends: true,
+    note: "",
   });
 
   return {
@@ -217,6 +223,8 @@ export interface SimpleDeviceState {
   /** 协议色相 0-65535（不是滑块度数）。 */
   hue: number;
   sat: number;
+  /** v4：该光区主效果的亮度 0-100（设备权威值，滑块据它回显）。 */
+  level: number;
   colorHex: string;
 }
 
@@ -251,6 +259,7 @@ export function inferSimpleState(
     cardId,
     hue: only.layer0.hue,
     sat: only.layer0.sat,
+    level: clampZoneLevel(only.layer0.level),
     colorHex: rgbToHex(segmentHueSatToRgb(only.layer0.hue, only.layer0.sat)),
   };
 }
