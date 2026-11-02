@@ -13,7 +13,7 @@
     <text class="notice-action">重试</text>
   </view>
 
-  <!-- 灯带切换器（v3 核心）：横向 chips，逐带显示灯珠数 / GPIO / 开关 / 段数 -->
+  <!-- 灯组切换器（v3 核心）：横向 chips，逐组显示灯珠数 / GPIO / 开关 / 光区数 -->
   <view class="strip-switcher {{ready ? '' : 'disabled'}}">
     <scroll-view scroll-x class="strip-scroll" enhanced show-scrollbar="{{false}}">
       <view class="strip-chip-row">
@@ -32,7 +32,7 @@
           <text class="strip-chip-sub">{{item.summary}}</text>
         </view>
         <view wx:if="{{stripChips.length === 0}}" class="strip-empty">
-          {{ready ? '没有可见的灯带' : '连接后显示灯带'}}
+          {{ready ? '没有可见的灯组' : '连接后显示灯组'}}
         </view>
       </view>
     </scroll-view>
@@ -55,7 +55,7 @@
     <view class="strip-power-row">
       <view class="strip-power-main">
         <text class="strip-power-title">{{stripTitle}} · {{ledCount}} 灯</text>
-        <text class="section-hint">只影响这一条带，其他带继续运行</text>
+        <text class="section-hint">只影响这一组，其他组继续运行</text>
       </view>
       <switch
         checked="{{stripOn}}"
@@ -197,11 +197,218 @@
 
   <!-- ---------------- 自定义档 ---------------- -->
   <block wx:if="{{effectMode === 'custom'}}">
-    <view class="section">
-      <text class="section-title">自定义编排</text>
-      <text class="section-hint">{{customHint}}</text>
+    <!-- 三级树的面包屑：方案 → 步骤 → 光区 -->
+    <view class="section-head custom-breadcrumb">
+      <text class="section-title">{{planSummaryText}}</text>
+      <text wx:if="{{customDisabledReason}}" class="section-value">{{customDisabledReason}}</text>
+    </view>
+
+    <!-- 方案槽位（1-4） -->
+    <view class="plan-tabs {{customDisabledReason ? 'disabled' : ''}}">
+      <view
+        wx:for="{{planTabs}}"
+        wx:key="planId"
+        class="plan-tab {{item.active ? 'on' : ''}}"
+        data-plan-id="{{item.planId}}"
+        bindtap="onPlanTabTap"
+      >{{item.label}}</view>
+    </view>
+
+    <!-- 步骤时间轴 -->
+    <view class="section {{customDisabledReason ? 'disabled' : ''}}">
+      <view class="section-head">
+        <text class="section-title">步骤</text>
+        <text class="section-action" bindtap="onStepAdd">加一步</text>
+      </view>
+
+      <view class="step-list">
+        <view
+          wx:for="{{stepRows}}"
+          wx:key="index"
+          class="step-row {{item.active ? 'selected' : ''}}"
+          data-step="{{item.index}}"
+          bindtap="onStepTap"
+          hover-class="link-row-hover"
+        >
+          <text class="step-title">{{item.title}}</text>
+          <text class="step-summary">{{item.summary}}</text>
+          <text class="step-duration">{{item.durationLabel}}</text>
+          <view class="step-actions">
+            <text
+              class="step-action {{item.first ? 'muted' : ''}}"
+              data-step="{{item.index}}"
+              data-delta="-1"
+              catchtap="onStepMove"
+            >上移</text>
+            <text
+              class="step-action {{item.last ? 'muted' : ''}}"
+              data-step="{{item.index}}"
+              data-delta="1"
+              catchtap="onStepMove"
+            >下移</text>
+            <text class="step-action danger" data-step="{{item.index}}" catchtap="onStepRemove">删</text>
+          </view>
+        </view>
+      </view>
+
+      <!-- 当前步骤的时长（人话档位） -->
+      <view class="step-durations">
+        <text class="quick-choice-label">停留</text>
+        <view class="quick-choice-options">
+          <view
+            wx:for="{{stepDurationOptions}}"
+            wx:key="value"
+            class="quick-option {{item.active ? 'on' : ''}}"
+            data-ms="{{item.value}}"
+            bindtap="onStepDurationTap"
+          >{{item.label}}</view>
+        </view>
+      </view>
+    </view>
+
+    <!-- 光区：灯珠条 + 列表 -->
+    <view class="section {{customDisabledReason ? 'disabled' : ''}}">
+      <view class="section-head">
+        <text class="section-title">光区</text>
+        <text class="section-value">{{zoneHintText}}</text>
+      </view>
+
+      <!-- 灯珠条：一格一颗，未覆盖熄灭，拖动划选 -->
+      <view class="led-bar" catchtouchstart="onZoneTouchStart" catchtouchmove="onZoneTouchMove" catchtouchend="onZoneTouchEnd">
+        <view
+          wx:for="{{zoneCells}}"
+          wx:key="index"
+          class="led-cell {{item.ownerSegId >= 0 ? 'owned' : 'dark'}} {{item.editing ? 'editing' : ''}} {{item.conflict ? 'conflict' : ''}}"
+          style="{{item.hex ? 'background:' + item.hex : ''}}"
+        ></view>
+        <view wx:if="{{zoneCells.length === 0}}" class="led-empty">连接后显示灯珠</view>
+      </view>
+      <view class="led-legend">
+        <text wx:if="{{draftRangeText}}" class="led-draft {{draftConflict ? 'conflict' : ''}}">
+          选中的区间：{{draftRangeText}}{{draftConflict ? ' · 与已有光区重叠，未写入' : ''}}
+        </text>
+        <text wx:else class="section-hint">按住拖动可划出区间</text>
+      </view>
+
+      <!-- 快捷切分 -->
+      <view class="split-row">
+        <view
+          wx:for="{{splitButtons}}"
+          wx:key="id"
+          class="split-btn"
+          data-id="{{item.id}}"
+          bindtap="onSplitTap"
+        >{{item.label}}</view>
+      </view>
+
+      <!-- 光区列表：主效果 / 叠加 / 删除 -->
+      <view class="zone-list">
+        <view wx:for="{{zoneRows}}" wx:key="segId" class="zone-card">
+          <view class="zone-head">
+            <view class="zone-swatch" style="background: {{item.hex}}"></view>
+            <text class="zone-title">{{item.title}}</text>
+            <text class="zone-range">{{item.rangeText}}</text>
+            <text class="zone-edit" data-seg-id="{{item.segId}}" catchtap="onZoneEditTap">区间</text>
+            <text class="zone-delete" data-seg-id="{{item.segId}}" catchtap="onZoneDeleteTap">
+              {{item.pendingDelete ? '确认删除？' : '删除'}}
+            </text>
+          </view>
+
+          <view wx:if="{{item.pendingDelete}}" class="zone-confirm">
+            <text class="zone-confirm-text">删除后这段灯珠熄灭，其余光区不变。</text>
+            <text class="zone-confirm-cancel" catchtap="onZoneDeleteCancel">取消</text>
+          </view>
+
+          <!-- 主效果：四种灯效 -->
+          <view class="zone-modes">
+            <view
+              wx:for="{{mainModes}}"
+              wx:for-item="mode"
+              wx:key="mode"
+              class="zone-mode {{item.modeName === mode.name ? 'on' : ''}}"
+              data-seg-id="{{item.segId}}"
+              data-mode="{{mode.mode}}"
+              bindtap="onZoneModeTap"
+            >{{mode.name}}</view>
+          </view>
+
+          <!-- 颜色 -->
+          <view class="zone-colors">
+            <view
+              wx:for="{{zonePresets}}"
+              wx:for-item="preset"
+              wx:key="name"
+              class="quick-preset"
+              style="background: {{preset.hex}}"
+              data-seg-id="{{item.segId}}"
+              data-hue="{{preset.hue}}"
+              data-sat="{{preset.sat}}"
+              bindtap="onZoneColorTap"
+            ></view>
+          </view>
+
+          <!-- 叠加效果 -->
+          <view class="zone-overlay">
+            <view class="zone-overlay-head">
+              <text class="quick-choice-label">叠加效果</text>
+              <text class="zone-overlay-name {{item.overlayName ? '' : 'muted'}}">
+                {{item.overlayName || '未开启'}}
+              </text>
+              <text class="zone-edit" data-seg-id="{{item.segId}}" catchtap="onZoneOverlayToggle">
+                {{item.overlayName ? '关闭' : '开启'}}
+              </text>
+            </view>
+            <view wx:if="{{item.overlayName}}" class="zone-blends">
+              <view
+                wx:for="{{blendOptions}}"
+                wx:for-item="blend"
+                wx:key="value"
+                class="quick-option {{item.blendName === blend.name ? 'on' : ''}}"
+                data-seg-id="{{item.segId}}"
+                data-blend="{{blend.value}}"
+                catchtap="onZoneBlendTap"
+              >{{blend.name}}</view>
+            </view>
+            <text wx:else class="section-hint">开启后才能选叠加方式（未开启时固定为覆盖）</text>
+          </view>
+        </view>
+
+        <view wx:if="{{zoneRows.length === 0}}" class="seg-empty">
+          这一步在这组还没有光区。用上面的「整条」或「均分」快速划，或在灯珠条上拖动。
+        </view>
+      </view>
+
+      <!-- 数字精修 -->
+      <view wx:if="{{editRangeOpen}}" class="range-editor">
+        <view class="range-inputs">
+          <input class="range-input" type="number" value="{{editStartText}}" bindinput="onEditStartInput" placeholder="起点" />
+          <text class="range-dash">–</text>
+          <input class="range-input" type="number" value="{{editEndText}}" bindinput="onEditEndInput" placeholder="终点" />
+        </view>
+        <view class="range-actions">
+          <text class="range-cancel" bindtap="onRangeCancel">取消</text>
+          <text class="range-ok" bindtap="onRangeConfirm">确定</text>
+        </view>
+        <text class="section-hint">灯珠编号从 0 开始，本组共 {{ledCount}} 颗</text>
+      </view>
+
+      <text wx:if="{{stepHint}}" class="section-hint">{{stepHint}}</text>
+    </view>
+
+    <!-- 写入灯控 / 播放 -->
+    <view class="section {{customDisabledReason ? 'disabled' : ''}}">
+      <view class="plan-actions">
+        <view class="plan-write {{writingPlan ? 'busy' : ''}}" bindtap="onPlanWrite">
+          {{writingPlan ? '正在写入…' : '写入灯控'}}
+        </view>
+        <view class="plan-play" data-action="1" bindtap="onPlanPlayback">播放</view>
+        <view class="plan-play" data-action="2" bindtap="onPlanPlayback">暂停</view>
+        <view class="plan-play" data-action="0" bindtap="onPlanPlayback">停止</view>
+      </view>
+      <text class="section-hint">{{planNote}}</text>
     </view>
   </block>
+
 
   <!-- 当前灯效：一行摘要，点它进对应档位的编辑 -->
   <view class="effect-row {{ready ? '' : 'disabled'}}" bindtap="onEffectSummaryTap" hover-class="link-row-hover">

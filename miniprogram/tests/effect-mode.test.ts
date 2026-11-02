@@ -16,6 +16,7 @@ import {
   takeCustomSnapshot,
 } from "../utils/control/effect-mode";
 import type { SegmentSpec } from "../utils/protocol/types";
+import type { ScriptDraft } from "../utils/control/script-view";
 import { NO_EFFECT, SEGMENT_TYPE } from "../utils/protocol/constants";
 
 function spec(segId: number, start: number, end: number, hue = 1000): SegmentSpec {
@@ -148,5 +149,65 @@ describe("切换决策", () => {
     planTransition("quick", "custom", "DEV-A", 0);
     planTransition("quick", "custom", "DEV-A", 0);
     expect(hasCustomSnapshot("DEV-A", 0)).toBe(true);
+  });
+});
+
+/**
+ * #57 追加：快照必须带上**完整的方案编排**（4 槽 × 步骤 × 光区）。
+ *
+ * 只存「当前步骤的光区」会让切回来之后其它方案 / 步骤变成空白——用户花
+ * 十分钟搭的多步骤方案看起来就丢了。
+ */
+describe("完整编排快照（#57）", () => {
+  beforeEach(() => clearAllSnapshots());
+
+  function drafts(): ScriptDraft[] {
+    return [
+      {
+        scriptId: 0,
+        stages: [
+          { durationInput: "1000", segments: [spec(0, 0, 9)] },
+          { durationInput: "2000", segments: [spec(0, 0, 4), spec(1, 5, 9)] },
+        ],
+      },
+      {
+        scriptId: 1,
+        stages: [{ durationInput: "3000", segments: [spec(0, 0, 29)] }],
+      },
+      { scriptId: 2, stages: [{ durationInput: "1000", segments: [] }] },
+      { scriptId: 3, stages: [{ durationInput: "1000", segments: [] }] },
+    ];
+  }
+
+  it("多方案 / 多步骤的编排原样取回", () => {
+    saveCustomSnapshot("DEV-A", 0, { zones: [], planId: 1, stepIndex: 0, drafts: drafts() });
+    const snap = takeCustomSnapshot("DEV-A", 0)!;
+    expect(snap.drafts).toHaveLength(4);
+    expect(snap.drafts![0].stages).toHaveLength(2);
+    expect(snap.drafts![0].stages[1].segments).toHaveLength(2);
+    expect(snap.drafts![1].stages[0].segments[0].end).toBe(29);
+  });
+
+  it("步骤时长输入原样保留（不把「1000」变成数字丢弃中间态）", () => {
+    saveCustomSnapshot("DEV-A", 0, { zones: [], planId: 0, stepIndex: 0, drafts: drafts() });
+    expect(takeCustomSnapshot("DEV-A", 0)!.drafts![0].stages[1].durationInput).toBe("2000");
+  });
+
+  it("取回的是深拷贝：改返回的草稿不会污染快照", () => {
+    saveCustomSnapshot("DEV-A", 0, { zones: [], planId: 0, stepIndex: 0, drafts: drafts() });
+    const first = takeCustomSnapshot("DEV-A", 0)!;
+    const firstStage = first.drafts![0].stages[0];
+    firstStage.durationInput = "9999";
+    (firstStage.segments[0] as SegmentSpec).start = 77;
+    const second = takeCustomSnapshot("DEV-A", 0)!;
+    expect(second.drafts![0].stages[0].durationInput).toBe("1000");
+    expect((second.drafts![0].stages[0].segments[0] as SegmentSpec).start).toBe(0);
+  });
+
+  it("没传 drafts 时快照仍是合法形状（早期调用点兼容）", () => {
+    saveCustomSnapshot("DEV-A", 0, { zones: [spec(0, 0, 9)], planId: 0, stepIndex: 0 });
+    const snap = takeCustomSnapshot("DEV-A", 0)!;
+    expect(snap.zones).toHaveLength(1);
+    expect(snap.drafts).toBeUndefined();
   });
 });

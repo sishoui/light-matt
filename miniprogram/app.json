@@ -2,10 +2,8 @@
   "pages": [
     "pages/home/home",
     "pages/devices/devices",
-    "pages/scripts/scripts",
     "pages/device/device",
-    "pages/device-info/device-info",
-    "pages/segment-edit/segment-edit"
+    "pages/device-info/device-info"
   ],
   "window": {
     "navigationStyle": "custom",
@@ -27,10 +25,6 @@
       {
         "pagePath": "pages/home/home",
         "text": "设备"
-      },
-      {
-        "pagePath": "pages/scripts/scripts",
-        "text": "剧本"
       },
       {
         "pagePath": "pages/devices/devices",

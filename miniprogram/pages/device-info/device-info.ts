@@ -150,13 +150,13 @@ Page({
             : `GPIO ${channel.gpio}`;
       stripRows.push({
         stripId,
-        label: `灯带 ${stripId + 1}`,
+        label: `灯组 ${stripId + 1}`,
         /* 逐带真实值：设备 State，不复制 strip 0。 */
         ledCount: state?.stripCounts[stripId] ?? 0,
         gpioText,
         visible: this.visibleInApp(registry, deviceId, stripId),
       });
-      ledStripOptions.push({ stripId, label: `灯带 ${stripId + 1}` });
+      ledStripOptions.push({ stripId, label: `灯组 ${stripId + 1}` });
     }
 
     const selected = this.data.ledCountStripId < stripRows.length ? this.data.ledCountStripId : 0;
@@ -181,7 +181,7 @@ Page({
       limitsText:
         info === null
           ? "—"
-          : `灯珠 ${info.maxLeds} · 灯带 ${info.maxStrips} · 段 ${info.maxSegments} · 阶段 ${info.maxStages} · 剧本 ${info.maxScripts}`,
+          : `灯珠 ${info.maxLeds} · 灯组 ${info.maxStrips} · 光区 ${info.maxSegments} · 步骤 ${info.maxStages} · 方案 ${info.maxScripts}`,
     });
 
     /* hwId 由会话在 ready 后写入登记表；重读一次让备注字段反映最新记录。 */
@@ -285,7 +285,7 @@ Page({
       const result = await session.setLedCount(parsed.value, stripId);
       if (result.kind === "ok") {
         this.setData({
-          ledCountHint: `灯带 ${stripId + 1} 已设为 ${result.state.stripCounts[stripId] ?? parsed.value} 颗`,
+          ledCountHint: `灯组 ${stripId + 1} 已设为 ${result.state.stripCounts[stripId] ?? parsed.value} 颗`,
         });
         await this.reload();
         return;

@@ -69,7 +69,7 @@ Page({
     current: null as CardView | null,
     thumbnails: [] as CardView[],
     empty: true,
-    emptyHint: "还没有设备。点「发现」扫描附近的 Lumen 灯带。",
+    emptyHint: "还没有设备。点「发现」扫描附近的 Lumen 灯控。",
   },
 
   session: null as ControlSession | null,

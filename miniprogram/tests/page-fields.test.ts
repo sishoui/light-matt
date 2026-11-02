@@ -113,8 +113,6 @@ describe("页面非 data 字段必须在 onLoad 里初始化", () => {
     expect(names).toContain("pages/home/home.ts");
     expect(names).toContain("pages/devices/devices.ts");
     expect(names).toContain("pages/device/device.ts");
-    expect(names).toContain("pages/scripts/scripts.ts");
-    expect(names).toContain("pages/segment-edit/segment-edit.ts");
     expect(names).toContain("pages/device-info/device-info.ts");
   });
 

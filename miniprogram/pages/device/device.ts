@@ -5,8 +5,10 @@
  *
  * 原来的 tab 结构是「设备 / 灯光 / 剧本」，用户要先在设备页连上、再切到灯光页
  * 才能控制，而「这台设备」与「它的灯光」在概念上是一件事。改版后：
- *   首页（大卡 + 小图）→ 点大卡 → 本页（这台设备的全部控制）
- * 剧本仍留在 tab 里（它是设备级但独立的编辑器）。
+ *   首页（大卡 + 小图）→ 点大卡 → 本页（这台灯控的全部控制）
+ *
+ * #58 起「剧本」tab 也删除了：灯效方案就在本页的「自定义」档里编，
+ * 底部只剩「设备 / 发现」两项，不再有一个需要先选段才能用的第二编辑器。
  *
  * ## 进入时的连接语义
  *
@@ -69,10 +71,119 @@ import {
 } from "../../utils/control/quick-effects";
 import type {
   DeviceState,
+  EffectLayer,
   LinkState,
   SegmentReport,
+  SegmentSpec,
   StripConfig,
 } from "../../utils/protocol/types";
+import {
+  addZone,
+  cellFromRatio,
+  checkZoneAdd,
+  defaultZoneLayer,
+  draftConflicts,
+  dragRange,
+  EMPTY_DRAG,
+  removeZone,
+  resizeZone,
+  setZoneLayer0,
+  setZoneOverlay,
+  splitParts,
+  splitWhole,
+  zonesFromReports,
+  type DragState,
+} from "../../utils/control/zone-editor";
+import { readZone } from "../../utils/control/zone-model";
+import {
+  buildZoneCells,
+  zonesSummary,
+  type ZoneCell,
+} from "../../utils/control/effect-layout";
+import {
+  BLEND_OPTIONS,
+  MAIN_MODE_OPTIONS,
+  applyLayerType,
+  layerModeOf,
+  type LayerMode,
+} from "../../utils/control/effect-view";
+import {
+  clampPlan,
+  createPlanState,
+  currentPlanDraft,
+  currentStep,
+  nearestDurationLabel,
+  PLAN_CAPACITY_NOTE,
+  PLAN_READBACK_NOTE,
+  replaceStepZones,
+  STEP_DURATION_OPTIONS,
+  stripsOfStep,
+  zoneCountOfStep,
+  zonesOfStep,
+  MAX_PLAN_STEPS,
+  type PlanState,
+} from "../../utils/control/plan-editor";
+import {
+  addStage,
+  createScriptDrafts,
+  draftCapacityBytes,
+  moveStage,
+  removeStage,
+  setStageDuration,
+  draftToScriptConfig,
+  type ScriptDraft,
+} from "../../utils/control/script-view";
+import { checkScriptBlobBytes } from "../../utils/control/script-plan";
+import {
+  planTransition,
+  saveCustomSnapshot,
+  type CustomSnapshot,
+} from "../../utils/control/effect-mode";
+import { MAX_SCRIPTS } from "../../utils/protocol/constants";
+import type { ScriptConfig } from "../../utils/control/script-plan";
+import { blendName } from "../../utils/control/effect-view";
+import { rgbToHex, segmentHueSatToRgb } from "../../utils/color/hsv";
+
+/** 灯珠条上一格的展示形状（WXML 直接渲染）。 */
+interface ZoneCellView extends ZoneCell {
+  /** 灯珠编号（从 1 显示）。 */
+  label: string;
+}
+
+/** 光区列表的一行。 */
+interface ZoneRow {
+  segId: number;
+  /** 「光区 1」（从 1 编号）。 */
+  title: string;
+  /** 「0–13」。 */
+  rangeText: string;
+  /** 主效果名（静态 / 呼吸 / 彩虹 / 流光）。 */
+  modeName: string;
+  /** 叠加效果名；没有叠加层为空串。 */
+  overlayName: string;
+  /** 叠加方式名（只有叠加层存在时才有意义）。 */
+  blendName: string;
+  hex: string;
+  pendingDelete: boolean;
+}
+
+/** 方案槽位标签。 */
+interface PlanTab {
+  planId: number;
+  label: string;
+  active: boolean;
+}
+
+/** 步骤行。 */
+interface StepRow {
+  index: number;
+  title: string;
+  durationLabel: string;
+  summary: string;
+  active: boolean;
+  first: boolean;
+  last: boolean;
+}
 
 /** chip 的展示形状 = 纯视图模型 + 一行摘要文本。 */
 interface StripChipView extends StripChip {
@@ -100,7 +211,7 @@ Page({
     stripChips: [] as StripChipView[],
     stripId: -1,
     stripTitle: "—",
-    stripHint: "连接后选择灯带",
+    stripHint: "连接后选择灯组",
 
     // 总闸
     power: 0 as 0 | 1,
@@ -134,8 +245,61 @@ Page({
     quickDisabledReason: "",
     quickBusy: false,
     quickHint: "",
-    /** 自定义档的说明行（#55/#56 会把它替换成真正的编排界面）。 */
-    customHint: "自定义编排即将开放",
+
+    /* ---------------- 自定义档（#55 / #56） ---------------- */
+    /** 灯珠条：一格一颗灯珠，带归属光区与冲突标记。 */
+    zoneCells: [] as ZoneCellView[],
+    /** 当前步骤里本灯组的光区（列表）。 */
+    zoneRows: [] as ZoneRow[],
+    /** 拖选中的区间文本（「12–27」）；不在拖选时为空。 */
+    draftRangeText: "",
+    /** 拖选与已有光区冲突（立刻变红，且不写入设备）。 */
+    draftConflict: false,
+    /** 光区数量 / 上限提示。 */
+    zoneHintText: "",
+    /** 正在二次确认删除的光区槽位（-1 = 无）。 */
+    pendingDeleteSegId: -1,
+    /** 数字精修入口是否展开。 */
+    editRangeOpen: false,
+    editStartText: "",
+    editEndText: "",
+    /** 当前编辑的是哪个光区（-1 = 新建）。 */
+    editSegId: -1,
+    /** 一键切分的按钮（整条 / 前半 / 后半 / 均分 2-4）。 */
+    splitButtons: [
+      { id: "whole", label: "整条" },
+      { id: "firstHalf", label: "前半" },
+      { id: "secondHalf", label: "后半" },
+      { id: "two", label: "均分 2" },
+      { id: "three", label: "均分 3" },
+      { id: "four", label: "均分 4" },
+    ] as Array<{ id: string; label: string }>,
+    /** 方案槽位（1-4）与步骤列表（#56 接入，这里先给出数据形状）。 */
+    planTabs: [] as PlanTab[],
+    planId: 0,
+    stepRows: [] as StepRow[],
+    /** 主效果的四个选项与叠加方式（WXML 直接渲染）。 */
+    mainModes: MAIN_MODE_OPTIONS.map((option) => ({ mode: option.mode, name: option.name })),
+    blendOptions: BLEND_OPTIONS.map((option) => ({ value: option.value, name: option.name })),
+    /** 光区可用颜色（预设色 → 协议 hue/sat，WXML 直接下发） */
+    zonePresets: PRESETS.map((preset) => ({
+      name: preset.name,
+      hex: preset.hex,
+      ...rgbToSegmentParams(preset.rgb),
+    })),
+    stepIndex: 0,
+    stepDurationLabel: "1 秒",
+    stepDurationOptions: [] as Array<{ value: number; label: string; active: boolean }>,
+    planSummaryText: "",
+    planNote: "",
+    stepBusy: false,
+    stepHint: "",
+    writingPlan: false,
+    playingPlan: false,
+    /** 自定义档整体是否不可用（未连接 / 未选组）。 */
+    customDisabledReason: "",
+    /** 自定义档的说明行。 */
+    customHint: "",
   },
 
   session: null as ControlSession | null,
@@ -160,6 +324,19 @@ Page({
   /** 防止「防抖期间又点卡片」把旧参数写出去。 */
   quickEpoch: 0,
 
+  /** 自定义档：方案槽位 → 步骤 → 光区的三级草稿。 */
+  plan: null as PlanState | null,
+  /** 拖动划选的锚点 / 指尖（不落 data，避免每帧 setData）。 */
+  drag: EMPTY_DRAG as DragState,
+  /** 自定义档写入的防抖定时器（拖动区间后短暂防抖再写）。 */
+  zoneTimer: null as ReturnType<typeof setTimeout> | null,
+  zoneEpoch: 0,
+  /** 当前步骤的光区（设备已确认那一份，作为编辑基础）。 */
+  stepZones: [] as SegmentSpec[],
+  /** 灯珠条的实测左边界与宽度（触摸坐标换算用）。 */
+  ledBarLeft: 0,
+  ledBarWidth: 0,
+
   onLoad(options: Record<string, string | undefined>) {
     /* 页面私有状态（不进 data）。Page() 不保证对象字面量字段会被复制到
      * 实例上，所以在这里显式兜底——漏掉会让 onLoad / onUnload 抛
@@ -175,6 +352,13 @@ Page({
     this.quickCardByStrip = new Map<number, string>();
     this.quickTimer = null;
     this.quickEpoch = 0;
+    this.plan = null;
+    this.drag = EMPTY_DRAG;
+    this.zoneTimer = null;
+    this.zoneEpoch = 0;
+    this.stepZones = [];
+    this.ledBarLeft = 0;
+    this.ledBarWidth = 0;
 
     const storage = createWxStorage();
     this.storage = storage;
@@ -443,11 +627,11 @@ Page({
     }
     this.applyStripPowerView(state);
     this.setData({
-      stripTitle: next >= 0 ? `灯带 ${next + 1}` : "无可见灯带",
+      stripTitle: next >= 0 ? `灯组 ${next + 1}` : "无可见灯组",
       stripHint:
         next >= 0
-          ? "切带只重新读设备，不会清掉任何配置"
-          : "在「发现」页打开至少一条灯带的显示开关",
+          ? "切换只重新读灯控，不会清掉任何配置"
+          : "在「发现」页打开至少一条灯组的显示开关",
     });
     if (changed) {
       void this.refreshSegments();
@@ -514,7 +698,7 @@ Page({
       stripChips: [],
       stripId: -1,
       stripTitle: "—",
-      stripHint: "连接后选择灯带",
+      stripHint: "连接后选择灯组",
       stripOn: false,
       ledCount: 0,
       stripCount: 0,
@@ -545,7 +729,7 @@ Page({
     session.setActiveStripId(stripId);
     this.setData({
       stripId,
-      stripTitle: `灯带 ${stripId + 1}`,
+      stripTitle: `灯组 ${stripId + 1}`,
       colorHintText: "点一个段改颜色",
     });
     this.applyStripPowerView(session.deviceState);
@@ -685,6 +869,16 @@ Page({
    * #57 把「切走前存快照 / 切回时恢复编排」接在这里；本轮（#54）只有快捷档
    * 完整，自定义档先给出占位说明。
    */
+  /**
+   * 切换编辑档位（#57）。
+   *
+   * 三条规则来自票面，且都由 `planTransition` 决定（纯函数，有单测）：
+   *  - 自定义 → 快捷：**先存快照**再切；
+   *  - 快捷 → 自定义且无快照：空白编排（第一次进）；
+   *  - 快捷 → 自定义且有快照：恢复并轻提示「已恢复你之前的编排」。
+   *
+   * 已在快捷档再点快捷**不存快照**——否则快捷档的整组配置会覆盖真正的编排。
+   */
   onModeTap(e: WechatMiniprogram.TouchEvent) {
     const mode = String(e.currentTarget.dataset.mode ?? "");
     if (mode !== "quick" && mode !== "custom") {
@@ -693,12 +887,87 @@ Page({
     if (mode === this.data.effectMode) {
       return;
     }
-    this.setData({ effectMode: mode, quickHint: "" });
-    if (mode === "quick") {
+    const deviceKey = this.deviceKey();
+    const stripId = this.data.stripId;
+    const transition = planTransition(this.data.effectMode, mode, deviceKey, stripId);
+
+    if (transition.kind === "to-quick") {
+      if (transition.shouldSave && stripId >= 0) {
+        /* 快照存的是**完整编排**（4 槽 × 步骤 × 光区），不只是当前步骤。 */
+        this.persistSnapshot(deviceKey, stripId);
+      }
+      this.setData({ effectMode: "quick", quickHint: "", stepHint: "" });
       this.renderQuick();
       return;
     }
+
+    if (transition.restore !== null) {
+      this.restoreSnapshot(transition.restore);
+      this.setData({
+        effectMode: "custom",
+        quickHint: "",
+        stepHint: "已恢复你之前的编排",
+      });
+    } else {
+      this.setData({ effectMode: "custom", quickHint: "", stepHint: "" });
+      /* 第一次进：用设备读回的光区给当前步骤铺底，用户看到的是现在灯在亮的样子。 */
+      this.seedStepFromDevice();
+    }
     this.renderCustom();
+    if (transition.restore !== null) {
+      wx.showToast({ title: "已恢复你之前的编排", icon: "none" });
+      /* 恢复后把当前步骤预览到设备（用户马上能看到编排生效）。
+       * quiet：不要用「已预览」覆盖掉「已恢复」这条更重要的提示。 */
+      void this.previewStep(true);
+    }
+  },
+
+  /** 当前设备的稳定 key（hardwareId 优先，未连接时为空）。 */
+  deviceKey(): string {
+    const session = this.session;
+    const info = session?.deviceInfo;
+    if (info !== null && info !== undefined && info.hwId.length > 0) {
+      return info.hwId;
+    }
+    return session?.transport.currentDeviceId ?? "";
+  },
+
+  /** 把当前完整编排写进内存快照（含当前步骤的光区 + 全部方案草稿）。 */
+  persistSnapshot(deviceKey: string, stripId: number): void {
+    const plan = clampPlan(this.ensurePlan());
+    saveCustomSnapshot(deviceKey, stripId, {
+      zones: zonesOfStep(currentStep(plan), stripId),
+      planId: plan.planId,
+      stepIndex: plan.stepIndex,
+      drafts: plan.drafts,
+    });
+  },
+
+  /** 从快照恢复编排（深拷贝，改草稿不污染快照）。 */
+  restoreSnapshot(snapshot: CustomSnapshot): void {
+    const drafts = snapshot.drafts ?? createScriptDrafts();
+    this.plan = clampPlan({
+      drafts,
+      planId: snapshot.planId,
+      stepIndex: snapshot.stepIndex,
+    });
+    this.drag = EMPTY_DRAG;
+  },
+
+  /** 当前步骤在本组还没有光区时，用设备读回值铺底。 */
+  seedStepFromDevice(): void {
+    const plan = clampPlan(this.ensurePlan());
+    const draft = currentPlanDraft(plan);
+    if (draft === null || this.stepZones.length > 0) {
+      return;
+    }
+    const zones = zonesFromReports(this.segmentReports);
+    if (zones.length === 0) {
+      return;
+    }
+    const drafts = plan.drafts.slice();
+    drafts[plan.planId] = replaceStepZones(draft, plan.stepIndex, this.data.stripId, zones);
+    this.plan = { ...plan, drafts };
   },
 
   /** 「当前灯效」摘要点击：滚到编辑区（摘要本身就是入口）。 */
@@ -722,9 +991,682 @@ Page({
     return this.quickParamsByStrip.get(this.data.stripId) ?? {};
   },
 
-  /** 自定义档的占位重画（#55/#56 接入真正的编排视图）。 */
-  renderCustom(): void {
-    this.setData({ customHint: "自定义编排即将开放" });
+  /* ================= 自定义档（#55 光区 / #56 方案与步骤） ================= */
+
+  /** 自定义档是否可用 + 不可用的原因。 */
+  customDisabledReasonOf(): string {
+    if (!this.data.ready) {
+      return "连接灯控后才能编排";
+    }
+    if (this.data.stripId < 0) {
+      return "先在「发现」页打开至少一条灯组";
+    }
+    if (this.data.ledCount < 1) {
+      return "还没读到这组的灯珠数量，稍等片刻";
+    }
+    return "";
+  },
+
+  /** 确保三级草稿存在（第一次进自定义档时按设备真实值初始化）。 */
+  ensurePlan(): PlanState {
+    if (this.plan === null) {
+      this.plan = createPlanState(createScriptDrafts());
+    }
+    return this.plan;
+  },
+
+  /** 重画整个自定义档（面包屑 / 步骤 / 光区列表 / 灯珠条）。 */
+  renderCustom(patch: Record<string, unknown> = {}): void {
+    const disabled = this.customDisabledReasonOf();
+    const plan = clampPlan(this.ensurePlan());
+    this.plan = plan;
+    const draft = currentPlanDraft(plan);
+    const step = currentStep(plan);
+    const stripId = this.data.stripId;
+    const ledCount = this.data.ledCount;
+
+    /* 光区以「当前步骤 × 当前灯组」为准；没有草稿时用设备读回值铺底。 */
+    const zones = zonesOfStep(step, stripId);
+    this.stepZones = zones;
+
+    const draftRange = dragRange(this.drag);
+    const cells = buildZoneCells(
+      ledCount,
+      zones.map((zone) => ({ segId: zone.segId, start: zone.start, end: zone.end })),
+      new Map(zones.map((zone) => [zone.segId, rgbToHex(segmentHueSatToRgb(zone.layer0.hue, zone.layer0.sat))])),
+      draftRange,
+    ).map((cell) => ({ ...cell, label: String(cell.index + 1) }));
+
+    const stepRows: StepRow[] = (draft?.stages ?? []).map((item, index) => {
+      const count = zoneCountOfStep(item, stripId);
+      const strips = stripsOfStep(item);
+      const durationValue = Number(item.durationInput);
+      return {
+        index,
+        title: `步骤 ${index + 1}`,
+        durationLabel: nearestDurationLabel(Number.isFinite(durationValue) ? durationValue : 1000),
+        summary:
+          item.segments.length === 0
+            ? "还没排光区"
+            : count > 0
+              ? `${count} 个光区`
+              : `${strips.length} 个灯组有光区（本组 0 个）`,
+        active: index === plan.stepIndex,
+        first: index === 0,
+        last: index === (draft?.stages.length ?? 1) - 1,
+      };
+    });
+
+    const durationValue = step === null ? 1000 : Number(step.durationInput);
+    const current = Number.isFinite(durationValue) ? durationValue : 1000;
+    const activeLabel = nearestDurationLabel(current);
+    const zoneHintText = this.zoneHintTextOf(zones.length, ledCount, zones);
+
+    this.setData({
+      customDisabledReason: disabled,
+      planTabs: Array.from({ length: MAX_SCRIPTS }, (_, planId) => ({
+        planId,
+        label: `方案 ${planId + 1}`,
+        active: planId === plan.planId,
+      })),
+      planId: plan.planId,
+      stepRows,
+      stepIndex: plan.stepIndex,
+      stepDurationLabel: activeLabel,
+      stepDurationOptions: STEP_DURATION_OPTIONS.map((option) => ({
+        ...option,
+        active: option.label === activeLabel,
+      })),
+      zoneCells: cells,
+      zoneRows: zones.map((zone) => ({
+        segId: zone.segId,
+        title: `光区 ${zone.segId + 1}`,
+        rangeText: `${zone.start}–${zone.end}`,
+        modeName: modeNameOf(zone.layer0.type),
+        overlayName: zone.layer1.type === NO_EFFECT ? "" : modeNameOf(zone.layer1.type),
+        blendName: zone.layer1.type === NO_EFFECT ? "" : blendName(zone.blend),
+        hex: rgbToHex(segmentHueSatToRgb(zone.layer0.hue, zone.layer0.sat)),
+        pendingDelete: zone.segId === this.data.pendingDeleteSegId,
+      })),
+      draftRangeText:
+        draftRange === null ? "" : `${draftRange.start}–${draftRange.end}`,
+      draftConflict:
+        draftRange !== null &&
+        draftConflicts(
+          zones.map((zone) => ({ segId: zone.segId, start: zone.start, end: zone.end })),
+          draftRange,
+        ),
+      zoneHintText,
+      planSummaryText: `方案 ${plan.planId + 1} · 步骤 ${plan.stepIndex + 1} / ${Math.max(1, draft?.stages.length ?? 1)}`,
+      planNote: PLAN_READBACK_NOTE,
+      customHint: disabled,
+      ...patch,
+    });
+    this.syncEffectSummary();
+  },
+
+  /** 光区提示（数量上限 / 熄灭灯珠）。 */
+  zoneHintTextOf(count: number, ledCount: number, zones: readonly SegmentSpec[]): string {
+    if (this.data.ledCount < 1) {
+      return "";
+    }
+    const summary = zonesSummary(
+      ledCount,
+      zones.map((zone) => ({ segId: zone.segId, start: zone.start, end: zone.end })),
+    );
+    return count >= 8 ? `${summary} · 已达上限 8 个` : summary;
+  },
+
+  /** 设备控制页的「当前灯效」摘要（自定义档时显示方案/步骤）。 */
+  syncEffectSummary(): void {
+    if (this.data.effectMode !== "custom") {
+      return;
+    }
+    const plan = clampPlan(this.ensurePlan());
+    const draft = currentPlanDraft(plan);
+    const total = Math.max(1, draft?.stages.length ?? 1);
+    const playing = (this.session?.deviceState?.playbackState ?? 0) === 1;
+    this.setData({
+      effectSummary: `方案 ${plan.planId + 1} · 步骤 ${plan.stepIndex + 1} / ${total}${playing ? " · 播放中" : ""}`,
+    });
+  },
+
+  /** 换方案槽位（每套独立草稿，互不覆盖）。 */
+  onPlanTabTap(e: WechatMiniprogram.TouchEvent) {
+    const planId = Number(e.currentTarget.dataset.planId ?? -1);
+    if (!Number.isInteger(planId) || planId < 0 || planId >= MAX_SCRIPTS) {
+      return;
+    }
+    this.plan = clampPlan({ ...this.ensurePlan(), planId, stepIndex: 0 });
+    this.drag = EMPTY_DRAG;
+    this.renderCustom({ stepHint: "", pendingDeleteSegId: -1 });
+    /* 换方案时把该方案当前步骤的光区预览到设备（票面：编辑步骤时实时预览）。 */
+    void this.previewStep();
+  },
+
+  onStepTap(e: WechatMiniprogram.TouchEvent) {
+    const index = Number(e.currentTarget.dataset.step ?? -1);
+    const plan = this.ensurePlan();
+    const draft = currentPlanDraft(plan);
+    if (draft === null || index < 0 || index >= draft.stages.length) {
+      return;
+    }
+    this.plan = { ...plan, stepIndex: index };
+    this.drag = EMPTY_DRAG;
+    this.renderCustom({ stepHint: "", pendingDeleteSegId: -1 });
+    void this.previewStep();
+  },
+
+  onStepAdd() {
+    const plan = clampPlan(this.ensurePlan());
+    const draft = currentPlanDraft(plan);
+    if (draft === null) {
+      return;
+    }
+    const next = addStage(draft);
+    if (next === draft) {
+      wx.showToast({ title: `最多 ${MAX_PLAN_STEPS} 个步骤`, icon: "none" });
+      return;
+    }
+    const drafts = plan.drafts.slice();
+    drafts[plan.planId] = next;
+    this.plan = { ...plan, drafts, stepIndex: next.stages.length - 1 };
+    this.renderCustom({ stepHint: "" });
+  },
+
+  onStepRemove(e: WechatMiniprogram.TouchEvent) {
+    const plan = clampPlan(this.ensurePlan());
+    const draft = currentPlanDraft(plan);
+    const index = Number(e.currentTarget.dataset.step ?? -1);
+    if (draft === null) {
+      return;
+    }
+    const next = removeStage(draft, index);
+    if (next === draft) {
+      wx.showToast({ title: "至少保留 1 个步骤", icon: "none" });
+      return;
+    }
+    const drafts = plan.drafts.slice();
+    drafts[plan.planId] = next;
+    this.plan = { ...plan, drafts, stepIndex: Math.min(plan.stepIndex, next.stages.length - 1) };
+    this.renderCustom({ stepHint: "" });
+  },
+
+  onStepMove(e: WechatMiniprogram.TouchEvent) {
+    const plan = clampPlan(this.ensurePlan());
+    const draft = currentPlanDraft(plan);
+    const index = Number(e.currentTarget.dataset.step ?? -1);
+    const delta = Number(e.currentTarget.dataset.delta ?? 0);
+    if (draft === null) {
+      return;
+    }
+    const next = moveStage(draft, index, delta);
+    if (next === draft) {
+      return;
+    }
+    const drafts = plan.drafts.slice();
+    drafts[plan.planId] = next;
+    this.plan = { ...plan, drafts, stepIndex: index + delta };
+    this.renderCustom({ stepHint: "" });
+  },
+
+  /** 改步骤时长（人话档位；协议里是毫秒，界面不出现这个词）。 */
+  onStepDurationTap(e: WechatMiniprogram.TouchEvent) {
+    const value = Number(e.currentTarget.dataset.ms ?? -1);
+    if (!Number.isInteger(value) || value <= 0) {
+      return;
+    }
+    const plan = clampPlan(this.ensurePlan());
+    const draft = currentPlanDraft(plan);
+    if (draft === null) {
+      return;
+    }
+    const next = setStageDuration(draft, plan.stepIndex, String(value));
+    const drafts = plan.drafts.slice();
+    drafts[plan.planId] = next;
+    this.plan = { ...plan, drafts };
+    this.renderCustom({ stepHint: "" });
+  },
+
+  /** 把当前步骤 × 当前灯组的光区换成新列表（并写进草稿）。 */
+  applyZones(zones: readonly SegmentSpec[], hint = ""): void {
+    const plan = clampPlan(this.ensurePlan());
+    const draft = currentPlanDraft(plan);
+    if (draft === null) {
+      return;
+    }
+    const next = replaceStepZones(draft, plan.stepIndex, this.data.stripId, zones);
+    const drafts = plan.drafts.slice();
+    drafts[plan.planId] = next;
+    this.plan = { ...plan, drafts };
+    this.renderCustom({ stepHint: hint });
+    this.scheduleStepPreview();
+  },
+
+  /**
+   * 步骤预览：把当前步骤、当前灯组的光区实时写进设备。
+   *
+   * 票面要求「编辑某步骤时它的光区实时写入设备作为预览」。两个约束：
+   *  - 方案正在播放时实时光区不可见 → 先停止并提示；
+   *  - 写失败要读回设备真实值（不能留假画面）。
+   */
+  scheduleStepPreview(): void {
+    this.zoneEpoch += 1;
+    const epoch = this.zoneEpoch;
+    if (this.zoneTimer !== null) {
+      clearTimeout(this.zoneTimer);
+      this.zoneTimer = null;
+    }
+    this.zoneTimer = setTimeout(() => {
+      this.zoneTimer = null;
+      if (epoch !== this.zoneEpoch) {
+        return;
+      }
+      void this.previewStep();
+    }, 300);
+  },
+
+  async previewStep(quiet = false): Promise<void> {
+    const session = this.session;
+    const stripId = this.data.stripId;
+    if (session === null || this.customDisabledReasonOf() !== "" || stripId < 0) {
+      return;
+    }
+    try {
+      const state = session.deviceState;
+      if (state !== null && state.playbackState !== 0) {
+        await session.setPlayback(0, (state.flags & 0x01) !== 0);
+        this.setData({ stepHint: "已停止方案播放，改为预览" });
+      }
+      /*
+       * 预览 = 用设备读回的真实光区做基线，再清掉本组的全部光区，然后
+       * 按草稿逐条写回。清空是必须的：协议不允许重叠，而且草稿可能删掉了
+       * 某个旧光区——不清的话旧光区会留在设备上，预览与草稿不一致。
+       */
+      const queried = await session.queryStrip(stripId);
+      if (queried.kind !== "ok") {
+        return;
+      }
+      const existing = queried.reports.filter((report) => report.stripId === stripId);
+      for (const report of existing) {
+        const cleared = await session.clearSegment(stripId, report.segId);
+        if (!cleared.ok) {
+          throw new Error(resultText(cleared.resultCode));
+        }
+      }
+      for (const zone of this.stepZones) {
+        const ack = await session.setSegment(zone);
+        if (!ack.ok) {
+          throw new Error(resultText(ack.resultCode));
+        }
+      }
+      if (!quiet) {
+        this.setData({ stepHint: "已预览本步骤的光区" });
+      }
+      await this.refreshSegments();
+    } catch (err) {
+      const message = errorText(err);
+      this.setData({ stepHint: `预览失败：${message}` });
+      wx.showToast({ title: `预览失败：${message}`, icon: "none" });
+      await this.refreshSegments();
+    }
+  },
+
+  // ---------------- 光区：拖动划选 ----------------
+
+  /** 触摸开始：按比例换算成灯珠下标，作为锚点。 */
+  async onZoneTouchStart(e: WechatMiniprogram.TouchEvent) {
+    if (this.customDisabledReasonOf() !== "") {
+      return;
+    }
+    /* 必须先测量再换算：宽度为 0 时 cellAt 返回 -1，拖动会整个失效。 */
+    await this.measureLedBar();
+    const index = this.cellAt(e);
+    if (index < 0) {
+      return;
+    }
+    this.drag = { anchor: index, cursor: index };
+    this.renderCustom();
+  },
+
+  onZoneTouchMove(e: WechatMiniprogram.TouchEvent) {
+    if (this.drag.anchor === null) {
+      return;
+    }
+    const index = this.cellAt(e);
+    if (index < 0 || index === this.drag.cursor) {
+      return;
+    }
+    this.drag = { anchor: this.drag.anchor, cursor: index };
+    this.renderCustom();
+  },
+
+  /** 松手：确认划出的区间（冲突 / 非法时**不写入设备**，就地提示）。 */
+  onZoneTouchEnd() {
+    const range = dragRange(this.drag);
+    this.drag = EMPTY_DRAG;
+    if (range === null) {
+      this.renderCustom();
+      return;
+    }
+    this.openRangeEditor(-1, range.start, range.end);
+  },
+
+  /** 把触摸点换算成灯珠下标（按灯珠条实测宽度做比例换算）。 */
+  cellAt(e: WechatMiniprogram.TouchEvent): number {
+    const touch = (e.touches?.[0] ?? e.changedTouches?.[0]) as
+      | { clientX?: number; pageX?: number; x?: number }
+      | undefined;
+    const ledCount = this.data.ledCount;
+    if (touch === undefined || ledCount < 1) {
+      return -1;
+    }
+    const x = Number(touch.clientX ?? touch.pageX ?? touch.x ?? Number.NaN);
+    if (!Number.isFinite(x) || this.ledBarWidth <= 0) {
+      return -1;
+    }
+    return cellFromRatio((x - this.ledBarLeft) / this.ledBarWidth, ledCount);
+  },
+
+  /**
+   * 实测灯珠条的位置与宽度。
+   *
+   * 触摸事件里的坐标是视口坐标，而 `boundingClientRect` 给的也是视口坐标，
+   * 两者相减就是条内偏移——页面滚动、不同机型宽度都不影响。
+   */
+  measureLedBar(): Promise<void> {
+    return new Promise((resolve) => {
+      wx.createSelectorQuery()
+        .select(".led-bar")
+        .boundingClientRect((rect) => {
+          const box = rect as { left?: number; width?: number } | null;
+          this.ledBarLeft = Number(box?.left ?? 0);
+          this.ledBarWidth = Number(box?.width ?? 0);
+          resolve();
+        })
+        .exec();
+    });
+  },
+
+  // ---------------- 光区：快捷切分 ----------------
+
+  onSplitTap(e: WechatMiniprogram.TouchEvent) {
+    if (this.customDisabledReasonOf() !== "") {
+      return;
+    }
+    const id = String(e.currentTarget.dataset.id ?? "");
+    const stripId = this.data.stripId;
+    const ledCount = this.data.ledCount;
+    let zones: SegmentSpec[];
+    if (id === "whole" || id === "firstHalf" || id === "secondHalf") {
+      zones = splitWhole(id, ledCount, stripId, this.stepZones.map(readZone));
+    } else if (id === "two" || id === "three" || id === "four") {
+      const parts = id === "two" ? 2 : id === "three" ? 3 : 4;
+      zones = splitParts(parts, ledCount, stripId, this.stepZones.map(readZone));
+    } else {
+      return;
+    }
+    this.applyZones(zones, "已按新的划分重建光区");
+  },
+
+  // ---------------- 光区：增删改 ----------------
+
+  /** 数字精修入口：展开并填入当前值。 */
+  onZoneEditTap(e: WechatMiniprogram.TouchEvent) {
+    const segId = Number(e.currentTarget.dataset.segId ?? -1);
+    const zone = this.stepZones.find((item) => item.segId === segId);
+    if (zone === undefined) {
+      return;
+    }
+    this.openRangeEditor(segId, zone.start, zone.end);
+  },
+
+  openRangeEditor(segId: number, start: number, end: number): void {
+    this.setData({
+      editRangeOpen: true,
+      editSegId: segId,
+      editStartText: String(start),
+      editEndText: String(end),
+      pendingDeleteSegId: -1,
+    });
+  },
+
+  onEditStartInput(e: WechatMiniprogram.Input) {
+    this.setData({ editStartText: String(e.detail.value ?? "") });
+  },
+
+  onEditEndInput(e: WechatMiniprogram.Input) {
+    this.setData({ editEndText: String(e.detail.value ?? "") });
+  },
+
+  /** 确认区间：新建或改已有的那个（非法 / 重叠就地提示，一帧不发）。 */
+  onRangeConfirm() {
+    const start = Number(this.data.editStartText);
+    const end = Number(this.data.editEndText);
+    const stripId = this.data.stripId;
+    if (!Number.isInteger(start) || !Number.isInteger(end)) {
+      wx.showToast({ title: "起点与终点都要填整数", icon: "none" });
+      return;
+    }
+    if (start < 0 || end < 0 || start > end) {
+      wx.showToast({ title: "区间不合法：起点不能大于终点", icon: "none" });
+      return;
+    }
+    if (end > Math.max(0, this.data.ledCount - 1)) {
+      wx.showToast({ title: `终点不能超过第 ${this.data.ledCount} 颗`, icon: "none" });
+      return;
+    }
+    if (this.data.editSegId >= 0) {
+      const next = resizeZone(this.stepZones, this.data.editSegId, start, end);
+      if (next === null) {
+        wx.showToast({ title: "与其它光区重叠，请调整", icon: "none" });
+        return;
+      }
+      const zones = this.stepZones.map((zone) => (zone.segId === next.segId ? next : zone));
+      this.setData({ editRangeOpen: false });
+      this.applyZones(zones, "光区区间已更新");
+      return;
+    }
+    const added = addZone(this.stepZones, stripId, start, end);
+    if (added === null) {
+      const check = checkZoneAdd(
+        this.stepZones.map((zone) => ({ segId: zone.segId, start: zone.start, end: zone.end })),
+        start,
+        end,
+      );
+      wx.showToast({ title: check.message || "不能新增这个光区", icon: "none" });
+      return;
+    }
+    this.setData({ editRangeOpen: false });
+    this.applyZones([...this.stepZones, added], "已新增光区");
+  },
+
+  onRangeCancel() {
+    this.setData({ editRangeOpen: false });
+  },
+
+  /** 删除光区：先二次确认，确认后该段熄灭、其余不动。 */
+  onZoneDeleteTap(e: WechatMiniprogram.TouchEvent) {
+    const segId = Number(e.currentTarget.dataset.segId ?? -1);
+    if (segId < 0) {
+      return;
+    }
+    if (this.data.pendingDeleteSegId !== segId) {
+      this.setData({ pendingDeleteSegId: segId });
+      this.renderCustom();
+      return;
+    }
+    const next = removeZone(this.stepZones, segId);
+    this.setData({ pendingDeleteSegId: -1 });
+    this.applyZones(next, `光区 ${segId + 1} 已删除（其灯珠熄灭）`);
+  },
+
+  onZoneDeleteCancel() {
+    this.setData({ pendingDeleteSegId: -1 });
+    this.renderCustom();
+  },
+
+  /** 换主效果（四种灯效之一）。保留颜色，按类型重置参数。 */
+  onZoneModeTap(e: WechatMiniprogram.TouchEvent) {
+    const segId = Number(e.currentTarget.dataset.segId ?? -1);
+    const mode = String(e.currentTarget.dataset.mode ?? "") as LayerMode;
+    const zone = this.stepZones.find((item) => item.segId === segId);
+    if (zone === undefined) {
+      return;
+    }
+    const layer = applyModeToLayer(zone.layer0, mode);
+    /* 只在防抖里写一次：连续点不同灯效不该发一堆积压帧。 */
+    const zones = this.stepZones.map((item) =>
+      item.segId === segId ? { ...item, layer0: layer, layer1: { ...item.layer1 } } : item,
+    );
+    this.applyZones(zones, "");
+  },
+
+  /** 改光区颜色（预设色块）。 */
+  onZoneColorTap(e: WechatMiniprogram.TouchEvent) {
+    const segId = Number(e.currentTarget.dataset.segId ?? -1);
+    const hue = Number(e.currentTarget.dataset.hue ?? -1);
+    const sat = Number(e.currentTarget.dataset.sat ?? -1);
+    if (segId < 0 || !Number.isInteger(hue) || !Number.isInteger(sat)) {
+      return;
+    }
+    const zones = setZoneLayer0(this.stepZones, segId, {
+      ...(this.stepZones.find((zone) => zone.segId === segId)?.layer0 ?? defaultZoneLayer()),
+      hue,
+      sat,
+    });
+    this.applyZones(zones, "");
+  },
+
+  /** 叠加效果：开 / 关（关 = 叠加方式强制覆盖）。 */
+  onZoneOverlayToggle(e: WechatMiniprogram.TouchEvent) {
+    const segId = Number(e.currentTarget.dataset.segId ?? -1);
+    const zone = this.stepZones.find((item) => item.segId === segId);
+    if (zone === undefined) {
+      return;
+    }
+    const hasOverlay = zone.layer1.type !== NO_EFFECT;
+    const zones = hasOverlay
+      ? setZoneOverlay(this.stepZones, segId, null, 0)
+      : setZoneOverlay(
+          this.stepZones,
+          segId,
+          applyModeToLayer(
+            { type: NO_EFFECT, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0 },
+            "rainbow",
+          ),
+          0,
+        );
+    this.applyZones(zones, hasOverlay ? "叠加效果已关闭" : "已开启叠加效果");
+  },
+
+  /** 叠加方式（覆盖 / 相乘 / 相加）。 */
+  onZoneBlendTap(e: WechatMiniprogram.TouchEvent) {
+    const segId = Number(e.currentTarget.dataset.segId ?? -1);
+    const blend = Number(e.currentTarget.dataset.blend ?? -1);
+    const zone = this.stepZones.find((item) => item.segId === segId);
+    if (zone === undefined || zone.layer1.type === NO_EFFECT) {
+      return;
+    }
+    if (!BLEND_OPTIONS.some((option) => option.value === blend)) {
+      return;
+    }
+    this.applyZones(setZoneOverlay(this.stepZones, segId, zone.layer1, blend), "");
+  },
+
+  // ---------------- 方案：写入灯控 / 播放 ----------------
+
+  /**
+   * 写入灯控：整套方案提交到设备并启用（**不自动播放**）。
+   *
+   * 三道预检在发第一帧之前：时长合法、区间合法、容量不超 16KB。
+   */
+  async onPlanWrite() {
+    const session = this.session;
+    const plan = clampPlan(this.ensurePlan());
+    const draft = currentPlanDraft(plan);
+    if (session === null || draft === null || !this.data.ready || this.data.writingPlan) {
+      return;
+    }
+    const script = draftToConfig(draft, Math.max(1, this.data.stripCount));
+    const precheck = session.validateScriptForDevice(script);
+    if (!precheck.ok) {
+      this.setData({ stepHint: precheck.message });
+      wx.showToast({ title: precheck.message, icon: "none" });
+      return;
+    }
+    const capacity = checkScriptBlobBytes(
+      draftCapacityBytes(plan.drafts, [], plan.planId, script.stripCount),
+    );
+    if (!capacity.ok) {
+      const message = `${capacity.message}（${PLAN_CAPACITY_NOTE}）`;
+      this.setData({ stepHint: message });
+      wx.showToast({ title: capacity.message, icon: "none" });
+      return;
+    }
+
+    this.setData({ writingPlan: true, stepHint: "正在写入灯控…" });
+    try {
+      /* 写入前若方案在播放，先停止（否则用户看不到写入后的静态画面）。 */
+      const state = session.deviceState;
+      if (state !== null && state.playbackState !== 0) {
+        await session.setPlayback(0, (state.flags & 0x01) !== 0);
+      }
+      const result = await session.downloadScript(script, {
+        /* 写入即启用（「启用这套方案」），但不自动播放。 */
+        activate: true,
+        loop: state !== null && (state.flags & 0x01) !== 0,
+      });
+      if (result.kind === "ok") {
+        this.setData({ stepHint: `方案 ${plan.planId + 1} 已写入灯控并启用` });
+        void this.refreshSegments();
+        return;
+      }
+      if (result.kind === "stale") {
+        this.setData({ stepHint: "连接已切换，写入结果已丢弃" });
+        return;
+      }
+      const message =
+        result.kind === "too-large"
+          ? `${result.message}；设备上的上一套方案仍可用`
+          : result.kind === "ack-error"
+            ? `写入被拒绝（${resultText(result.ack.resultCode)}），设备上的上一套方案仍可用`
+            : result.message;
+      this.setData({ stepHint: message });
+      wx.showToast({ title: message, icon: "none" });
+    } finally {
+      this.setData({ writingPlan: false });
+    }
+  },
+
+  /** 播放 / 暂停 / 停止（State 是权威）。 */
+  async onPlanPlayback(e: WechatMiniprogram.TouchEvent) {
+    const session = this.session;
+    const action = Number(e.currentTarget.dataset.action ?? -1);
+    if (session === null || !this.data.ready || this.data.playingPlan) {
+      return;
+    }
+    if (action !== 0 && action !== 1 && action !== 2) {
+      return;
+    }
+    this.setData({ playingPlan: true });
+    try {
+      const loop = ((session.deviceState?.flags ?? 0) & 0x01) !== 0;
+      const result = await session.setPlayback(action as 0 | 1 | 2, loop);
+      if (result.kind === "ok") {
+        this.syncEffectSummary();
+        return;
+      }
+      if (result.kind === "ack-error") {
+        wx.showToast({ title: resultText(result.ack.resultCode), icon: "none" });
+        return;
+      }
+      if (result.kind === "error") {
+        wx.showToast({ title: result.message, icon: "none" });
+      }
+    } finally {
+      this.setData({ playingPlan: false });
+    }
   },
 
   /** 重画卡片 + 参数区 + 摘要。 */  renderQuick(patch: Record<string, unknown> = {}): void {
@@ -980,3 +1922,40 @@ Page({
     }
   },
 });
+
+/** 灯效类型 → 用户看到的名称（四种灯效 + 空层）。 */
+function modeNameOf(type: number): string {
+  switch (layerModeOf(type)) {
+    case "breathing":
+      return "呼吸";
+    case "rainbow":
+      return "彩虹";
+    case "comet":
+      return "流光";
+    case "off":
+      return "关闭";
+    default:
+      return "静态";
+  }
+}
+
+/**
+ * 把一层灯效切到指定档位（保留颜色）。
+ *
+ * 复用 `effect-view.applyLayerType` 的规则：静态清零、呼吸只留波形位、
+ * 彩虹/流光只留方向位、周期抬到类型下限之上。区别是这里返回**新对象**——
+ * 草稿里的层不能被就地改（否则撤销 / 快照会一起变）。
+ */
+function applyModeToLayer(layer: EffectLayer, mode: LayerMode): EffectLayer {
+  const option = MAIN_MODE_OPTIONS.find((item) => item.mode === mode);
+  if (option === undefined) {
+    return { ...layer };
+  }
+  /* 传副本进去：统一规则会就地改类型并重置参数，草稿里的层不能被就地改。 */
+  return applyLayerType({ ...layer }, option.type);
+}
+
+/** 草稿 → 下发配置（时长非法时用 0，让校验给出具体原因）。 */
+function draftToConfig(draft: ScriptDraft, stripCount: number): ScriptConfig {
+  return draftToScriptConfig(draft, stripCount);
+}

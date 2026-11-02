@@ -1,7 +1,7 @@
 <view class="page {{themeClass}}">
   <nav-bar
     title="发现"
-    subtitle="{{scanning ? '扫描中…' : (ready ? '已连接 ' + currentDeviceName : '查找附近的灯带')}}"
+    subtitle="{{scanning ? '扫描中…' : (ready ? '已连接 ' + currentDeviceName : '查找附近的灯控')}}"
     action-text="{{scanning ? '停止' : '扫描'}}"
     bind:action="onNavAction"
   />
@@ -26,7 +26,7 @@
     <text>{{identityHint}}</text>
   </view>
 
-  <!-- 当前设备：备注名 + 控制入口 + 灯带启用掩码（App 本地偏好） -->
+  <!-- 当前设备：备注名 + 控制入口 + 灯组启用掩码（App 本地偏好） -->
   <view class="section" wx:if="{{ready}}">
     <view class="section-head">
       <text class="section-title">{{currentDeviceName || '当前设备'}}</text>
@@ -49,7 +49,7 @@
     </view>
 
     <view class="section-subhead">
-      <text class="section-title small">显示的灯带</text>
+      <text class="section-title small">显示的灯组</text>
       <text class="section-hint inline">只在本机生效，设备配置不会改变</text>
     </view>
     <view class="strip-trim-row" wx:for="{{stripRows}}" wx:key="stripId">
@@ -95,7 +95,7 @@
         <text class="device-delete" data-key="{{item.key}}" catchtap="onDeleteDevice">删除</text>
       </view>
     </view>
-    <text class="section-hint">灯带数标「缓存 / 上次」时不是设备当前配置，连接后以设备为准</text>
+    <text class="section-hint">灯组数标「缓存 / 上次」时不是灯控当前配置，连接后以灯控为准</text>
   </view>
 
   <!-- 附近设备（实时扫描结果）：与本机记录同一台的不重复列出 -->

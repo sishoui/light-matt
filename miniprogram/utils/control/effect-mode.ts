@@ -16,6 +16,7 @@
  */
 
 import type { SegmentSpec } from "../protocol/types";
+import type { ScriptDraft } from "./script-view";
 
 /** 编辑档位。 */
 export type EffectMode = "quick" | "custom";
@@ -28,6 +29,14 @@ export interface CustomSnapshot {
   planId: number;
   /** 当时选中的步骤下标（0 起）。 */
   stepIndex: number;
+  /**
+   * 当时的**全部**方案草稿（4 槽 × ≤8 步骤 × 光区）。
+   *
+   * 为什么不能只存 `zones`：一个用户的编排可能跨多个方案槽位与多个步骤，
+   * 只存「当前步骤的光区」会让切回来之后其它方案 / 步骤全变成空白的。
+   * 省略时快照仍是合法形状（早期调用点只关心 zones）。
+   */
+  drafts?: ScriptDraft[];
   /** 保存时间戳（用于提示与调试，不参与判断）。 */
   savedAt: number;
 }
@@ -45,10 +54,34 @@ export function snapshotKey(deviceKey: string, stripId: number): string {
 /** 模块级快照表（不进 data、不落存储）。 */
 const snapshots = new Map<string, CustomSnapshot>();
 
+/** 复制一个草稿（深拷贝层对象；方案 / 步骤的数组也换新引用）。 */
+function copyDraft(draft: ScriptDraft): ScriptDraft {
+  return {
+    scriptId: draft.scriptId,
+    stages: draft.stages.map((stage) => ({
+      durationInput: stage.durationInput,
+      segments: stage.segments.map((segment) =>
+        "layer0" in segment
+          ? {
+              stripId: segment.stripId,
+              segId: segment.segId,
+              start: segment.start,
+              end: segment.end,
+              blend: segment.blend,
+              layer0: { ...segment.layer0 },
+              layer1: { ...segment.layer1 },
+            }
+          : { ...segment },
+      ),
+    })),
+  };
+}
+
 /**
  * 切到快捷档前调用：记住当前编排。
  *
  * `zones` 传设备读回的权威 spec（不是页面草稿）——快照要能直接重放回设备。
+ * `drafts` 传完整的四级草稿（见 `CustomSnapshot.drafts`）。
  */
 export function saveCustomSnapshot(
   deviceKey: string,
@@ -67,6 +100,7 @@ export function saveCustomSnapshot(
     })),
     planId: snapshot.planId,
     stepIndex: snapshot.stepIndex,
+    drafts: snapshot.drafts?.map(copyDraft),
     savedAt: nowMs,
   });
 }
@@ -89,6 +123,7 @@ export function takeCustomSnapshot(
     })),
     planId: found.planId,
     stepIndex: found.stepIndex,
+    drafts: found.drafts?.map(copyDraft),
     savedAt: found.savedAt,
   };
 }

@@ -14,10 +14,14 @@
 
 import { THEME_KEY } from "../utils/control/theme";
 
-/** 与 app.json tabBar.list 的顺序**必须一致**。 */
+/**
+ * 与 app.json tabBar.list 的顺序**必须一致**。
+ *
+ * #58 起只有两项（设备 / 发现）：灯效编排在设备详情页里，
+ * 独立的「剧本」tab 已删除。
+ */
 const TABS = [
   { path: "/pages/home/home", label: "设备" },
-  { path: "/pages/scripts/scripts", label: "剧本" },
   { path: "/pages/devices/devices", label: "发现" },
 ] as const;
 

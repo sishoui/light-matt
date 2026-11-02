@@ -279,7 +279,7 @@ Page({
   syncTabBar() {
     const tabBar = this.getTabBar?.();
     if (tabBar !== undefined && tabBar !== null) {
-      tabBar.setData({ selected: 2 });
+      tabBar.setData({ selected: 1 });
     }
   },
 
@@ -513,7 +513,7 @@ Page({
   toRowView(row: MyDeviceRow, current: string): DeviceRowView {
     const cached = row.stripCountSource !== "device";
     const stripsText =
-      row.stripCount === null ? "灯带数未知" : `灯带 ${row.stripCount} 条`;
+      row.stripCount === null ? "灯组数未知" : `灯组 ${row.stripCount} 条`;
     const sourceTag =
       row.stripCountSource === "backend-cache"
         ? " · 缓存"
@@ -548,7 +548,7 @@ Page({
     for (let stripId = 0; stripId < stripCount; stripId += 1) {
       stripRows.push({
         stripId,
-        label: `灯带 ${stripId + 1}`,
+        label: `灯组 ${stripId + 1}`,
         /* 没有 deviceId（还没连过）时按默认全启用显示。 */
         enabled: deviceId.length === 0 ? true : stripEnabled(registry, deviceId, stripId),
       });
