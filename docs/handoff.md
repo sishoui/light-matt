@@ -176,6 +176,9 @@ python scripts/analyze-strips-video.py base.mp4
 `setSegmentComet` 仍走扁平草稿路径，与 #48 是同类陷阱。段编辑页直接用
 `setSegment(spec)`，所以当前没有调用点；**将来给它们接 UI 时必须一起改**。
 
+> **完整未完成清单见 [`pending-tasks.md`](./pending-tasks.md)。** 它把 25 项剩余验收
+> 按「需手指点 / 需硬件 / 纯仓库」分了类，并写明相机色域压缩这个最大阻塞。
+
 ### 0.00 复制这段话开新会话
 
 ```
