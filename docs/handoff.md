@@ -1,15 +1,15 @@
 # 交接：lumen 当前状态与下一步
 
-**最后更新**：2026-11-02　**分支**：`master`（v3 已合入；工作区有大量未提交改动，见 §0）
+**最后更新**：2026-11-02　**分支**：`feat/effect-editor`（灯效编辑重构已完成，待合入 `master`）
 
 这份文件是给**新会话**的入口。它只写「新会话必须知道、但代码和文档里读不到」的东西；
 其余一律给指针，不重复。
 
 ---
 
-## 0. 2026-11-02 第四轮：灯效编辑重构（进行中）
+## 0. 2026-11-02 第四轮：灯效编辑重构（**已完成**，分支 `feat/effect-editor`）
 
-**这是当前唯一在做的任务。** 规格与实现票已全部落在 GitHub：
+**6 张实现票 `#53`–`#58` 全部实现完毕并验证。** 规格与实现票落在 GitHub：
 
 - **规格**：[#52 小程序：灯效编辑重构（快捷 / 自定义两档 + 术语重写）](https://github.com/sishoui/light-matt/issues/52)（label `spec`）
 - **本地副本**：`.scratch/effect-editor-spec.md`（与 #52 同内容，离线可读）
@@ -41,6 +41,44 @@
  ├────────┼─ #57 模式切换：保留并恢复编排   (阻塞于 #54, #56)
  └────────┴─ #58 收尾：术语 + 删旧页 + 设备页收窄  (阻塞于 #54, #55, #56)
 ```
+
+### 完成状态（2026-11-02）
+
+| 票 | 内容 | 落点 |
+|---|---|---|
+| #53 | 收敛光区单一真相 + 下沉灯效视图 | `zone-model.ts` / `effect-view.ts`；`segment-editor` / `segment-view` / `quick-effects` / `segment-shapes` 全部委托 |
+| #54 | 快捷档成品效果卡 | `pages/device` 的「快捷」档；`quick-effects` 的 `buildQuickCardViews` / `buildQuickPanel` |
+| #55 | 自定义档光区编辑 | `zone-editor.ts`（拖动划选 / 切分 / 增删改）+ 灯珠条 UI |
+| #56 | 方案与步骤 | `plan-editor.ts`（4 槽 × 步骤 ≤8 × 光区 ≤8，复用 `script-view` 草稿） |
+| #57 | 模式切换快照 | `effect-mode.ts` 快照扩展为完整四级编排 |
+| #58 | 术语统一 + 删旧入口 | 删 `pages/scripts` 与 `pages/segment-edit`；tabBar 只剩两项 |
+
+**两个必须记住的实现细节**（都是真机会踩的）：
+
+1. **快捷档写整组前必须先清掉其它光区**。协议要求同带光区不重叠，而快捷档的语义是
+   「整组变成这一个效果」——多光区灯组不清就写会被设备回 `InvalidParam`，
+   用户点了卡片却毫无变化（`device.writeQuick`）。
+2. **灯珠数必须逐灯组取**（`state.stripCounts[stripId]`），**不能**用 `state.ledCount`
+   ——后者按协议只是 strip 0 的派生值。多灯组设备每组长度不同（演示设备就有 60 与 24），
+   取错会让拖动落到不存在的灯珠、切分产出越界区间。页面统一走 `stripLedCount()`。
+
+**测试与验收（本轮实测）**：
+
+```bash
+cd miniprogram && npx vitest run                 # 47 文件 / 921 用例
+cd miniprogram && npx tsc --noEmit               # 干净
+cd miniprogram && node .auto/check-bindings.mjs  # 零缺失
+cd miniprogram && node .auto/verify-effect-editor.mjs   # 48/48（新增，锁两档全部行为）
+cd miniprogram && node .auto/verify-redesign.mjs        # 26/26
+cd miniprogram && node .auto/verify-deep.mjs            # 27/27
+cd miniprogram && node .auto/verify-ui-interaction.mjs  # 7/7
+```
+
+`verify-effect-editor.mjs` 锁的是**只有渲染层能发现**的几件事：点卡片后设备状态真的变、
+参数区只显示该卡的档位、均分切分互不重叠、切档后编排完整恢复、界面零协议词、两 tab。
+
+> **`.auto/verify-ui.mjs` 已作废**（它的目标页面 `pages/scripts` / `pages/segment-edit`
+> 已删除），只作历史证据保留，跑它会失败——那是预期。
 
 ### 已完成的地基（重要：别重写）
 

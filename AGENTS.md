@@ -7,9 +7,10 @@
 **先读 [`docs/handoff.md`](docs/handoff.md)。** 它写清了当前在哪、哪些已完成、剩余工作卡在
 什么上。不要凭本文件的简短描述推断进度——项目已经过了三个大版本。
 
-> **当前在做的任务**：灯效编辑重构（规格 [#52](https://github.com/sishoui/light-matt/issues/52)，
-> 实现票 #53–#58）。**开工前先读 handoff §0**，那里有依赖图、当前 frontier 与已完成的
-> 纯逻辑地基（别重写）。**注意工作区有大量未提交改动**（UI 改版），先确认提交状态再动 git。
+> **刚完成**：灯效编辑重构（规格 [#52](https://github.com/sishoui/light-matt/issues/52)，
+> 实现票 #53–#58），在分支 `feat/effect-editor`，**待合入 master**。灯效编辑现在是
+> 设备详情页里的「快捷 / 自定义」两档；`pages/scripts` 与 `pages/segment-edit` 已删除。
+> 细节与两个真机陷阱见 handoff §0。
 
 **当前状态**：v3 的 11 张实现票（#36–#45）与 4 张缺口票（#47–#50）全部关闭，
 **已合入 `master`**（PR #51，merge commit `f9f2fe3`）。**设备侧验收已全部跑完**：协议层 47 项 + 行为语义
@@ -38,11 +39,12 @@ GitHub **#46** 已关闭且**验收项全部闭环**：§1.1–1.8 的 38 项里
 | 路由 | 角色 |
 |---|---|
 | `pages/home/home` | **tab 1 设备**：大设备卡 + 下方设备小图 |
-| `pages/scripts/scripts` | tab 2 剧本 |
-| `pages/devices/devices` | tab 3 **发现**：扫描 / 我的设备 / 外观 / 演示开关 |
-| `pages/device/device` | 二级页：**设备控制**（原「灯光」页并入） |
+| `pages/devices/devices` | **tab 2 发现**：扫描 / 我的设备 / 外观 / 演示开关 |
+| `pages/device/device` | 二级页：**设备控制 + 灯效编辑（快捷 / 自定义两档）** |
 | `pages/device-info/device-info` | 二级页：身份 / 固件 / 灯珠数 / 自检 / 改名 / 删除 |
-| `pages/segment-edit/segment-edit` | 二级页：段区间 + 两层灯效 |
+
+> 灯效编辑重构（#52）删除了 `pages/scripts`（剧本 tab）与 `pages/segment-edit`：
+> 多步骤方案并入设备详情页的「自定义」档，底部只剩「设备 / 发现」两项。
 
 **交互契约**（`pages/home`）：点小图只切换大卡**不连接**；点大卡进 `pages/device`
 （在那里才连接）；卡上的电源键是 `catchtap` 快捷开关，未连接时先连上/切换。
@@ -57,7 +59,7 @@ GitHub **#46** 已关闭且**验收项全部闭环**：§1.1–1.8 的 38 项里
 **页面 wxss 不要写死 hex**——写死会在某个主题下变白底白字。
 
 **导航栏与 tabBar 都是自建的**：`components/nav-bar`（含状态栏高度与胶囊避让）、
-`custom-tab-bar`（3 项，图标纯 CSS）。tab 页内容必须给 tabBar 让出
+`custom-tab-bar`（2 项，图标纯 CSS）。tab 页内容必须给 tabBar 让出
 `padding-bottom: calc(140rpx + env(safe-area-inset-bottom))`，否则底部被压住。
 
 **演示模式（mock）**：`utils/ble/mock-transport.ts` 实现与 `BleTransport` 同形的方法，
@@ -88,7 +90,7 @@ SHA-256 索引、配置丢失记录。
 
 ```bash
 cmd.exe //c "firmware\\test\\run-tests.cmd"   # 11053 项断言 + 58 条 v3 向量
-cd miniprogram && npx vitest run              # 665 用例（不含 e2e）
+cd miniprogram && npx vitest run              # 921 用例（不含 e2e）
 cd miniprogram && npm run test:ble            # 8 项真机 e2e（无设备自动 skip）
 cd miniprogram && npx tsc --noEmit            # 必须干净
 cd server && npm test                         # 140 用例
@@ -98,12 +100,15 @@ cd server && npm run typecheck                # 必须干净
 **模拟器 UI 回归**（改页面后必跑；需要微信开发者工具开着自动化端口）：
 
 ```bash
-cd miniprogram && node .auto/verify-redesign.mjs   # 28 项：页面树 / 大卡 / 小图切换 / 主题 / tabBar
-cd miniprogram && node .auto/verify-ui-interaction.mjs
+cd miniprogram && node .auto/verify-effect-editor.mjs   # 48 项：快捷卡生效 / 参数区 / 切分 / 快照恢复 / 逐组灯珠数 / 术语 / 两 tab
+cd miniprogram && node .auto/verify-redesign.mjs        # 26 项：页面树 / 大卡 / 小图切换 / 主题 / tabBar
+cd miniprogram && node .auto/verify-deep.mjs            # 27 项：电源 / 亮度 / 自定义档 / 写入 / 播放
+cd miniprogram && node .auto/verify-ui-interaction.mjs  # 7 项：点得动
 ```
 
-`verify-redesign.mjs` 锁的是「只有渲染层能发现」的问题：白屏、`bindtap` 全失效、
-点小图却发起了连接、主题 class 没挂上、tabBar 没渲染。改页面后**跑一次再交付**。
+`verify-effect-editor.mjs` 锁的是「只有渲染层能发现」的问题：白屏、`bindtap` 全失效、
+点小图却发起了连接、主题 class 没挂上、tabBar 没渲染，以及**点效果卡后设备状态
+真的变了**（不是只改 data）。改页面后**跑一次再交付**。
 
 ## Agent skills
 
