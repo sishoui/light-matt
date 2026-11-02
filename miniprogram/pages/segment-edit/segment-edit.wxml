@@ -60,7 +60,7 @@
     <text class="section-hint">{{existingText}}</text>
   </view>
 
-  <!-- ============ 第 1 层（必填） ============ -->
+  <!-- ============ 主效果 / 叠加效果（两层定宽） ============ -->
   <view
     wx:for="{{layerViews}}"
     wx:key="label"
@@ -74,7 +74,7 @@
     </view>
 
     <block wx:if="{{!layer.collapsed}}">
-      <!-- 层类型：第 2 层多一个「关闭」（第 1 层不提供，因为必填） -->
+      <!-- 灯效类型：叠加效果多一个「关闭」（主效果必填，不提供关闭入口） -->
       <view class="chip-row">
         <view
           wx:for="{{layer.modeOptions}}"
@@ -283,7 +283,7 @@
   <view class="section {{blendEnabled && ready ? '' : 'disabled'}}">
     <view class="section-head">
       <text class="section-title">混合方式</text>
-      <text class="section-value">{{blend === 1 ? '相乘' : (blend === 2 ? '相加' : '覆盖')}}</text>
+      <text class="section-value">{{blendName}}</text>
     </view>
     <view class="chip-row">
       <view

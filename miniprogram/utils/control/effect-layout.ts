@@ -5,8 +5,18 @@
  * 主效果 / 叠加效果。协议要求**同一灯组内的光区不能重叠**（设备会回
  * InvalidParam），所以重叠必须在本地就拦住——一帧都不发。
  *
- * 本模块只处理「区间」这一维：切分、校验、逐灯珠归属。灯效参数在
- * `segment-editor` / `quick-effects` 里，互不依赖。
+ * ## 单一真相（#53）
+ *
+ * 「区间」这一维的实现只在本模块存在一份。上层模块（`segment-editor`、
+ * `segment-view`、将来的自定义档）一律**委托**到这里，不再各写一套：
+ *
+ *  - 区间校验：[`parseRangeText`] / [`checkRange`]（同一个 `validateRange`）
+ *  - 重叠判定：[`rangesOverlap`] / [`findConflict`] / [`findConflictInList`]
+ *  - 槽位分配：[`firstFreeSlot`] / [`nextFreeSegId`]
+ *  - 逐灯珠归属：[`scanLedOwnership`]（`buildZoneCells` / `buildLedCells` 的共用核心）
+ *
+ * 依赖方向是**单向**的：本模块不 import 任何上层控制模块；灯效参数校验
+ * 留在 `segment-editor`，两者互不反向依赖。
  */
 
 import { MAX_LEDS, MAX_SEGMENTS } from "../protocol/constants";
@@ -41,19 +51,42 @@ export function checkRange(start: number, end: number, ledCount: number): RangeR
     return invalid("灯组灯珠数量未知，请先连接");
   }
   if (!Number.isInteger(start) || !Number.isInteger(end)) {
-    return invalid("起止必须是整数");
+    return invalid("起点与终点必须都是整数");
   }
   if (start < 0 || end < 0) {
-    return invalid("起止不能是负数");
+    return invalid("起点与终点不能是负数");
   }
   if (start > end) {
     return invalid(`起点 ${start} 不能大于终点 ${end}`);
   }
   const limit = Math.min(ledCount, MAX_LEDS) - 1;
   if (end > limit) {
-    return invalid(`终点 ${end} 超出范围（0-${limit}）`);
+    return invalid(`终点 ${end} 超出灯珠范围（0-${limit}）`);
   }
   return { ok: true, start, end, message: "" };
+}
+
+/**
+ * 校验两个输入框的原文（先把文本解析成整数，再走 `checkRange`）。
+ *
+ * 空串必须**显式拒绝**：`Number("") === 0` 会把「没填」误判成合法起点。
+ * 失败时 `start` / `end` 为 -1（不给调用方「半成品」区间）。
+ */
+export function parseRangeText(startText: string, endText: string, ledCount: number): RangeResult {
+  if (!Number.isInteger(ledCount) || ledCount < 1) {
+    return { ok: false, start: -1, end: -1, message: "灯组灯珠数量未知，请先连接" };
+  }
+  const startRaw = String(startText).trim();
+  const endRaw = String(endText).trim();
+  if (startRaw === "" || endRaw === "") {
+    return { ok: false, start: -1, end: -1, message: "起点与终点都要填" };
+  }
+  const start = Number(startRaw);
+  const end = Number(endRaw);
+  if (!Number.isInteger(start) || !Number.isInteger(end)) {
+    return { ok: false, start: -1, end: -1, message: "起点与终点必须都是整数" };
+  }
+  return checkRange(start, end, ledCount);
 }
 
 /** 两个闭区间是否相交。 */
@@ -81,6 +114,33 @@ export function findConflict(
   }
   return null;
 }
+
+/**
+ * 跨灯组列表的重叠判定：先按 `stripId` 过滤，再比区间。
+ *
+ * 段区间是「每带独立」的——编辑第 3 条带时，第 1、2 条带的段与它毫无关系，
+ * 算进来会误拒。返回带 `stripId` 的那一条原文（调用方要用它的号码写提示）。
+ */
+export function findStripConflict<T extends { stripId: number; segId: number; start: number; end: number }>(
+  range: { start: number; end: number },
+  items: readonly T[],
+  stripId: number,
+  ignoreSegId = -1,
+): T | null {
+  for (const item of items) {
+    if (item.stripId !== stripId) {
+      continue;
+    }
+    if (item.segId === ignoreSegId) {
+      continue;
+    }
+    if (rangesOverlap(range, item)) {
+      return item;
+    }
+  }
+  return null;
+}
+
 
 /** 全量校验：区间合法 + 不与他人重叠。 */
 export function validateZone(
@@ -111,15 +171,26 @@ export function canAddZone(zones: readonly ZoneRange[]): boolean {
   return zones.length < MAX_SEGMENTS;
 }
 
-/** 下一个空闲槽位；已满返回 -1。 */
-export function nextFreeSegId(zones: readonly ZoneRange[]): number {
+/**
+ * 已占用槽位列表 → 第一个空闲槽位；占满返回 -1。
+ *
+ * 槽位是**设备概念**（每灯组 8 个），新建光区时占用最小空闲槽位，
+ * 绝不静默覆盖别人的段。
+ */
+export function firstFreeSlot(usedSegIds: readonly number[]): number {
   for (let id = 0; id < MAX_SEGMENTS; id += 1) {
-    if (!zones.some((zone) => zone.segId === id)) {
+    if (!usedSegIds.includes(id)) {
       return id;
     }
   }
   return -1;
 }
+
+/** 下一个空闲槽位；已满返回 -1。 */
+export function nextFreeSegId(zones: readonly ZoneRange[]): number {
+  return firstFreeSlot(zones.map((zone) => zone.segId));
+}
+
 
 /**
  * 把 `0 .. ledCount-1` 按份数均分（余数给前面的块，避免最后一块特别短）。
@@ -159,6 +230,61 @@ export function splitPreset(preset: SplitPreset, ledCount: number): { start: num
   return { start: Math.min(half, last), end: last };
 }
 
+/**
+ * 逐灯珠归属的**共用核心**（`buildZoneCells` / `buildLedCells` 都走它）。
+ *
+ * 输入的 `items` 必须已经按灯组过滤好：这里只认槽位与区间，不认 `stripId`
+ * ——「哪一条带」是调用方（页面）显式给出的，本模块不替它猜。
+ *
+ * `draft` 是**正在划的那一段**（可能非法 → 传 null）。它优先于已有归属，
+ * 这样「正在划的这段」永远看得见；与已有光区相交的部分标 `conflict`
+ * （提交前就标出来，不发一帧必定被设备拒绝的配置）。
+ */
+export interface OwnershipItem {
+  segId: number;
+  start: number;
+  end: number;
+}
+
+export interface OwnershipScan {
+  /** 逐颗灯珠的归属槽位；-1 = 未覆盖。 */
+  owners: number[];
+  /** 逐颗灯珠是否落在草稿区间内。 */
+  inDraft: boolean[];
+  /** 逐颗灯珠是否「草稿 ∩ 已有归属」= 冲突。 */
+  conflicts: boolean[];
+}
+
+export function scanLedOwnership(
+  ledCount: number,
+  items: readonly OwnershipItem[],
+  draft: { start: number; end: number } | null,
+  ignoreSegId = -1,
+): OwnershipScan {
+  const count = Math.max(0, Math.min(ledCount, MAX_LEDS));
+  const owners: number[] = [];
+  const inDraft: boolean[] = [];
+  const conflicts: boolean[] = [];
+  const draftValid = draft !== null && draft.end >= draft.start;
+  for (let index = 0; index < count; index += 1) {
+    let ownerSegId = -1;
+    for (const item of items) {
+      if (item.segId === ignoreSegId) {
+        continue;
+      }
+      if (index >= item.start && index <= item.end) {
+        ownerSegId = item.segId;
+        break;
+      }
+    }
+    const edited = draftValid && index >= draft!.start && index <= draft!.end;
+    owners.push(ownerSegId);
+    inDraft.push(edited);
+    conflicts.push(edited && ownerSegId >= 0);
+  }
+  return { owners, inDraft, conflicts };
+}
+
 /** 灯珠条上的一格。 */
 export interface ZoneCell {
   /** 灯珠下标。 */
@@ -186,30 +312,19 @@ export function buildZoneCells(
   draft: { start: number; end: number } | null,
   ignoreSegId = -1,
 ): ZoneCell[] {
-  const count = Math.max(0, Math.min(ledCount, MAX_LEDS));
-  const cells: ZoneCell[] = [];
-  for (let index = 0; index < count; index += 1) {
-    let ownerSegId = -1;
-    for (const zone of zones) {
-      if (zone.segId === ignoreSegId) {
-        continue;
-      }
-      if (index >= zone.start && index <= zone.end) {
-        ownerSegId = zone.segId;
-        break;
-      }
-    }
-    const inDraft = draft !== null && index >= draft.start && index <= draft.end;
-    cells.push({
+  const scan = scanLedOwnership(ledCount, zones, draft, ignoreSegId);
+  return scan.owners.map((ownerSegId, index) => {
+    const editing = scan.inDraft[index];
+    return {
       index,
-      ownerSegId: inDraft ? ignoreSegId : ownerSegId,
-      hex: inDraft ? (colors.get(ignoreSegId) ?? "") : (colors.get(ownerSegId) ?? ""),
-      editing: inDraft,
-      conflict: inDraft && ownerSegId >= 0,
-    });
-  }
-  return cells;
+      ownerSegId: editing ? ignoreSegId : ownerSegId,
+      hex: colors.get(editing ? ignoreSegId : ownerSegId) ?? "",
+      editing,
+      conflict: scan.conflicts[index],
+    };
+  });
 }
+
 
 /** 从设备读回的光区 → 区间列表（按槽位排序）。 */
 export function zonesFromReports(reports: readonly SegmentReport[]): ZoneRange[] {

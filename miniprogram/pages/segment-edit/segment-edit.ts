@@ -22,9 +22,7 @@ import {
   MAX_SEGMENTS,
   MAX_STRIPS,
   NO_EFFECT,
-  SEGMENT_TYPE,
   WAVEFORM,
-  WAVEFORM_NAMES,
 } from "../../utils/protocol/constants";
 import type {
   BlendMode,
@@ -35,92 +33,40 @@ import type {
   SegmentSpec,
   SegmentTarget,
 } from "../../utils/protocol/types";
-import { PRESETS, rgbToHex, rgbToSegmentParams, segmentHueSatToRgb } from "../../utils/color/hsv";
+import { PRESETS, rgbToSegmentParams } from "../../utils/color/hsv";
 import {
   blendEnabled,
   buildLedCells,
   defaultDraft,
   discardDraft,
   draftFromSpec,
-  effectiveBlend,
   emptyLayerDraft,
   isDraftDirty,
-  layerPeriodFloor,
   parseDraftRange,
   validateDraft,
   type LedCell,
   type SegmentDraft,
 } from "../../utils/control/segment-editor";
-import { firstFreeSegId, percentOf255, spanText, tailText } from "../../utils/control/segment-view";
+import {
+  BLEND_OPTIONS,
+  applyLayerType,
+  blendName,
+  buildLayerPanel,
+  defaultCollapsed,
+  setCollapsed,
+  toggleCollapsed,
+  type LayerView,
+} from "../../utils/control/effect-view";
+import { firstFreeSlot } from "../../utils/control/effect-layout";
+import { zoneSpecOf } from "../../utils/control/zone-model";
 import { ControlSession } from "../../utils/control/session";
 import { getSession } from "../../utils/control/session-singleton";
 import { createWxStorage } from "../../utils/control/device-cache";
 import { loadTheme, themeClass } from "../../utils/control/theme";
 import { queryInt } from "../../utils/control/routes";
 
-/** UI 上的灯效选项（第 2 层多一个「关闭」）。 */
-type LayerMode = "static" | "breathing" | "rainbow" | "comet" | "off";
 
-interface ModeOption {
-  mode: LayerMode;
-  name: string;
-  type: number;
-}
-
-const LAYER0_MODES: ModeOption[] = [
-  { mode: "static", name: "静态", type: SEGMENT_TYPE.STATIC },
-  { mode: "breathing", name: "呼吸", type: SEGMENT_TYPE.BREATHING },
-  { mode: "rainbow", name: "彩虹", type: SEGMENT_TYPE.RAINBOW },
-  { mode: "comet", name: "流光", type: SEGMENT_TYPE.COMET },
-];
-
-const LAYER1_MODES: ModeOption[] = [
-  ...LAYER0_MODES,
-  { mode: "off", name: "关闭", type: NO_EFFECT },
-];
-
-/** 每层的展示态（WXML 只读这一份，编辑一律回写到 `this.draft`）。 */
-interface LayerView {
-  label: string;
-  mode: LayerMode;
-  /** 该层是否为空（只有第 2 层可能为空）。 */
-  empty: boolean;
-  /** 折叠态：三个参数组默认都收起，避免一屏堆 20 个控件。 */
-  collapsed: boolean;
-  modeOptions: ModeOption[];
-  colorHex: string;
-  periodMs: number;
-  periodText: string;
-  periodFloor: number;
-  minLevel: number;
-  minLevelText: string;
-  waveform: number;
-  waveformOptions: Array<{ value: number; name: string }>;
-  span: number;
-  spanText: string;
-  tail: number;
-  tailText: string;
-  reverse: boolean;
-  breathing: boolean;
-  rainbow: boolean;
-  comet: boolean;
-  /** 每个预设是否等于该层当前色（按 hue+sat 判定，不按 hex 字符串）。 */
-  presetSelected: boolean[];
-}
-
-const WAVEFORM_OPTIONS = [
-  { value: WAVEFORM.SINE, name: WAVEFORM_NAMES[WAVEFORM.SINE] },
-  { value: WAVEFORM.TRIANGLE, name: WAVEFORM_NAMES[WAVEFORM.TRIANGLE] },
-  { value: WAVEFORM.SAWTOOTH, name: WAVEFORM_NAMES[WAVEFORM.SAWTOOTH] },
-  { value: WAVEFORM.SQUARE, name: WAVEFORM_NAMES[WAVEFORM.SQUARE] },
-];
-
-/** blend 选项（顺序 = 协议值）。 */
-const BLEND_OPTIONS: Array<{ value: BlendMode; name: string; hint: string }> = [
-  { value: BLEND_VALUE.OVER, name: "覆盖", hint: "第 2 层直接替换第 1 层" },
-  { value: BLEND_VALUE.MULTIPLY, name: "相乘", hint: "两层相乘：明暗叠加、颜色不变形" },
-  { value: BLEND_VALUE.ADD, name: "相加", hint: "两层相加，更亮（可能过曝到白）" },
-];
+/** blend 选项与波形选项来自 `effect-view`（与灯效面板共用同一份表）。 */
 
 Page({
   data: {
@@ -149,6 +95,7 @@ Page({
     blendEnabled: false,
     blendOptions: BLEND_OPTIONS,
     blend: BLEND_VALUE.OVER as BlendMode,
+    blendName: "覆盖",
     blendHint: BLEND_OPTIONS[0].hint,
 
     presetList: PRESETS,
@@ -194,7 +141,7 @@ Page({
      * `this.unsubscribers` 为 undefined 而抛错，整个页面事件绑定失效。 */
     this.unsubscribers = [];
     this.reports = [];
-    this.collapsed = [false, true];
+    this.collapsed = defaultCollapsed(emptyLayerDraft());
     this.draft = null;
     this.deviceSpec = null;
     this.hasStrip = false;
@@ -398,7 +345,7 @@ Page({
         : draftFromSpec(this.deviceSpec);
     this.loadedOnce = true;
     /* 第 2 层为空时收起（没有可编辑参数）；有第二层时展开，让设备值可见。 */
-    this.collapsed = [false, this.deviceSpec === null || this.deviceSpec.layer1.type === NO_EFFECT];
+    this.collapsed = defaultCollapsed(this.draft.layer1);
     this.setData({
       segId: this.deviceSpec === null ? -1 : segId,
       hint:
@@ -445,7 +392,7 @@ Page({
       if (index === 1) {
         draft.layer1 = emptyLayerDraft();
         /* 空层没有可编辑参数，收起；blend 也随之被强制为覆盖。 */
-        this.collapsed = [this.collapsed[0], true];
+        this.collapsed = setCollapsed(this.collapsed, 1, true);
       }
     } else {
       const layer = index === 0 ? draft.layer0 : draft.layer1;
@@ -455,7 +402,7 @@ Page({
       } else {
         draft.layer1 = layer;
         /* 启用第 2 层后展开它的参数，否则用户看不到刚打开的是什么。 */
-        this.collapsed = [this.collapsed[0], false];
+        this.collapsed = setCollapsed(this.collapsed, 1, false);
       }
     }
     this.render({ keepHint: true });
@@ -467,9 +414,7 @@ Page({
     if (index === null || this.layerAt(index).type === NO_EFFECT) {
       return;
     }
-    const next: [boolean, boolean] = [this.collapsed[0], this.collapsed[1]];
-    next[index] = !next[index];
-    this.collapsed = next;
+    this.collapsed = toggleCollapsed(this.collapsed, index);
     this.render({ keepHint: true });
   },
 
@@ -611,7 +556,7 @@ Page({
     /* 槽位：有选中段就替换它；否则占第一个空闲槽位（绝不静默覆盖别的段）。 */
     let segId = this.data.segId >= 0 ? this.data.segId : draft.segId;
     if (segId < 0) {
-      segId = firstFreeSegId(this.reports.map((item) => item.segId));
+      segId = firstFreeSlot(this.reports.map((item) => item.segId));
       if (segId < 0) {
         const message = `这条带最多 ${MAX_SEGMENTS} 段，请先删掉一段`;
         this.setData({ hint: message, issueText: message });
@@ -781,21 +726,17 @@ Page({
       stripId: draft.stripId,
       existing: this.reports,
     });
-    const blendOn = blendEnabled(draft.layer1);
-    const blend = effectiveBlend(draft);
-    const hints = BLEND_OPTIONS.filter((option) => option.value === blend);
+    const panel = buildLayerPanel(draft.blend, draft.layer0, draft.layer1, this.collapsed);
 
     this.setData({
       startInput: draft.startText,
       endInput: draft.endText,
       cells,
-      layerViews: [
-        layerView(draft.layer0, 0, this.collapsed[0]),
-        layerView(draft.layer1, 1, this.collapsed[1]),
-      ],
-      blendEnabled: blendOn,
-      blend,
-      blendHint: blendOn ? (hints[0]?.hint ?? "") : "第 2 层关闭时固定为覆盖",
+      layerViews: panel.views,
+      blendEnabled: panel.blendEnabled,
+      blend: panel.blend,
+      blendName: blendName(panel.blend),
+      blendHint: panel.blendHint,
       existingText: existingTextOf(this.reports, this.data.stripId),
       /* 未连接时不显示「灯珠数量未知」这类预检噪音：本页根本不能提交。 */
       issueText: validation.ok || !this.data.ready ? "" : validation.message,
@@ -813,99 +754,9 @@ function layerIndexOf(e: WechatMiniprogram.BaseEvent): 0 | 1 | null {
   return raw === 0 || raw === 1 ? raw : null;
 }
 
-/** 切换灯效类型时保留颜色，按新类型的语义重置参数（静态层清零）。 */
-function applyLayerType(layer: EffectLayer, type: number): void {
-  if (layer.type === type) {
-    return;
-  }
-  layer.type = type;
-  if (type === SEGMENT_TYPE.STATIC) {
-    layer.periodMs = 0;
-    layer.p5 = 0;
-    layer.flags = 0;
-    return;
-  }
-  if (type === SEGMENT_TYPE.BREATHING) {
-    /* 呼吸只有波形位 (bit1-2)，方向位清零。 */
-    layer.flags = layer.flags & 0x06;
-  } else {
-    /* 彩虹 / 流光只有方向位 (bit0)，波形位清零。 */
-    layer.flags = layer.flags & 0x01;
-  }
-  /* 周期：从静态（恒 0）切到动画时给一个可感知的默认值，否则「周期 0 = 静止」
-   * 会让人以为新灯效没生效；已有的非 0 周期抬到新类型的下限之上
-   * （从 200ms 的彩虹切到呼吸不会立刻产生一条非法草稿）。 */
-  if (layer.periodMs === 0) {
-    layer.periodMs = type === SEGMENT_TYPE.BREATHING ? 1000 : 1200;
-  } else {
-    layer.periodMs = Math.max(layer.periodMs, layerPeriodFloor(type));
-  }
-}
-
-/** 一层 → 视图（WXML 只读）。`collapsed` 由页面持有，重画不会丢。 */
-function layerView(layer: EffectLayer, index: 0 | 1, collapsed: boolean): LayerView {
-  const empty = layer.type === NO_EFFECT;
-  const mode = modeOf(layer.type);
-  const rgb = segmentHueSatToRgb(layer.hue, layer.sat);
-  const periodFloor = layerPeriodFloor(layer.type);
-  return {
-    label: index === 0 ? "第 1 层（必填）" : "第 2 层（可选）",
-    mode,
-    empty,
-    /* 空层永远展开：否则「第 2 层」只剩一行标题，用户找不到打开它的入口。 */
-    collapsed: collapsed && !empty,
-    modeOptions: index === 0 ? LAYER0_MODES : LAYER1_MODES,
-    colorHex: rgbToHex(rgb),
-    periodMs: layer.periodMs,
-    periodText: empty ? "—" : layer.periodMs === 0 ? "静止" : `${layer.periodMs}ms`,
-    periodFloor,
-    minLevel: layer.p5,
-    minLevelText: percentOf255(layer.p5),
-    waveform: (layer.flags >> 1) & 0x03,
-    waveformOptions: WAVEFORM_OPTIONS,
-    span: layer.p5,
-    spanText: spanText(layer.p5),
-    tail: layer.p5,
-    tailText: tailText(layer.p5),
-    reverse: (layer.flags & 0x01) !== 0,
-    breathing: mode === "breathing",
-    rainbow: mode === "rainbow",
-    comet: mode === "comet",
-    /* 用预设的 hue+sat 反推再比，而不是比 hex：hex 是 RGB 展示值，
-     * 与协议里的 hue/sat 之间有一次量化，永远对不齐。 */
-    presetSelected: PRESETS.map((preset) => {
-      const params = rgbToSegmentParams(preset.rgb);
-      return params.hue === layer.hue && params.sat === layer.sat;
-    }),
-  };
-}
-
-function modeOf(type: number): LayerMode {
-  switch (type) {
-    case SEGMENT_TYPE.BREATHING:
-      return "breathing";
-    case SEGMENT_TYPE.RAINBOW:
-      return "rainbow";
-    case SEGMENT_TYPE.COMET:
-      return "comet";
-    case NO_EFFECT:
-      return "off";
-    default:
-      return "static";
-  }
-}
-
-/** 段报告 → 可下发的 spec（去掉扁平兼容字段，两层原样带过来）。 */
+/** 段报告 → 可下发的 spec（去掉扁平兼容字段，两层原样带过来）。委托 `zone-model`。 */
 function specOf(report: SegmentReport): SegmentSpec {
-  return {
-    stripId: report.stripId,
-    segId: report.segId,
-    start: report.start,
-    end: report.end,
-    blend: report.blend,
-    layer0: { ...report.layer0 },
-    layer1: { ...report.layer1 },
-  };
+  return zoneSpecOf(report);
 }
 
 /** 同带已有段的一句话摘要（重叠提示的上下文，也用于「这条带已被占满」）。 */

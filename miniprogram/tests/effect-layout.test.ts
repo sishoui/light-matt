@@ -11,8 +11,12 @@ import {
   canAddZone,
   checkRange,
   findConflict,
+  findStripConflict,
+  firstFreeSlot,
   nextFreeSegId,
+  parseRangeText,
   rangesOverlap,
+  scanLedOwnership,
   splitEvenly,
   splitPreset,
   uncoveredCount,
@@ -248,3 +252,127 @@ describe("从设备读回的值派生", () => {
     expect(zonesSummary(30, [])).toContain("还没有光区");
   });
 });
+
+/**
+ * #53：区间规则的单一真相。
+ *
+ * 下面几组是「上层模块委托到这里」的合同——`segment-editor.parseDraftRange`、
+ * `segment-view.parseRangeInput`、`segment-editor.findOverlap`、
+ * `segment-view.firstFreeSegId` 与 `segment-editor.buildLedCells` 全部转发，
+ * 所以这些断言同时锁住四条旧路径。
+ */
+describe("#53 文本区间解析（parseRangeText）", () => {
+  it("合法输入回显闭区间", () => {
+    expect(parseRangeText("0", "29", 30)).toEqual({ ok: true, start: 0, end: 29, message: "" });
+    expect(parseRangeText(" 3 ", " 12 ", 30)).toMatchObject({ ok: true, start: 3, end: 12 });
+  });
+
+  it("空串被拒绝（Number('') === 0 不能当成合法起点）", () => {
+    for (const [startText, endText] of [["", "9"], ["0", ""], ["  ", "  "]] as const) {
+      const out = parseRangeText(startText, endText, 30);
+      expect(out.ok, `"${startText}"-"${endText}"`).toBe(false);
+      expect(out.message).toContain("都要填");
+      expect(out.start).toBe(-1);
+      expect(out.end).toBe(-1);
+    }
+  });
+
+  it("非整数 / 负数 / 起点大于终点 / 越界都被拦下并给出可读原因", () => {
+    const cases: Array<[string, string, RegExp]> = [
+      ["1.5", "9", /整数/],
+      ["-1", "9", /负数/],
+      ["10", "9", /不能大于/],
+      ["0", "30", /超出灯珠范围/],
+    ];
+    for (const [startText, endText, pattern] of cases) {
+      const out = parseRangeText(startText, endText, 30);
+      expect(out.ok, `${startText}-${endText}`).toBe(false);
+      expect(out.message).toMatch(pattern);
+    }
+  });
+
+  it("灯珠数未知时直接拒绝，不猜 0 号带的数量", () => {
+    for (const ledCount of [0, -1, 1.5, Number.NaN]) {
+      const out = parseRangeText("0", "0", ledCount);
+      expect(out.ok, String(ledCount)).toBe(false);
+      expect(out.message).toContain("灯珠数量未知");
+    }
+  });
+
+  it("上限按 min(ledCount, 64) 取（不能越过协议上限）", () => {
+    expect(parseRangeText("0", "63", 200).ok).toBe(true);
+    expect(parseRangeText("0", "64", 200).ok).toBe(false);
+  });
+});
+
+describe("#53 跨灯组重叠（findStripConflict）", () => {
+  const items = [
+    { stripId: 0, segId: 1, start: 0, end: 9 },
+    { stripId: 2, segId: 3, start: 10, end: 20 },
+  ];
+
+  it("只与同灯组比：别的灯组上的同区间不算冲突", () => {
+    expect(findStripConflict({ start: 0, end: 9 }, items, 1)).toBeNull();
+  });
+
+  it("同灯组重叠时返回那一条（带槽位，供提示文案）", () => {
+    const hit = findStripConflict({ start: 15, end: 25 }, items, 2);
+    expect(hit?.segId).toBe(3);
+  });
+
+  it("改自己时忽略自己的旧区间", () => {
+    expect(findStripConflict({ start: 0, end: 30 }, items, 2, 3)).toBeNull();
+  });
+});
+
+describe("#53 槽位分配（firstFreeSlot）", () => {
+  it("取最小空闲槽位；空列表取 0", () => {
+    expect(firstFreeSlot([])).toBe(0);
+    expect(firstFreeSlot([0, 2])).toBe(1);
+  });
+
+  it("8 个占满后返回 -1", () => {
+    const full = Array.from({ length: MAX_SEGMENTS }, (_, i) => i);
+    expect(firstFreeSlot(full)).toBe(-1);
+  });
+
+  it("nextFreeSegId 与 firstFreeSlot 是同一套规则", () => {
+    const list = zones([0, 0, 5], [2, 10, 15]);
+    expect(nextFreeSegId(list)).toBe(firstFreeSlot([0, 2]));
+  });
+});
+
+describe("#53 逐灯珠归属（scanLedOwnership）", () => {
+  it("未覆盖的灯珠 owner 为 -1", () => {
+    const scan = scanLedOwnership(10, [{ segId: 0, start: 0, end: 4 }], null);
+    expect(scan.owners).toHaveLength(10);
+    expect(scan.owners[0]).toBe(0);
+    expect(scan.owners[4]).toBe(0);
+    expect(scan.owners[5]).toBe(-1);
+  });
+
+  it("草稿区间优先并被标记 editing，与已有归属相交处标 conflict", () => {
+    const scan = scanLedOwnership(10, [{ segId: 0, start: 0, end: 4 }], { start: 3, end: 7 }, 1);
+    expect(scan.inDraft[3]).toBe(true);
+    expect(scan.conflicts[3]).toBe(true);
+    expect(scan.inDraft[6]).toBe(true);
+    expect(scan.conflicts[6]).toBe(false);
+  });
+
+  it("忽略正在编辑的槽位（改自己的区间不是冲突）", () => {
+    const scan = scanLedOwnership(10, [{ segId: 1, start: 0, end: 9 }], { start: 0, end: 9 }, 1);
+    expect(scan.owners.every((owner) => owner === -1)).toBe(true);
+    expect(scan.conflicts.every((flag) => flag === false)).toBe(true);
+  });
+
+  it("灯珠数超过 64 时截断；0 时返回空数组", () => {
+    expect(scanLedOwnership(200, [], null).owners).toHaveLength(64);
+    expect(scanLedOwnership(0, [], null).owners).toEqual([]);
+  });
+
+  it("非法草稿（end < start）等同「没有草稿」", () => {
+    const scan = scanLedOwnership(5, [], { start: 4, end: 1 });
+    expect(scan.inDraft.every((flag) => flag === false)).toBe(true);
+  });
+});
+

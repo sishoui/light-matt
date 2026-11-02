@@ -16,12 +16,13 @@
 
 import {
   BLEND,
-  NO_EFFECT,
+  MAX_LEDS,
   SEGMENT_TYPE,
   WAVEFORM,
 } from "../protocol/constants";
 import type { EffectLayer, SegmentSpec } from "../protocol/types";
 import { breathingFlags, directionFlags } from "../protocol/commands";
+import { buildZoneSpec } from "./zone-model";
 
 /** 卡片对应的灯效类型。 */
 export type QuickKind = "solid" | "breathing" | "rainbow" | "comet";
@@ -232,6 +233,8 @@ export function buildQuickLayer(card: QuickEffectCard, params: QuickParams = {})
  *
  * 快捷档的语义就是「整组生效」，所以区间恒为 `0 .. ledCount-1`，
  * 槽位固定 0（整组只有这一个光区），叠加层为空、叠加方式覆盖。
+ *
+ * 装配委托给 `zone-model.buildZoneSpec`——单层 blend 归一与深拷贝只有一份实现。
  */
 export function buildQuickSpec(
   card: QuickEffectCard,
@@ -239,16 +242,25 @@ export function buildQuickSpec(
   stripId: number,
   ledCount: number,
 ): SegmentSpec {
-  const last = Math.max(0, Math.min(ledCount, 64) - 1);
-  return {
+  const last = Math.max(0, Math.min(ledCount, MAX_LEDS) - 1);
+  return buildZoneSpec({
     stripId,
     segId: 0,
     start: 0,
     end: last,
     blend: BLEND.OVER,
     layer0: buildQuickLayer(card, params),
-    layer1: { type: NO_EFFECT, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0 },
-  };
+    layer1: null,
+  });
+}
+
+/**
+ * 整组的区间（供「快捷档只作用于选中的那组」时校验/展示）。
+ *
+ * 灯珠数未知（0）时仍返回 0-0：协议不允许负区间，且调用方本就该先等连接。
+ */
+export function quickRange(ledCount: number): { start: number; end: number } {
+  return { start: 0, end: Math.max(0, Math.min(ledCount, MAX_LEDS) - 1) };
 }
 
 /**
