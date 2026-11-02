@@ -50,20 +50,15 @@ uint8_t lumen_gamma_apply(uint8_t value, uint8_t brightness)
     return (uint8_t)((scaled + 127u) / 255u);
 }
 
-void lumen_gamma_apply_pixel(const uint8_t in_rgb[3], uint8_t brightness, uint8_t out_rgb[3])
+/*
+ * 色相丢失截断：输入非零通道数已知（必须在写 out 之前数，因为 in 与 out
+ * 允许指向同一块内存），输出 <2 通道非零时整颗归零。
+ */
+static void clip_hue_loss(uint8_t in_nonzero, uint8_t out_rgb[3])
 {
-    if (in_rgb == NULL || out_rgb == NULL) {
-        return;
-    }
-    uint8_t out[3];
-    uint8_t in_nonzero = 0;
     uint8_t out_nonzero = 0;
     for (uint8_t c = 0; c < 3; ++c) {
-        out[c] = lumen_gamma_apply(in_rgb[c], brightness);
-        if (in_rgb[c] != 0) {
-            ++in_nonzero;
-        }
-        if (out[c] != 0) {
+        if (out_rgb[c] != 0) {
             ++out_nonzero;
         }
     }
@@ -72,11 +67,60 @@ void lumen_gamma_apply_pixel(const uint8_t in_rgb[3], uint8_t brightness, uint8_
      * 这样呼吸谷底是「熄灭」而不是「先闪一下纯红」。
      */
     if (in_nonzero >= 2 && out_nonzero < 2) {
-        out[0] = 0;
-        out[1] = 0;
-        out[2] = 0;
+        out_rgb[0] = 0;
+        out_rgb[1] = 0;
+        out_rgb[2] = 0;
     }
-    out_rgb[0] = out[0];
-    out_rgb[1] = out[1];
-    out_rgb[2] = out[2];
+}
+
+static uint8_t count_nonzero(const uint8_t rgb[3])
+{
+    uint8_t n = 0;
+    for (uint8_t c = 0; c < 3; ++c) {
+        if (rgb[c] != 0) {
+            ++n;
+        }
+    }
+    return n;
+}
+
+void lumen_gamma_apply_pixel(const uint8_t in_rgb[3], uint8_t brightness, uint8_t out_rgb[3])
+{
+    if (in_rgb == NULL || out_rgb == NULL) {
+        return;
+    }
+    uint8_t in_nonzero = count_nonzero(in_rgb); /* 先数，支持 in/out 同址 */
+    for (uint8_t c = 0; c < 3; ++c) {
+        out_rgb[c] = lumen_gamma_apply(in_rgb[c], brightness);
+    }
+    clip_hue_loss(in_nonzero, out_rgb);
+}
+
+void lumen_gamma_apply_pixel_scaled(const uint8_t in_rgb[3], uint8_t brightness,
+                                    uint8_t out_rgb[3])
+{
+    if (in_rgb == NULL || out_rgb == NULL) {
+        return;
+    }
+    if (!s_ready) {
+        lumen_gamma_init();
+    }
+    uint8_t in_nonzero = count_nonzero(in_rgb); /* 先数，支持 in/out 同址 */
+    /*
+     * v4 的合成顺序（docs/protocol-v4.md §9.3）：**先在用户空间乘全局亮度，
+     * 再查一次 gamma**。与 v3 的「先 gamma 再乘亮度」相比，gamma 只作用一次
+     * 且作用在已经含亮度的值上——暗部对比更符合物理直觉，也让 level 与
+     * brightness 严格按乘积生效。
+     *
+     *   out = gamma(round(in × brightness / 255))
+     *
+     * brightness = 255 时与 lumen_gamma_apply_pixel(in, 255) 逐字节一致。
+     */
+    for (uint8_t c = 0; c < 3; ++c) {
+        uint32_t scaled = (uint32_t)in_rgb[c] * brightness;
+        uint8_t value = (uint8_t)((scaled + 127u) / 255u);
+        out_rgb[c] = s_gamma[value];
+    }
+    /* 色相丢失截断保持在最后一次 gamma 之后（与 v3 同一条规则）。 */
+    clip_hue_loss(in_nonzero, out_rgb);
 }

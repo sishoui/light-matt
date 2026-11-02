@@ -17,7 +17,7 @@
  * debounce 与 blob 编解码分别由 save_scheduler / state_blob 两个纯模块实现，
  * 本文件只负责任务、NVS 与失败上报，因此 host 单测不需要 NVS。
  *
- * 写失败发生在 ACK 之后，按 docs/protocol.md §10.3 用 Event 0x81 上报：
+ * 写失败发生在 ACK 之后，按 docs/protocol-v4.md §10.3 用 Event 0x81 上报：
  * 注册的 event_cb 会被调用，参数是触发这次写入的命令字（detail 字段）。
  */
 
@@ -50,7 +50,7 @@ void lumen_state_store_request_save(const lumen_persist_t *snapshot, uint8_t com
  * 那条路径（它按值拷贝），且写 blob 的缓冲在存储任务栈上。
  *
  * 只存**已提交**剧本、激活 id 与 loop；**播放位置不持久化**
- * （docs/protocol.md §12 / 21-design §6：上电从第一阶段 + 停止态）。
+ * （docs/protocol-v4.md §12 / 21-design §6：上电从第一阶段 + 停止态）。
  */
 bool lumen_state_store_load_scripts(const uint16_t strip_counts[LUMEN_MAX_STRIPS],
                                     lumen_script_store_t *store, uint8_t *active_script_id,

@@ -59,6 +59,12 @@ static uint32_t now_ms(void)
     return (uint32_t)(esp_timer_get_time() >> 10);
 }
 
+/*
+ * 栈注意（v4）：blob 缓冲是 1440 字节（LUMEN_STATE_BLOB_SIZE = 32 + 8×8×22），
+ * 而本任务栈是 CONFIG_LUMEN_STORE_TASK_STACK_SIZE = 5120。调用方还持有一份
+ * lumen_persist_t（≈1.83 KB），加上这里的 blob 与 NVS 在 cache 关闭期间的工作量，
+ * 余量约 1.8 KB。想增大 blob 之前先读 Kconfig.projbuild 的那段账。
+ */
 static esp_err_t write_blob(const lumen_persist_t *snapshot)
 {
     uint8_t blob[LUMEN_STATE_BLOB_SIZE];

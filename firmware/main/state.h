@@ -8,15 +8,16 @@
 /*
  * 设备共享状态的 RAM 表示。
  *
- * 字节布局见 docs/protocol-v3.md §7.3（37 字节）。v3 相比 v2 增加了每带开关掩码
- * 与每带动画掩码，并把每条灯带的灯珠数 / 活动段数放进 State。
+ * 字节布局见 docs/protocol-v4.md §7.3（37 字节）。v3 起增加了每带开关掩码
+ * 与每带动画掩码，并把每条灯带的灯珠数 / 活动段数放进 State；v4 未改 State 布局
+ * （逐层亮度不进 State，需要时逐段 QueryStrip 读回）。
  */
 
 typedef struct {
     uint8_t power;      /* 0 关 / 1 开（全局总闸） */
     uint8_t brightness; /* 0-255，已按 max_brightness 钳位 */
     /*
-     * strip 0 / seg 0 的基准色（docs/protocol-v3.md §7.3）。
+     * strip 0 / seg 0 的基准色（docs/protocol-v4.md §7.3）。
      * 有活动段时由引擎按 seg 0 的 layer0 hue+sat 重算（seg 0 不存在则为 0）；
      * 一个活动段都没有时保持 v1 的单色值（向后兼容：现有单灯带功能不退化）。
      * 见 led_engine.c 的 lumen_engine_refresh_state_summary()。
@@ -34,7 +35,7 @@ typedef struct {
     uint8_t playback_state; /* 0 停止 / 1 播放 / 2 暂停 */
     uint8_t flags;          /* bit0 loop；bit1 script_active；bit2-7 保留 = 0 */
     /*
-     * 每条灯带的独立开关（docs/protocol-v3.md §9.5）。bit i = 第 i 条。
+     * 每条灯带的独立开关（docs/protocol-v4.md §9.5）。bit i = 第 i 条。
      * 实际是否出光 = 全局 power && 对应位。默认 0xFF（全开）。
      * 由 SetStripPower 改写；全局 SetPower 只动 power，**不碰**本字段。
      * 门控判据集中在 strip_power.c 的 lumen_strip_mask_allows()。
@@ -69,7 +70,7 @@ void lumen_state_defaults(lumen_state_t *state, uint16_t led_count);
 uint8_t lumen_state_clamp_brightness(uint8_t value, uint8_t max_brightness);
 
 /*
- * 按 docs/protocol-v3.md §7.3 编码 LUMEN_STATE_BYTES(37) 字节 State。
+ * 按 docs/protocol-v4.md §7.3 编码 LUMEN_STATE_BYTES(37) 字节 State。
  *
  * strip_counts / strip_seg_counts 是每条灯带的灯珠数与活动段数（长度须为
  * LUMEN_MAX_STRIPS）。传 NULL 时按「只有 strip 0 且段数为 0」兜底——

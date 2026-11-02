@@ -37,7 +37,7 @@ esp_err_t lumen_led_engine_init(void);
 /* BLE 层注册：引擎用它在渲染任务里回 SetLedCount 的异步 ACK。 */
 void lumen_led_engine_set_response_cb(lumen_led_engine_response_cb cb);
 
-/* 把共享状态编码成 LUMEN_STATE_BYTES(37) 字节 State（docs/protocol-v3.md §7.3），
+/* 把共享状态编码成 LUMEN_STATE_BYTES(37) 字节 State（docs/protocol-v4.md §7.3），
  * 供 State read 与 StateReport 使用。条带维度（灯珠数 / 活动段数）在同一临界区
  * 内按当前生效的段配置填好。 */
 void lumen_led_engine_state_bytes(uint8_t out[LUMEN_STATE_BYTES]);
@@ -50,7 +50,7 @@ void lumen_led_engine_snapshot(lumen_state_t *out);
  * 并请求 state_store 做 500ms debounce 持久化。
  *
  * command 是触发这次变更的命令字，只用于 NVS 写失败时的 Event 0x81 detail
- * （docs/protocol.md §10.3）；持久化内容本身是整份快照（状态 + 段配置）。
+ * （docs/protocol-v4.md §10.3）；持久化内容本身是整份快照（状态 + 段配置）。
  */
 void lumen_led_engine_commit(const lumen_state_t *next, uint8_t command);
 

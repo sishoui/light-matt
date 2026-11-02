@@ -73,7 +73,7 @@ static bool stage_has_overlap(const lumen_script_stage_t *stage, uint8_t strip)
  * 规则永远一致，不会各写一份。重叠由 stage_has_overlap 单独判过。
  *
  * 这里刻意**不**构造 1KB 的临时 lumen_segment_store_t：commit 跑在 NimBLE
- * 主机任务的 4KB 栈上，而 lumen_script_store_t 本身（~40KB）在静态区。
+ * 主机任务的 4KB 栈上，而 lumen_script_store_t 本身（~70KB）在静态区。
  */
 static uint8_t validate_stage_segment(uint8_t strip_id, uint8_t strip_count, uint16_t led_count,
                                       const lumen_segment_t *seg)
@@ -155,11 +155,18 @@ bool lumen_script_segment(lumen_script_store_t *store, uint8_t script_id, uint8_
     }
 
     /*
-     * 「两层都空」= 清空该槽位（docs/protocol-v3.md §9.6）。命令层把这种
+     * 「两层都空」= 清空该槽位（docs/protocol-v4.md §9.6）。命令层把这种
      * 情况表示成一个非活动段的零值，这里认它——**不能**无条件把 active 置真，
      * 否则清空操作会退化成「写入一个空段」，槽位反而永远留着。
+     *
+     * v4：清槽的段不得携带亮度（空层 level 必须为 0）。命令层的清槽旁路已
+     * 显式判过；这里再判一次，保证任何调用方（含 blob 解码的中间态）都不会
+     * 把「带亮度的空段」当成合法清槽。
      */
     if (!segment->active) {
+        if (segment->layer[0].level != 0 || segment->layer[1].level != 0) {
+            return false;
+        }
         lumen_script_clear_slot_impl(store, stage_index, strip_id, seg_id, frames_written);
         return true;
     }
@@ -301,10 +308,10 @@ lumen_script_commit_result_t lumen_script_commit(lumen_script_store_t *store, ui
  * 栈预算说明（不是断言，是给下一个人看的账）。
  *
  * 跑在 NimBLE host 任务（CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE = 4096）上的
- * 路径**不得**在栈上放剧本结构体：
- *     sizeof(lumen_script_stage_t) = 8 带 × 8 段 × 24B + 4 ≈ 1540 B
- *     sizeof(lumen_script_t)      = 8 阶段 × 1540B + 3   ≈ 12324 B
- *     sizeof(lumen_script_store_t)= 5 × 12324B          ≈ 61.6 KB
+ * 路径**不得**在栈上放剧本结构体（v4：段 28 字节、层 9 字节）：
+ *     sizeof(lumen_script_stage_t) = 8 带 × 8 段 × 28B + 4 ≈ 1796 B
+ *     sizeof(lumen_script_t)      = 8 阶段 × 1796B + 3   ≈ 14372 B
+ *     sizeof(lumen_script_store_t)= 5 × 14372B          ≈ 70 KB
  *
  * 真机上踩过一次：ScriptCommit 的尺寸预检曾写
  *     lumen_script_t saved = store->committed[id];

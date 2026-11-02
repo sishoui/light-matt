@@ -3,11 +3,12 @@
 #include <string.h>
 
 /*
- * 剧本 blob v2（docs/protocol-v3.md §10.3）：两层定宽段 + 变长记录。
+ * 剧本 blob v3（docs/protocol-v4.md §10.3）：两层定宽段 + 变长记录。
  *
  * 段记录 = start(1) end(1) blend(1) layer0 layer1，其中每层是
- * type(1) + param_len(type) 字节（空层 0xFF 长度为 0）。记录宽度因此由
- * 两层类型决定，见 script_blob.h 的 LUMEN_SCRIPT_SEGMENT_MIN/MAX。
+ * type(1) + param_len(type) 字节 + level(1)（空层 0xFF 长度为 0，**连 level
+ * 都不写**——空层 level 恒 0）。记录宽度因此由两层类型决定，见 script_blob.h
+ * 的 LUMEN_SCRIPT_SEGMENT_MIN/MAX。
  */
 
 size_t lumen_script_blob_encode(const lumen_script_store_t *store, uint8_t active_script_id,
@@ -43,7 +44,7 @@ static bool read_u16(reader_t *r, uint16_t *out)
     return true;
 }
 
-/* 某一层在 blob 里的参数宽度（空层 0）。 */
+/* 某一层在 blob 里的参数个数（空层 0）。 */
 static size_t layer_param_len(uint8_t type)
 {
     if (type == LUMEN_LAYER_EMPTY) {
@@ -52,20 +53,35 @@ static size_t layer_param_len(uint8_t type)
     return lumen_effect_param_len(type);
 }
 
+/*
+ * 某一层在 blob 里的完整宽度：空层只有 type 一个字节（level 恒 0，不写）；
+ * 非空层是 type(1) + param_len + level(1)。
+ */
+static size_t layer_wire_len(uint8_t type)
+{
+    if (type == LUMEN_LAYER_EMPTY) {
+        return 1;
+    }
+    return 1u + lumen_effect_param_len(type) + 1u;
+}
+
 /* 一条段记录的宽度。 */
 static size_t segment_record_len(const lumen_segment_t *seg)
 {
-    return 3u + 1u + layer_param_len(seg->layer[0].type) + 1u +
-           layer_param_len(seg->layer[1].type);
+    return 3u + layer_wire_len(seg->layer[0].type) + layer_wire_len(seg->layer[1].type);
 }
 
-/* 写一层：type + 该类型的有效参数前缀（其余 param 字节不持久化）。 */
+/* 写一层：type + 该类型的有效参数前缀 + level（其余 param 字节不持久化）。
+ * 空层只写 type（0xFF）：level 恒 0，省略后记录更短，解码据此识别空层。 */
 static void encode_layer(const lumen_effect_layer_t *layer, uint8_t *out)
 {
     out[0] = layer->type;
     size_t n = layer_param_len(layer->type);
     for (size_t i = 0; i < n; ++i) {
         out[1 + i] = layer->param[i];
+    }
+    if (n != 0) {
+        out[1 + n] = layer->level;
     }
 }
 
@@ -76,13 +92,18 @@ static void encode_segment(const lumen_segment_t *seg, uint8_t *out)
     out[pos++] = seg->start;
     out[pos++] = seg->end;
     out[pos++] = seg->blend;
-    size_t n0 = layer_param_len(seg->layer[0].type);
     encode_layer(&seg->layer[0], &out[pos]);
-    pos += 1u + n0;
+    pos += layer_wire_len(seg->layer[0].type);
     encode_layer(&seg->layer[1], &out[pos]);
 }
 
-/* 读一层：type + 参数；未持久化的 param 尾部补 0（保留位必须为 0）。 */
+/*
+ * 读一层：type + 参数 + level；未持久化的 param 尾部补 0（保留位必须为 0）。
+ *
+ * v4：空层只写 type（0xFF），**没有 level 字节**——空层的 level 恒 0，
+ * 形状校验也要求它必须为 0，所以省略即可。非空层读完 param 后必须再读
+ * 一个 level 字节，否则整份 blob 会错位。
+ */
 static bool decode_layer(reader_t *r, lumen_effect_layer_t *layer)
 {
     uint8_t type = 0;
@@ -100,6 +121,13 @@ static bool decode_layer(reader_t *r, lumen_effect_layer_t *layer)
     }
     for (size_t i = 0; i < n; ++i) {
         layer->param[i] = r->data[r->pos++];
+    }
+    if (n != 0) {
+        uint8_t level = 0;
+        if (!read_u8(r, &level)) {
+            return false;
+        }
+        layer->level = level;
     }
     return true;
 }

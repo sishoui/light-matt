@@ -21,9 +21,9 @@ static void encode_segment(const lumen_segment_t *seg, uint8_t *out)
     out[1] = seg->start;
     out[2] = seg->end;
     out[3] = seg->blend;
-    /* 层编码与 §7.1 的 8 字节线格式完全一致（type + param[7]）。 */
+    /* 层编码与 §7.1 的 9 字节线格式完全一致（type + param[7] + level）。 */
     lumen_layer_encode(&seg->layer[0], &out[4]);
-    lumen_layer_encode(&seg->layer[1], &out[12]);
+    lumen_layer_encode(&seg->layer[1], &out[13]);
 }
 
 static void decode_segment(const uint8_t *in, lumen_segment_t *seg)
@@ -34,7 +34,7 @@ static void decode_segment(const uint8_t *in, lumen_segment_t *seg)
     seg->end = in[2];
     seg->blend = in[3];
     (void)lumen_layer_decode(&in[4], &seg->layer[0]);
-    (void)lumen_layer_decode(&in[12], &seg->layer[1]);
+    (void)lumen_layer_decode(&in[13], &seg->layer[1]);
     /* t0_ms 不持久化：加载后由引擎统一设为当前时刻（v2-effects-engine §7.3）。 */
     seg->t0_ms = 0;
 }
@@ -112,9 +112,10 @@ bool lumen_state_blob_decode(const uint8_t *blob, size_t len, lumen_persist_t *o
         (uint16_t)blob[BLOB_OFF_VERSION] | ((uint16_t)blob[BLOB_OFF_VERSION + 1] << 8);
     if (version != LUMEN_STATE_BLOB_VERSION) {
         /*
-         * v3（以及任何别的版本）整体拒绝：记录宽度从 11 变成 20、pmask 挪进
-         * 偏移 14，布局不兼容。绝不能「尽量解析」——错位的段表会写出越界区间。
-         * 调用方因此回落到协议默认值（一次干净的重置，不是半套状态）。
+         * 任何别的版本（含 v3 的 4）整体拒绝：记录宽度从 20 变成 22、每层多一个
+         * level 字节，布局不兼容。绝不能「尽量解析」——错位的段表会写出越界区间。
+         * 调用方因此回落到协议默认值（一次干净的重置，不是半套状态），这也正是
+         * 「刷机后设备配置回到默认值」的实现来源。
          */
         return false;
     }

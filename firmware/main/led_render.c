@@ -127,16 +127,15 @@ static uint16_t compose_frame(const lumen_state_t *snapshot,
     }
 
     /*
-     * ② 逐颗过 gamma + 亮度，并截掉「色相已丢失」的那一档。
-     *
-     * 判定与理由集中在 lumen_gamma_apply_pixel()（纯函数、host 可测）：
-     * 极暗处 8bit 装不下色相，橙色会先丢 G 只剩 R，看起来是「闪一下红」。
-     * 那里直接把这类像素归零，呼吸谷底就是干净的熄灭。
+     * ② v4 合成顺序：**先在用户空间乘全局亮度，再统一过 gamma 一次**
+     *    （docs/protocol-v4.md §9.3）。level 已经在 lumen_layer_pixel 里乘过，
+     *    所以这里只剩全局亮度；色相丢失截断由 lumen_gamma_apply_pixel_scaled
+     *    统一处理（纯函数、host 可测）。
      */
     for (uint16_t i = 0; i < count; ++i) {
         uint8_t in[3] = {frame[i * 3u + 0], frame[i * 3u + 1], frame[i * 3u + 2]};
         uint8_t out[3];
-        lumen_gamma_apply_pixel(in, brightness, out);
+        lumen_gamma_apply_pixel_scaled(in, brightness, out);
         frame[i * 3u + 0] = out[0];
         frame[i * 3u + 1] = out[1];
         frame[i * 3u + 2] = out[2];

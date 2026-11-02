@@ -9,7 +9,7 @@
 #include "state.h"
 
 /*
- * 命令层：信封已通过 docs/protocol.md §10.2 的
+ * 命令层：信封已通过 docs/protocol-v4.md §10.2 的
  * magic → version → length → checksum 校验后，由 ble_link 调用。
  *
  * 本文件是纯 reducer（旧状态 + 命令 → 新状态 + 结果码），不依赖 NimBLE、
@@ -66,7 +66,7 @@ typedef struct {
     uint8_t query_strip_id;
 
     /*
-     * SetStripPower 0x1B（docs/protocol-v3.md §9.5）。#36 只登记意图：
+     * SetStripPower 0x1B（docs/protocol-v4.md §9.5）。#36 只登记意图：
      * 掩码写入、推黑帧与 TDM 跳带在 #38。命令层已按 §5 的顺序校验
      * （strip 已分配、on ∈ {0,1}），所以这里 result_code 为 OK 时调用方
      * 可以立即回 ACK，即使掩码还没生效。
@@ -76,7 +76,7 @@ typedef struct {
     bool strip_power_on;
 
     /*
-     * QueryStripConfig 0x1C / QueryDeviceInfo 0x1D（docs/protocol-v3.md §7.4）。
+     * QueryStripConfig 0x1C / QueryDeviceInfo 0x1D（docs/protocol-v4.md §7.4）。
      * 两条查询都没有载荷、不改状态，回 ACK 之后各补一条固定报告。
      * 数据源（引脚表 / MAC）在 ble_link 侧，所以这里只置意图。
      */
@@ -167,13 +167,13 @@ bool lumen_command_is_known(uint8_t command);
  */
 bool lumen_command_changes_state(uint8_t command);
 
-/* 已知命令的固定载荷长度（docs/protocol-v3.md §6 命令表）。未知命令返回 0。
- * v3 的段命令也是固定长度（SetSegment 21 / ScriptSegment 23）。 */
+/* 已知命令的固定载荷长度（docs/protocol-v4.md §6 命令表）。未知命令返回 0。
+ * v4 的段命令也是固定长度（SetSegment 23 / ScriptSegment 25）。 */
 uint8_t lumen_command_payload_len(uint8_t command);
 
 /*
  * 载荷长度是否符合命令要求（§5 的「载荷长度」一步）。
- * v3 全部命令都是固定长度，所以这里就是等值比较——不再有「先读 type 再定长」
+ * v4 全部命令都是固定长度，所以这里就是等值比较——不再有「先读 type 再定长」
  * 的二次校验路径（§7.1 选 定宽层编码的直接收益）。
  */
 bool lumen_command_payload_len_ok(const lumen_frame_t *frame);

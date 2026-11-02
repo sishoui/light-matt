@@ -32,7 +32,7 @@
 
 static const char *TAG = "lumen_ble";
 
-/* 128-bit UUID 在 NimBLE 里按小端存放。唯一真相是 docs/protocol.md §2。
+/* 128-bit UUID 在 NimBLE 里按小端存放。唯一真相是 docs/protocol-v4.md §2。
  * Service 6c756d65-6e00-4b1e-9a3c-000000000001
  * RX      ...-000000000002
  * TX      ...-000000000003
@@ -52,7 +52,7 @@ static const ble_uuid128_t s_state_uuid = BLE_UUID128_INIT(
     0x1e, 0x4b, 0x00, 0x6e, 0x65, 0x6d, 0x75, 0x6c);
 
 /*
- * 单次 BLE 写 / notify 的字节上限（docs/protocol-v3.md §2.1）：
+ * 单次 BLE 写 / notify 的字节上限（docs/protocol-v4.md §2.1）：
  *   chunk_capacity = min(mtu - 3, 180)，单分片的数据上限再减 1 字节分片头。
  *
  * MTU 未知时按 23 处理（最坏情况），即 20 字节写、19 字节数据。
@@ -62,8 +62,9 @@ static const ble_uuid128_t s_state_uuid = BLE_UUID128_INIT(
 #define LUMEN_RX_BUF_SIZE (LUMEN_MAX_CHUNK_CAPACITY + 1)
 #define LUMEN_DEFAULT_MTU 23
 
-/* v3 协议版本号（DeviceInfoReport 的 firmware_version = major<<8 | minor）。 */
-#define LUMEN_FIRMWARE_VERSION 0x0300
+/* v4 固件版本号（DeviceInfoReport 的 firmware_version = major<<8 | minor）。
+ * 与协议 version 是两件事，但同一轮升级必须同步（docs/protocol-v4.md §7.4）。 */
+#define LUMEN_FIRMWARE_VERSION 0x0400
 
 /* 每条灯带的数据脚（构建期 Kconfig，协议只读；#38 的 StripConfigReport 用它）。 */
 #ifndef CONFIG_LUMEN_STRIP_PINS
@@ -87,7 +88,7 @@ static uint8_t s_own_addr_type;
 static volatile uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t s_tx_val_handle;
 static char s_device_name[16] = "Lumen-0000";
-/* 当前连接的 ATT MTU。0 = 未知（按 23 处理，docs/protocol-v3.md §2.1）。 */
+/* 当前连接的 ATT MTU。0 = 未知（按 23 处理，docs/protocol-v4.md §2.1）。 */
 static volatile uint16_t s_mtu;
 
 /*
@@ -120,7 +121,7 @@ static void advertise(void);
 
 /*
  * 当前单分片的数据上限（不需要分片头的那部分）。
- * 未知 MTU（0）按 23 处理 → 20 字节写 → 19 字节数据（docs/protocol-v3.md §2.1）。
+ * 未知 MTU（0）按 23 处理 → 20 字节写 → 19 字节数据（docs/protocol-v4.md §2.1）。
  */
 static uint16_t chunk_data_capacity(void)
 {
@@ -139,7 +140,7 @@ static uint16_t chunk_data_capacity(void)
 }
 
 /*
- * 处理一条完整写到 RX 的分片（docs/protocol-v3.md §3.2）：
+ * 处理一条完整写到 RX 的分片（docs/protocol-v4.md §3.2）：
  *   ctrl 解析 → 重组 → 完成时交给 handle_frame。
  *
  * 超过本次写容量、或累计超过 240 → 回 BadLength（§3.2 规则 2）。重组溢出时
@@ -208,7 +209,7 @@ static void engine_response(uint8_t seq, uint8_t command, uint8_t result)
 
 /*
  * 超过本地重组缓冲的分片：协议规定累计 > 240 必须拒绝（0x04），绝不截断执行
- * （docs/protocol-v3.md §3.2 规则 2）。分片头之后的前 4 字节仍是逻辑帧 header，
+ * （docs/protocol-v4.md §3.2 规则 2）。分片头之后的前 4 字节仍是逻辑帧 header，
  * 所以先按 §5 的顺序检查 magic / version，再回长度错误。
  *
  * 注意分片头：header[0] 是 ctrl，逻辑帧从 header[1] 开始。
@@ -237,12 +238,12 @@ static void reject_oversized(const struct os_mbuf *om, uint16_t mbuf_len)
 }
 
 /*
- * QueryStrip 0x12 的多帧响应（docs/protocol-v3.md §7.4 / §8）：
+ * QueryStrip 0x12 的多帧响应（docs/protocol-v4.md §7.4 / §8）：
  * seg_count 条 SegmentReport(0x83) + 1 条 SegmentListEnd(0x84)，
  * **全部回显同一个 seq**。小程序按命令字区分帧类型，按 SegmentListEnd 收尾。
  *
- * SegmentReport 载荷固定 21 字节，与 §7.1 的 SetSegment 同构：
- *   strip_id, seg_id(真实槽位), start, end, blend, layer0(8), layer1(8)
+ * SegmentReport 载荷固定 23 字节，与 §7.1 的 SetSegment 同构：
+ *   strip_id, seg_id(真实槽位), start, end, blend, layer0(9), layer1(9)
  *
  * #37：段就是两层结构，layer0 / layer1 / blend 直接编码上报（与持久化记录
  * 的层编码完全一致，用 lumen_layer_encode 而不是在这里手抄一遍字段）。
@@ -262,9 +263,9 @@ static void send_strip_reports(uint8_t seq, uint8_t strip_id)
         if (!lumen_effect_type_known(seg->layer[0].type)) {
             continue;
         }
-        /* 层编码：type + param[7]，未用字节由 param 原样给出（§7.1 定宽）。 */
-        uint8_t layer0[8];
-        uint8_t layer1[8];
+        /* 层编码：type + param[7] + level（9 字节定宽，§7.1）。 */
+        uint8_t layer0[9];
+        uint8_t layer1[9];
         lumen_layer_encode(&seg->layer[0], layer0);
         lumen_layer_encode(&seg->layer[1], layer1);
 
@@ -288,7 +289,7 @@ static void send_strip_reports(uint8_t seq, uint8_t strip_id)
 }
 
 /*
- * QueryStripConfig 0x1C → StripConfigReport 0x87（docs/protocol-v3.md §7.4）。
+ * QueryStripConfig 0x1C → StripConfigReport 0x87（docs/protocol-v4.md §7.4）。
  * 引脚表来自构建期 Kconfig（CONFIG_LUMEN_STRIP_PINS），协议只读。
  * 未分配的记录由编码器写 gpio=0xFF、flags=0。
  */
@@ -315,7 +316,7 @@ static void send_strip_config_report(uint8_t seq)
 }
 
 /*
- * QueryDeviceInfo 0x1D → DeviceInfoReport 0x88（docs/protocol-v3.md §7.4）。
+ * QueryDeviceInfo 0x1D → DeviceInfoReport 0x88（docs/protocol-v4.md §7.4）。
  *
  * hw_id 是 6 字节 BT MAC，按 "AA:BB:CC:DD:EE:FF" 的自然顺序——esp_read_mac
  * 给出的就是这个顺序，直接抄，不要按小端翻转（那是数值字段的规则）。
@@ -343,7 +344,7 @@ static void send_device_info_report(uint8_t seq)
 }
 
 /*
- * ScriptProgress 0x86：每接受 8 帧 ScriptSegment 补一条（docs/protocol.md §10.4）。
+ * ScriptProgress 0x86：每接受 8 帧 ScriptSegment 补一条（docs/protocol-v4.md §10.4）。
  *
  * 「每 8 帧」是设备侧补充证据；权威进度是小程序自己数的逐帧 ACK。
  * 每帧都发会把 BLE 带宽吃掉（下发一帧本身就 20 字节），所以按 8 帧节流。
@@ -520,7 +521,7 @@ static void handle_frame(const uint8_t *data, size_t len)
     }
 
     /*
-     * SetStripPower 0x1B（docs/protocol-v3.md §9.5）。命令层已校验 strip 已分配
+     * SetStripPower 0x1B（docs/protocol-v4.md §9.5）。命令层已校验 strip 已分配
      * 且 on ∈ {0,1}。这里只改 State 的 strip_power_mask（一位），让小程序立刻
      * 能通过 State 观察到结果。
      *
@@ -655,7 +656,7 @@ static void handle_frame(const uint8_t *data, size_t len)
 }
 
 /*
- * 收下一个分片并驱动重组（docs/protocol-v3.md §3.2）。
+ * 收下一个分片并驱动重组（docs/protocol-v4.md §3.2）。
  *
  * 三种结果：
  *   COMPLETE → 把拼好的逻辑帧交给 handle_frame（§3.1 解析、§5 结果码）；
@@ -1033,7 +1034,7 @@ esp_err_t lumen_ble_link_init(void)
     }
 
     /*
-     * 偏好 MTU 247（docs/protocol-v3.md §2.1）：chunk_capacity 因此能到
+     * 偏好 MTU 247（docs/protocol-v4.md §2.1）：chunk_capacity 因此能到
      * min(247-3, 180) = 180。必须在主机任务启动前设置，协商结果以对端为准；
      * 对端不配合时 s_mtu 会停在 23，所有路径按 20 字节写 / 19 字节数据兜底。
      */

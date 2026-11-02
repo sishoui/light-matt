@@ -80,8 +80,9 @@ SHA-256 索引、配置丢失记录。
 
 ## 字节契约
 
-- **v3（当前唯一真相）**：`docs/protocol-v3.md` + 可执行副本
-  `docs/protocol-testvectors-v3.json`（由 `scripts/gen-protocol-testvectors-v3.mjs` 生成）
+- **v4（当前唯一真相）**：`docs/protocol-v4.md` + 可执行副本
+  `docs/protocol-testvectors-v4.json`（由 `scripts/gen-protocol-testvectors-v4.mjs` 生成）
+- **v3 已作废**：`docs/protocol-v3.md` 与 `protocol-testvectors-v3.json` 仅保留供对照
 - **v2 已作废**：`docs/protocol.md` 与 `docs/spec-v2.md` 仅保留供对照
 
 改任何字节布局 = 契约 + 向量 + 两端实现同一个 commit。
@@ -89,7 +90,7 @@ SHA-256 索引、配置丢失记录。
 ## 测试基线（改代码后必须保持）
 
 ```bash
-cmd.exe //c "firmware\\test\\run-tests.cmd"   # 11053 项断言 + 58 条 v3 向量
+cmd.exe //c "firmware\\test\\run-tests.cmd"   # 11441 项断言 + 64 条 v4 向量
 cd miniprogram && npx vitest run              # 921 用例（不含 e2e）
 cd miniprogram && npm run test:ble            # 8 项真机 e2e（无设备自动 skip）
 cd miniprogram && npx tsc --noEmit            # 必须干净
