@@ -1,10 +1,140 @@
 <view class="page {{themeClass}}">
-  <nav-bar title="{{title}}" subtitle="灯光编辑" back="{{true}}" />
+  <nav-bar title="{{title}}" subtitle="{{subtitle}}" back="{{true}}" />
 
-  <view class="placeholder-card">
-    <text class="placeholder-title">灯组编辑</text>
+  <!-- 连接提示：自动连接失败 / 需要先扫描时才有内容 -->
+  <view wx:if="{{connectHint}}" class="notice-card" bindtap="onRetryConnect">
+    <text class="notice-text">{{connectHint}}</text>
+    <text class="notice-action">重试</text>
+  </view>
+
+  <view class="statusbar {{linkClass}}" bindtap="onRetryConnect">
+    <view class="status-dot"></view>
+    <view class="status-main">
+      <text class="status-text">{{statusText}}</text>
+      <text class="status-sub">{{statusSub}}</text>
+    </view>
+    <text
+      wx:if="{{!ready && !connectBusy && (linkClass === 'link-idle' || linkClass === 'link-error')}}"
+      class="status-action"
+    >重连</text>
+  </view>
+
+  <!-- ---------------- 顶部：灯组名 / 灯珠数 + 方案槽位按钮 ---------------- -->
+  <view class="strip-head">
+    <view class="strip-head-main">
+      <text class="strip-name">{{title}}</text>
+      <text class="strip-meta">{{ledText}}</text>
+    </view>
+    <!-- 点一下在四个槽位之间轮换；空槽位标注「空白」，有内容显示步骤数 -->
+    <view class="plan-slot" bindtap="onPlanSlotTap" hover-class="plan-slot-hover">
+      <text class="plan-slot-label">{{planLabel}}</text>
+      <text class="plan-slot-sub">{{planSub}}</text>
+    </view>
+  </view>
+
+  <!-- ---------------- 简单 / 进阶 ---------------- -->
+  <view class="mode-switch">
+    <view
+      class="mode-tab {{mode === 'simple' ? 'on' : ''}}"
+      data-mode="simple"
+      bindtap="onModeTap"
+    >
+      <text class="mode-tab-label">简单</text>
+      <text class="mode-tab-sub">点一下就好</text>
+    </view>
+    <view
+      class="mode-tab {{mode === 'advanced' ? 'on' : ''}}"
+      data-mode="advanced"
+      bindtap="onModeTap"
+    >
+      <text class="mode-tab-label">进阶</text>
+      <text class="mode-tab-sub">自己编排</text>
+    </view>
+  </view>
+
+  <!-- ---------------- 简单档：六张成品效果卡 ---------------- -->
+  <block wx:if="{{mode === 'simple'}}">
+    <view class="section">
+      <view class="section-head">
+        <text class="section-title">选一个效果</text>
+        <text class="section-value">整组生效</text>
+      </view>
+
+      <view class="quick-grid {{quickDisabledReason ? 'disabled' : ''}}">
+        <view
+          wx:for="{{quickCards}}"
+          wx:key="id"
+          class="quick-card {{item.selected ? 'selected' : ''}}"
+          data-card-id="{{item.id}}"
+          bindtap="onQuickCardTap"
+          hover-class="quick-card-hover"
+        >
+          <view class="quick-swatch" style="background: {{item.hex}}"></view>
+          <view class="quick-body">
+            <text class="quick-name">{{item.name}}</text>
+            <text class="quick-hint">{{item.hint}}</text>
+          </view>
+          <view wx:if="{{item.selected}}" class="quick-check"></view>
+        </view>
+      </view>
+
+      <text wx:if="{{quickDisabledReason}}" class="section-hint">{{quickDisabledReason}}</text>
+    </view>
+
+    <!-- 参数区：只出现这张卡支持的滑块（色相 / 饱和度 + 亮度） -->
+    <view wx:if="{{simpleParams}}" class="section param-panel">
+      <view class="section-head">
+        <text class="section-title">{{simpleParams.cardName}}的参数</text>
+        <view class="param-preview" style="background: {{simpleParams.colorHex}}"></view>
+      </view>
+
+      <view wx:for="{{simpleParams.sliders}}" wx:key="key" class="param-row">
+        <view class="param-head">
+          <text class="param-label">{{item.label}}</text>
+          <text class="param-value mono">{{item.display}}</text>
+        </view>
+        <slider
+          class="param-slider"
+          min="{{item.min}}"
+          max="{{item.max}}"
+          step="{{item.step}}"
+          value="{{item.value}}"
+          data-key="{{item.key}}"
+          disabled="{{!ready}}"
+          activeColor="#ff9500"
+          backgroundColor="rgba(120, 120, 128, 0.2)"
+          block-size="22"
+          bindchanging="onParamChanging"
+          bindchange="onParamChange"
+        />
+        <!-- 暂不写进设备的滑块（逐光区亮度要等协议 v4）在这里说明原因 -->
+        <text wx:if="{{item.note}}" class="param-note">{{item.note}}</text>
+      </view>
+
+      <text wx:if="{{quickHint}}" class="section-hint">{{quickHint}}</text>
+      <text wx:else class="section-hint">改完立刻生效，整组一起变</text>
+    </view>
+  </block>
+
+  <!-- ---------------- 进阶档：本票只给占位 ---------------- -->
+  <view wx:if="{{mode === 'advanced'}}" class="section placeholder-card">
+    <text class="placeholder-title">进阶编辑即将可用</text>
     <text class="placeholder-text">
-      简单档与高级编排正在从设备详情页搬到这里。
+      时间轴、光区划分与效果面板会在后续版本里接上。现在先用「简单」档选一个成品效果。
     </text>
+  </view>
+
+  <!-- ---------------- 底部：唯一的主按钮 ---------------- -->
+  <view class="apply-bar">
+    <button
+      class="btn primary apply-play"
+      disabled="{{!ready || applying}}"
+      bindtap="onApplyAndPlay"
+    >{{applying ? '正在应用…' : '应用并播放'}}</button>
+    <text wx:if="{{applyError}}" class="apply-error">{{applyError}}</text>
+  </view>
+
+  <view class="footer">
+    <text class="footer-hint">灯效以灯控为准{{mock ? '（演示模式）' : ''}}</text>
   </view>
 </view>
