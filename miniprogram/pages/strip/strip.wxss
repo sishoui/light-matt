@@ -1,13 +1,259 @@
-/* 灯组编辑页（二级页）：骨架阶段只有一个占位说明卡。 */
+/*
+ * 灯组详情页（#64 简单档）。
+ *
+ * 共享外观（.section / .btn / .statusbar）在 app.wxss，这里只放本页独有布局。
+ * 二级页不给 tabBar 留高度。颜色一律走 var(--…)，不写死 hex——
+ * 写死会在某个主题下变白底白字（tests/theme.test.ts 每文件最多 4 处）。
+ */
 
-.placeholder-card {
-  margin-top: 16rpx;
-  padding: 48rpx 36rpx;
-  border-radius: var(--radius-xl);
-  background: var(--card);
-  box-shadow: var(--shadow);
+/* ---------------- 连接提示 ---------------- */
+
+.notice-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20rpx;
+  padding: 24rpx 28rpx;
+  border-radius: var(--radius-lg);
+  background: var(--danger-soft);
+}
+
+.notice-text {
+  flex: 1;
+  font-size: 23rpx;
+  color: var(--danger);
+  line-height: 1.5;
+}
+
+.notice-action {
+  font-size: 25rpx;
+  font-weight: 600;
+  color: var(--danger);
+  flex-shrink: 0;
+}
+
+/* ---------------- 顶部：灯组名 + 方案槽位 ---------------- */
+
+.strip-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20rpx;
+  padding: 4rpx 4rpx 0;
+}
+
+.strip-head-main {
   display: flex;
   flex-direction: column;
+  gap: 6rpx;
+  min-width: 0;
+}
+
+.strip-name {
+  font-size: 40rpx;
+  font-weight: 700;
+  letter-spacing: -0.4rpx;
+  color: var(--text);
+}
+
+.strip-meta {
+  font-size: 23rpx;
+  color: var(--text-2);
+}
+
+/* 方案槽位按钮：点一下轮换 ①→②→③→④→①，空槽位写「空白」。 */
+.plan-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4rpx;
+  padding: 14rpx 22rpx;
+  border-radius: var(--radius-md);
+  background: var(--card);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+  flex-shrink: 0;
+}
+
+.plan-slot-hover {
+  background: var(--card-press);
+}
+
+.plan-slot-label {
+  font-size: 25rpx;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.plan-slot-sub {
+  font-size: 20rpx;
+  color: var(--text-3);
+}
+
+/* ---------------- 简单 / 进阶 分段控件 ---------------- */
+
+.mode-switch {
+  display: flex;
+  gap: 8rpx;
+  padding: 8rpx;
+  border-radius: var(--radius-lg);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+.mode-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4rpx;
+  padding: 18rpx 8rpx;
+  border-radius: var(--radius-md);
+  transition: background 160ms ease;
+}
+
+.mode-tab.on {
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+
+.mode-tab-label {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.mode-tab.on .mode-tab-label {
+  color: var(--text);
+}
+
+.mode-tab-sub {
+  font-size: 20rpx;
+  color: var(--text-3);
+}
+
+/* ---------------- 六张成品效果卡 ---------------- */
+
+.quick-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16rpx;
+}
+
+.quick-grid.disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.quick-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  padding: 20rpx;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+  transition: background 160ms ease;
+}
+
+.quick-card-hover {
+  background: var(--card-press);
+}
+
+/* 选中态用描边 + 微底：色块本身就有颜色，不能靠颜色区分选中。 */
+.quick-card.selected {
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 2rpx var(--accent);
+}
+
+.quick-swatch {
+  width: 56rpx;
+  height: 56rpx;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+.quick-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+  min-width: 0;
+  flex: 1;
+}
+
+.quick-name {
+  font-size: 26rpx;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.quick-hint {
+  font-size: 20rpx;
+  color: var(--text-2);
+  line-height: 1.4;
+}
+
+.quick-check {
+  width: 26rpx;
+  height: 14rpx;
+  border-left: 4rpx solid var(--accent);
+  border-bottom: 4rpx solid var(--accent);
+  transform: rotate(-45deg) translateY(-4rpx);
+  flex-shrink: 0;
+}
+
+/* ---------------- 参数区：色相 / 饱和度 / 亮度 ---------------- */
+
+.param-panel {
+  gap: 16rpx;
+}
+
+.param-preview {
+  width: 44rpx;
+  height: 44rpx;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1rpx var(--border);
+  flex-shrink: 0;
+}
+
+.param-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+}
+
+.param-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16rpx;
+}
+
+.param-label {
+  font-size: 25rpx;
+  color: var(--text-2);
+}
+
+.param-value {
+  font-size: 25rpx;
+  color: var(--text);
+}
+
+.param-slider {
+  margin: 0;
+}
+
+/* 「固件更新后可用」这类限制说明：小字、不抢注意力但必须看得见。 */
+.param-note {
+  font-size: 20rpx;
+  color: var(--text-3);
+}
+
+/* ---------------- 进阶档占位 ---------------- */
+
+.placeholder-card {
+  padding: 48rpx 36rpx;
   gap: 12rpx;
 }
 
@@ -21,4 +267,24 @@
   font-size: 24rpx;
   line-height: 1.6;
   color: var(--text-2);
+}
+
+/* ---------------- 底部：应用并播放 ---------------- */
+
+.apply-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+  margin-top: 8rpx;
+}
+
+.apply-play {
+  width: 100%;
+}
+
+/* 写入失败就地说明原因（不弹模态）。 */
+.apply-error {
+  font-size: 22rpx;
+  color: var(--danger);
+  line-height: 1.5;
 }
