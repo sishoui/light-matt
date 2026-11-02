@@ -53,10 +53,46 @@ import {
   type SimpleParamView,
 } from "../../utils/control/strip-simple";
 import { loadTheme, themeClass, type ThemeMode } from "../../utils/control/theme";
+import {
+  addStep as addStepToTimeline,
+  blockIndexAtRects,
+  canAddStep as canAddMoreSteps,
+  clampDuration,
+  createTimeline,
+  durationText,
+  durationTicks,
+  layoutBlocks,
+  LONG_PRESS_MS,
+  MAX_STEPS,
+  moveBlock,
+  selectionAfterMove,
+  setStepDuration,
+  timelineRowWidth,
+  type DurationTickView,
+  type TimelineBlockView,
+  type TimelineStep,
+} from "../../utils/control/timeline";
 import type { DeviceState, LinkState, SegmentReport } from "../../utils/protocol/types";
 
-/** 编辑档位：简单（点效果卡）/ 进阶（后续票）。 */
+/** 编辑档位：简单（点效果卡）/ 进阶（时间轴 + 光区）。 */
 type StripMode = "simple" | "advanced";
+
+/**
+ * 触摸事件里的第一个触点。
+ *
+ * `touchend` 的 `touches` 已经空了，坐标在 `changedTouches` 里；两者都查一遍
+ * 比在每个处理器里各写一次分支清楚。拿不到坐标返回 null（不是给 0）。
+ */
+function firstTouch(e: WechatMiniprogram.TouchEvent): { clientX: number; clientY: number } | null {
+  const lists = [e.touches, e.changedTouches];
+  for (const list of lists) {
+    const touch = list?.[0];
+    if (touch !== undefined && Number.isFinite(touch.clientX)) {
+      return { clientX: touch.clientX, clientY: touch.clientY ?? 0 };
+    }
+  }
+  return null;
+}
 
 Page({
   data: {
@@ -85,6 +121,19 @@ Page({
 
     /* ---- 简单 / 进阶 ---- */
     mode: "simple" as StripMode,
+
+    /* ---- 进阶档：时间轴 + 时长（#65） ---- */
+    steps: [] as TimelineBlockView[],
+    stepCount: 0,
+    stepIndex: 0,
+    stepCanAdd: false,
+    timelineSummary: "",
+    timelineRowStyle: "width: 100%;",
+    timelineScrollable: false,
+    stepDurationSeconds: 1,
+    stepDurationText: "1 秒",
+    durationTicks: [] as DurationTickView[],
+    stepHint: "",
 
     /* ---- 简单档：六张成品卡 ---- */
     quickCards: [] as QuickCardView[],
@@ -123,6 +172,30 @@ Page({
   /** 方案摘要读取代次（并发读时旧一轮作废）。 */
   planEpoch: 0,
 
+  /* ---- 进阶档：时间轴的本地草稿（#65，不进设备） ---- */
+  /** 时间轴的步骤（纯数据，页面只转发事件）。 */
+  timelineSteps: [] as TimelineStep[],
+  /** 时间轴选中步骤的下标（0 起）。 */
+  timelineIndex: 0,
+  /** 时间轴容器（scroll-view）的宽度（px）；0 = 还没测量。 */
+  timelineContainerWidth: 0,
+  /** 时间轴行实际宽度（px）= max(容器宽, 块数 × 40 + 间隙)；拖动的坐标换算用它。 */
+  timelineWidth: 0,
+  /** 长按定时器：到时进入拖动状态。 */
+  longPressTimer: null as ReturnType<typeof setTimeout> | null,
+  /** 拖动中的源下标；-1 = 没有拖动。 */
+  dragFrom: -1,
+  /** 拖动落点下标；-1 = 没在拖。 */
+  dragTo: -1,
+  /** 拖动开始时量到的块屏幕矩形（按顺序）。 */
+  blockRects: [] as Array<{ left: number; right: number }>,
+  /** 时间轴容器左边缘（px，屏幕坐标），只用于诊断。 */
+  timelineLeft: 0,
+  /** 这次触摸已经变成了拖动：紧接着的 tap 不能改选中（时间戳自愈，不会永久吞掉点击）。 */
+  dragTapUntil: 0,
+  /** 已经做过测量的标记（不需要每次 setData 后重新测量）。 */
+  timelineMeasured: false,
+
   onLoad(options: Record<string, string | undefined>) {
     /* 私有状态显式兜底：Page() 不保证对象字面量字段被复制到实例上，漏掉会让
      * onShow 的调用链抛错并中断整页事件绑定（见 AGENTS.md 的页面字段陷阱）。 */
@@ -140,6 +213,17 @@ Page({
     this.dirty = false;
     this.planStepCounts = null;
     this.planEpoch = 0;
+    this.timelineSteps = createTimeline();
+    this.timelineIndex = 0;
+    this.timelineContainerWidth = 0;
+    this.timelineWidth = 0;
+    this.longPressTimer = null;
+    this.dragFrom = -1;
+    this.dragTo = -1;
+    this.blockRects = [];
+    this.timelineLeft = 0;
+    this.dragTapUntil = 0;
+    this.timelineMeasured = false;
 
     const storage = createWxStorage();
     this.storage = storage;
@@ -154,7 +238,9 @@ Page({
       title: `灯组 ${stripId + 1}`,
       planLabel: planSlotLabel(0),
       quickCards: buildQuickCardViews(null),
+      durationTicks: durationTicks(),
     });
+    this.renderTimeline();
   },
 
   onShow() {
@@ -172,12 +258,14 @@ Page({
     this.unsubscribe();
     /* 防抖定时器不属于界面：页面隐藏后它还会跑一次，可能对已断开的设备白发一帧。 */
     this.clearQuickTimer();
+    this.clearLongPress();
   },
 
   onUnload() {
     /* 二级页会被真正卸载；会话属于 App，绝不 destroy。 */
     this.unsubscribe();
     this.clearQuickTimer();
+    this.clearLongPress();
     this.session = null;
     this.storage = null;
   },
@@ -335,6 +423,10 @@ Page({
      * 卡片 / 参数区，否则每帧重建数组会让本页滑块拖动发卡。 */
     if (changed) {
       this.renderQuick();
+      /* 缩略色带按灯珠数换算比例：灯珠数变了要重画时间轴。 */
+      if (this.data.mode === "advanced") {
+        this.renderTimeline();
+      }
     }
   },
 
@@ -404,7 +496,273 @@ Page({
     if (mode === "simple") {
       /* 切回来时用内存里的卡片 / 参数重画一次（进阶档可能改过设备）。 */
       this.renderQuick({ quickHint: "" });
+      return;
     }
+    /* 进进阶档才渲染时间轴：块的宽度依赖真实行宽，行不在 DOM 里就量不到。 */
+    this.renderTimeline();
+    this.measureTimeline(true);
+  },
+
+  // ---------------- 进阶档：时间轴（#65） ----------------
+
+  /**
+   * 重画时间轴（唯一派生入口）。
+   *
+   * 只调 `layoutBlocks` + 一次 `setData`：拖时长条时块宽跟着变，但页面结构
+   * 不动（不 reLaunch / 不重建列表），所以拖动是连续的。
+   */
+  renderTimeline(patch: Record<string, unknown> = {}, callback?: () => void): void {
+    const ledCount = this.stripLedCount();
+    /* 容器宽度没量到之前不能算像素（会把首帧算成 88px），退回时长权重 +
+     * CSS 最小宽度；量到之后按「容器宽 / 保底下限 / 比例下限」三者取大分配。 */
+    const measured = this.timelineContainerWidth > 0;
+    const durations = this.timelineSteps.map((step) => clampDuration(step.durationMs));
+    const rowWidth = timelineRowWidth(durations, this.timelineContainerWidth);
+    this.timelineWidth = rowWidth;
+    const blocks = layoutBlocks(this.timelineSteps, {
+      widthPx: measured ? rowWidth : 0,
+      selected: this.timelineIndex,
+      dragIndex: this.dragFrom >= 0 ? this.dragFrom : -1,
+      dropIndex: this.dragFrom >= 0 ? this.dragTo : -1,
+      ledCount,
+    });
+    const current = this.timelineSteps[this.timelineIndex] ?? null;
+    const durationMs = current === null ? null : clampDuration(current.durationMs);
+    const totalMs = this.timelineSteps.reduce(
+      (sum, step) => sum + clampDuration(step.durationMs),
+      0,
+    );
+    /* 拖动期间关掉横向滚动：否则手指一横移，滚动容器先动、块纹丝不动，
+     * 长按拖动就永远读不出落点。松手后恢复。 */
+    const scrollable =
+      measured && rowWidth > this.timelineContainerWidth && this.dragFrom < 0;
+    this.setData({
+      steps: blocks,
+      stepCount: this.timelineSteps.length,
+      stepIndex: this.timelineIndex,
+      stepCanAdd: canAddMoreSteps(this.timelineSteps),
+      timelineRowStyle: measured ? `width: ${rowWidth}px;` : "width: 100%;",
+      timelineScrollable: scrollable,
+      timelineSummary:
+        this.timelineSteps.length === 0
+          ? "还没有步骤"
+          : `${this.timelineSteps.length} 个步骤 · 共 ${durationText(totalMs)}`,
+      stepDurationSeconds: durationMs === null ? 1 : durationMs / 1000,
+      stepDurationText: durationMs === null ? "1 秒" : durationText(durationMs),
+      ...patch,
+    }, callback);
+  },
+
+  /**
+   * 量时间轴滚动容器的真实宽度。
+   *
+   * 块的宽度按「行宽 - 间隙」分配，容器宽度只能问渲染层。量到之后立刻重算
+   * 一次，动画才会从「时长比例」平滑过渡到「像素」。
+   */
+  measureTimeline(force = false): void {
+    if (this.timelineMeasured && !force) {
+      return;
+    }
+    wx.createSelectorQuery()
+      .select(".timeline-scroll")
+      .boundingClientRect((rect) => {
+        /* 容器不在 DOM 里（还在简单档）时回调给 null：保持未测量状态。 */
+        if (!rect) {
+          this.timelineMeasured = false;
+          return;
+        }
+        const box = rect as WechatMiniprogram.BoundingClientRectCallbackResult;
+        this.timelineMeasured = true;
+        this.timelineLeft = box.left;
+        const width = Math.round(box.width);
+        if (!Number.isFinite(width) || width <= 0) {
+          return;
+        }
+        if (width === this.timelineContainerWidth) {
+          this.renderTimeline();
+          return;
+        }
+        this.timelineContainerWidth = width;
+        this.renderTimeline();
+      })
+      .exec();
+  },
+
+  /** 点时间轴的块：选中它，下方的时长与光区跟着切换。 */
+  onStepTap(e: WechatMiniprogram.TouchEvent) {
+    /* 拖动刚松手：这一次点击是同一次触摸的尾巴，不能改选中。
+     * 用时间戳而不是布尔量——卡在 true 会让整条时间轴从此点不动。 */
+    if (Date.now() < this.dragTapUntil) {
+      return;
+    }
+    const index = Number(e.currentTarget.dataset.index);
+    if (!Number.isInteger(index) || index < 0 || index >= this.timelineSteps.length) {
+      return;
+    }
+    if (index === this.timelineIndex) {
+      return;
+    }
+    this.timelineIndex = index;
+    this.renderTimeline({ stepHint: "" });
+  },
+
+  /**
+   * 手指按下：起长按定时器。
+   *
+   * 定时器到点才进入拖动状态——直接按下变拖动会与横向滚动打架，用户也没法
+   * 「先看一眼再点」。380 毫秒是票面的约数。
+   *
+   * 进入拖动时顺手量一次所有块的屏幕位置：落点换算用这些真实矩形，而不是
+   * 「容器左边缘 + 滚动量」的推算——行比容器宽时后者会因为惯性滚动和 1px
+   * 取整而错位，用户会觉得「拖到右边那个块上却换了别的」。
+   */
+  onStepTouchStart(e: WechatMiniprogram.TouchEvent) {
+    const index = Number(e.currentTarget.dataset.index);
+    if (!Number.isInteger(index) || index < 0 || index >= this.timelineSteps.length) {
+      return;
+    }
+    this.clearLongPress();
+    this.longPressTimer = setTimeout(() => {
+      this.longPressTimer = null;
+      this.dragFrom = index;
+      this.dragTo = index;
+      this.timelineIndex = index;
+      this.renderTimeline({ stepHint: "拖到目标位置松手" }, () => this.measureBlockRects());
+    }, LONG_PRESS_MS);
+  },
+
+  /** 量所有时间轴块的屏幕矩形（拖动落点换算的基准）。 */
+  measureBlockRects(): void {
+    wx.createSelectorQuery()
+      .selectAll(".timeline-block")
+      .boundingClientRect((rects) => {
+        const list = Array.isArray(rects) ? rects : rects ? [rects] : [];
+        this.blockRects = list.map((rect) => {
+          const box = rect as WechatMiniprogram.BoundingClientRectCallbackResult;
+          return { left: box.left, right: box.right };
+        });
+      })
+      .exec();
+  },
+
+  /** 拖动中：把指尖坐标命中到某个块（只是预览，顺序还没改）。 */
+  onStepTouchMove(e: WechatMiniprogram.TouchEvent) {
+    if (this.dragFrom < 0) {
+      return;
+    }
+    const touch = firstTouch(e);
+    if (touch === null) {
+      return;
+    }
+    /* 用拖动开始时量到的块屏幕矩形做命中：行比容器宽（八个步骤）时也准，
+     * 不受横向滚动与 1px 取整影响。 */
+    const target = blockIndexAtRects(this.blockRects, touch.clientX);
+    if (target < 0 || target === this.dragTo) {
+      return;
+    }
+    this.dragTo = target;
+    this.renderTimeline();
+  },
+
+  /** 拖动落点命中：指尖坐标 → 块下标（行比容器宽时也准，屏幕坐标直比）。 */
+  dropIndexAt(clientX: number): number {
+    return blockIndexAtRects(this.blockRects, clientX);
+  },
+
+  onStepTouchEnd() {
+    this.clearLongPress();
+    const from = this.dragFrom;
+    const to = this.dragTo;
+    /* 定时器没到点就没有进入拖动：这次触摸只是「按住了一下」，不改顺序。
+     * 拖过（无论有没有真的换位置）都要让随后的 tap 闭嘴。 */
+    const dragged = from >= 0;
+    this.dragFrom = -1;
+    this.dragTo = -1;
+    if (!dragged) {
+      return;
+    }
+    this.dragTapUntil = Date.now() + 300;
+    if (to < 0 || from === to) {
+      this.renderTimeline({ stepHint: "" });
+      return;
+    }
+    const moved = moveBlock(this.timelineSteps, from, to);
+    /* `moveBlock` 对越界 / 自身返回同一个数组：引用没变就是没挪动。 */
+    if (moved === this.timelineSteps) {
+      this.renderTimeline({ stepHint: "" });
+      return;
+    }
+    const selected = selectionAfterMove(this.timelineIndex, from, to);
+    this.timelineSteps = moved;
+    this.timelineIndex = selected;
+    this.renderTimeline({
+      stepHint: `已把第 ${from + 1} 个步骤挪到第 ${to + 1} 位`,
+    });
+  },
+
+  onStepTouchCancel() {
+    this.clearLongPress();
+    if (this.dragFrom >= 0) {
+      this.dragTapUntil = Date.now() + 300;
+    }
+    this.dragFrom = -1;
+    this.dragTo = -1;
+    this.renderTimeline();
+  },
+
+  clearLongPress() {
+    if (this.longPressTimer !== null) {
+      clearTimeout(this.longPressTimer);
+      this.longPressTimer = null;
+    }
+  },
+
+  /** 「+ 加步骤」：新增一个默认时长的空步骤并选中它；8 个步骤后不可用。 */
+  onStepAdd() {
+    const result = addStepToTimeline(this.timelineSteps);
+    if (result === null) {
+      this.renderTimeline({ stepHint: `最多 ${MAX_STEPS} 个步骤` });
+      return;
+    }
+    this.timelineSteps = result.steps;
+    this.timelineIndex = result.selected;
+    this.renderTimeline({ stepHint: "" });
+  },
+
+  /** 拖时长条：块宽实时跟着变（拖动中也走 `renderTimeline`，只是不写设备）。 */
+  onDurationChanging(e: WechatMiniprogram.SliderChanging) {
+    this.applyDuration(Number(e.detail.value));
+  },
+
+  onDurationChange(e: WechatMiniprogram.SliderChange) {
+    this.applyDuration(Number(e.detail.value));
+  },
+
+  /**
+   * 时长条的值（秒）→ 当前步骤的时长。
+   *
+   * 滑块步进 0.5 秒，但真机上仍可能给出 0.4999 之类的值：`setStepDuration` 会
+   * 再钳一次，所以这里只管传。
+   */
+  applyDuration(seconds: number) {
+    if (this.timelineSteps.length === 0 || !Number.isFinite(seconds)) {
+      return;
+    }
+    const next = setStepDuration(this.timelineSteps, this.timelineIndex, seconds * 1000);
+    if (next === this.timelineSteps) {
+      return;
+    }
+    this.timelineSteps = next;
+    this.renderTimeline();
+  },
+
+  /** 点时长条的刻度（0.5 / 15 / 30 秒），直接把当前步骤设到那一档。 */
+  onDurationTickTap(e: WechatMiniprogram.TouchEvent) {
+    const ms = Number(e.currentTarget.dataset.ms);
+    if (!Number.isFinite(ms)) {
+      return;
+    }
+    this.applyDuration(ms / 1000);
   },
 
   // ---------------- 方案槽位 ----------------
@@ -662,6 +1020,12 @@ Page({
    */
   async onApplyAndPlay() {
     const session = this.session;
+    /* 进阶档的时间轴还写不进设备（光区在 #66 / #67）：按下去会误写简单档
+     * 的那张卡，所以这里直接拒绝并说明原因。 */
+    if (this.data.mode === "advanced") {
+      wx.showToast({ title: "光区接上后才能播放进阶编排", icon: "none" });
+      return;
+    }
     const reason = this.disabledReason();
     if (session === null || reason !== "") {
       if (reason !== "") {
