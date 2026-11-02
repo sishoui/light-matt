@@ -29,3 +29,6 @@ __pycache__/
 .strip-colorize.png
 .layout-shots/
 .scratch/ticket-*.md
+
+# 开发者工具自动化：依赖本机 IDE 服务端口，脚本与截图都是本地产物
+miniprogram/.auto/
