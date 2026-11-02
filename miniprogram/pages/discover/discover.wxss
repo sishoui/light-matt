@@ -1,0 +1,24 @@
+/* 发现页（二级页）：骨架阶段只有一个占位说明卡。 */
+
+.placeholder-card {
+  margin-top: 16rpx;
+  padding: 48rpx 36rpx;
+  border-radius: var(--radius-xl);
+  background: var(--card);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+}
+
+.placeholder-title {
+  font-size: 32rpx;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.placeholder-text {
+  font-size: 24rpx;
+  line-height: 1.6;
+  color: var(--text-2);
+}

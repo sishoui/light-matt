@@ -1,9 +1,11 @@
 {
   "pages": [
     "pages/home/home",
-    "pages/devices/devices",
+    "pages/me/me",
+    "pages/discover/discover",
     "pages/device/device",
-    "pages/device-info/device-info"
+    "pages/device-info/device-info",
+    "pages/strip/strip"
   ],
   "window": {
     "navigationStyle": "custom",
@@ -27,8 +29,8 @@
         "text": "设备"
       },
       {
-        "pagePath": "pages/devices/devices",
-        "text": "发现"
+        "pagePath": "pages/me/me",
+        "text": "我的"
       }
     ]
   },

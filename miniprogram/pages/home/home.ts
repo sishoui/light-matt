@@ -41,7 +41,7 @@ import {
 import { getSession } from "../../utils/control/session-singleton";
 import { loadTheme, themeClass, type ThemeMode } from "../../utils/control/theme";
 import type { ControlSession } from "../../utils/control/session";
-import { PAGE_ROUTES, TAB_ROUTES, pushTo, switchTabTo } from "../../utils/control/routes";
+import { PAGE_ROUTES, pushTo } from "../../utils/control/routes";
 import { statusView } from "../../utils/control/status-view";
 import type { LinkState } from "../../utils/protocol/types";
 
@@ -231,7 +231,7 @@ Page({
   onCardTap() {
     const card = this.data.current;
     if (card === null) {
-      switchTabTo(TAB_ROUTES.devices);
+      pushTo(PAGE_ROUTES.discover);
       return;
     }
     pushTo(PAGE_ROUTES.device, { key: card.key });
@@ -243,7 +243,7 @@ Page({
       pushTo(PAGE_ROUTES.device, { key: this.data.current.key });
       return;
     }
-    switchTabTo(TAB_ROUTES.devices);
+    pushTo(PAGE_ROUTES.discover);
   },
 
   /**
@@ -354,12 +354,12 @@ Page({
 
   /** 空态：去发现页扫描。 */
   onEmptyTap() {
-    switchTabTo(TAB_ROUTES.devices);
+    pushTo(PAGE_ROUTES.discover);
   },
 
-  /** 右上角动作：去发现页。 */
+  /** 右上角动作：去发现页（发现页是二级页，压栈进入）。 */
   onGoDiscover() {
-    switchTabTo(TAB_ROUTES.devices);
+    pushTo(PAGE_ROUTES.discover);
   },
 });
 

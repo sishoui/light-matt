@@ -857,3 +857,63 @@
   background: var(--card-2);
   box-shadow: inset 0 0 0 1rpx var(--border);
 }
+
+/* ---------------- 右上角下拉菜单（#61） ----------------
+ * nav-bar 组件没有 slot，菜单只能在页面里自建：
+ *  - 遮罩 z-index 85 低于 nav-bar 的 90 —— 「菜单」按钮永远点得到，
+ *    再点一次收起（不会先被遮罩吞掉）；
+ *  - 面板从 nav-bar 下边界开始，z-index 86，仍在 nav-bar 之下但高于内容。
+ */
+.menu-mask {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 85;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.menu-panel {
+  position: fixed;
+  right: 24rpx;
+  z-index: 86;
+  min-width: 300rpx;
+  padding: 8rpx 0;
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-card);
+  border: 1rpx solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+.menu-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 24rpx;
+  padding: 22rpx 28rpx;
+}
+
+.menu-item-hover {
+  background: var(--card-press);
+}
+
+.menu-item.disabled {
+  opacity: 0.4;
+}
+
+.menu-item-label {
+  font-size: 28rpx;
+  color: var(--text);
+}
+
+.menu-item-sub {
+  font-size: 20rpx;
+  color: var(--text-3);
+}
+
+.menu-item.disabled .menu-item-label {
+  color: var(--text-3);
+}

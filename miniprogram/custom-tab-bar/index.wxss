@@ -96,27 +96,30 @@
   border-color: var(--tb-on);
 }
 
-/* ---- 发现（雷达环 + 中心点） ---- */
-.glyph-discover-ring {
-  width: 34rpx;
-  height: 34rpx;
+/* ---- 我的（人物轮廓：头 + 肩，纯 CSS） ---- */
+.glyph-person-head {
+  width: 16rpx;
+  height: 16rpx;
   border: 4rpx solid var(--tb-text);
   border-radius: 50%;
   box-sizing: border-box;
 }
 
-.glyph-discover-dot {
-  position: absolute;
-  width: 10rpx;
-  height: 10rpx;
-  border-radius: 50%;
-  background: var(--tb-text);
+/* 肩：圆角矩形只留上面三边，底部敞开，像半圆拱。 */
+.glyph-person-body {
+  width: 32rpx;
+  height: 14rpx;
+  border: 4rpx solid var(--tb-text);
+  border-bottom: none;
+  border-radius: 16rpx 16rpx 0 0;
+  box-sizing: border-box;
+  margin-top: 3rpx;
 }
 
-.tab.on .glyph-discover-ring {
+.tab.on .glyph-person-head {
   border-color: var(--tb-on);
 }
 
-.tab.on .glyph-discover-dot {
-  background: var(--tb-on);
+.tab.on .glyph-person-body {
+  border-color: var(--tb-on);
 }

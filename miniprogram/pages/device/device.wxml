@@ -3,9 +3,36 @@
     title="{{deviceName}}"
     subtitle="{{deviceId}}"
     back="{{true}}"
-    action-text="信息"
-    bind:action="onGoDeviceInfo"
+    action-text="菜单"
+    bind:action="onMenuTap"
   />
+
+  <!-- 右上角下拉菜单（#61）：nav-bar 没有 slot，菜单在本页自建。
+       遮罩层级低于 nav-bar（90），所以「菜单」按钮始终可点，再点一次收起。 -->
+  <view
+    wx:if="{{menuOpen}}"
+    class="menu-mask"
+    bindtap="onMenuClose"
+    catchtouchmove="onMenuNoop"
+  ></view>
+  <view wx:if="{{menuOpen}}" class="menu-panel" style="top: {{menuTop}}px;">
+    <view class="menu-item" bindtap="onMenuDiscover" hover-class="menu-item-hover">
+      <text class="menu-item-label">添加设备</text>
+      <text class="menu-item-sub">扫描附近</text>
+    </view>
+    <view class="menu-item" bindtap="onMenuDeviceInfo" hover-class="menu-item-hover">
+      <text class="menu-item-label">设备信息</text>
+      <text class="menu-item-sub">固件 · 灯珠数 · 自检</text>
+    </view>
+    <view
+      class="menu-item {{ready ? '' : 'disabled'}}"
+      bindtap="onMenuDisconnect"
+      hover-class="{{ready ? 'menu-item-hover' : 'none'}}"
+    >
+      <text class="menu-item-label">断开连接</text>
+      <text class="menu-item-sub">{{ready ? '回到未连接' : '未连接'}}</text>
+    </view>
+  </view>
 
   <!-- 连接提示：自动连接失败 / 需要先扫描时才有内容 -->
   <view wx:if="{{connectHint}}" class="notice-card" bindtap="onRetryConnect">
