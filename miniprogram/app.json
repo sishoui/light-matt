@@ -1,10 +1,37 @@
 {
-  "pages": ["pages/index/index"],
+  "pages": [
+    "pages/devices/devices",
+    "pages/light/light",
+    "pages/scripts/scripts",
+    "pages/segment-edit/segment-edit",
+    "pages/device-info/device-info"
+  ],
   "window": {
     "navigationBarTitleText": "lumen",
     "navigationBarBackgroundColor": "#101014",
     "navigationBarTextStyle": "white",
-    "backgroundColor": "#101014"
+    "backgroundColor": "#101014",
+    "backgroundTextStyle": "dark"
+  },
+  "tabBar": {
+    "color": "#6f6f7a",
+    "selectedColor": "#ffb478",
+    "backgroundColor": "#18181e",
+    "borderStyle": "black",
+    "list": [
+      {
+        "pagePath": "pages/devices/devices",
+        "text": "设备"
+      },
+      {
+        "pagePath": "pages/light/light",
+        "text": "灯光"
+      },
+      {
+        "pagePath": "pages/scripts/scripts",
+        "text": "剧本"
+      }
+    ]
   },
   "style": "v2",
   "sitemapLocation": "sitemap.json"

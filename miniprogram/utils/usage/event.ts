@@ -1,0 +1,188 @@
+/**
+ * 使用日志的事件构造与本地身份。
+ *
+ * ## 记录什么
+ *
+ * 一条记录 = 「谁 × 哪台 × 什么时候连上」。字段严格对应后端
+ * `POST /api/v1/usage-logs` 的请求体（见 `server/README.md` §2.1）：
+ *
+ * ```json
+ * {
+ *   "userKey": "local-...",
+ *   "startedAt": 1760000000000,
+ *   "clientEventId": "...",
+ *   "device": {
+ *     "hardwareId": "AA:BB:CC:DD:EE:FF",
+ *     "deviceName": "Lumen-1A2B",
+ *     "deviceId": "AA:BB:...",
+ *     "platform": "android"
+ *   }
+ * }
+ * ```
+ *
+ * **不记录任何实时控制数据**：没有颜色、亮度、开关、灯珠数、分段、剧本、命令字节。
+ * `tests/usage.test.ts` 有一条用例逐字段断言这一点。
+ *
+ * ## userKey 的来源（个人测试阶段的决定）
+ *
+ * 正式形态应当是 `wx.login()` → `code2session` → `openid`。本票不引入登录流程，
+ * 所以这里退化为**本机生成的稳定随机串**（`local-xxxxxxxx`），首次使用时写入
+ * storage，之后同一安装永远复用：
+ *
+ *  - 诚实地说：它不是 openid，不能跨手机识别同一个人；同一人换手机 = 两个用户。
+ *  - 但它满足本阶段的运维问题「这台设备最近有没有人用」，且重装/清缓存前稳定。
+ *  - 接入 `code2session` 后只需把 `getOrCreateLocalUserKey()` 换成 openid 来源，
+ *    后端与 `userKey` 字段都不用改。
+ *
+ * ## 设备身份如实上报
+ *
+ * `hardwareId` 是设备自报的 6 字节 BT MAC（`DeviceInfoReport 0x88` 的 hw_id，
+ * #50）——它是 v3 的设备真身份，后端聚合键首选它；读不到时如实为 null，
+ * 后端退化为按广播名聚合，绝不拿 `deviceId` 或广播名冒充。
+ *
+ * `deviceName` 是广播名（老客户端唯一的跨手机标识），`deviceId` 是平台原始 id
+ * （Android=MAC，iOS=UUID），只作诊断证据。三者都照实上报，不在小程序里
+ * 做归一或猜测。
+ */
+
+/** 后端接受的平台值。`other`（含开发者工具）如实记为 `unknown`。 */
+export type UsagePlatform = "android" | "ios" | "devtools" | "unknown";
+
+export interface UsageDevice {
+  /**
+   * 设备自报的 6 字节 BT MAC（`AA:BB:CC:DD:EE:FF`）。
+   *
+   * 可选：`QueryDeviceInfo` 还没读回时（或老固件不支持 0x1D）就没有它。
+   * 未知时**整个字段不出现**（不是 null）——老客户端上报体因此与新客户端
+   * 「读不到 hw_id」时逐字节一致，后端只需按可选字段处理。
+   */
+  hardwareId?: string;
+  deviceName: string | null;
+  deviceId: string | null;
+  platform: UsagePlatform;
+}
+
+/** 上报体（字段名与后端一致）。 */
+export interface UsageEvent {
+  userKey: string;
+  startedAt: number;
+  clientEventId: string;
+  device: UsageDevice;
+}
+
+/** 一次成功连接的身份信息（session 在 ready 时提供）。 */
+export interface ConnectionIdentity {
+  /** 6 字节 BT MAC；未读到（或固件不支持 0x1D）时为 null / 省略。 */
+  hardwareId?: string | null;
+  deviceName: string | null;
+  deviceId: string | null;
+  platform: "android" | "ios" | "other";
+}
+
+export const LOCAL_USER_KEY_STORAGE_KEY = "lumen.usage.userkey.v1";
+
+/**
+ * 平台归一：小程序只有 android / ios / other（devtools 归 other）。
+ * 后端枚举是 android | ios | devtools | unknown —— 无法区分 devtools 时记 unknown
+ * 才是诚实的；把 other 猜成 devtools 会制造假数据。
+ */
+export function toUsagePlatform(platform: "android" | "ios" | "other"): UsagePlatform {
+  if (platform === "android") return "android";
+  if (platform === "ios") return "ios";
+  return "unknown";
+}
+
+/** 32 bit 随机 hex。Math.random 足够——这是诊断标识，不是安全令牌。 */
+function randomHex(random: () => number, bytes: number): string {
+  let out = "";
+  for (let i = 0; i < bytes; i += 1) {
+    const value = Math.floor(random() * 256) & 0xff;
+    out += value.toString(16).padStart(2, "0");
+  }
+  return out;
+}
+
+/**
+ * UUID v4 形状的 clientEventId（幂等键）。
+ * 不依赖 `crypto.randomUUID`：小程序基础库不保证有它，且后端只要求唯一。
+ */
+export function createClientEventId(random: () => number = Math.random): string {
+  const hex = randomHex(random, 16).split("");
+  // version 4 / variant 10xx（只改十六进制字符，保持形状可读）。
+  hex[12] = "4";
+  hex[16] = ((Number.parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
+  const s = hex.join("");
+  return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20)}`;
+}
+
+/** 本机稳定身份：`local-` + 16 hex。首次生成后写入 storage。 */
+export function createLocalUserKey(random: () => number = Math.random): string {
+  return `local-${randomHex(random, 8)}`;
+}
+
+/**
+ * 取（或首次生成）本机 userKey。
+ * storage 读写失败时返回一个进程内临时值，绝不抛错——日志是旁路。
+ */
+export function getOrCreateLocalUserKey(
+  storage: { get(key: string): string | null; set(key: string, value: string): void },
+  random: () => number = Math.random,
+): string {
+  const existing = storage.get(LOCAL_USER_KEY_STORAGE_KEY);
+  if (existing !== null && existing.length > 0) {
+    return existing;
+  }
+  const created = createLocalUserKey(random);
+  storage.set(LOCAL_USER_KEY_STORAGE_KEY, created);
+  return created;
+}
+
+/** 由连接身份构造一条待上报记录。纯函数，便于单测。 */
+export function buildUsageEvent(input: {
+  userKey: string;
+  startedAt: number;
+  clientEventId: string;
+  device: ConnectionIdentity;
+}): UsageEvent {
+  const name =
+    input.device.deviceName !== null && input.device.deviceName.trim().length > 0
+      ? input.device.deviceName.trim()
+      : null;
+  const id =
+    input.device.deviceId !== null && input.device.deviceId.trim().length > 0
+      ? input.device.deviceId.trim()
+      : null;
+  const hardwareId = normalizeHardwareId(input.device.hardwareId);
+  return {
+    userKey: input.userKey,
+    startedAt: input.startedAt,
+    clientEventId: input.clientEventId,
+    device: {
+      /* 未知时省略字段而不是写 null：老客户端的上报体保持逐字节不变。 */
+      ...(hardwareId !== null ? { hardwareId } : {}),
+      deviceName: name,
+      deviceId: id,
+      platform: toUsagePlatform(input.device.platform),
+    },
+  };
+}
+
+/**
+ * 归一化设备自报的硬件 id，输出 `AA:BB:CC:DD:EE:FF`（大写冒号形式）。
+ *
+ * 与后端 `normalizeMacAddress` 同一口径：协议层 `parseDeviceInfoReport` 已经
+ * 给出这个形式，这里只是防御——脏值（长度不对 / 非 hex）一律视为「不知道」，
+ * 宁可退化为按广播名聚合，也不把脏数据当聚合键。
+ *
+ * **全零 MAC 同样视为「不知道」**：固件 `esp_read_mac` 失败时会上报
+ * `00:00:00:00:00:00`，那不是身份，上报它只会把所有故障设备并成一行。
+ */
+export function normalizeHardwareId(raw: string | null | undefined): string | null {
+  if (typeof raw !== "string") return null;
+  const compressed = raw.trim().toLowerCase().replace(/^0x/, "").replace(/[:\-\s]/g, "");
+  if (!/^[0-9a-f]{12}$/.test(compressed)) return null;
+  if (compressed === "000000000000") return null;
+  const pairs = compressed.match(/.{2}/g);
+  if (pairs === null) return null;
+  return pairs.join(":").toUpperCase();
+}

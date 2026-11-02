@@ -10,6 +10,23 @@ menu "Lumen"
             GPIO18/19（USB Serial/JTAG）、GPIO20/21（UART0）、
             GPIO4-7（JTAG）、GPIO2/8/9（strapping）。
 
+    config LUMEN_STRIP_PINS
+        string "多灯带引脚列表（逗号分隔，1-8 个）"
+        default "3"
+        help
+            第 0 条灯带的数据脚在第一项；后续项是第 1..7 条。
+
+            只给一个引脚（默认 "3"）时走单灯带路径，行为与 v1 逐字节一致。
+            给 2-8 个引脚时进入 TDM 轮询（#29）：C3 只有 2 个 RMT TX 通道，
+            8 条灯带共用一个通道，运行时用 led_strip_switch_gpio 切换输出引脚，
+            靠 WS2812B 锁存保持各条画面。
+
+            引脚不能重复（否则两条灯带无法区分，初始化会拒绝并退回单灯带）。
+            禁用/慎用引脚见 LUMEN_LED_GPIO 的说明。
+
+            注意：这里只决定「有几条、在哪几个引脚」。每条灯珠数由小程序的
+            SetLedCount 分别设置，初始都取 LUMEN_LED_COUNT。
+
     config LUMEN_LED_COUNT
         int "灯珠数量"
         default 30
@@ -73,11 +90,22 @@ menu "Lumen"
 
     config LUMEN_RENDER_TASK_STACK_SIZE
         int "渲染任务栈大小（字节）"
-        default 4096
-        range 2048 16384
+        default 6144
+        range 4096 16384
         help
-            渲染任务只做 gamma 查表、set_pixel 循环和阻塞 refresh，
-            4 KB 足以覆盖 led_strip 与 RMT 驱动的调用深度。
+            渲染任务做段合成、gamma 查表、set_pixel 循环和阻塞 refresh。
+
+            历史：v1 只用 4 KB，因为那条路径只有「整条同色」的局部变量。
+            v2 加分段后，真机实测 4 KB 会 **栈溢出**（`Guru Meditation ...
+            Stack protection fault, task "lumen_render"`），表现为上电反复重启。
+            根因是段存储（lumen_segment_store_t ≈ 1024 字节）与持久化快照
+            （lumen_persist_t ≈ 1060 字节）被放在渲染任务的栈上，再叠上
+            led_strip / RMT 驱动的调用深度。
+
+            已把这两类结构改成渲染任务私有的**静态工作区**
+            （led_engine.c 的 s_render_persist / s_render_segments），
+            大结构不再占栈；6 KB 是给驱动深度与后续灯效计算留的余量。
+            不要再往渲染任务栈上放大数组。
 
     config LUMEN_RENDER_TASK_PRIORITY
         int "渲染任务优先级"
@@ -89,12 +117,52 @@ menu "Lumen"
             主机任务，否则刷新期间会阻塞协议栈；高于 IDLE(0) 与 app_main(1)
             即可，取 4 留出协议栈抢占余量。
 
+    config LUMEN_ANIM_FPS
+        int "动画帧率（fps）"
+        default 20
+        range 5 48
+        help
+            有动画段（呼吸 / 彩虹 / 流光）或剧本在播放时，渲染任务按帧率
+            超时等待，超时即渲染下一帧（docs/v2-effects-engine.md §3.1）。
+
+            **等待量 = 目标帧周期 − 上一帧实际耗时**，所以这里填的就是真实帧率。
+            早先的实现直接等一个完整周期，导致「配 10fps 实际只有 8.3fps」；
+            真机实测（8 路 × 64 灯，帧耗时 20.8ms）已确认修复。
+
+            ## 上限由 TDM 带宽决定（真机实测）
+
+            | 每条灯珠 | 8 路一轮耗时 | 纯发送上限 | 20fps 占用 |
+            |---|---|---|---|
+            | 30 | ≈11 ms | ≈90 Hz | 22% |
+            | 64 | ≈20.8 ms | ≈48 Hz | 42% |
+
+            所以 8 路 × 64 灯时理论上限约 48fps；取 **20fps** 是因为要留余量
+            给 BLE 抢占 RMT 中断——C3 单核无 DMA，占用越高错色风险越大，
+            而错色率至今没有实测数据（见 docs/animation-baseline.md §1）。
+
+            想更流畅就往 30 调（占用 62%），但请先在真机上跑一轮 BLE 高频写入
+            观察有无错色；不要超过 40（占用 >83%，几乎不留抢占余量）。
+            单灯带场景上限远高（64 灯约 450Hz），20fps 占用仅 13%。
+
+            默认 10（#20 帧率基线结论）：呼吸周期 334ms 时每周期约 33 帧，
+            肉眼足够平滑；RMT 负载不到 1%。**静态场景不受影响**：
+            need_frames() 为假时渲染任务仍阻塞在信号量上，零额外 CPU。
+
+            不要用第二个定时器任务：esp_timer 回调里渲染会持锁并与 BLE
+            回调抢单核，渲染任务自身的带超时 xSemaphoreTake 就够了。
+
     config LUMEN_STORE_TASK_STACK_SIZE
         int "存储任务栈大小（字节）"
-        default 3072
-        range 2048 8192
+        default 5120
+        range 3072 8192
         help
-            存储任务只做 NVS blob 写入与 commit，3 KB 足够。
+            存储任务做 NVS blob 编码与 commit。
+
+            v4 blob 的段记录是 20 字节（两层），所以编码时栈上同时有
+            lumen_persist_t（8×8 段 × 24 + 状态 ≈ 1.6 KB）与 1312 字节的
+            blob 缓冲，合计约 2.9 KB，再加 NVS 在 cache 关闭期间的工作量。
+            v2/v3 时约 1.8 KB / 4 KB；#37 的两层结构把这里推高，默认改为
+            5120。不要压回 2 KB。
 
     config LUMEN_STORE_TASK_PRIORITY
         int "存储任务优先级"
@@ -103,6 +171,25 @@ menu "Lumen"
         help
             存储任务优先级低于渲染任务：NVS 写不是实时路径，且 flash 操作
             会短暂关 cache，不应抢占渲染与协议栈。
+
+    config LUMEN_FORCE_REFRESH
+        bool "强制持续刷帧（仅 #20 错色实验，非产品功能）"
+        default n
+        help
+            开启后，即使画面完全静态，渲染任务也按 LUMEN_ANIM_FPS 持续刷帧，
+            并且**跳过逐帧去重**（像素没变也照发）。
+
+            用途：验证 RMT × BLE 共存（issue #20 的核心问题）。错色判定的前提是
+            「画面恒定 + 持续刷帧」——画面恒定才能用 analyze-strip-video.py
+            逐帧比对基线（任何偏离都是异常）；持续刷帧才能让 BLE 抢占 RMT 中断
+            的机会出现。
+
+            为什么不用 LUMEN_RMT_STRESS_MODE：那套压力固件直接对单个 led_strip
+            句柄刷，不认识 TDM 的引脚轮换，8 路场景下测不出真实负载。
+
+            副作用：静态场景也会持续占用 RMT 带宽（20fps 约 41%），功耗与
+            发热高于正常。**量产固件必须关闭。**
+            与 LUMEN_RMT_STRESS_MODE 互斥使用：两者同时开会以压力模式为准。
 
     config LUMEN_RMT_STRESS_MODE
         bool "RMT × BLE 共存压力测试模式（#7，仅实验固件）"

@@ -1,13 +1,13 @@
 /**
- * #10 颜色与预设端到端的小程序侧测试。
+ * 颜色语义与「写进选中段」的小程序侧测试（#10 / #25）。
  *
  * 覆盖：
  *  1. HSV→RGB 纯函数：0°/120°/240°、饱和度与明度边界、**不做 gamma**；
  *  2. RGB→HSV 反推（设备状态回填色环）、十六进制互转、预设表；
  *  3. 色环几何：圆环命中判定（中心/环外/边缘容差）、角度与坐标互转；
- *  4. 颜色与亮度共用同一个 20Hz latest-wins 节流通道（不叠成 40Hz）；
- *  5. 预设用一条 SetAll 原子下发，且编码与测试向量逐字节一致；
- *  6. 快速切预设 / 拖动残留颜色都不出现旧色回跳。
+ *  4. **#25**：SetColor / SetAll 已退役，颜色写进**选中段**（SetSegment 0x10）——
+ *     没有选中段时不发帧、applyPreset 明确返回错误而不是假装成功；
+ *  5. 亮度仍走 20Hz latest-wins 闸门（颜色不再占用这条通道）。
  *
  * 只替换计时器与传输通道（spec 允许的两个假件），不 mock 协议字节。
  */
@@ -38,11 +38,16 @@ import { ControlSession } from "../utils/control/session";
 import { bytesToCompactHex } from "../utils/protocol/hex";
 import { encodeFrame } from "../utils/protocol/frame";
 import type { BleTransport } from "../utils/ble/transport";
-import type { CommandRequest, DeviceState } from "../utils/protocol/types";
+import type {
+  CommandRequest,
+  DeviceState,
+  SegmentListEnd,
+  SegmentReport,
+} from "../utils/protocol/types";
+import { EMPTY_EFFECT } from "../utils/protocol/types";
+import { baseState } from "./helpers/state";
 
 const CMD_SET_BRIGHTNESS = 0x02;
-const CMD_SET_COLOR = 0x03;
-const CMD_SET_ALL = 0x04;
 
 interface VectorCase {
   name: string;
@@ -50,11 +55,12 @@ interface VectorCase {
   seq?: number;
   payload_hex?: string;
   frame_hex: string;
+  result_code?: number;
 }
 
 const vectors = JSON.parse(
-  readFileSync(new URL("../../docs/protocol-testvectors.json", import.meta.url), "utf8"),
-) as { cases: VectorCase[] };
+  readFileSync(new URL("../../docs/protocol-testvectors-v3.json", import.meta.url), "utf8"),
+) as { cases: VectorCase[]; state_read_example_hex: string };
 
 function vector(name: string): VectorCase {
   const found = vectors.cases.find((c) => c.name === name);
@@ -62,18 +68,7 @@ function vector(name: string): VectorCase {
   return found as VectorCase;
 }
 
-function baseState(overrides: Partial<DeviceState> = {}): DeviceState {
-  return {
-    power: 1,
-    brightness: 128,
-    r: 255,
-    g: 180,
-    b: 120,
-    ledCount: 30,
-    maxBrightness: 255,
-    ...overrides,
-  };
-}
+/* v3 的 37 字节 State 夹具集中在 tests/helpers/state.ts（含派生字段一致性）。 */
 
 /** 可控时钟 + 计时器（与 brightness.test.ts 同款）。 */
 function fakeClock() {
@@ -127,15 +122,38 @@ class FakeTransport {
   writes: CommandRequest[] = [];
   writeTimes: number[] = [];
   failNextWrites = 0;
-  /** 手动控制 ACK 何时/以什么顺序返回（快速切预设用）。 */
-  deferAcks = false;
-  pendingAcks: Array<{ req: CommandRequest; resolve: (resultCode: number) => void }> = [];
+  /**
+   * #48 起改色要先读回完整 spec：这里模拟「设备上已有的段」。
+   * 缺省是单层静态段（layer1 空、blend 覆盖），区间与旧用例的期望一致。
+   */
+  reports: SegmentReport[] = [
+    ["0-15", 0],
+    ["0-15", 1],
+    ["40-63", 2],
+  ].map(([range, segId]) => {
+    const [start, end] = String(range).split("-").map(Number);
+    return {
+      stripId: 0,
+      segId: Number(segId),
+      start,
+      end,
+      blend: 0 as const,
+      layer0: { type: 0, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0 },
+      layer1: { ...EMPTY_EFFECT },
+      type: 0,
+      hue: 0,
+      sat: 255,
+      periodMs: 0,
+      p5: 0,
+      flags: 0,
+    };
+  });
+  stripQueries: number[] = [];
 
   private readonly stateListeners: Array<(state: DeviceState) => void> = [];
   private readonly linkListeners: Array<(state: string, detail?: unknown) => void> = [];
   private seq = 1;
 
-  /** #11 起 session 内部订阅链路状态；这里只记录，不主动触发。 */
   onLink(fn: (state: string, detail?: unknown) => void): () => void {
     this.linkListeners.push(fn);
     return () => {
@@ -179,17 +197,18 @@ class FakeTransport {
     this.writeTimes.push(Date.now());
     const seq = this.seq;
     this.seq = (this.seq + 1) & 0xff;
-    if (!this.deferAcks) {
-      return Promise.resolve({ seq, command: req.command, resultCode: 0, ok: true });
-    }
-    return new Promise((resolve) => {
-      this.pendingAcks.push({
-        req,
-        resolve: (resultCode: number) => {
-          resolve({ seq, command: req.command, resultCode, ok: resultCode === 0 });
-        },
-      });
-    });
+    return Promise.resolve({ seq, command: req.command, resultCode: 0, ok: true });
+  }
+
+  /** #48：改色前读回设备权威的段列表。 */
+  async queryStrip(
+    stripId: number,
+  ): Promise<{ reports: SegmentReport[]; end: SegmentListEnd }> {
+    this.stripQueries.push(stripId);
+    return {
+      reports: this.reports.map((report) => ({ ...report })),
+      end: { stripId, segMask: 0xff },
+    };
   }
 
   async disconnect(): Promise<void> {
@@ -220,9 +239,17 @@ function makeSession(): SessionHarness {
   return { session, transport, clock };
 }
 
-async function settle(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
+/**
+ * 把微任务队列跑空。
+ *
+ * #48 起颜色帧要先 await 一次 `queryStrip`（读回完整 spec），一次 emit 的
+ * Promise 链比之前长；2 个 tick 不够，会让写时间戳落在下一拍、把 20Hz 的
+ * 间隔断言测成 40ms 的假失败。这里放宽到 40 个 tick（仍是纯微任务）。
+ */
+async function settle(rounds = 40): Promise<void> {
+  for (let i = 0; i < rounds; i += 1) {
+    await Promise.resolve();
+  }
 }
 
 describe("HSV → 用户空间 RGB（不做 gamma）", () => {
@@ -305,11 +332,13 @@ describe("HSV → 用户空间 RGB（不做 gamma）", () => {
 
     const warm = PRESETS.find((p) => p.name === "暖白");
     expect(warm).toBeDefined();
-    /* 协议默认 RGB 255/180/120；向量 set_color_warm_white 的载荷是 FFB478。 */
+    /* 协议默认 RGB 255/180/120：v3 的 State 示例里字节 2-4 就是这三个值
+     * （层 0 基准色），所以直接拿向量文件当唯一真相，不另抄一份 hex。 */
     expect(warm?.rgb).toEqual({ r: 255, g: 180, b: 120 });
     expect(warm?.hex).toBe("#FFB478");
+    const stateHex = vectors.state_read_example_hex;
     expect(bytesToCompactHex(new Uint8Array([warm!.rgb.r, warm!.rgb.g, warm!.rgb.b]))).toBe(
-      vector("set_color_warm_white").payload_hex,
+      stateHex.slice(4, 10).toUpperCase(),
     );
 
     /* 每个预设的 hex 与 rgb 必须一致（同一来源解析，避免两套值漂移）。 */
@@ -445,10 +474,91 @@ describe("色环几何（触控精度只到这里，其余待真机）", () => {
   });
 });
 
-describe("颜色与亮度共用同一个 20Hz 节流通道", () => {
-  it("亮度与颜色交替输入 1 秒：写次数 ≤20，任意两帧间隔 ≥50ms", async () => {
+describe("#25：颜色写进选中段（不再是占位）", () => {
+  it("没有选中段时 queueColor / commitColor 不发帧（不能假装成功）", async () => {
+    const { session, transport, clock } = makeSession();
+    transport.emitState(baseState({ power: 1, brightness: 77 }));
+
+    session.queueColor({ r: 0, g: 0, b: 255 });
+    clock.advance(200);
+    await settle();
+
+    session.commitColor({ r: 255, g: 0, b: 0 });
+    clock.advance(200);
+    await settle();
+
+    expect(transport.attempts).toHaveLength(0);
+    expect(transport.writes).toHaveLength(0);
+    vi.restoreAllMocks();
+  });
+
+  it("有选中段时颜色变成 SetSegment 0x10，区间与 hue/sat 正确，并走 20Hz 闸门", async () => {
+    const { session, transport, clock } = makeSession();
+    transport.emitState(baseState({ power: 1, brightness: 77 }));
+    session.setActiveSegment({ stripId: 0, segId: 2, start: 40, end: 63 });
+
+    /* 纯红：hue 0、sat 255。 */
+    session.commitColor({ r: 255, g: 0, b: 0 });
+    clock.advance(200);
+    await settle();
+
+    expect(transport.writes).toHaveLength(1);
+    const req = transport.writes[0];
+    expect(req.command).toBe(0x10);
+    /* strip, seg, start, end, type, hue_lo, hue_hi, sat */
+    /* v3：21 字节两层载荷，单层时 layer1 全 0xFF。 */
+    expect(req.payload.length).toBe(21);
+    expect(bytesToCompactHex(req.payload)).toBe(
+      "0002283F00000000FF00000000FF00000000000000",
+    );
+
+    /* 连续拖动：50ms 闸门，只保留最新值。 */
+    transport.writes.length = 0;
+    transport.writeTimes.length = 0;
+    for (let i = 0; i < 20; i += 1) {
+      session.queueColor({ r: 0, g: 255, b: 0 });
+      clock.advance(10);
+      await settle();
+    }
+    clock.advance(200);
+    await settle();
+    expect(transport.writes.length).toBeLessThanOrEqual(5);
+    for (let i = 1; i < transport.writeTimes.length; i += 1) {
+      expect(transport.writeTimes[i] - transport.writeTimes[i - 1]).toBeGreaterThanOrEqual(50);
+    }
+    /* 绿色 hue=120° → 0x5555（21845），sat=255。 */
+    const last = transport.writes[transport.writes.length - 1];
+    expect(bytesToCompactHex(last.payload)).toBe(
+      "0002283F00005555FF00000000FF00000000000000",
+    );
+
+    vi.restoreAllMocks();
+  });
+
+  it("applyPreset 没有目标段时明确报错；有目标段时发 SetSegment", async () => {
+    const { session, transport } = makeSession();
+    transport.emitState(baseState());
+
+    const noTarget = await session.applyPreset({ r: 255, g: 0, b: 0 });
+    expect(noTarget.kind).toBe("error");
+    expect(transport.attempts).toHaveLength(0);
+
+    session.setActiveSegment({ stripId: 0, segId: 0, start: 0, end: 15 });
+    const withTarget = await session.applyPreset({ r: 255, g: 0, b: 0 });
+    expect(withTarget.kind).toBe("ok");
+    expect(transport.writes).toHaveLength(1);
+    expect(transport.writes[0].command).toBe(0x10);
+    expect(bytesToCompactHex(transport.writes[0].payload)).toBe(
+      "0000000F00000000FF00000000FF00000000000000",
+    );
+
+    vi.restoreAllMocks();
+  });
+
+  it("亮度仍走 20Hz 闸门；颜色走另一条同节奏的段闸门", async () => {
     const { session, transport, clock } = makeSession();
     transport.emitState(baseState());
+    session.setActiveSegment({ stripId: 0, segId: 0, start: 0, end: 15 });
 
     /* 模拟 100Hz：每 10ms 交替推亮度与颜色。 */
     for (let i = 0; i < 100; i += 1) {
@@ -463,251 +573,25 @@ describe("颜色与亮度共用同一个 20Hz 节流通道", () => {
     clock.advance(200);
     await settle();
 
-    expect(transport.writes.length).toBeLessThanOrEqual(20);
+    /* 两条通道各自 20Hz，合起来不超过 20 帧/秒（不是叠成 40Hz）。 */
     expect(transport.writes.length).toBeGreaterThan(0);
-    /* 若两路各有一套 20Hz 闸门，这里会看到 <50ms 的间隔（叠成 40Hz）。 */
-    for (let i = 1; i < transport.writeTimes.length; i += 1) {
-      expect(transport.writeTimes[i] - transport.writeTimes[i - 1]).toBeGreaterThanOrEqual(50);
-    }
-    /* 两种命令都真的走了这条通道（不是只测了亮度）。 */
+    expect(transport.writes.length).toBeLessThanOrEqual(20);
     const commands = new Set(transport.writes.map((w) => w.command));
     expect(commands.has(CMD_SET_BRIGHTNESS)).toBe(true);
-    expect(commands.has(CMD_SET_COLOR)).toBe(true);
+    expect(commands.has(0x10)).toBe(true);
+    expect(commands.size).toBe(2);
 
     vi.restoreAllMocks();
   });
 
-  it("颜色拖动是乐观更新：本地立即变，power / brightness 不动", async () => {
-    const { session, transport, clock } = makeSession();
-    transport.emitState(baseState({ power: 1, brightness: 77 }));
-
-    session.queueColor({ r: 0, g: 0, b: 255 });
-    /* 还没到 50ms：本地状态已经跟手，但一帧都没发。 */
-    expect(session.deviceState?.b).toBe(255);
-    expect(transport.writes).toHaveLength(0);
-
-    clock.advance(50);
-    await settle();
-    expect(transport.writes).toHaveLength(1);
-    expect(transport.writes[0].command).toBe(CMD_SET_COLOR);
-    expect(bytesToCompactHex(transport.writes[0].payload)).toBe("0000FF");
-    expect(session.deviceState?.power).toBe(1);
-    expect(session.deviceState?.brightness).toBe(77);
-
-    vi.restoreAllMocks();
-  });
-
-  it("连续颜色不重传：写失败后只发下一个最新值", async () => {
-    const { session, transport, clock } = makeSession();
-    transport.emitState(baseState());
-
-    transport.failNextWrites = 1;
-    session.queueColor({ r: 255, g: 0, b: 0 });
-    clock.advance(50);
-    await settle();
-    session.queueColor({ r: 0, g: 255, b: 0 });
-    clock.advance(50);
-    await settle();
-
-    /* 红只尝试一次（没有重传），随后发的是绿。 */
-    expect(transport.attempts.map((r) => bytesToCompactHex(r.payload))).toEqual([
-      "FF0000",
-      "00FF00",
-    ]);
-    expect(transport.writes.map((r) => bytesToCompactHex(r.payload))).toEqual(["00FF00"]);
-
-    vi.restoreAllMocks();
-  });
-});
-
-describe("开关与颜色快速切换不出现旧色回跳", () => {
-  it("拖着颜色快速关开灯：颜色保持最新，开关帧之后不再补发旧色", async () => {
-    const { session, transport, clock } = makeSession();
-    transport.emitState(baseState({ power: 1, brightness: 128, r: 255, g: 180, b: 120 }));
-
-    /* 先把颜色拖到红（20Hz 节流发出去）。 */
-    session.queueColor({ r: 255, g: 0, b: 0 });
-    clock.advance(50);
-    await settle();
-    const afterColor = transport.writes.length;
-    expect(transport.writes[afterColor - 1].command).toBe(CMD_SET_COLOR);
-
-    /* 立刻关灯再开灯（离散路径，等 ACK）。 */
-    const offResult = await session.setPower(false);
-    const onResult = await session.setPower(true);
-    expect(offResult.kind).toBe("ok");
-    expect(onResult.kind).toBe("ok");
-
-    /* 推进时钟：节流通道里不应再有残留的颜色帧。 */
-    clock.advance(300);
-    await settle();
-
-    const afterToggle = transport.writes.slice(afterColor);
-    expect(afterToggle.every((r) => r.command !== CMD_SET_COLOR)).toBe(true);
-    /* 本地颜色仍是最后拖到的红，没有被开关路径或旧帧改回去。 */
-    expect(session.deviceState?.r).toBe(255);
-    expect(session.deviceState?.g).toBe(0);
-    expect(session.deviceState?.b).toBe(0);
-    expect(session.deviceState?.power).toBe(1);
-
-    vi.restoreAllMocks();
-  });
-
-  it("拖动颜色同时下发预设：最终是新预设色，不是拖动的旧色", async () => {
-    const { session, transport, clock } = makeSession();
-    transport.emitState(baseState({ power: 1, brightness: 128 }));
-
-    session.queueColor({ r: 255, g: 0, b: 0 }); // 还没到 50ms 的 pending 红
-    const purple = PRESETS.find((p) => p.name === "紫")!;
-    await session.applyPreset(purple.rgb);
-    clock.advance(300);
-    await settle();
-
-    expect(transport.writes.map((r) => r.command)).toEqual([CMD_SET_ALL]);
-    expect(session.deviceState?.r).toBe(purple.rgb.r);
-    expect(session.deviceState?.g).toBe(purple.rgb.g);
-    expect(session.deviceState?.b).toBe(purple.rgb.b);
-
-    vi.restoreAllMocks();
-  });
-});
-
-describe("预设 = 一次 SetAll 原子下发", () => {
-  it("只发一帧 SetAll，载荷 [power=1, 当前亮度, R, G, B]", async () => {
-    const { session, transport } = makeSession();
-    transport.emitState(baseState({ power: 0, brightness: 90, r: 255, g: 180, b: 120 }));
-
-    const red = PRESETS.find((p) => p.name === "红")!;
-    const result = await session.applyPreset(red.rgb);
-
-    expect(result.kind).toBe("ok");
-    expect(transport.writes).toHaveLength(1);
-    const write = transport.writes[0];
-    expect(write.command).toBe(CMD_SET_ALL);
-    expect(bytesToCompactHex(write.payload)).toBe("015AFF0000");
-    /* 关灯态点预设也点亮（预设 = 场景入口），亮度沿用当前值。 */
-    expect(session.deviceState?.power).toBe(1);
-    expect(session.deviceState?.brightness).toBe(90);
-    expect(session.deviceState?.r).toBe(255);
-
-    vi.restoreAllMocks();
-  });
-
-  it("当前亮度为 0：用最近一次非 0 亮度恢复，避免「点了但没亮」", async () => {
-    const { session, transport } = makeSession();
-    transport.emitState(baseState({ power: 1, brightness: 200 }));
-    transport.emitState(baseState({ power: 1, brightness: 0 }));
-
-    const blue = PRESETS.find((p) => p.name === "蓝")!;
-    await session.applyPreset(blue.rgb);
-
-    expect(bytesToCompactHex(transport.writes[0].payload)).toBe("01C80000FF");
-    expect(session.deviceState?.brightness).toBe(200);
-
-    vi.restoreAllMocks();
-  });
-
-  it("SetAll 编码与测试向量逐字节一致（set_all_on / set_all_off）", async () => {
-    const onCase = vector("set_all_on");
-    const payload = new Uint8Array([0x01, 0x80, 0xff, 0xb4, 0x78]);
-    expect(bytesToCompactHex(encodeFrame(onCase.command as number, onCase.seq as number, payload))).toBe(
-      onCase.frame_hex,
-    );
-
-    const offCase = vector("set_all_off");
-    const offPayload = new Uint8Array([0x00, 0x80, 0xff, 0xb4, 0x78]);
-    expect(
-      bytesToCompactHex(encodeFrame(offCase.command as number, offCase.seq as number, offPayload)),
-    ).toBe(offCase.frame_hex);
-
-    /* SetColor 向量同样逐字节一致。 */
-    const colorCase = vector("set_color_red");
-    const colorPayload = new Uint8Array([0xff, 0x00, 0x00]);
-    expect(
-      bytesToCompactHex(
-        encodeFrame(colorCase.command as number, colorCase.seq as number, colorPayload),
-      ),
-    ).toBe(colorCase.frame_hex);
-    expect(colorCase.command).toBe(CMD_SET_COLOR);
-    expect(onCase.command).toBe(CMD_SET_ALL);
-  });
-
-  it("拖动残留的旧颜色在预设下发前被丢弃（不发旧色）", async () => {
-    const { session, transport, clock } = makeSession();
-    transport.emitState(baseState());
-
-    /* 拖动留下一个还没发出的颜色。 */
-    session.queueColor({ r: 10, g: 20, b: 30 });
-    expect(transport.writes).toHaveLength(0);
-
-    const green = PRESETS.find((p) => p.name === "绿")!;
-    await session.applyPreset(green.rgb);
-    /* 之后时钟推进：被丢弃的旧颜色不能再落地。 */
-    clock.advance(200);
-    await settle();
-
-    expect(transport.writes.map((r) => r.command)).toEqual([CMD_SET_ALL]);
-    expect(bytesToCompactHex(transport.writes[0].payload)).toBe("018000FF00");
-    expect(session.deviceState?.g).toBe(255);
-
-    vi.restoreAllMocks();
-  });
-
-  it("快速连点两个预设：最终颜色是最后一次，旧 ACK 不回跳", async () => {
-    const { session, transport } = makeSession();
-    transport.emitState(baseState({ power: 1, brightness: 100 }));
-    transport.deferAcks = true;
-
-    const red = PRESETS.find((p) => p.name === "红")!;
-    const blue = PRESETS.find((p) => p.name === "蓝")!;
-
-    const first = session.applyPreset(red.rgb);
-    const second = session.applyPreset(blue.rgb);
-
-    /* 两帧都发出（SetAll 是绝对值命令，FIFO 顺序保证设备最终 = 最后一次）。 */
-    expect(transport.writes.map((r) => bytesToCompactHex(r.payload))).toEqual([
-      "0164FF0000",
-      "01640000FF",
-    ]);
-    expect(session.deviceState?.b).toBe(255);
-
-    /* 制造乱序返回：先完成第一次（红），再完成第二次（蓝）。 */
-    expect(transport.pendingAcks).toHaveLength(2);
-    transport.pendingAcks[0].resolve(0);
-    expect((await first).kind).toBe("ok");
-    /* 旧的红色 ACK 回来时不能把本地颜色改回红。 */
-    expect(session.deviceState?.b).toBe(255);
-    expect(session.deviceState?.r).toBe(0);
-
-    transport.pendingAcks[1].resolve(0);
-    const result = await second;
-    expect(result.kind).toBe("ok");
-    if (result.kind === "ok") {
-      expect(result.state.b).toBe(255);
-      expect(result.state.r).toBe(0);
-      expect(result.state.power).toBe(1);
-    }
-
-    vi.restoreAllMocks();
-  });
-
-  it("预设 ACK 超时允许重发一次（离散绝对值命令），连续颜色不重发", async () => {
+  it("断开连接会清掉选中段（颜色控件回到禁用态）", async () => {
     const { session, transport } = makeSession();
     transport.emitState(baseState());
+    session.setActiveSegment({ stripId: 0, segId: 0, start: 0, end: 15 });
+    expect(session.activeSegment).not.toBeNull();
 
-    /* 假通道的 sendAndWaitAck 不会超时；这里只验证调用参数：SetAll 带重试、SetColor 不带。
-     * 用记录调用参数的包装器确认。 */
-    const calls: Array<{ command: number; retries?: number }> = [];
-    const original = transport.sendAndWaitAck.bind(transport);
-    transport.sendAndWaitAck = ((req: CommandRequest, opts?: { retryOnTimeout?: number }) => {
-      calls.push({ command: req.command, retries: opts?.retryOnTimeout });
-      return original(req, opts);
-    }) as typeof transport.sendAndWaitAck;
-
-    const cyan = PRESETS.find((p) => p.name === "青")!;
-    await session.applyPreset(cyan.rgb);
-    expect(calls).toEqual([{ command: CMD_SET_ALL, retries: 1 }]);
-
+    await session.disconnect();
+    expect(session.activeSegment).toBeNull();
     vi.restoreAllMocks();
   });
 });

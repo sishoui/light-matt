@@ -2,7 +2,7 @@
  * #13 自检命令的小程序侧测试。
  *
  * 覆盖：
- *  1. SelfTest 是 0 字节载荷的 0x07，编码与 docs/protocol-testvectors.json
+ *  1. SelfTest 是 0 字节载荷的 0x07，编码与 docs/protocol-testvectors-v3.json
  *     的 `self_test` 向量逐字节一致；
  *  2. session.selfTest() 只发一帧、不改本地状态/UI（自检是设备侧临时覆盖）；
  *  3. ACK 非 0 与异常都如实上报，不伪装成功；
@@ -21,6 +21,7 @@ import { encodeFrame } from "../utils/protocol/frame";
 import { bytesToCompactHex } from "../utils/protocol/hex";
 import type { BleTransport } from "../utils/ble/transport";
 import type { AckResult, CommandRequest, DeviceState } from "../utils/protocol/types";
+import { baseState } from "./helpers/state";
 
 const CMD_SELF_TEST = 0x07;
 
@@ -32,7 +33,7 @@ interface VectorCase {
 }
 
 const vectors = JSON.parse(
-  readFileSync(new URL("../../docs/protocol-testvectors.json", import.meta.url), "utf8"),
+  readFileSync(new URL("../../docs/protocol-testvectors-v3.json", import.meta.url), "utf8"),
 ) as { cases: VectorCase[] };
 
 function vector(name: string): VectorCase {
@@ -97,16 +98,7 @@ function makeSession(transport: FakeTransport): ControlSession {
 }
 
 function state(overrides: Partial<DeviceState> = {}): DeviceState {
-  return {
-    power: 1,
-    brightness: 128,
-    r: 255,
-    g: 180,
-    b: 120,
-    ledCount: 30,
-    maxBrightness: 255,
-    ...overrides,
-  };
+  return baseState(overrides);
 }
 
 describe("SelfTest 帧", () => {

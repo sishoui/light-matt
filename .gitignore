@@ -18,3 +18,17 @@ __pycache__/
 
 # 发布辅助（由脚本生成，不入库）
 .scratch/publish/
+
+# #20 实验产物：标定绑相机机位，录像/抓帧是临时证据
+.board-homography.json
+.board-calib-check.png
+.runs/
+
+# 逐带标定产物：绑相机机位与分辨率，换机位必须重跑
+.strip-layout.json
+.strip-colorize.png
+.layout-shots/
+.scratch/ticket-*.md
+
+# 开发者工具自动化：依赖本机 IDE 服务端口，脚本与截图都是本地产物
+miniprogram/.auto/

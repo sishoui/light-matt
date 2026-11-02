@@ -68,8 +68,9 @@ export class LatestWinsThrottle<T> {
   /**
    * 丢弃满足条件的 pending 值（不取消正在飞的那一帧）。
    *
-   * #10 用：用户拖色环留下一个未发出的颜色，紧接着点了预设（SetAll 离散帧）。
-   * 若不丢弃，这个旧颜色会在 SetAll 之后落地，造成「旧色回跳」。
+   * #10 用：用户拖色环留下一个未发出的颜色，紧接着点了预设（离散帧）。
+   * 若不丢弃，这个旧颜色会在离散命令之后落地，造成「旧色回跳」。
+   * v2（#21）起颜色 / 预设下发路径禁用（见 #25），本方法暂时只被单测使用。
    */
   dropIf(predicate: (value: T) => boolean): void {
     if (!this.hasPending || this.pending === undefined) {

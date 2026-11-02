@@ -15,6 +15,7 @@ import {
 import { ControlSession } from "../utils/control/session";
 import type { SendOptions } from "../utils/ble/transport";
 import type { AckResult, CommandRequest, DeviceState, LinkState } from "../utils/protocol/types";
+import { baseState } from "./helpers/state";
 
 /** 记录调用的假传输层；只实现 ControlSession 真正用到的那几个成员。 */
 class FakeTransport {
@@ -110,15 +111,7 @@ function sessionWith(transport: FakeTransport): ControlSession {
 }
 
 function stateWith(ledCount: number): DeviceState {
-  return {
-    power: 1,
-    brightness: 128,
-    r: 255,
-    g: 180,
-    b: 120,
-    ledCount,
-    maxBrightness: 255,
-  };
+  return baseState({ ledCount });
 }
 
 describe("parseLedCountInput", () => {
@@ -207,8 +200,8 @@ describe("ControlSession.setLedCount", () => {
 
     expect(transport.writes).toHaveLength(1);
     expect(transport.writes[0].command).toBe(0x06);
-    // 2 字节小端：60 = 0x3C
-    expect(Array.from(transport.writes[0].payload)).toEqual([0x3c, 0x00]);
+    // v2 载荷：strip_id(0) + 2 字节小端 60 = 0x3C
+    expect(Array.from(transport.writes[0].payload)).toEqual([0x00, 0x3c, 0x00]);
     expect(transport.sendOptions[0]).toEqual({ timeoutMs: 3000 });
     expect(result.kind).toBe("ok");
     if (result.kind === "ok") {

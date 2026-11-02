@@ -55,6 +55,33 @@ TOP_FRACTION = 0.25
 # ---------------------------------------------------------------- 取色
 
 
+def frame_segments_grid(frame_bgr, roi, rows, cols):
+    """把 ROI 切成 rows×cols 个格子，返回 (b, g, r) 三个 (rows*cols, px) 平面。
+
+    用于**二维排布**的灯带（例如 64 灯绕成 8×8 方阵）。一维切段
+    （frame_segments）会把相邻行混进同一段，方形布局下判据完全失真。
+
+    灯珠顺序按行优先（row-major）：索引 = row*cols + col，与 WS2812B 的
+    走线顺序一致（蛇形走线需要调用方自行映射，本函数不做假设）。
+    """
+    x, y, w, h = roi
+    patch = frame_bgr[y : y + h, x : x + w]
+    if patch.size == 0:
+        return (np.zeros((rows * cols, 1)),) * 3
+
+    # 先缩到每个格子 SEG_PIXELS 见方，再切块。INTER_AREA 对缩小是最稳的（面积平均），
+    # 能压掉单像素噪声，同时保留「这个格子亮不亮」。
+    small = cv2.resize(patch, (cols * SEG_PIXELS, rows * SEG_PIXELS),
+                       interpolation=cv2.INTER_AREA)
+    # (rows, SEG_PIXELS, cols, SEG_PIXELS, 3) → (rows, cols, px, 3)
+    chunks = small.reshape(rows, SEG_PIXELS, cols, SEG_PIXELS, 3)
+    chunks = chunks.transpose(0, 2, 1, 3, 4).reshape(rows * cols, -1, 3)
+    b = chunks[:, :, 0].astype(np.float32)
+    g = chunks[:, :, 1].astype(np.float32)
+    r = chunks[:, :, 2].astype(np.float32)
+    return b, g, r
+
+
 def frame_segments(frame_bgr, roi, segments):
     """把 ROI 沿长边切成 segments 段，返回 (每段均值 RGB, 每段亮像素比例)。
 
@@ -292,6 +319,7 @@ def detect_roi(cap, frame_count, max_samples=40):
 def analyze_video(
     path,
     segments=64,
+    grid=None,
     roi=None,
     chroma_threshold=0.18,
     dark_ratio=0.55,
@@ -335,7 +363,10 @@ def analyze_video(
         if idx >= limit_frames:
             break
         if idx % stride == 0:
-            b, g, r = frame_segments(frame, roi, segments)
+            if grid is not None:
+                b, g, r = frame_segments_grid(frame, roi, grid[0], grid[1])
+            else:
+                b, g, r = frame_segments(frame, roi, segments)
             feat = segment_features(b, g, r, lit_threshold)
             cmp = baseline.compare(feat)
             if cmp is not None:
@@ -470,6 +501,34 @@ def _make_synthetic(path, fps=60, seconds=10, segments=16, injected=None, jitter
     writer.release()
 
 
+def _make_synthetic_grid(path, fps=60, seconds=12, rows=8, cols=8, injected=None):
+    """生成 8x8 方阵灯带的合成录像，用于验证 --grid 判定。
+
+    每格是独立亮的方块，格子间留 2px 暗缝（真实方阵灯带也有物理间隔）。
+    injected 形如 {帧号: (格子索引, "green")}，只改那一格。
+    """
+    injected = injected or {}
+    w, h = 640, 480
+    sx, sy, sw, sh = 40, 150, 560, 300
+    writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+    cell_w, cell_h = sw // cols, sh // rows
+    base = np.array([0, 0, 90], dtype=np.float32)  # 暗红 BGR
+    for f in range(fps * seconds):
+        frame = np.zeros((h, w, 3), dtype=np.uint8)
+        for row in range(rows):
+            for col in range(cols):
+                idx = row * cols + col
+                color = base
+                if f in injected and injected[f][0] == idx:
+                    color = np.array([0, 90, 0], dtype=np.float32)  # 绿 = 错色
+                x = sx + col * cell_w
+                y = sy + row * cell_h
+                frame[y + 1:y + cell_h - 1, x + 1:x + cell_w - 1] = color.astype(np.uint8)
+        writer.write(frame)
+    writer.release()
+
+
+
 def selftest():
     import tempfile
     import os
@@ -581,6 +640,29 @@ def selftest():
             print("✗ 时间偏移过大")
             ok = False
 
+    # ---- 用例 5：8x8 方阵 + 单格错色（--grid 模式）----
+    grid_path = os.path.join(tempfile.gettempdir(), "lumen-selftest-grid.mp4")
+    _make_synthetic_grid(grid_path, fps=fps, seconds=12, rows=8, cols=8,
+                         injected={200: (27, "green")})
+    grid_result = analyze_video(
+        grid_path, segments=64, grid=(8, 8), roi=(40, 150, 560, 300), progress=False
+    )
+    print("")
+    print(f"[用例 5] 8x8 方阵 + 第 27 格错色：检出 {grid_result['event_count']} 次（应为 1）")
+    if grid_result["event_count"] != 1:
+        for ev in grid_result["events"][:5]:
+            print(f"  x t={ev['t_start_s']:.2f}s {ev['kind']} 格={ev['segments'][:5]}")
+        ok = False
+    else:
+        ev = grid_result["events"][0]
+        hit = ev["segments"]
+        print(f"  ok t={ev['t_start_s']:.2f}s {ev['kind']} 格={hit[:5]}")
+        if 27 not in hit:
+            print(f"  x 检出的格子不含 27（实际 {hit[:8]}）")
+            ok = False
+        else:
+            print("  ok 精确定位到第 27 格（row 3, col 3）")
+
     print("\n自检" + ("通过" if ok else "失败"))
     return 0 if ok else 1
 
@@ -592,6 +674,9 @@ def main():
     ap = argparse.ArgumentParser(description="#7 错色判定：逐帧分析灯带录像")
     ap.add_argument("video", nargs="?", help="录像文件；--selftest 时可省略")
     ap.add_argument("--selftest", action="store_true", help="用合成视频验证判定逻辑")
+    ap.add_argument("--grid",
+                    help="二维灯带按 RxC 切格子（如 8x8）。用于绕成方阵的灯带；"
+                         "与 --segments 互斥，给出时按行优先编号")
     ap.add_argument("--segments", type=int, default=64,
                     help="把灯带切成几段，建议与灯珠数一致（默认 64）")
     ap.add_argument("--roi", help="灯带区域 x,y,w,h；不给则自动检测")
@@ -618,6 +703,13 @@ def main():
     if not args.video:
         ap.error("需要视频路径，或加 --selftest")
 
+    grid = None
+    if args.grid:
+        parts = args.grid.lower().replace(" ", "").split("x")
+        if len(parts) != 2 or not all(p.isdigit() for p in parts):
+            ap.error("--grid 格式为 RxC，例如 8x8")
+        grid = (int(parts[0]), int(parts[1]))
+
     roi = None
     if args.roi:
         parts = [int(v) for v in args.roi.replace(" ", "").split(",")]
@@ -629,6 +721,7 @@ def main():
     result = analyze_video(
         args.video,
         segments=args.segments,
+        grid=grid,
         roi=roi,
         chroma_threshold=args.chroma_threshold,
         dark_ratio=args.dark_ratio,

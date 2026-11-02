@@ -4,6 +4,8 @@
 #include <stdint.h>
 
 #include "protocol.h"
+#include "script_store.h"
+#include "segment_store.h"
 #include "state.h"
 
 /*
@@ -14,11 +16,14 @@
  * FreeRTOS 或 NVS，因此可以在 host 上直接单测。命令层负责 §10.2 后半段：
  * command → payload 长度 → payload 取值。
  *
- * #8 实现 SetPower 0x01；#9 实现 SetBrightness 0x02；#10 实现 SetColor 0x03
- * 与 SetAll 0x04；#12 实现 SetLedCount 0x06 的取值校验与「需要重建句柄」
- * 标记（真正的重建在 led_engine 的渲染任务里）；#13 实现 SelfTest 0x07 的
- * 命令语义（ACK 0x00 + 启动自检）；QueryState 0x05 置 state_report，
- * 由 ble_link 在 ACK 之后补一条 StateReport（§6.1）。
+ * #8 实现 SetPower 0x01；#9 实现 SetBrightness 0x02；#12 实现 SetLedCount 0x06
+ * 的取值校验与「需要重建句柄」标记（真正的重建在 led_engine 的渲染任务里）；
+ * #13 实现 SelfTest 0x07 的命令语义（ACK 0x00 + 启动自检）；QueryState 0x05
+ * 置 state_report，由 ble_link 在 ACK 之后补一条 StateReport（§6.1）；
+ * #25 实现段配置 0x10 SetSegment / 0x11 ClearSegment / 0x12 QueryStrip。
+ *
+ * v2（#21）退役了 0x03 SetColor / 0x04 SetAll：命令层不再认识它们，落到
+ * UnknownCommand。颜色只通过 0x10 SetSegment 下发。
  */
 
 typedef struct {
@@ -42,40 +47,133 @@ typedef struct {
      * led_strip 句柄成功后才写入共享状态，ACK 也必须等重建结果。 */
     bool led_count_rebuild;
     uint16_t led_count;    /* 目标灯珠数量；仅在 led_count_rebuild 为 true 时有效 */
+    uint8_t led_count_strip; /* 哪条灯带要改数量（#29 多条独立） */
+
+    /*
+     * 段配置（#25）。0x10 / 0x11 置 segment_op：命令层已完成 §11.3 第 4-9 步
+     * 的全部校验（区间与重叠用的是传入的段配置快照），调用方据此写/清槽位。
+     * 段配置不在 lumen_state_t 里，所以 state_changed 保持 false——摘要字段
+     * （seg_count 与 State 字节 2-4 的基准色）由 led_engine 在写入后重算。
+     */
+    bool segment_op;
+    bool segment_clear;    /* true = ClearSegment 0x11，false = SetSegment 0x10 */
+    uint8_t segment_strip; /* strip_id */
+    uint8_t segment_id;    /* seg_id */
+    lumen_segment_t segment; /* SetSegment 的目标段（t0_ms 由引擎填） */
+
+    /* QueryStrip 0x12：ACK 之后要回 seg_count 条 SegmentReport + SegmentListEnd。 */
+    bool strip_query;
+    uint8_t query_strip_id;
+
+    /*
+     * SetStripPower 0x1B（docs/protocol-v3.md §9.5）。#36 只登记意图：
+     * 掩码写入、推黑帧与 TDM 跳带在 #38。命令层已按 §5 的顺序校验
+     * （strip 已分配、on ∈ {0,1}），所以这里 result_code 为 OK 时调用方
+     * 可以立即回 ACK，即使掩码还没生效。
+     */
+    bool strip_power_op;
+    uint8_t strip_power_strip;
+    bool strip_power_on;
+
+    /*
+     * QueryStripConfig 0x1C / QueryDeviceInfo 0x1D（docs/protocol-v3.md §7.4）。
+     * 两条查询都没有载荷、不改状态，回 ACK 之后各补一条固定报告。
+     * 数据源（引脚表 / MAC）在 ble_link 侧，所以这里只置意图。
+     */
+    bool strip_config_query;
+    bool device_info_query;
+
+    /*
+     * #32 剧本（0x13–0x1A）。命令层只做形状校验；真正的暂存 / 提交 /
+     * 激活由 led_engine 在锁内执行（它持剧本表），这里只交出意图。
+     *
+     * script_op 取值见 lumen_script_op_t；script_stage_index / script_strip /
+     * script_seg / script_segment / script_loop 按 op 解释。
+     */
+    uint8_t script_op;
+    uint8_t script_id;
+    uint8_t script_action;   /* SetPlayback 的 action：0 stop / 1 play / 2 pause */
+    uint8_t script_stage_count;
+    uint8_t script_strip_count;
+    uint8_t script_stage_index;
+    uint16_t script_duration_ms;
+    /* fade_ms（§9.6）：格式预留，non-zero 照收并持久化，播放仍是硬切。 */
+    uint16_t script_fade_ms;
+    uint8_t script_strip;
+    uint8_t script_seg;
+    lumen_segment_t script_segment;
+    bool script_loop;
+
     lumen_state_t next;    /* 命令生效后的完整状态（未生效时等于 current） */
 } lumen_command_outcome_t;
+
+/* #32 剧本命令的操作意图（outcome->script_op）。 */
+typedef enum {
+    LUMEN_SCRIPT_OP_NONE = 0,
+    LUMEN_SCRIPT_OP_BEGIN,    /* 0x14 ScriptBegin */
+    LUMEN_SCRIPT_OP_STAGE,    /* 0x15 ScriptStage */
+    LUMEN_SCRIPT_OP_SEGMENT,  /* 0x16 ScriptSegment */
+    LUMEN_SCRIPT_OP_COMMIT,   /* 0x17 ScriptCommit */
+    LUMEN_SCRIPT_OP_ABORT,    /* 0x18 ScriptAbort */
+    LUMEN_SCRIPT_OP_ACTIVATE, /* 0x19 ActivateScript */
+    LUMEN_SCRIPT_OP_QUERY,    /* 0x1A QueryScript */
+    LUMEN_SCRIPT_OP_PLAYBACK, /* 0x13 SetPlayback */
+} lumen_script_op_t;
 
 /*
  * 分发一条已通过信封校验的帧。
  *
  * current / outcome 不能为 NULL；调用方保证 frame 非 NULL。
  * 返回前总是填充 outcome->next（未生效时复制 current）、led_count_rebuild /
- * led_count，以及 start_selftest / cancels_selftest，因此调用方可以无条件读取。
- * 只有 state_changed 为 true 时才应写入共享状态，只有 led_count_rebuild 为
- * true 时才应请求重建句柄，而 cancels_selftest 为 true 时必须在写入共享状态
- * **之前**结束自检（SetLedCount 的 state_changed 恒为 false，但仍要取消自检）。
+ * led_count、段配置操作字段，以及 start_selftest / cancels_selftest，因此
+ * 调用方可以无条件读取。
  *
- * max_brightness 是构建期亮度上限（协议 §11.4）：SetBrightness 与 SetAll
- * 载荷里的 brightness 会被钳位到这个值而不是拒绝。调用方传
- * lumen_led_engine_max_brightness()；host 单测直接传测试值。
+ * segments 是当前段配置的**只读**快照，用于 §11.3 第 5-9 步（strip 范围、
+ * 区间、重叠、flags、周期）。传 NULL 表示「没有任何活动段」——host 单测与
+ * 「段配置尚未加载」的场景都走这条路，区间校验仍然按灯珠数生效。
  *
- * 错误路径（0x01 / 0x02 / 0x04）一律不修改状态。
+ * strip_counts 是「每条灯带的灯珠数」只读数组（#29 多条独立，长度须为
+ * LUMEN_MAX_STRIPS）。传 NULL 时退回 current->led_count（单灯带场景，
+ * 也就是 #29 之前的全部行为）。**不要**用 current->led_count 校验
+ * strip_id != 0 的段：那是 strip 0 的数字，会让真实越界被放行，
+ * 或让合法段被误拒。
+ *
+ * 只有 state_changed 为 true 时才应写入共享状态；led_count_rebuild 为 true 时
+ * 应请求重建句柄；segment_op 为 true 时应在 ACK 之前调用 led_engine 写/清段；
+ * cancels_selftest 为 true 时必须在应用之前结束自检。
  */
 void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *current,
-                            uint8_t max_brightness, lumen_command_outcome_t *outcome);
+                            const lumen_segment_store_t *segments,
+                            const uint16_t *strip_counts, uint8_t max_brightness,
+                            lumen_command_outcome_t *outcome);
 
-/* 协议 §6 定义的已知命令字（0x01-0x07）。保留字与设备→小程序方向不算。 */
+/*
+ * 取某条灯带的灯珠数（#29）。strip_counts 为 NULL 时退回 current->led_count；
+ * 结果钳到 1..LUMEN_MAX_LEDS。纯函数，host 可直接测。
+ */
+uint16_t lumen_command_strip_count(const lumen_state_t *current, const uint16_t *strip_counts,
+                                   uint8_t strip_id);
+
+/* 协议 §6 定义的已知（已实现）命令字。保留字、退役字与设备→小程序方向不算。 */
 bool lumen_command_is_known(uint8_t command);
 
 /*
  * 协议 §11.2 第 5 条：该命令是否属于「改变状态」的类别
- * （SetPower / SetBrightness / SetColor / SetAll / SetLedCount）。
- * QueryState 与 SelfTest 不算。
+ * （SetPower / SetBrightness / SetLedCount / SetSegment / ClearSegment）。
+ * QueryState、SelfTest、QueryStrip 不算；v2 退役的 0x03 / 0x04 也不算。
  *
  * 取消规则在 dispatch 的统一收尾里执行，因此任何新增的「改变状态」命令只要
  * 加进本函数就会自动取消自检——不需要再去改 ble_link 或 led_engine。
  */
 bool lumen_command_changes_state(uint8_t command);
 
-/* 已知命令的载荷长度（§6 命令表）。未知命令返回 0，调用方先判断 known。 */
+/* 已知命令的固定载荷长度（docs/protocol-v3.md §6 命令表）。未知命令返回 0。
+ * v3 的段命令也是固定长度（SetSegment 21 / ScriptSegment 23）。 */
 uint8_t lumen_command_payload_len(uint8_t command);
+
+/*
+ * 载荷长度是否符合命令要求（§5 的「载荷长度」一步）。
+ * v3 全部命令都是固定长度，所以这里就是等值比较——不再有「先读 type 再定长」
+ * 的二次校验路径（§7.1 选 定宽层编码的直接收益）。
+ */
+bool lumen_command_payload_len_ok(const lumen_frame_t *frame);

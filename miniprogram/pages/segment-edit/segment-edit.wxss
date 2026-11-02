@@ -1,0 +1,121 @@
+/* 段编辑页独有布局（共享外观在 app.wxss）。 */
+
+.params {
+  display: flex;
+  flex-direction: column;
+  gap: 10rpx;
+  margin-top: 8rpx;
+}
+
+/* 波形 / 方向这类短选项排成一行，不要用 40% 的两列宽度 */
+.chip-row.tight .chip {
+  flex: 0 1 auto;
+  min-width: 120rpx;
+  padding: 12rpx 20rpx;
+}
+
+/* ---------------- 逐灯珠示意条 ----------------
+ * 一格 = 一颗灯珠。64 颗在 750rpx 里约 10rpx/格，靠 gap 与小圆角保留可数性；
+ * 不换行（换行会让「第几颗」与格子位置脱钩，反而更难数）。
+ */
+.led-bar {
+  display: flex;
+  gap: 3rpx;
+  width: 100%;
+  height: 44rpx;
+  padding: 4rpx;
+  box-sizing: border-box;
+  background: #101014;
+  border: 1rpx solid #2a2a32;
+  border-radius: 12rpx;
+  overflow: hidden;
+}
+
+.led-cell {
+  flex: 1 1 0;
+  min-width: 0;
+  border-radius: 3rpx;
+  background: #23232b;
+}
+
+/* 草稿区间：实亮（即使下面是已有段，也保留高亮边） */
+.led-cell.covered {
+  background: #ffb478;
+  box-shadow: 0 0 0 1rpx #ffd7ae inset;
+}
+
+/* 已有段：inline style 给出该段基准色；被草稿压住时加内描边 */
+.led-cell.owned.covered {
+  box-shadow: 0 0 0 2rpx #ffb478 inset;
+}
+
+/* 重叠：红框 + 斜纹，提交前就能看见 */
+.led-cell.conflict {
+  box-shadow: 0 0 0 2rpx #ff5a5a inset;
+  background-image: linear-gradient(45deg, rgba(255, 90, 90, 0.55) 25%, transparent 25%);
+  background-size: 6rpx 6rpx;
+}
+
+.led-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20rpx;
+  font-size: 20rpx;
+  color: #6f6f7a;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+}
+
+.legend-dot {
+  width: 18rpx;
+  height: 18rpx;
+  border-radius: 4rpx;
+  background: #23232b;
+}
+
+.legend-dot.covered {
+  background: #ffb478;
+}
+
+.legend-dot.owned {
+  background: #4f8cff;
+}
+
+.legend-dot.conflict {
+  background: #ff5a5a;
+}
+
+/* ---------------- 层的基准色 ----------------
+ * 两层各一组预设：共享一个色环会让「改第 2 层时顺手改了第 1 层」变得很容易。
+ */
+.layer-color {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 4rpx;
+}
+
+/* 层的预设与灯光页同尺寸，只收紧一点内边距 */
+.layer-color + .presets {
+  padding: 16rpx;
+}
+
+/* ---------------- 预检提示 ----------------
+ * 提交前就告诉用户「为什么不能应用」，比等设备回 InvalidParam 更早、更具体。
+ */
+.issue-box {
+  padding: 18rpx 20rpx;
+  background: #2a1518;
+  border: 1rpx solid #6b2d34;
+  border-radius: 16rpx;
+}
+
+.issue-text {
+  font-size: 22rpx;
+  color: #ff9a9a;
+  line-height: 1.6;
+}

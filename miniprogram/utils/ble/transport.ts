@@ -6,41 +6,73 @@
  *    notify → 等 500ms → 读 State）；
  *  - 写入串行化（SerialWriter）；
  *  - 帧收发、ACK 匹配、Event / StateReport 分发；
- *  - 每连接重置 seq = 0x01（协议 §9）；
+ *  - 每连接重置 seq = 0x01（协议 §8）；
  *  - 断线时清空写队列与所有等待者。
  *
+ * v3（#40）变化：
+ *  - 每次逻辑帧先分片（chunk.ts）再串行写入；MTU 未知按 23（20 字节）工作；
+ *  - 入站 notify 先重组（ChunkAssembler）再解帧；
+ *  - ACK / 查询超时按分片数放大（13 片 × 600ms 会让大帧必然超时）；
+ *  - 新增 QueryStripConfig 0x1C / QueryDeviceInfo 0x1D 的单飞查询；
+ *  - State read 若读到的长度不是 37（MTU 23 放不下），回落到 QueryState 0x05
+ *    → StateReport 0x82，绝不静默截断。
+ *
  * UI 层不直接调用任何 BLE API；#11 的自动退避回连只需在同一状态机上补状态。
+ *
+ * 拆分后的协作模块（同级 utils/ble/）：
+ *  - frame-codec.ts：入站帧解码与出站日志描述（纯函数，不碰 wx）；
+ *  - ack-waiters.ts：ACK 等待表；
+ *  - state-read.ts：State read 的 value 等待者；
+ *  - scan-controller.ts：扫描结果缓存与合并派发；
+ *  - link-listeners.ts：订阅表与派发。
  */
 
 import {
-  DEVICE_CMD,
+  DEFAULT_CHUNK_CAPACITY,
   RX_UUID,
   SERVICE_UUID,
+  STATE_BYTES,
   STATE_UUID,
   TX_UUID,
   commandName,
 } from "../protocol/constants";
 import { bytesToHex } from "../protocol/hex";
-import { decodeFrame, encodeFrame } from "../protocol/frame";
-import { parseAck, parseState } from "../protocol/commands";
 import {
-  describeAck,
-  describeCommand,
-  describeEvent,
-  describeState,
-  describeStateRead,
-} from "../protocol/describe";
+  cmdQueryDeviceInfo,
+  cmdQueryState,
+  cmdQueryStripConfig,
+  parseState,
+  type ScriptSummary,
+} from "../protocol/commands";
+import { chunkCapacityForMtu, chunkDataCapacity, chunkFrame, ChunkAssembler } from "../protocol/chunk";
 import type {
   AckResult,
   CommandRequest,
+  DeviceInfo,
   DeviceState,
   DiscoveredDevice,
   LinkState,
+  SegmentListEnd,
+  SegmentReport,
+  StripConfig,
 } from "../protocol/types";
-import { errorText, iosStateText, resultText, triage } from "./errors";
+import { AckWaiters } from "./ack-waiters";
+import { AckRejectedError, errorText, iosStateText, resultText, triage } from "./errors";
+import {
+  describeStateReadBytes,
+  describeTx,
+  encodeTxFrame,
+  routeInboundFrame,
+} from "./frame-codec";
+import { TransportListeners, type LinkDetail } from "./link-listeners";
 import { FrameLog } from "./log";
+import { DeviceScanner } from "./scan-controller";
+import { StateReadSlot } from "./state-read";
+import { StripQueryCollector } from "./strip-collector";
 import { WxCallError, WxCallTimeoutError, wxCall } from "./wx-promise";
 import { SerialWriter } from "./writer";
+
+export type { LinkDetail } from "./link-listeners";
 
 export interface BleTransportOptions {
   log: FrameLog;
@@ -55,39 +87,23 @@ export interface BleTransportOptions {
   scanHintMs?: number;
 }
 
-export interface LinkDetail {
-  message?: string;
-  deviceName?: string;
-  /**
-   * true = 非用户主动的断线（设备断电 / 超出范围 / 10006）。
-   * 会话层据此启动 1s/2s/4s 自动回连；主动 disconnect 不带这个标记。
-   */
-  reconnectable?: boolean;
-}
-
 export interface SendOptions {
   timeoutMs?: number;
   /** ACK 超时后重发次数（开关允许 1 次；连续量必须是 0）。 */
   retryOnTimeout?: number;
 }
 
-interface AckWaiter {
-  command: number;
-  resolve: (ack: AckResult) => void;
-  reject: (err: unknown) => void;
-  timer: ReturnType<typeof setTimeout>;
-}
-
-interface StateWaiter {
-  resolve: (value: Uint8Array) => void;
-  reject: (err: unknown) => void;
-}
-
 const DEFAULT_INIT_SETTLE_MS = 500;
 const DEFAULT_ACK_TIMEOUT_MS = 600;
 const DEFAULT_STATE_READ_TIMEOUT_MS = 2000;
 const DEFAULT_SCAN_HINT_MS = 10000;
-const DEVICE_FLUSH_MS = 300;
+/**
+ * 每个分片额外放宽的 ACK 等待时间。
+ *
+ * 大帧（240B / cap 20）要 13 次串行写；固定 600ms 会让「设备其实收到了、
+ * 只是排在后半段」的帧被误判超时。按片数线性放大，单分片行为完全不变。
+ */
+const ACK_TIMEOUT_PER_CHUNK_MS = 120;
 
 function upper(value: string | undefined): string {
   return (value ?? "").toUpperCase();
@@ -97,6 +113,36 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** 一条「只有单帧报告、没有多帧续」的查询（v3：0x1C / 0x1D）。 */
+interface SingleReportQuery<T> {
+  seq: number;
+  resolve: (value: T) => void;
+  reject: (err: unknown) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+/**
+ * State read 回值长度不是 37：不是链路错误，而是「read 这条路径放不下」。
+ * 内部用它触发 QueryState 回落，不向上暴露（§7.3 / 协调者裁决 2）。
+ */
+class StateLengthMismatchError extends Error {
+  readonly actual: number;
+
+  constructor(actual: number) {
+    super(`State read 返回 ${actual} 字节，v3 要求 ${STATE_BYTES} 字节`);
+    this.name = "StateLengthMismatchError";
+    this.actual = actual;
+  }
+}
+
+/** readBLECharacteristicValue 失败：同样回落到 QueryState。 */
+class StateReadFallbackError extends Error {
+  constructor() {
+    super("State read 失败，改用 QueryState");
+    this.name = "StateReadFallbackError";
+  }
+}
+
 export class BleTransport {
   readonly log: FrameLog;
 
@@ -104,7 +150,6 @@ export class BleTransport {
   private readonly initSettleMs: number;
   private readonly ackTimeoutMs: number;
   private readonly stateReadTimeoutMs: number;
-  private readonly scanHintMs: number;
 
   private link: LinkState = "uninitialized";
   private adapterOpened = false;
@@ -123,23 +168,52 @@ export class BleTransport {
   /** 每条连接从 0x01 开始；发送时分配，回绕 0xFF → 0x00。 */
   private nextSeq = 1;
 
-  private readonly devices = new Map<string, DiscoveredDevice>();
-  private deviceFlushTimer: ReturnType<typeof setTimeout> | null = null;
-  private scanTimer: ReturnType<typeof setTimeout> | null = null;
-  private scanHint: string | null = null;
+  private readonly listeners = new TransportListeners();
+  private readonly scanner: DeviceScanner;
   /** 用户想扫描但适配器不可用：蓝牙打开后自动继续（spec 用户故事 8）。 */
   private scanRequested = false;
 
   private readonly writer: SerialWriter;
-  private readonly ackWaiters = new Map<number, AckWaiter>();
-  private stateWaiter: StateWaiter | null = null;
-  private stateReadPromise: Promise<DeviceState> | null = null;
+  private readonly ackWaiters = new AckWaiters();
+  private readonly stateRead = new StateReadSlot();
+  /** #25：QueryStrip 的多帧收集（seg_count 条 SegmentReport + 1 条 ListEnd）。 */
+  private readonly stripQueries = new StripQueryCollector();
+  /**
+   * #32：QueryScript 的响应（一条 ScriptSummary 0x85，回显请求 seq）。
+   * 同一时刻只允许一个查询：下发流程与 UI 不会并发查剧本。
+   */
+  private pendingScriptQuery: {
+    seq: number;
+    resolve: (summary: ScriptSummary) => void;
+    reject: (err: unknown) => void;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
 
-  private readonly linkListeners: Array<(state: LinkState, detail?: LinkDetail) => void> = [];
-  private readonly deviceListeners: Array<(list: DiscoveredDevice[]) => void> = [];
-  private readonly stateListeners: Array<(state: DeviceState) => void> = [];
-  private readonly eventListeners: Array<(code: number, detail: number) => void> = [];
-  private readonly scanHintListeners: Array<(hint: string | null) => void> = [];
+  /** v3：QueryStripConfig 0x1C → StripConfigReport 0x87（单飞）。 */
+  private pendingStripConfig: SingleReportQuery<StripConfig> | null = null;
+  /** v3：QueryDeviceInfo 0x1D → DeviceInfoReport 0x88（单飞）。 */
+  private pendingDeviceInfo: SingleReportQuery<DeviceInfo> | null = null;
+  /**
+   * v3：State read 回落到 QueryState 时，等 0x82 的等待者（单飞）。
+   * 带独立计时器：ACK 与 StateReport 是两段等待，任何一段都不能悬挂。
+   */
+  private pendingStateReport: {
+    seq: number;
+    resolve: (state: DeviceState) => void;
+    reject: (err: unknown) => void;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
+
+  /**
+   * 协商到的 ATT MTU（未知 = null，按 23 工作）。只影响分片，不影响逻辑帧。
+   */
+  private mtu: number | null = null;
+  /** 单次写上限（含 1 字节分片头）；由 mtu 推出，缺省 20。 */
+  private chunkCapacity = DEFAULT_CHUNK_CAPACITY;
+  /** 入站分片重组（一问一答，同一时刻只有一条逻辑帧在途）。 */
+  private readonly assembler = new ChunkAssembler();
+  /** State read 回落到 QueryState 时的在飞 Promise（单飞，避免重复查询）。 */
+  private stateFallback: Promise<DeviceState> | null = null;
 
   private destroyed = false;
 
@@ -149,7 +223,10 @@ export class BleTransport {
     this.initSettleMs = opts.initSettleMs ?? DEFAULT_INIT_SETTLE_MS;
     this.ackTimeoutMs = opts.ackTimeoutMs ?? DEFAULT_ACK_TIMEOUT_MS;
     this.stateReadTimeoutMs = opts.stateReadTimeoutMs ?? DEFAULT_STATE_READ_TIMEOUT_MS;
-    this.scanHintMs = opts.scanHintMs ?? DEFAULT_SCAN_HINT_MS;
+    this.scanner = new DeviceScanner(
+      this.listeners,
+      opts.scanHintMs ?? DEFAULT_SCAN_HINT_MS,
+    );
 
     this.writer = new SerialWriter((bytes) => this.sendOne(bytes));
 
@@ -173,43 +250,28 @@ export class BleTransport {
   // ------------------------------------------------------------------
 
   onLink(fn: (state: LinkState, detail?: LinkDetail) => void): () => void {
-    this.linkListeners.push(fn);
-    return () => {
-      const i = this.linkListeners.indexOf(fn);
-      if (i >= 0) this.linkListeners.splice(i, 1);
-    };
+    return this.listeners.onLink(fn);
   }
 
   onDevices(fn: (list: DiscoveredDevice[]) => void): () => void {
-    this.deviceListeners.push(fn);
-    return () => {
-      const i = this.deviceListeners.indexOf(fn);
-      if (i >= 0) this.deviceListeners.splice(i, 1);
-    };
+    return this.listeners.onDevices(fn);
   }
 
   onState(fn: (state: DeviceState) => void): () => void {
-    this.stateListeners.push(fn);
-    return () => {
-      const i = this.stateListeners.indexOf(fn);
-      if (i >= 0) this.stateListeners.splice(i, 1);
-    };
+    return this.listeners.onState(fn);
   }
 
   onDeviceEvent(fn: (code: number, detail: number) => void): () => void {
-    this.eventListeners.push(fn);
-    return () => {
-      const i = this.eventListeners.indexOf(fn);
-      if (i >= 0) this.eventListeners.splice(i, 1);
-    };
+    return this.listeners.onDeviceEvent(fn);
   }
 
   onScanHint(fn: (hint: string | null) => void): () => void {
-    this.scanHintListeners.push(fn);
-    return () => {
-      const i = this.scanHintListeners.indexOf(fn);
-      if (i >= 0) this.scanHintListeners.splice(i, 1);
-    };
+    return this.listeners.onScanHint(fn);
+  }
+
+  /** #32：设备侧 ScriptProgress(0x86) 的旁证（scriptId + 设备侧累计帧数）。 */
+  onScriptProgress(fn: (scriptId: number, frames: number) => void): () => void {
+    return this.listeners.onScriptProgress(fn);
   }
 
   // ------------------------------------------------------------------
@@ -269,9 +331,8 @@ export class BleTransport {
       throw new Error("请打开蓝牙");
     }
 
-    this.devices.clear();
-    this.emitDevices();
-    this.setScanHint(null);
+    this.scanner.reset();
+    this.scanner.setHint(null);
     this.setLink("scanning", { message: "扫描中…" });
 
     try {
@@ -290,22 +351,19 @@ export class BleTransport {
       throw err;
     }
 
-    this.clearScanTimer();
-    this.scanTimer = setTimeout(() => {
-      this.scanTimer = null;
-      if (this.link === "scanning" && this.devices.size === 0) {
-        this.setScanHint(
-          this.platform === "android"
-            ? "10 秒未发现设备：请检查定位权限与定位开关"
-            : "10 秒未发现设备：请检查微信的蓝牙授权",
-        );
+    this.scanner.scheduleHint(() => {
+      if (this.link === "scanning" && this.scanner.size === 0) {
+        return this.platform === "android"
+          ? "10 秒未发现设备：请检查定位权限与定位开关"
+          : "10 秒未发现设备：请检查微信的蓝牙授权";
       }
-    }, this.scanHintMs);
+      return null;
+    });
   }
 
   async stopScan(): Promise<void> {
     this.scanRequested = false;
-    this.clearScanTimer();
+    this.scanner.clearHintTimer();
     if (this.link !== "scanning") {
       return;
     }
@@ -322,7 +380,7 @@ export class BleTransport {
     if (this.link === "scanning") {
       this.setLink("idle");
     }
-    this.setScanHint(null);
+    this.scanner.setHint(null);
   }
 
   // ------------------------------------------------------------------
@@ -401,6 +459,9 @@ export class BleTransport {
   /**
    * 固定初始化顺序（spec §3）：Android MTU → services → characteristics →
    * notify → 等 500ms → 读 State。每次连接都重新发现 GATT 句柄。
+   *
+   * v3：MTU 协商结果决定分片容量；协商失败或平台不支持时按 23（20 字节）
+   * 工作——功能不降级，只是分片更多（§2.1）。
    */
   private async initLink(): Promise<DeviceState> {
     const deviceId = this.deviceId;
@@ -408,20 +469,7 @@ export class BleTransport {
       throw new Error("未连接");
     }
 
-    if (this.platform === "android") {
-      try {
-        const res = await wxCall<any>(
-          "setBLEMTU",
-          wx.setBLEMTU,
-          { deviceId, mtu: 185 },
-          3000,
-        );
-        // 请求值不是最终值，只记录回包。
-        console.log(`[lumen] MTU 协商结果 ${res?.mtu ?? "?"}（帧长仍按 20 字节设计）`);
-      } catch {
-        /* MTU 只当优化，失败不阻断连接 */
-      }
-    }
+    await this.negotiateMtu(deviceId);
 
     const servicesRes = await wxCall<any>(
       "getBLEDeviceServices",
@@ -506,16 +554,60 @@ export class BleTransport {
   // 写入
   // ------------------------------------------------------------------
 
+  /**
+   * 逻辑帧 → 分片 → 串行写入。
+   *
+   * seq 只在**逻辑帧**层面分配一次：分片的 ctrl 序号与之无关（§8）。
+   * 任一分片写失败即拒绝整帧（中间分片丢了，后面的分片只会拼出错误帧）。
+   *
+   * 日志：每片一条 tx（hex 是**实际线上字节**，带 ctrl 头），解析文本挂在
+   * 第一片上——单分片帧因此仍是一行，与 v2 的日志密度一致。
+   */
+  private async writeLogicalFrame(
+    req: CommandRequest,
+    seq: number,
+    frame: Uint8Array,
+  ): Promise<void> {
+    const chunks = chunkFrame(frame, this.chunkCapacity);
+    chunks.forEach((chunk, index) => {
+      this.logChunk(
+        "tx",
+        chunk,
+        req.command,
+        seq,
+        frame.length,
+        index === 0 ? describeTx(req) : undefined,
+      );
+    });
+    try {
+      for (const chunk of chunks) {
+        await this.writer.enqueue(chunk);
+      }
+    } catch (err) {
+      this.logFailure(frame, req.command, seq, errorText(err));
+      throw err;
+    }
+  }
+
+  /** 分片数（ACK 超时按它放大）。 */
+  private chunksFor(frame: Uint8Array): number {
+    return Math.max(1, Math.ceil(frame.length / chunkDataCapacity(this.chunkCapacity)));
+  }
+
+  /** 超时按分片数放大：单分片与 v2 完全一致（600ms）。 */
+  private scaledTimeout(baseMs: number, frame: Uint8Array): number {
+    const extra = this.chunksFor(frame) - 1;
+    return baseMs + extra * ACK_TIMEOUT_PER_CHUNK_MS;
+  }
+
   /** 只等写入回调（连续量用）；ACK 异步记录在日志里。 */
   async write(req: CommandRequest): Promise<{ seq: number }> {
     this.ensureWritable();
     const seq = this.allocateSeq();
-    const frame = encodeFrame(req.command, seq, req.payload);
-    this.logFrame("tx", frame, req.command, seq, describeTx(req));
+    const frame = encodeTxFrame(req.command, seq, req.payload);
     try {
-      await this.writer.enqueue(frame);
+      await this.writeLogicalFrame(req, seq, frame);
     } catch (err) {
-      this.logFailure(frame, req.command, seq, errorText(err));
       // 10006 / 写回调超时：链路已经不可用，切到「非主动断线」交给会话层退避回连；
       // 10001：适配器被关掉，显示「请打开蓝牙」，等适配器事件（非致命）。
       this.noteWriteFailure(err);
@@ -552,36 +644,15 @@ export class BleTransport {
   ): Promise<AckResult> {
     this.ensureWritable();
     const seq = this.allocateSeq();
-    const frame = encodeFrame(req.command, seq, req.payload);
+    const frame = encodeTxFrame(req.command, seq, req.payload);
 
-    const timeoutMs = timeoutOverride ?? this.ackTimeoutMs;
-    const ackPromise = new Promise<AckResult>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.ackWaiters.delete(seq);
-        reject(new WxCallTimeoutError("ACK", timeoutMs));
-      }, timeoutMs);
-      this.ackWaiters.set(seq, {
-        command: req.command,
-        resolve,
-        reject: (err) => reject(err),
-        timer,
-      });
-    });
-    // 写失败时我们会先 throw、不 await ackPromise；挂一个空 catch 防止
-    // Node/开发者工具把这次 reject 报成 UnhandledPromiseRejection。
-    ackPromise.catch(() => undefined);
+    const timeoutMs = this.scaledTimeout(timeoutOverride ?? this.ackTimeoutMs, frame);
+    const ackPromise = this.ackWaiters.register(seq, req.command, timeoutMs);
 
-    this.logFrame("tx", frame, req.command, seq, describeTx(req));
     try {
-      await this.writer.enqueue(frame);
+      await this.writeLogicalFrame(req, seq, frame);
     } catch (err) {
-      this.logFailure(frame, req.command, seq, errorText(err));
-      const waiter = this.ackWaiters.get(seq);
-      if (waiter !== undefined) {
-        clearTimeout(waiter.timer);
-        this.ackWaiters.delete(seq);
-        waiter.reject(err);
-      }
+      this.ackWaiters.fail(seq, err);
       this.noteWriteFailure(err);
       throw err;
     }
@@ -594,14 +665,217 @@ export class BleTransport {
     return ack;
   }
 
+  /**
+   * #25：QueryStrip 0x12 + 多条 SegmentReport + SegmentListEnd。
+   *
+   * 与 sendAndWaitAck 的区别：响应不是单帧 ACK，而是同 seq 的多帧。
+   * 这里同一 seq 既登记 ACK 等待者（拿到拒绝时的结果码），又登记段收集器
+   * （拿到 SegmentReport 列表与 ListEnd）。ACK 与收尾两者都成功才返回。
+   *
+   * ACK 可能是非零（InvalidParam）：那时设备不会再发 SegmentReport，
+   * 所以先 await ACK；ok 才等收尾。超时按链路异常抛出。
+   */
+  async queryStrip(
+    stripId: number,
+    opts: { timeoutMs?: number } = {},
+  ): Promise<{ reports: SegmentReport[]; end: SegmentListEnd }> {
+    this.ensureWritable();
+    const seq = this.allocateSeq();
+    const req: CommandRequest = { command: 0x12, payload: new Uint8Array([stripId & 0xff]) };
+    const frame = encodeTxFrame(req.command, seq, req.payload);
+    const timeoutMs = this.scaledTimeout(opts.timeoutMs ?? this.ackTimeoutMs, frame);
+
+    const ackPromise = this.ackWaiters.register(seq, req.command, timeoutMs);
+    const collectPromise = this.stripQueries.open(seq, stripId, timeoutMs);
+
+    try {
+      await this.writeLogicalFrame(req, seq, frame);
+    } catch (err) {
+      this.ackWaiters.fail(seq, err);
+      this.stripQueries.reset(err instanceof Error ? err : new Error(String(err)));
+      this.noteWriteFailure(err);
+      throw err;
+    }
+
+    const ack = await ackPromise;
+    if (!ack.ok) {
+      /* 非零 ACK：设备不会发段回包。收尾 Promise 必须显式丢弃，避免悬挂。 */
+      this.stripQueries.reset(new Error(`QueryStrip 被拒（${resultText(ack.resultCode)}）`));
+      throw new Error(`QueryStrip 失败：${resultText(ack.resultCode)}`);
+    }
+
+    const result = await collectPromise;
+    return { reports: result.reports, end: result.end };
+  }
+
+  /**
+   * #32：QueryScript 0x1A + ScriptSummary 0x85。
+   *
+   * 响应是一条**单独**的 0x85（不是 ACK 的多帧续），同样回显请求 seq。
+   * 流程与 queryStrip 一致：先等 ACK；ACK 非零时设备不会发 0x85。
+   */
+  async queryScript(
+    scriptId: number,
+    opts: { timeoutMs?: number } = {},
+  ): Promise<ScriptSummary> {
+    this.ensureWritable();
+    const seq = this.allocateSeq();
+    const req = { command: 0x1a, payload: new Uint8Array([scriptId & 0xff]) };
+    const frame = encodeTxFrame(req.command, seq, req.payload);
+    const timeoutMs = this.scaledTimeout(opts.timeoutMs ?? this.ackTimeoutMs, frame);
+
+    const ackPromise = this.ackWaiters.register(seq, req.command, timeoutMs);
+    const summaryPromise = new Promise<ScriptSummary>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingScriptQuery = null;
+        reject(new WxCallTimeoutError("QueryScript", timeoutMs));
+      }, timeoutMs);
+      this.pendingScriptQuery = { seq, resolve, reject, timer };
+    });
+    summaryPromise.catch(() => undefined);
+
+    try {
+      await this.writeLogicalFrame(req, seq, frame);
+    } catch (err) {
+      this.ackWaiters.fail(seq, err);
+      this.failPendingScriptQuery(err instanceof Error ? err : new Error(String(err)));
+      this.noteWriteFailure(err);
+      throw err;
+    }
+
+    const ack = await ackPromise;
+    if (!ack.ok) {
+      this.failPendingScriptQuery(
+        new Error(`QueryScript 被拒（${resultText(ack.resultCode)}）`),
+      );
+      throw new Error(`QueryScript 失败：${resultText(ack.resultCode)}`);
+    }
+    return summaryPromise;
+  }
+
+  /** v3：QueryStripConfig 0x1C → StripConfigReport 0x87（单帧，回显 seq）。 */
+  async queryStripConfig(opts: { timeoutMs?: number } = {}): Promise<StripConfig> {
+    return this.querySingleReport(
+      cmdQueryStripConfig(),
+      "QueryStripConfig",
+      opts,
+      (pending) => {
+        this.pendingStripConfig = pending;
+      },
+      () => this.pendingStripConfig,
+    );
+  }
+
+  /** v3：QueryDeviceInfo 0x1D → DeviceInfoReport 0x88（单帧，回显 seq）。 */
+  async queryDeviceInfo(opts: { timeoutMs?: number } = {}): Promise<DeviceInfo> {
+    return this.querySingleReport(
+      cmdQueryDeviceInfo(),
+      "QueryDeviceInfo",
+      opts,
+      (pending) => {
+        this.pendingDeviceInfo = pending;
+      },
+      () => this.pendingDeviceInfo,
+    );
+  }
+
+  /**
+   * 「一条命令 → 一条单帧报告」的公共流程（0x1C / 0x1D）。
+   *
+   * 与 queryScript 同构，但把「挂哪个 pending」「取哪个 pending」作为参数，
+   * 避免三份几乎相同的 ACK 等待 + 超时清理代码各自漂移。
+   */
+  private async querySingleReport<T>(
+    req: CommandRequest,
+    label: string,
+    opts: { timeoutMs?: number },
+    setPending: (pending: SingleReportQuery<T> | null) => void,
+    getPending: () => SingleReportQuery<T> | null,
+  ): Promise<T> {
+    this.ensureWritable();
+    const seq = this.allocateSeq();
+    const frame = encodeTxFrame(req.command, seq, req.payload);
+    const timeoutMs = this.scaledTimeout(opts.timeoutMs ?? this.ackTimeoutMs, frame);
+
+    const ackPromise = this.ackWaiters.register(seq, req.command, timeoutMs);
+    const reportPromise = new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        setPending(null);
+        reject(new WxCallTimeoutError(label, timeoutMs));
+      }, timeoutMs);
+      setPending({ seq, resolve, reject, timer });
+    });
+    reportPromise.catch(() => undefined);
+
+    try {
+      await this.writeLogicalFrame(req, seq, frame);
+    } catch (err) {
+      this.ackWaiters.fail(seq, err);
+      this.failPendingReport(getPending(), setPending, err instanceof Error ? err : new Error(String(err)));
+      this.noteWriteFailure(err);
+      throw err;
+    }
+
+    const ack = await ackPromise;
+    if (!ack.ok) {
+      this.failPendingReport(
+        getPending(),
+        setPending,
+        new Error(`${label} 被拒（${resultText(ack.resultCode)}）`),
+      );
+      throw new Error(`${label} 失败：${resultText(ack.resultCode)}`);
+    }
+    return reportPromise;
+  }
+
+  /**
+   * #32：按顺序下发一串命令，每帧等 ACK。
+   *
+   * 剧本下发是「一帧一条命令」的批量流程，用 sendAndWaitAck 逐帧串行即可：
+   * 顺序是协议要求（Begin → Stage/Segment → Commit），不能并发。
+   * 回调在每帧确认后报告进度（done 是**已确认**的帧数）。
+   *
+   * **非零 ACK 必须中断**：剧本的 Commit 回 `ScriptTooLarge (0x0A)` 时设备
+   * 不提交，继续发后面的 Activate 会得到一条误导性的成功。所以这里把非零
+   * ACK 折成 `AckRejectedError` 抛出，由会话层决定 Abort 与提示文案。
+   */
+  async sendSequence(
+    requests: CommandRequest[],
+    onProgress?: (done: number, total: number) => void,
+    opts: SendOptions = {},
+  ): Promise<void> {
+    const total = requests.length;
+    for (let i = 0; i < total; i += 1) {
+      const ack = await this.sendAndWaitAck(requests[i], opts);
+      if (!ack.ok) {
+        throw new AckRejectedError(ack.command, ack.resultCode);
+      }
+      onProgress?.(i + 1, total);
+    }
+  }
+
   // ------------------------------------------------------------------
   // 读 State
   // ------------------------------------------------------------------
 
-  /** 读 State：注册 waiter → 调 read → 等 value 事件（success ≠ 数据到达）。 */
+  /**
+   * 读 State。
+   *
+   * v3 的 State 是 37 字节：MTU 23（ATT 载荷 20）时 GATT read 根本放不下，
+   * 平台可能返回截断值或直接失败。权威路径（§9.1）要求拿到完整 37 字节，
+   * 所以这里做**回落**：
+   *   1. 先试 read State 特征值；
+   *   2. 若回值长度 ≠ 37（或 read 失败），改发 QueryState 0x05 → StateReport
+   *      0x82（chunked notify），用它作为 State。
+   * 绝不静默截断——parseState 仍对非 37 字节抛错。
+   */
   readState(): Promise<DeviceState> {
-    if (this.stateReadPromise !== null) {
-      return this.stateReadPromise;
+    const inflight = this.stateRead.inflight;
+    if (inflight !== null) {
+      return inflight;
+    }
+    if (this.stateFallback !== null) {
+      return this.stateFallback;
     }
     const deviceId = this.deviceId;
     const serviceId = this.serviceId;
@@ -610,46 +884,156 @@ export class BleTransport {
       return Promise.reject(new Error("未连接"));
     }
 
-    const promise = new Promise<DeviceState>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.stateWaiter = null;
-        this.stateReadPromise = null;
-        reject(new WxCallTimeoutError("State read", this.stateReadTimeoutMs));
-      }, this.stateReadTimeoutMs);
-
-      this.stateWaiter = {
-        resolve: (value: Uint8Array) => {
-          clearTimeout(timer);
-          this.stateWaiter = null;
-          this.stateReadPromise = null;
-          try {
-            const state = parseState(value);
-            this.emitState(state);
-            resolve(state);
-          } catch (err) {
-            reject(err);
-          }
-        },
-        reject: (err: unknown) => {
-          clearTimeout(timer);
-          this.stateWaiter = null;
-          this.stateReadPromise = null;
-          reject(err);
-        },
-      };
+    const promise = this.stateRead.open(this.stateReadTimeoutMs, (value) => {
+      if (value.length !== STATE_BYTES) {
+        /* 长度不对（典型：MTU 23 下短读）：交给回落路径，不在等待者里硬解析。 */
+        throw new StateLengthMismatchError(value.length);
+      }
+      const state = parseState(value);
+      this.listeners.emitState(state);
+      return state;
     });
-    this.stateReadPromise = promise;
 
     wxCall(
       "readBLECharacteristicValue",
       wx.readBLECharacteristicValue,
       { deviceId, serviceId, characteristicId },
       this.stateReadTimeoutMs,
-    ).catch((err) => {
-      this.stateWaiter?.reject(err);
+    ).catch(() => {
+      /* read 失败也走回落；真正的错误由回落路径报告。 */
+      this.stateRead.reject(new StateReadFallbackError());
     });
 
-    return promise;
+    return promise.catch((err: unknown) => {
+      if (err instanceof StateLengthMismatchError || err instanceof StateReadFallbackError) {
+        return this.readStateViaQueryState();
+      }
+      /* read 一直没有回值（MTU 23 下某些平台的表现）：同样走 QueryState 回落；
+       * 回落也失败时抛出的才是真正的链路错误。 */
+      if (err instanceof WxCallTimeoutError && err.api === "State read") {
+        return this.readStateViaQueryState();
+      }
+      throw err;
+    });
+  }
+
+  /**
+   * 回落路径：QueryState 0x05 → 等 StateReport 0x82。
+   *
+   * 用 ackWaiters 等 ACK，用一次性 state 等待者接 0x82。StateReport 的回包
+   * 会同时广播给 onState（设备权威），这里只是把它作为 `readState` 的返回值。
+   */
+  private readStateViaQueryState(): Promise<DeviceState> {
+    const existing = this.stateFallback;
+    if (existing !== null) {
+      return existing;
+    }
+    const req = cmdQueryState();
+    const seq = this.allocateSeq();
+    const frame = encodeTxFrame(req.command, seq, req.payload);
+    const timeoutMs = this.scaledTimeout(this.stateReadTimeoutMs, frame);
+
+    const ackPromise = this.ackWaiters.register(seq, req.command, timeoutMs);
+    const statePromise = new Promise<DeviceState>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingStateReport = null;
+        reject(new WxCallTimeoutError("StateReport", timeoutMs));
+      }, timeoutMs);
+      this.pendingStateReport = { seq, resolve, reject, timer };
+    });
+    statePromise.catch(() => undefined);
+
+    void this.writeLogicalFrame(req, seq, frame).then(
+      () => undefined,
+      (err: unknown) => {
+        this.ackWaiters.fail(seq, err);
+        this.failPendingStateReport(err instanceof Error ? err : new Error(String(err)));
+        this.noteWriteFailure(err);
+      },
+    );
+
+    const fallback = ackPromise.then(
+      (ack) => {
+        if (!ack.ok) {
+          this.failPendingStateReport(
+            new Error(`QueryState 被拒（${resultText(ack.resultCode)}）`),
+          );
+          throw new Error(`QueryState 失败：${resultText(ack.resultCode)}`);
+        }
+        return statePromise;
+      },
+      (err: unknown) => {
+        this.failPendingStateReport(err instanceof Error ? err : new Error(String(err)));
+        throw err;
+      },
+    );
+    this.stateFallback = fallback;
+    /* 无论成败都要摘掉单飞标记，否则一次失败会永久挡住后续读 State。 */
+    void fallback.then(
+      () => {
+        if (this.stateFallback === fallback) this.stateFallback = null;
+      },
+      () => {
+        if (this.stateFallback === fallback) this.stateFallback = null;
+      },
+    );
+    return fallback;
+  }
+
+  // ------------------------------------------------------------------
+  // MTU
+  // ------------------------------------------------------------------
+
+  /** 当前分片容量（含分片头；测试可观察）。 */
+  get chunkCapacityBytes(): number {
+    return this.chunkCapacity;
+  }
+
+  /** 当前协商到的 MTU（未知为 null）。 */
+  get negotiatedMtu(): number | null {
+    return this.mtu;
+  }
+
+  /**
+   * MTU 协商（§2.1）：Android 主动请求 185，其它平台用系统协商值；
+   * 拿不到就按 23 工作（功能不降级，只是分片更多）。
+   *
+   * 任何一步失败都不阻断连接——分片容量退回默认值即可。
+   */
+  private async negotiateMtu(deviceId: string): Promise<void> {
+    let mtu: number | null = null;
+    if (this.platform === "android") {
+      try {
+        const res = await wxCall<any>("setBLEMTU", wx.setBLEMTU, { deviceId, mtu: 185 }, 3000);
+        if (typeof res?.mtu === "number" && res.mtu > 0) {
+          mtu = res.mtu;
+        }
+      } catch {
+        /* 只当优化：失败继续用 getBLEMTU / 默认值 */
+      }
+    }
+    if (mtu === null && typeof wx.getBLEMTU === "function") {
+      try {
+        const res = await wxCall<any>("getBLEMTU", wx.getBLEMTU, { deviceId, writeType: "write" }, 2000);
+        if (typeof res?.mtu === "number" && res.mtu > 0) {
+          mtu = res.mtu;
+        }
+      } catch {
+        /* 平台不支持或还没协商好：按默认 23 */
+      }
+    }
+    this.applyMtu(mtu);
+  }
+
+  /** 记录 MTU 并换算分片容量（未知 → 23 → 20）。 */
+  private applyMtu(mtu: number | null): void {
+    this.mtu = mtu;
+    this.chunkCapacity = chunkCapacityForMtu(mtu);
+    // 请求值不是最终值，只记录协商结果与随之确定的分片容量。
+    console.log(
+      `[lumen] MTU=${mtu ?? "未知(按23)"} → 分片容量 ${this.chunkCapacity} 字节` +
+        `（数据 ${this.chunkCapacity - 1} 字节）`,
+    );
   }
 
   // ------------------------------------------------------------------
@@ -661,11 +1045,7 @@ export class BleTransport {
       return;
     }
     this.destroyed = true;
-    this.clearScanTimer();
-    if (this.deviceFlushTimer !== null) {
-      clearTimeout(this.deviceFlushTimer);
-      this.deviceFlushTimer = null;
-    }
+    this.scanner.clearTimers();
     this.resetLinkWaiters(new Error("页面已销毁"));
 
     // 反注册必须传同一个函数对象，否则 off 不生效。
@@ -691,11 +1071,7 @@ export class BleTransport {
     }
     this.deviceId = null;
     this.filterDeviceId = null;
-    this.linkListeners.length = 0;
-    this.deviceListeners.length = 0;
-    this.stateListeners.length = 0;
-    this.eventListeners.length = 0;
-    this.scanHintListeners.length = 0;
+    this.listeners.clear();
   }
 
   // ------------------------------------------------------------------
@@ -707,21 +1083,10 @@ export class BleTransport {
       return;
     }
     const found: any[] = res?.devices ?? [];
-    let changed = false;
-    for (const dev of found) {
-      const id = dev?.deviceId;
-      if (!id) {
-        continue;
-      }
-      // 广播名优先取扫描响应里的 localName，name 仅兜底。
-      const name = dev.localName || dev.name || "(无名)";
-      this.devices.set(id, { deviceId: id, name, rssi: dev.RSSI ?? 0 });
-      changed = true;
-    }
+    const changed = this.scanner.addDevices(found);
     if (changed) {
-      this.scheduleDeviceFlush();
-      if (this.link === "scanning" && this.devices.size > 0) {
-        this.setScanHint(null);
+      if (this.link === "scanning" && this.scanner.size > 0) {
+        this.scanner.setHint(null);
       }
     }
   };
@@ -744,24 +1109,46 @@ export class BleTransport {
     const bytes = new Uint8Array(raw);
 
     if (characteristicId === upper(this.txId ?? TX_UUID)) {
-      this.handleDeviceFrame(bytes);
+      this.handleInboundChunk(bytes);
       return;
     }
     if (characteristicId === upper(this.stateId ?? STATE_UUID)) {
-      // State read 回值不是协议帧（直接 8 字节），但同样进日志、同样可解析。
-      this.logFrame("rx", bytes, undefined, undefined, this.describeStateRead(bytes));
-      const waiter = this.stateWaiter;
-      if (waiter !== null) {
-        waiter.resolve(bytes.slice());
-      } else {
+      // State read 回值在 v3 是裸 37 字节（无信封、无分片头），但同样进日志、同样可解析。
+      this.logFrame("rx", bytes, undefined, undefined, describeStateReadBytes(bytes));
+      if (!this.stateRead.deliver(bytes)) {
         try {
-          this.emitState(parseState(bytes));
+          this.listeners.emitState(parseState(bytes));
         } catch {
-          /* 非 8 字节的 State 回值：记录日志已足够 */
+          /* 非 37 字节的 State 回值：记录日志已足够（readState 会走回落） */
         }
       }
     }
   };
+
+  /**
+   * v3 入站：每个 notify 是**一个分片**（带 1 字节 ctrl 头）。
+   *
+   * 分片先进日志（hex 含 ctrl，便于与固件串口对照），重组出完整逻辑帧后
+   * 才交给命令层；解析失败按 §5 的语义留在日志里。
+   */
+  private handleInboundChunk(bytes: Uint8Array): void {
+    const result = this.assembler.push(bytes);
+    if (result.kind === "incomplete") {
+      this.logChunk("rx", bytes, undefined, undefined);
+      return;
+    }
+    if (result.kind === "error") {
+      this.log.push({
+        ts: Date.now(),
+        dir: "rx",
+        hex: bytesToHex(bytes),
+        parsed: `分片重组失败（${result.reason}）`,
+        ok: false,
+      });
+      return;
+    }
+    this.handleDeviceFrame(result.frame);
+  }
 
   private readonly handleConnectionStateChange = (res: any): void => {
     if (this.destroyed) {
@@ -811,69 +1198,112 @@ export class BleTransport {
   // ------------------------------------------------------------------
 
   private handleDeviceFrame(bytes: Uint8Array): void {
-    const result = decodeFrame(bytes);
-    if (!result.ok) {
-      this.logFrame("rx", bytes, undefined, undefined, `解码失败（${result.reason}）`, false);
-      return;
-    }
+    const frame = routeInboundFrame(bytes);
+    this.logFrame("rx", bytes, frame.command, frame.seq, frame.text, frame.ok);
 
-    const { command, seq, payload } = result;
-    if (command === DEVICE_CMD.ACK) {
-      let ack: AckResult;
-      try {
-        ack = parseAck(payload, seq);
-      } catch (err) {
-        this.logFrame("rx", bytes, command, seq, errorText(err), false);
+    switch (frame.action.kind) {
+      case "ack":
+        this.ackWaiters.settle(frame.seq as number, frame.action.ack);
         return;
-      }
-      this.logFrame(
-        "rx",
-        bytes,
-        command,
-        seq,
-        describeAck(ack),
-        ack.ok,
-      );
-      const waiter = this.ackWaiters.get(seq);
-      if (waiter !== undefined) {
-        if (waiter.command === ack.command) {
-          clearTimeout(waiter.timer);
-          this.ackWaiters.delete(seq);
-          waiter.resolve(ack);
-        } else {
-          // seq 对上但原命令字不符：协议异常，记录但不兑现。
-          console.warn(`[lumen] ACK 原命令字不匹配 seq=${seq}`);
+      case "state":
+        this.listeners.emitState(frame.action.state);
+        /* v3：State read 回落到 QueryState 时，这里兑现那次读。 */
+        this.settlePendingStateReport(frame.seq as number, frame.action.state);
+        return;
+      case "event":
+        this.listeners.emitEvent(frame.action.code, frame.action.detail);
+        return;
+      case "segment-report":
+        /* #25：同 seq 多帧，交给 QueryStrip 的收集器。 */
+        this.stripQueries.report(frame.seq as number, frame.action.report);
+        return;
+      case "segment-list-end":
+        this.stripQueries.listEnd(frame.seq as number, frame.action.end);
+        return;
+      case "script-summary": {
+        const pending = this.pendingScriptQuery;
+        if (pending !== null && pending.seq === frame.seq) {
+          clearTimeout(pending.timer);
+          this.pendingScriptQuery = null;
+          pending.resolve(frame.action.summary);
         }
-      }
-      return;
-    }
-
-    if (command === DEVICE_CMD.STATE_REPORT) {
-      try {
-        const state = parseState(payload);
-        this.logFrame("rx", bytes, command, seq, describeState(state), true);
-        this.emitState(state);
-      } catch (err) {
-        this.logFrame("rx", bytes, command, seq, errorText(err), false);
-      }
-      return;
-    }
-
-    if (command === DEVICE_CMD.EVENT) {
-      if (payload.length !== 2) {
-        this.logFrame("rx", bytes, command, seq, "Event 载荷长度错误", false);
         return;
       }
-      const code = payload[0];
-      const detail = payload[1];
-      this.logFrame("rx", bytes, command, seq, describeEvent(code, detail), code !== 0x01);
-      for (const fn of this.eventListeners.slice()) {
-        fn(code, detail);
+      case "script-progress":
+        /* 设备侧旁证，不进 ACK 等待表；只广播给关心进度的 UI。 */
+        this.listeners.emitScriptProgress(
+          frame.action.progress.scriptId,
+          frame.action.progress.framesWritten,
+        );
+        return;
+      case "strip-config": {
+        const pending = this.pendingStripConfig;
+        if (pending !== null && pending.seq === frame.seq) {
+          clearTimeout(pending.timer);
+          this.pendingStripConfig = null;
+          pending.resolve(frame.action.config);
+        }
+        return;
       }
+      case "device-info": {
+        const pending = this.pendingDeviceInfo;
+        if (pending !== null && pending.seq === frame.seq) {
+          clearTimeout(pending.timer);
+          this.pendingDeviceInfo = null;
+          pending.resolve(frame.action.info);
+        }
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  /** 丢掉 in-flight 的 QueryScript（写失败 / 被拒 / 断线）。 */
+  private failPendingScriptQuery(err: Error): void {
+    const pending = this.pendingScriptQuery;
+    if (pending === null) {
       return;
     }
+    clearTimeout(pending.timer);
+    this.pendingScriptQuery = null;
+    pending.reject(err);
+  }
 
-    this.logFrame("rx", bytes, command, seq, "未知的设备→小程序命令", false);
+  /** 丢掉 in-flight 的 0x1C / 0x1D 查询（写失败 / 被拒 / 断线）。 */
+  private failPendingReport<T>(
+    pending: SingleReportQuery<T> | null,
+    setPending: (value: SingleReportQuery<T> | null) => void,
+    err: Error,
+  ): void {
+    if (pending === null) {
+      return;
+    }
+    clearTimeout(pending.timer);
+    setPending(null);
+    pending.reject(err);
+  }
+
+  /** 兑现回落到 QueryState 的 State 等待者（seq 不符时静默忽略）。 */
+  private settlePendingStateReport(seq: number, state: DeviceState): void {
+    const pending = this.pendingStateReport;
+    if (pending === null || pending.seq !== seq) {
+      return;
+    }
+    clearTimeout(pending.timer);
+    this.pendingStateReport = null;
+    pending.resolve(state);
+  }
+
+  /** 丢掉回落到 QueryState 的 State 等待者（写失败 / 被拒 / 断线）。 */
+  private failPendingStateReport(err: Error): void {
+    const pending = this.pendingStateReport;
+    if (pending === null) {
+      return;
+    }
+    clearTimeout(pending.timer);
+    this.pendingStateReport = null;
+    pending.reject(err);
   }
 
   /**
@@ -891,6 +1321,9 @@ export class BleTransport {
     this.txId = null;
     this.stateId = null;
     this.nextSeq = 1;
+    /* MTU 是 per-connection 的：新连接必须重新协商，未知时按 23（20 字节）工作。 */
+    this.mtu = null;
+    this.chunkCapacity = DEFAULT_CHUNK_CAPACITY;
   }
 
   /**
@@ -954,89 +1387,25 @@ export class BleTransport {
 
   private resetLinkWaiters(reason: Error): void {
     this.writer.reset(reason);
-    for (const waiter of this.ackWaiters.values()) {
-      clearTimeout(waiter.timer);
-      waiter.reject(reason);
-    }
-    this.ackWaiters.clear();
-    if (this.stateWaiter !== null) {
-      this.stateWaiter.reject(reason);
-      this.stateWaiter = null;
-    }
-    this.stateReadPromise = null;
+    this.ackWaiters.reset(reason);
+    this.stateRead.reset(reason);
+    this.stripQueries.reset(reason);
+    this.failPendingScriptQuery(reason);
+    this.failPendingReport(this.pendingStripConfig, (v) => {
+      this.pendingStripConfig = v;
+    }, reason);
+    this.failPendingReport(this.pendingDeviceInfo, (v) => {
+      this.pendingDeviceInfo = v;
+    }, reason);
+    this.failPendingStateReport(reason);
+    this.stateFallback = null;
+    /* 未完成的分片不能在回连后与新分片拼接（seq / 帧都已是旧的）。 */
+    this.assembler.reset();
   }
 
   private setLink(state: LinkState, detail?: LinkDetail): void {
     this.link = state;
-    for (const fn of this.linkListeners.slice()) {
-      try {
-        fn(state, detail);
-      } catch {
-        /* 监听者异常不能影响状态机 */
-      }
-    }
-  }
-
-  private emitDevices(): void {
-    const list = Array.from(this.devices.values()).sort((a, b) => b.rssi - a.rssi);
-    for (const fn of this.deviceListeners.slice()) {
-      try {
-        fn(list);
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-
-  private emitState(state: DeviceState): void {
-    for (const fn of this.stateListeners.slice()) {
-      try {
-        fn(state);
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-
-  private setScanHint(hint: string | null): void {
-    this.scanHint = hint;
-    this.emitScanHint();
-  }
-
-  private emitScanHint(): void {
-    for (const fn of this.scanHintListeners.slice()) {
-      try {
-        fn(this.scanHint);
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-
-  private scheduleDeviceFlush(): void {
-    if (this.deviceFlushTimer !== null) {
-      return;
-    }
-    this.deviceFlushTimer = setTimeout(() => {
-      this.deviceFlushTimer = null;
-      this.emitDevices();
-    }, DEVICE_FLUSH_MS);
-  }
-
-  private clearScanTimer(): void {
-    if (this.scanTimer !== null) {
-      clearTimeout(this.scanTimer);
-      this.scanTimer = null;
-    }
-  }
-
-  /** State read 的裸值：能解析就写出完整状态，不能解析也保留长度。 */
-  private describeStateRead(bytes: Uint8Array): string {
-    try {
-      return describeStateRead(parseState(bytes));
-    } catch {
-      return `State read（${bytes.length} 字节，无法解析）`;
-    }
+    this.listeners.emitLink(state, detail);
   }
 
   /** 写失败时补一条同 seq 的日志，保留「这一帧没发出去」的证据。 */
@@ -1068,8 +1437,37 @@ export class BleTransport {
   ): void {
     this.log.push({ ts: Date.now(), dir, hex: bytesToHex(bytes), command, seq, parsed, ok });
   }
-}
 
-function describeTx(req: CommandRequest): string {
-  return describeCommand(req.command, req.payload);
+  /**
+   * 分片入日志：hex 带 ctrl 头（与固件串口逐片对照）。
+   *
+   * `frameLength` 是所属逻辑帧长度；入站分片在重组完成前不知道它，所以可选。
+   * 分片序号从 ctrl 低 6 位解析出来，日志里直接给出片号比裸 hex 好用。
+   * `parsed` 只在该帧的**第一片**上传入解析文本，避免一片一行把日志刷满。
+   */
+  private logChunk(
+    dir: "tx" | "rx",
+    chunk: Uint8Array,
+    command: number | undefined,
+    seq: number | undefined,
+    frameLength?: number,
+    parsed?: string,
+  ): void {
+    const ctrl = chunk[0] ?? 0;
+    const flags: string[] = [];
+    if ((ctrl & 0x80) !== 0) flags.push("FIRST");
+    if ((ctrl & 0x40) !== 0) flags.push("LAST");
+    flags.push(`#${ctrl & 0x3f}`);
+    const size =
+      frameLength === undefined ? `chunk=${chunk.length}B` : `chunk=${chunk.length}/${frameLength}B`;
+    const chunkText = `分片[${flags.join("|")}] ${size}`;
+    this.log.push({
+      ts: Date.now(),
+      dir,
+      hex: bytesToHex(chunk),
+      command,
+      seq,
+      parsed: parsed === undefined ? chunkText : `${chunkText} ${parsed}`,
+    });
+  }
 }

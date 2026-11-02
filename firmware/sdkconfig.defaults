@@ -1,7 +1,10 @@
 # ESP32-C3FH4：4MB flash
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
-CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+# v3 自定义分区表（docs/protocol-v3.md §10.1）：NVS 64KB，app 0x3E0000。
+# 内置 SINGLE_APP_LARGE 只给 NVS 24KB，装不下 16KB 的剧本 blob 加上多份快照。
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
 # NimBLE，仅外设 + 广播
 CONFIG_BT_ENABLED=y
@@ -20,3 +23,28 @@ CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=4096
 
 # 日志
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# 8 路 TDM 验收（#29）：一条灯带依次接 8 个脚，验证每路独立。
+# 全部避开 strapping(GPIO2/8/9) 与 flash/USB/UART 脚：
+#   GPIO3/10/0/1 = 安全普通 IO；GPIO4-7 = JTAG，可作普通 IO。
+# 注意 build-firmware.cmd 会删掉生成的 sdkconfig 重新应用默认值，
+# 所以这里改的是默认值，改完直接重构建即可生效。
+CONFIG_LUMEN_STRIP_PINS="3,10,0,1,4,5,6,7"
+
+# 动画帧率 20fps（8 路 × 64 灯占 42% RMT 带宽，留余量给 BLE 抢占）。
+# 等待量 = 帧周期 − 上一帧耗时，所以这是真实帧率。
+CONFIG_LUMEN_ANIM_FPS=20
+
+# #20 错色实验用的开关：静态画面也持续刷帧（跳过逐帧去重）。
+# **量产必须关闭** —— 它让静态场景也持续占 41% RMT 带宽，功耗发热都高，
+# 而且会放大 §7.8 测出的 BLE 抢占问题。这里保留关（n）作为产品默认值；
+# 复现 #20 实验时改成 y 重新构建即可。
+# 实验记录见 docs/animation-baseline.md §7.8。
+CONFIG_LUMEN_FORCE_REFRESH=n
+
+# RMT 每块 symbol 数。显式写成默认值 48 是 #20 的实测结论：与 192（C3 硬件
+# 上限）对照，BLE 压力下的轮周期**没有改善**（>25ms 占比 37% vs 39%，
+# 中位 19.6 vs 19.8ms），见 docs/animation-baseline.md §7.8.2。
+# 8 路 TDM 只用一个 RMT 通道（靠切 GPIO），块大小不改变被打断的次数，
+# 只改变每次被打断后要重做的编码量，所以加大块尺寸在 8 路模式下无收益。
+CONFIG_LUMEN_RMT_MEM_BLOCK_SYMBOLS=48

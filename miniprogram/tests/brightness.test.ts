@@ -24,6 +24,7 @@ import {
 import { ControlSession } from "../utils/control/session";
 import type { BleTransport } from "../utils/ble/transport";
 import type { CommandRequest, DeviceState } from "../utils/protocol/types";
+import { baseState } from "./helpers/state";
 
 const CMD_SET_POWER = 0x01;
 const CMD_SET_BRIGHTNESS = 0x02;
@@ -166,18 +167,7 @@ async function settle(): Promise<void> {
   await Promise.resolve();
 }
 
-function baseState(overrides: Partial<DeviceState> = {}): DeviceState {
-  return {
-    power: 1,
-    brightness: 128,
-    r: 255,
-    g: 180,
-    b: 120,
-    ledCount: 30,
-    maxBrightness: 255,
-    ...overrides,
-  };
-}
+/* v3 的 37 字节 State 夹具集中在 tests/helpers/state.ts（含派生字段一致性）。 */
 
 /** 取命令载荷第 1 字节（SetBrightness / SetPower 都是 1 字节载荷）。 */
 function payloadByte(req: CommandRequest): number {

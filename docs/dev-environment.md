@@ -1,131 +1,133 @@
 # 开发环境
 
-目标：在这台 Windows 机器上能 `idf.py build/flash` ESP-IDF v5.4 工程，并能用微信开发者工具真机预览小程序。
+目标：在这台 Windows 机器上能 `idf.py build/flash` ESP-IDF 工程，并能用微信开发者工具真机预览小程序。
+
+> **ESP-IDF 基线：v6.1**（最新稳定版，2026-10-31 定）。
+> **本项目不做版本兼容。** MVP 只是试验，不为任何旧版本维护降级路径或条件编译。
+> 换机器时按本文装到 v6.1；版本不符就装到一致，不要「凑合能跑」。
+>
+> 选 v6.1 而非 v5.x 的原因：多引脚 TDM 方案依赖 `rmt_tx_switch_gpio()`。
+> 该 API 从 v5.4.2 起才有，v6.1 已确认存在且可链接（见下「验证」）。
 
 ## 组件位置
 
 | 组件 | 位置 / 版本 |
 |---|---|
-| ESP-IDF | `C:\Users\13092\esp\v5.4\esp-idf` |
+| ESP-IDF | `C:\Users\13092\esp\esp-idf\esp-idf`（**v6.1**，detached HEAD 在 tag 上） |
 | IDF 工具 | `C:\Espressif\tools`（`IDF_TOOLS_PATH=C:\Espressif`） |
-| IDF Python | `C:\Espressif\tools\idf-python\3.11.2` |
+| IDF Python 环境 | `C:\Espressif\python_env\idf6.1_py3.11_env` |
+| Python 基础解释器 | `C:\Espressif\tools\idf-python\3.11.2` |
 | IDF Git | `C:\Espressif\tools\idf-git\2.44.0` |
+| riscv32-esp-elf | `esp-15.2.0_20251204` |
+| riscv32-esp-elf-gdb | `17.1_20260402` |
+| cmake / ninja | `4.0.3` / `1.12.1` |
+| ccache / openocd | `4.12.1` / `v0.12.0-esp32-20260703` |
+| esp-clangd | `esp-21.1.3_20260408` |
 | 系统 Python | 3.12.10 |
 | Node / npm | v24.14.0 / 11.11.0 |
 | 微信开发者工具 | `C:\Program Files (x86)\Tencent\微信web开发者工具` |
 
+> **目录名与版本无关**：路径是 `C:\Users\13092\esp\esp-idf\esp-idf`，不随版本变化。
+> 升级 IDF 只需在同一个目录里 `git checkout <新 tag>`，`scripts\idf.cmd` 无需改动。
+> `export.bat` 从脚本自身位置推断 `IDF_PATH`，所以这个路径对 IDF 本身也不敏感。
+>
+> **改名记录（2026-10-31）**：原路径是 `C:\Users\13092\esp\v5.4\esp-idf`，目录名带着版本号，
+> 升级后名实不符。已改名为 `esp\esp-idf`，一次性根治。踩到两个坑：
+>
+> 1. **`C:\Espressif\idf-env.json` 里也记着旧路径**（`idfInstalled` 的键与 `path` 字段）。
+>    不改会导致 export 报「工具未安装」。备份在 `C:\Espressif\idf-env.json.bak`。
+> 2. **改名后 export 开始严格检查全部工具链**（xtensa-esp-elf / xtensa-gdb / esp32ulp-elf / dfu-util），
+>    之前只装了 riscv 那套。用不带 `--targets` 的 `idf_tools.py install` 一次性补齐。
+>
+> 同时受影响的三个同级项目（`lumen-app`、`lumen-fw`）的 `scripts\idf.cmd` 已一并改路径。
+
+## 验证安装是否完整
+
+```bat
+C:\Users\13092\esp\esp-idf\esp-idf\export.bat
+idf.py --version
+```
+
+应输出 `ESP-IDF v6.1`。然后跑一次完整构建：
+
+```bat
+scripts\build-firmware.cmd
+```
+
+**判定通过的最低标准**：构建成功，且 `lumen.elf` 里有 `rmt_tx_switch_gpio` 符号（TDM 的前提）：
+
+```bat
+C:\Espressif\tools\riscv32-esp-elf\esp-15.2.0_20251204\riscv32-esp-elf\bin\riscv32-esp-elf-nm.exe ^
+  %TEMP%\lumen-firmware\build\lumen.elf | findstr rmt_tx_switch_gpio
+```
+
+应看到类似 `4204f876 T rmt_tx_switch_gpio`（`T` = 已定义，位于代码段）。
+
 ## 首次安装（可复现）
 
-`install.bat` 必须在 **cmd.exe** 里运行，且不能带 `MSYSTEM`（Git Bash 会设置它，脚本会直接拒绝）。用批处理包装：
+`install.bat` 必须在 **cmd.exe** 里运行，且不能带 `MSYSTEM`（Git Bash 会设置它，脚本会直接拒绝）。
 
 ```bat
 @echo off
 set "MSYSTEM="
 set "PATH=C:\Espressif\tools\idf-python\3.11.2;C:\Espressif\tools\idf-git\2.44.0\cmd;%PATH%"
 set "IDF_TOOLS_PATH=C:\Espressif"
-cd /d C:\Users\13092\esp\v5.4\esp-idf
+cd /d C:\Users\13092\esp\esp-idf\esp-idf
 
 call install.bat esp32c3
-python tools\idf_tools.py install cmake ninja idf-exe
 ```
 
-`install.bat` 会装 riscv32-esp-elf / gdb / cmake / ninja / idf-exe / ccache / openocd 等，并创建 Python 环境。下载走 GitHub，国内网络可能较慢；失败就重跑同一条命令，已下载的包会复用。
+若已有旧版环境，v6.1 需要**独立补装**两样东西（两者缺一都会让 `export.bat` 直接退出）：
+
+**1. 全部目标工具链**（v6.1 的 export 会检查 xtensa/gdb/dfu-util/clangd 等，即使只编 C3）：
+
+```bat
+set "MSYSTEM="
+set "IDF_TOOLS_PATH=C:\Espressif"
+C:\Espressif\python_env\idf6.1_py3.11_env\Scripts\python.exe tools\idf_tools.py install --targets=esp32c3
+```
+
+**2. Python 环境**（v6.1 用 `idf6.1_py3.11_env`，与旧版 `idf5.4_py3.11_env` 并存）：
+
+```bat
+C:\Espressif\python_env\idf5.4_py3.11_env\Scripts\python.exe tools\idf_tools.py install-python-env
+```
+
+这条命令会用已有的 Python 解释器创建 v6.1 的新 venv，并装上 esptool 5.6、esp-idf-kconfig、tree_sitter 等依赖。
+
+## v6.1 的两个坑（重装时会重现）
+
+**坑 1：`esp-clangd` 的 PATH 冲突。** 若系统 PATH 里有另一版本的 esp-clangd，export 会警告并拒绝使用。它不影响构建，但若坚持用系统那份，需加 `--prefer-system`。正常情况忽略即可。
+
+**坑 2：配置项 `default 0` 弃用提示。** 构建时会出现一批来自 IDF 自身 Kconfig 的 NOTE：
+
+```
+BT_NIMBLE_MESH_PROVISIONER: 'default 0' is not a valid bool value
+Deprecation notice: hex literal '0' without '0x' prefix detected
+```
+
+**这些是 ESP-IDF 自身 Kconfig 的问题，不是本仓库的**，不影响构建结果。不要为此改我们的 `Kconfig.projbuild`。
 
 ## 每个新终端
 
 `export.bat` 只对 cmd.exe 生效。**建议 IDF 命令都在 cmd.exe 里跑**：
 
 ```bat
-C:\Users\13092\esp\v5.4\esp-idf\export.bat
+C:\Users\13092\esp\esp-idf\esp-idf\export.bat
 idf.py --version
 ```
 
-PowerShell：
+仓库里的 `scripts\idf.cmd` 已封装好（清 `MSYSTEM`、设 `IDF_TOOLS_PATH`、调用 `export.bat`），日常用包装脚本即可。
 
-```powershell
-. C:\Users\13092\esp\v5.4\esp-idf\export.ps1
-idf.py --version
-```
+Git Bash 里不要直接 `source export.sh`；用包装脚本或 `cmd.exe //c`。
 
-Git Bash 里不要直接 `source export.sh`；用包装脚本或 `cmd.exe //c`：
-
-```bash
-cmd.exe //c "call C:\Users\13092\esp\v5.4\esp-idf\export.bat && idf.py --version"
-```
-
-仓库根目录提供 `scripts/idf.cmd`，Git Bash 里可以这样用：
-
-```bash
-cmd.exe //c "scripts\idf.cmd --version"
-cmd.exe //c "scripts\idf.cmd -C firmware build"
-```
-
-## 烧录与串口
-
-1. 用 USB 线把 ESP32-C3 开发板接到电脑。
-2. 确认端口出现：
-   - 原生 USB Serial/JTAG：设备名 `USB 串行设备 (COMx)`，VID `303A`。
-   - 板载 USB-UART 桥：`USB-SERIAL CH340 (COMx)` 或 `CP210x`。
-   - 若端口没出现：装 CH340 / CP210x 驱动；原生 USB-JTAG 在 Windows 10+ 自带驱动。
-3. 烧录并看日志：
+## 验证基线（改代码后必须保持）
 
 ```bat
-idf.py -p COM6 flash monitor
+cmd.exe //c "firmware\test\run-tests.cmd"   REM 1426 项
+cd miniprogram && npx vitest run            REM 159 个用例
+cd miniprogram && npx tsc --noEmit          REM 必须干净
+scripts\build-firmware.cmd                  REM 分区余量 67%
 ```
 
-- 退出 monitor：`Ctrl+]`。
-- 串口默认 115200。
-- 找不到端口时先 `idf.py -p COM6 monitor` 单独试；仍失败就换线/换 USB 口。
-
-## led_strip 依赖
-
-```bat
-idf.py add-dependency espressif/led_strip
-idf.py build
-```
-
-组件会从 Espressif Component Registry 拉取。第一次构建需要联网；之后走 `managed_components/` 缓存（已在 `.gitignore`）。
-
-## 微信开发者工具
-
-1. 打开微信开发者工具，导入 `miniprogram/` 目录。
-2. `project.config.json` 里 `appid` 目前是 `touristappid`。**真机预览需要换成你的测试号 AppID**（测试号在公众平台申请，BLE 不依赖服务器域名）。
-   > 注：当前开发者工具版本用 CLI `open --project` 打开 `touristappid` 会报 `code 10：不存在此 AppID`。真机预览必须先在 IDE 里导入项目并使用「测试号」，或填入测试号 AppID。
-3. 模拟器只能模拟部分蓝牙接口；**完整 BLE 功能必须真机调试**。
-4. 真机预览步骤：工具栏「预览」→ 手机微信扫码 → 打开小程序。
-5. 平台差异：
-   - Android 6.0+ 扫描需要定位权限与定位开关；8.0.16 之前无权限是静默扫不到。
-   - iOS 需要 `scope.bluetooth` 授权，失败回调带 `state`（0 未知 / 1 重置中 / 2 不支持 / 3 未授权 / 4 未开启）。
-   - iOS 不支持 `wx.setBLEMTU`；超长写入可能既无 success 也无 fail。
-
-## 常用命令
-
-| 目的 | 命令 |
-|---|---|
-| 查看 IDF 版本 | `idf.py --version` |
-| 配置目标 | `idf.py set-target esp32c3` |
-| 编译 | `idf.py build` |
-| 构建固件（中文路径安全） | `scripts\build-firmware.cmd` |
-| 烧录固件 | `scripts\flash-firmware.cmd COM6` |
-| 烧录 + 监视 | `idf.py -p COMx flash monitor` |
-| 只监视 | `idf.py -p COMx monitor` |
-| 清理 | `idf.py fullclean` |
-| 添加组件 | `idf.py add-dependency espressif/led_strip` |
-| 查看串口 | `mode` / 设备管理器；或 `powershell -Command "Get-CimInstance Win32_SerialPort"` |
-| 打开小程序项目 | `"C:\Program Files (x86)\Tencent\微信web开发者工具\cli.bat" open --project <path>` |
-
-## 验证结果
-
-- [x] 工具链安装完成（riscv32-esp-elf 14.2.0、gdb 14.2、cmake 3.30.2、ninja 1.12.1、idf-exe 1.0.3、ccache 4.10.2）
-- [x] `idf.py --version` → `ESP-IDF v5.4`
-- [x] hello_world 烧录 + 串口输出（COM6，`Hello world!`，ESP-IDF v5.4，chip rev v0.4）
-- [ ] 真机预览打开页面（需要测试号 AppID 与手机扫码）
-
-## 已知问题
-
-- `idf.py add-dependency` 之后如果 `build` 报 `led_strip.h: No such file or directory`，跑一次 `idf.py reconfigure` 再 build，让组件管理器拉取依赖。
-- **flash size 警告**：开发板实际是 4MB flash，但 hello_world 默认按 2MB 配置，启动会打印 `Detected size(4096k) larger than the size in the binary image header(2048k)`。实际固件工程按 C3FH4 配置 4MB：`CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y`。
-- **中文路径**：仓库在 `...\Desktop\项目\...`，ESP-IDF 的 ccache/CMake 在中文路径下会报 `filesystem error: Cannot convert character sequence`，构建会卡住或失败（`--no-ccache` 也不够）。已落地的办法：用 `scripts\build-firmware.cmd`，它把 `firmware/` 同步到 `%TEMP%\lumen-firmware`（纯 ASCII）再构建；烧录用 `scripts\flash-firmware.cmd COM6`。或者把整个仓库移到纯 ASCII 路径。
-- **devtools AppID**：`touristappid` 在当前版本会被 CLI 拒绝（`code 10：不存在此 AppID`）。真机预览前，在 IDE 里导入 `miniprogram/` 并使用「测试号」，或把测试号 AppID 填进 `project.config.json`。
-- 当前没有检测到已连接的串口时，先接板子；本次识别到的是原生 USB 的 `USB 串行设备 (COM6)`（VID `303A`）。系统里还记录过 CH340 的 COM3/COM4、CH343 的 COM5，注意别烧错口。
-- 系统 Python 是 3.12.10，但 IDF 工具链用自带的 3.11.2。`scripts/idf.cmd` 已把 IDF Python 放到 PATH 最前面；不要用系统 Python 直接跑 `idf_tools.py`。
+**v6.1 下四条全部通过，且固件源码无需任何改动**（2026-10-31 实测）。

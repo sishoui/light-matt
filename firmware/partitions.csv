@@ -1,0 +1,13 @@
+# lumen v3 分区表（docs/protocol-v3.md §10.1）
+#
+# 4MB flash。IDF 内置的 SINGLE_APP_LARGE 只给 NVS 24KB（6 个 page），
+# 而 v3 的剧本 blob 上限是 16KB、state blob 1.3KB，加上 NVS 自身的磨损均衡
+# 与多份快照，24KB 很快会写满。改为 NVS 64KB（16 个 page）。
+#
+# app 分区给 0x3E0000（≈3.9MB），当前固件约 1MB，余量充足。
+# 注意：本表一旦烧录，旧的 NVS 内容（v2 的 state / scripts）不可读——
+# v3 本来就不兼容 v2 的 blob，刷新固件后回到默认值（spec-v3 §8 已记录）。
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x10000,
+phy_init, data, phy,     0x19000,  0x1000,
+factory,  app,  factory, 0x20000,  0x3E0000,

@@ -1,0 +1,125 @@
+<view class="page">
+  <view class="statusbar {{ready ? 'link-ready' : 'link-idle'}}">
+    <view class="status-dot"></view>
+    <view class="status-main">
+      <text class="status-text">{{deviceName || '设备详情'}}</text>
+      <text class="status-sub mono">{{deviceId || '未连接'}}</text>
+    </view>
+  </view>
+
+  <!-- 身份：hw_id 是设备真身份（广播名会碰撞，§2） -->
+  <view class="section">
+    <view class="section-head">
+      <text class="section-title">身份与固件</text>
+    </view>
+    <view class="device-info">
+      <view class="info-row">
+        <text class="info-label">硬件号</text>
+        <text class="info-value mono">{{hwId}}</text>
+      </view>
+      <view class="info-row">
+        <text class="info-label">固件</text>
+        <text class="info-value">{{firmwareText}}</text>
+      </view>
+      <view class="info-row">
+        <text class="info-label">能力</text>
+        <text class="info-value">{{capsText}}</text>
+      </view>
+      <view class="info-row">
+        <text class="info-label">上限</text>
+        <text class="info-value">{{limitsText}}</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 逐带真实数据：灯珠数来自 State，GPIO 来自 QueryStripConfig（只读） -->
+  <view class="section {{ready ? '' : 'disabled'}}">
+    <view class="section-head">
+      <text class="section-title">灯带</text>
+      <text class="section-value">{{stripRows.length}} 条</text>
+    </view>
+    <view class="strip-info-list">
+      <view wx:for="{{stripRows}}" wx:key="stripId" class="strip-info-row">
+        <text class="strip-info-name">{{item.label}}</text>
+        <text class="strip-info-meta">{{item.ledCount}} 灯</text>
+        <text class="strip-info-meta">{{item.gpioText}}</text>
+        <text class="strip-info-hidden" wx:if="{{!item.visible}}">已隐藏</text>
+      </view>
+      <view wx:if="{{stripRows.length === 0}}" class="device-empty">未连接或设备未报告灯带</view>
+    </view>
+    <text class="section-hint">GPIO 来自构建期引脚表，协议只读；「已隐藏」只是本机界面偏好</text>
+  </view>
+
+  <!-- 灯珠数量（按选中带改）：会重建设备的 led_strip 句柄，超时 3s -->
+  <view class="section {{ready ? '' : 'disabled'}}">
+    <view class="section-head">
+      <text class="section-title">灯珠数量</text>
+      <text class="section-value">按带设置</text>
+    </view>
+    <view class="chip-row tight">
+      <view
+        wx:for="{{ledStripOptions}}"
+        wx:key="stripId"
+        class="chip blue {{ledCountStripId === item.stripId ? 'selected' : ''}}"
+        data-strip-id="{{item.stripId}}"
+        bindtap="onLedStripTap"
+      >{{item.label}}</view>
+    </view>
+    <view class="range-row">
+      <input
+        class="range-input"
+        type="number"
+        value="{{ledCountInput}}"
+        maxlength="2"
+        placeholder="1-64"
+        disabled="{{!ready || ledCountBusy}}"
+        bindinput="onLedCountInput"
+      />
+      <button
+        class="range-apply {{ledCountBusy ? 'busy' : ''}}"
+        disabled="{{!ready || ledCountBusy}}"
+        bindtap="onApplyLedCount"
+      >{{ledCountBusy ? '应用中…' : '应用'}}</button>
+    </view>
+    <text class="section-hint">{{ledCountHint || '改完立即生效并写入设备，重启后保持；非法值会被拒绝'}}</text>
+  </view>
+
+  <!-- 自检与危险操作 -->
+  <view class="section">
+    <button
+      class="btn ghost"
+      disabled="{{!ready || selfTestBusy}}"
+      bindtap="onSelfTest"
+    >{{selfTestBusy ? '自检中…' : '自检（红→绿→蓝→白）'}}</button>
+
+    <!-- 改名：本地先写，后端异步同步（失败只影响别的手机可见性） -->
+    <view class="section-head">
+      <text class="section-title small">备注名</text>
+      <text wx:if="{{identityHint}}" class="section-hint inline">{{identityHint}}</text>
+    </view>
+    <view class="remark-row">
+      <input
+        class="range-input"
+        value="{{remarkInput}}"
+        maxlength="20"
+        placeholder="备注名"
+        disabled="{{remarkBusy}}"
+        bindinput="onRemarkInput"
+      />
+      <button class="range-apply" disabled="{{remarkBusy}}" bindtap="onRename">保存</button>
+    </view>
+
+    <button
+      class="btn danger"
+      disabled="{{!ready || disconnectBusy}}"
+      bindtap="onDisconnect"
+    >{{disconnectBusy ? '断开中…' : '断开连接'}}</button>
+    <button class="btn danger" disabled="{{deleteBusy}}" bindtap="onDelete">
+      {{deleteBusy ? '删除中…' : '删除这台设备（解除关联）'}}
+    </button>
+    <text class="section-hint">
+      删除只解除登记关系：设备上的灯光配置不变，重新扫描仍能连上。
+    </text>
+    <text class="section-hint">{{hint}}</text>
+  </view>
+</view>
