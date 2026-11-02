@@ -161,13 +161,13 @@ static uint32_t now_ms(void)
  *
  *  - 字节 9 `seg_count`：strip 0 的**活动**段数。每次写段 / 清段都必须重算，
  *    不是只在初始化时算一次。
- *  - 字节 2-4 `R/G/B`：docs/protocol-v3.md §7.3 定义为「strip 0 / seg 0
+ *  - 字节 2-4 `R/G/B`：docs/protocol-v4.md §7.3 定义为「strip 0 / seg 0
  *    **层 0** 的基准色」，由 layer[0] 的 hue+sat 算出（不含动画包络、不含
- *    layer1 与 blend）；seg 0 不活动或不存在时是 0。
+ *    layer1 与 blend、**也不含这一层的 level**）；seg 0 不活动或不存在时是 0。
  *
  * 一个活动段都没有时保留 v1 的单色值（s_state.r/g/b）：这是刻意的向后兼容——
  * 现有单灯带功能不退化，且与协议默认值（255,180,120 / seg_count 0，
- * 见 docs/protocol.md §7.1 与共享向量 state_read_example_hex）一致。
+ * 见 docs/protocol-v4.md §7.1 与共享向量 state_read_example_hex）一致。
  * 一旦有活动段，State 就完全由段配置决定。
  */
 static void state_summary_apply(lumen_state_t *state, const lumen_segment_store_t *segments)
@@ -1120,7 +1120,7 @@ esp_err_t lumen_led_engine_init(void)
     /*
      * #32 恢复已提交剧本 + 激活 id + loop。
      *
-     * **播放位置不持久化**（docs/protocol.md §12 / 21-design §6 的二选一）：
+     * **播放位置不持久化**（docs/protocol-v4.md §12 / 21-design §6 的二选一）：
      * 上电一律「从第一阶段 + playback_state = 0（停止）」。所以这里只用
      * active_script_id 建时间轴，不恢复 stage_index / elapsed。
      *

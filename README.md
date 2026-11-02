@@ -15,11 +15,16 @@ lumen/
 
 ## 从这里开始
 
-**v3 扩展（已实现，待真机验收）**
+**v4（当前，固件侧已实现）**
+
+- **v4 协议契约**：[docs/protocol-v4.md](docs/protocol-v4.md) —— 字节级唯一真相，含分片、两层段与逐层亮度
+- **v4 测试向量**：[docs/protocol-testvectors-v4.json](docs/protocol-testvectors-v4.json) —— 由 `scripts/gen-protocol-testvectors-v4.mjs` 生成
+
+**v3 扩展（已实现，历史）**
 
 - **v3 规格**：[docs/spec-v3.md](docs/spec-v3.md) —— 设备列表 / 多灯带 / 两层灯效 / 分阶段（GitHub [#35](https://github.com/sishoui/light-matt/issues/35)）
-- **v3 协议契约**：[docs/protocol-v3.md](docs/protocol-v3.md) —— 字节级唯一真相，含分片与两层段
-- **v3 测试向量**：[docs/protocol-testvectors-v3.json](docs/protocol-testvectors-v3.json) —— 由 `scripts/gen-protocol-testvectors-v3.mjs` 生成
+- **v3 协议契约（历史）**：[docs/protocol-v3.md](docs/protocol-v3.md) —— 保留供对照
+- **v3 测试向量（历史）**：[docs/protocol-testvectors-v3.json](docs/protocol-testvectors-v3.json)
 - **v3 真机验收**：[docs/acceptance-v3.md](docs/acceptance-v3.md) —— 8 带 / 每带开关 / 两层 / 剧本 / 稳定性清单与记录表（**需硬件，待执行**）
 - **灯效参数表**：[docs/effects-spec.md](docs/effects-spec.md) —— 四种灯效的字节布局与行为公式（v3 未改语义）
 
@@ -34,7 +39,7 @@ lumen/
 
 - **接手/继续开发**：[docs/handoff.md](docs/handoff.md) —— 当前状态、下一步、必须知道的坑
 - **想了解架构**：[docs/wayfinding/architecture-brief.md](docs/wayfinding/architecture-brief.md)（⚠️ v1 历史产物）
-- **想写 codec（v3，当前）**：[docs/protocol-v3.md](docs/protocol-v3.md) —— 字节级协议规格与测试向量
+- **想写 codec（v4，当前）**：[docs/protocol-v4.md](docs/protocol-v4.md) —— 字节级协议规格与测试向量
 - **想写 codec（v2，已作废）**：[docs/protocol.md](docs/protocol.md) —— 保留供对照
 - **想实现 MVP**：[docs/spec.md](docs/spec.md) —— MVP 实现规格（用户故事、实现决策、测试接缝）
 - **想跑真机验收**：[docs/end-to-end-acceptance.md](docs/end-to-end-acceptance.md) —— 7 条清单的操作步骤与记录表
@@ -47,7 +52,7 @@ lumen/
 
 | 端 | 规模 |
 |---|---|
-| 固件 host 测试 | **11053 项断言**，58 条 v3 向量（CRC16 / 分片重组 / 两层合成 / blob v4 与 LMS3） |
+| 固件 host 测试 | **11449 项断言**，64 条向量（CRC16 / 分片重组 / 两层合成 / 逐层亮度 / blob v5 与 LMS4） |
 | 小程序 | **603 个 vitest 用例**，31 个测试文件，`tsc --noEmit` 干净 |
 | 后端 | **140 个 vitest 用例**，6 个测试文件，`tsc --noEmit` 干净 |
 

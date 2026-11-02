@@ -85,7 +85,7 @@ v1（MVP）的 wayfinder 地图与决策票仍在 `docs/wayfinding/`（历史产
 ### 上一 effort：v3 扩展
 
 - **规格（实现层）**：[#35 lumen v3 · 实现规格](https://github.com/sishoui/light-matt/issues/35)，label `spec`。11 张实现票是它的 sub-issues。
-- **字节细节**的唯一真相是 `docs/protocol-v3.md`（v3 契约，含分片与两层段）；可执行副本是 `docs/protocol-testvectors-v3.json`，由 `scripts/gen-protocol-testvectors-v3.mjs` 生成 —— **改契约必须重新生成向量**。
+- **字节细节**的唯一真相是 `docs/protocol-v4.md`（v4 契约，含分片、两层段与逐层亮度）；可执行副本是 `docs/protocol-testvectors-v4.json`，由 `scripts/gen-protocol-testvectors-v4.mjs` 生成 —— **改契约必须重新生成向量**。
 - **不取代**：`docs/effects-spec.md` 的灯效参数语义在 v3 里没有变。
 
 **v3 要解决的核心问题**：v2 把多带 / 多段 / 多阶段 / 多灯效都做进了固件和协议，但**小程序没跟上**（`PRIMARY_STRIP_ID = 0` 写死，无灯带维度）。v3 的主战场是小程序，固件做「补齐 + 放开」。

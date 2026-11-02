@@ -8,7 +8,7 @@
 bool lumen_command_is_known(uint8_t command)
 {
     /*
-     * 只包含「已实现」的命令（docs/protocol-v3.md §6）。0x03 / 0x04 在 v2 退役，
+     * 只包含「已实现」的命令（docs/protocol-v4.md §6）。0x03 / 0x04 在 v2 退役，
      * 落到 default → 0x02 未知命令，小程序能明确看到「该命令需要升级固件」。
      * v3 加入 0x1B SetStripPower / 0x1C QueryStripConfig / 0x1D QueryDeviceInfo。
      *
@@ -53,7 +53,7 @@ uint8_t lumen_command_payload_len(uint8_t command)
     case LUMEN_CMD_QUERY_DEVICE_INFO:
         return 0;
     case LUMEN_CMD_SET_LED_COUNT:
-        /* strip_id + count 小端（docs/protocol-v3.md §6）。 */
+        /* strip_id + count 小端（docs/protocol-v4.md §6）。 */
         return 3;
     case LUMEN_CMD_SET_STRIP_POWER:
         /* strip_id, on。 */
@@ -72,8 +72,8 @@ uint8_t lumen_command_payload_len(uint8_t command)
         /* script_id, stage_index, duration_ms(2), fade_ms(2)。 */
         return 6;
     case LUMEN_CMD_SCRIPT_SEGMENT:
-        /* 固定 23：script_id + stage_index + §7.1 的 21 字节段。 */
-        return 23;
+        /* 固定 25：script_id + stage_index + §7.1 的 23 字节段。 */
+        return 25;
     case LUMEN_CMD_SCRIPT_COMMIT:
     case LUMEN_CMD_SCRIPT_ABORT:
     case LUMEN_CMD_QUERY_SCRIPT:
@@ -83,8 +83,8 @@ uint8_t lumen_command_payload_len(uint8_t command)
         /* script_id, loop。 */
         return 2;
     case LUMEN_CMD_SET_SEGMENT:
-        /* 固定 21（docs/protocol-v3.md §7.1）：定宽层编码，不再按 type 变长。 */
-        return 21;
+        /* 固定 23（docs/protocol-v4.md §7.1）：定宽 9 字节层，不再按 type 变长。 */
+        return 23;
     default:
         return 0;
     }
@@ -96,7 +96,7 @@ bool lumen_command_payload_len_ok(const lumen_frame_t *frame)
         return false;
     }
     /*
-     * v3 的段命令都是**固定长度**（21 / 23），不再有「先读 type 再定长」的
+     * v4 的段命令都是**固定长度**（23 / 25），不再有「先读 type 再定长」的
      * 二次校验路径——这正是 §7.1 选择定宽层编码的目的。长度不符一律
      * BadLength，交给 type 校验之前就拒。
      */
@@ -206,21 +206,23 @@ static void dispatch_set_led_count(const lumen_frame_t *frame, const lumen_state
 }
 
 /*
- * 从 v3 段载荷解析层与段。
+ * 从 v4 段载荷解析层与段。
  *
- * 载荷布局（docs/protocol-v3.md §7.1）：固定 21 字节
- *   0 strip_id | 1 seg_id | 2 start | 3 end | 4 blend | 5..12 layer0 | 13..20 layer1
+ * 载荷布局（docs/protocol-v4.md §7.1）：固定 23 字节
+ *   0 strip_id | 1 seg_id | 2 start | 3 end | 4 blend | 5..13 layer0 | 14..22 layer1
  *
- * 层是 8 字节定宽：type + param[7]，解码统一走 effects.c 的 lumen_layer_decode
- * （线格式与 layer 结构一一对应，别再在命令层抄一份字段解析）。
+ * 层是 **9 字节**定宽：type + param[7] + level，解码统一走 effects.c 的
+ * lumen_layer_decode（线格式与 layer 结构一一对应，别再在命令层抄一份字段解析）。
  *
  * 为什么定宽：未知 type 也能安全判定为非法而不是越界读（§7.1 的取舍记录）。
- * 这也是 v3 段命令长度固定的原因，命令层不再需要「先读 type 再定长」。
+ * 这也是 v4 段命令长度固定的原因，命令层不再需要「先读 type 再定长」。
  */
-#define LUMEN_WIRE_SEGMENT_BYTES 21
+#define LUMEN_WIRE_SEGMENT_BYTES 23
+/* 段块内 layer1 的起始偏移 = 5 字节段头 + 9 字节 layer0。 */
+#define LUMEN_WIRE_LAYER1_OFFSET 14
 
 /*
- * 把 21 字节段载荷解码成两层结构（§7.1）。
+ * 把 23 字节段载荷解码成两层结构（§7.1）。
  *
  * 只做**结构**映射，不做任何校验：形状与参数由 lumen_segment_validate_shape
  * 统一判（命令层与 blob 解码共用同一份规则）。layer_decode 的返回值不在这里
@@ -235,12 +237,12 @@ static void wire_segment_read(const uint8_t payload[LUMEN_WIRE_SEGMENT_BYTES],
     seg->end = payload[3];
     seg->blend = payload[4];
     (void)lumen_layer_decode(&payload[5], &seg->layer[0]);
-    (void)lumen_layer_decode(&payload[13], &seg->layer[1]);
+    (void)lumen_layer_decode(&payload[LUMEN_WIRE_LAYER1_OFFSET], &seg->layer[1]);
     seg->t0_ms = 0; /* 生效时刻由 led_engine 在真正写入时填 */
 }
 
 /*
- * #32 剧本命令的形状校验（docs/protocol.md §6 / §11.3）。
+ * #32 剧本命令的形状校验（docs/protocol-v4.md §6 / §11.3）。
  *
  * 这里只做「命令层能判定」的部分：id / 下标 / 类型 / 长度 / 时长非 0。
  * 区间越界与重叠是**整份**校验，必须等 ScriptCommit（协议 §10.4 明确：
@@ -323,7 +325,7 @@ static void dispatch_script_stage(const lumen_frame_t *frame, lumen_command_outc
         return;
     }
     /*
-     * fade_ms 在 v3 是**格式预留**（docs/protocol-v3.md §9.6）：非 0 值照常接受、
+     * fade_ms 在 v3 是**格式预留**（docs/protocol-v4.md §9.6）：非 0 值照常接受、
      * 存储并持久化（blob v2 的 stage 头有 2 字节），但播放行为仍是硬切——
      * 过渡期要同时渲染两套阶段帧，RMT 负载翻倍，与已实测的 BLE 抢 RMT ISR
      * 问题叠加。所以这里刻意只校验长度、不校验取值。
@@ -338,14 +340,16 @@ static void dispatch_script_stage(const lumen_frame_t *frame, lumen_command_outc
 
 /*
  * ScriptSegment 0x16：载荷
- *   script_id, stage_index, 然后 §7.1 的 21 字节段（共 23 字节）。
+ *   script_id, stage_index, 然后 §7.1 的 23 字节段（共 25 字节）。
  *
  * 注意字段顺序：两个前缀字节在**最前面**（与 v2 的 script_id/stage_index 前缀
- * 一致，测试向量也是这么排的）。docs/protocol-v3.md §7.1 的「末尾再追加」
+ * 一致，测试向量也是这么排的）。docs/protocol-v4.md §7.1 的「末尾再追加」
  * 只是描述长度来源；字节级契约以向量为准。
  *
  * 与 SetSegment 的差别只有一条：**两层都空表示「清空该槽位」**（§9.6），
  * 所以这里 layer0 允许为空层，但「layer0 空、layer1 非空」仍是非法。
+ * **v4：清槽要求两层的 level 都为 0**，否则按参数非法拒绝（清槽不是
+ * 「带亮度的空段」）。
  *
  * 第 5 步 strip 范围用**本次下发的 strip_count** 判断不了（命令层没有暂存区），
  * 所以下界只到 LUMEN_MAX_STRIPS；引擎在写入时按暂存的 strip_count 再拒一次。
@@ -373,7 +377,7 @@ static void dispatch_script_segment(const lumen_frame_t *frame,
     }
 
     /*
-     * 载荷 = script_id + stage_index 两个前缀字节，其后是 §7.1 的 21 字节段
+     * 载荷 = script_id + stage_index 两个前缀字节，其后是 §7.1 的 23 字节段
      * （与 SetSegment 完全同构，因此段块从 payload[2] 开始）。t0_ms 在剧本里
      * 无意义，wire_segment_read 已置 0。
      */
@@ -385,7 +389,16 @@ static void dispatch_script_segment(const lumen_frame_t *frame,
         /*
          * 清空槽位（§9.6）：效果等同于不下发该段。交出非活动段，由调用方
          * 释放槽位。
+         *
+         * **v4 的旁路漏洞修复**：这条路径**绕过 lumen_segment_validate_shape**，
+         * 所以「空层 level 必须为 0」必须在**这里**显式再判一次，否则一个
+         * layer0=0xFF/level=50 的清槽帧会被静默接受。level 非 0 时按参数非法
+         * 拒绝（它不是清槽，也不是合法空层）。
          */
+        if (candidate.layer[0].level != 0 || candidate.layer[1].level != 0) {
+            outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+            return;
+        }
         outcome->result_code = LUMEN_RESULT_OK;
         outcome->script_op = LUMEN_SCRIPT_OP_SEGMENT;
         outcome->script_id = script_id;
@@ -412,7 +425,7 @@ static void dispatch_script_segment(const lumen_frame_t *frame,
 }
 
 /*
- * SetStripPower 0x1B（docs/protocol-v3.md §9.5）：strip_id 必须已分配、on ∈ {0,1}。
+ * SetStripPower 0x1B（docs/protocol-v4.md §9.5）：strip_id 必须已分配、on ∈ {0,1}。
  *
  * #36 只做校验与意图登记（outcome->strip_power_op）；掩码写入、推黑帧与 TDM
  * 跳带在 #38。命令仍然**算已知命令**：小程序要能收到 ACK 0x00，而不是被旧
@@ -492,19 +505,18 @@ uint16_t lumen_command_strip_count(const lumen_state_t *current, const uint16_t 
 }
 
 /*
- * SetSegment 0x10（#25 / #30 / #31 / #36 / #37）。
+ * SetSegment 0x10（#25 / #30 / #31 / #36 / #37 / v4）。
  *
- * 校验顺序严格按 docs/protocol-v3.md §7.1（再叠 §5 的信封级顺序）：
- *   1 载荷长度精确等于 21（在上层 payload_len_ok 完成）
+ * 校验顺序严格按 docs/protocol-v4.md §7.1（再叠 §5 的信封级顺序）：
+ *   1 载荷长度精确等于 23（在上层 payload_len_ok 完成）
  *   2 layer0 已知且不为 0xFF
- *   3 layer1 已知或 0xFF
- *   4 layer1 为空 ⇒ blend 必须为 0
- *   5 blend ≤ 2
- *   6 静态层 param[3..6] 全 0
- *   7 各层按 type 校验参数（周期下限、flags 保留位）
+ *   3 layer1 已知或 0xFF；空层的 level 必须为 0
+ *   4 各层 level ≤ 100
+ *   5 layer1 为空 ⇒ blend 必须为 0
+ *   6 blend ≤ 2
+ *   7 静态层 param[3..6] 全 0
+ *   8 各层按 type 校验参数（周期下限、flags 保留位；呼吸 p5 ≤ 100）
  *   然后 strip 范围 / 区间 / 重叠（lumen_segment_store_validate）
- *
- * #37 起段就是两层结构：layer1 与 blend 真正落库、进渲染。
  */
 static void dispatch_set_segment(const lumen_frame_t *frame, const lumen_state_t *current,
                                  const lumen_segment_store_t *segments,
@@ -516,7 +528,7 @@ static void dispatch_set_segment(const lumen_frame_t *frame, const lumen_state_t
         return;
     }
 
-    /* 21 字节段块 → 两层结构（layer0/layer1 都是 8 字节定宽）。 */
+    /* 23 字节段块 → 两层结构（layer0/layer1 都是 9 字节定宽）。 */
     lumen_segment_t candidate;
     wire_segment_read(frame->payload, &candidate);
 

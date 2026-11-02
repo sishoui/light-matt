@@ -4,26 +4,27 @@
 #include <stdint.h>
 
 /*
- * lumen 协议 v3 的字节级契约，唯一真相是 docs/protocol-v3.md。
+ * lumen 协议 v4 的字节级契约，唯一真相是 docs/protocol-v4.md。
  *
  * 本文件只提供「信封」层面的纯函数：
  *   - 解码 magic / version / length / crc16，原样交出 command / seq / payload；
  *   - 编码 ACK / Event / StateReport / SegmentReport / 两条新报告。
  * 命令字是否已知、载荷长度与取值是否合法属于命令层（command.[ch]），不在本文件实现。
  *
- * v3 不向后兼容：magic 0xA6、version 0x03、16 位小端长度、CRC16（CCITT-FALSE）。
+ * v4 不向后兼容：magic 0xA6（未变）、**version 0x04**、16 位小端长度、CRC16
+ * （CCITT-FALSE）。v3 帧一律回 UnsupportedVersion，不做双版本解码。
  * 分片头（BLE 传输层）不在信封里，见 chunk_reasm.h。
  */
 
 #define LUMEN_MAGIC 0xA6
-#define LUMEN_VERSION 0x03
+#define LUMEN_VERSION 0x04
 #define LUMEN_MAX_FRAME 240
 #define LUMEN_MAX_PAYLOAD 232
 #define LUMEN_HEADER_LEN 6
 #define LUMEN_FRAME_OVERHEAD 8 /* header 6 + crc16 2 */
 #define LUMEN_MAX_LEDS 64
 
-/* v3 协议常量（docs/protocol-v3.md §1.1）。 */
+/* v4 协议常量（docs/protocol-v4.md §1.1）。 */
 #define LUMEN_MAX_STRIPS 8
 #define LUMEN_MAX_SEGMENTS 8 /* 每条灯带 */
 #define LUMEN_MAX_STAGES 8   /* 每套剧本 */
@@ -34,7 +35,7 @@
 #define LUMEN_NO_SCRIPT 0xFF /* script_id 用 0xFF 表示「无激活剧本」 */
 #define LUMEN_NO_EFFECT 0xFF /* 层类型 0xFF 表示「空层」 */
 
-/* 分片容量（docs/protocol-v3.md §2.1 / §3.2）：chunk_capacity = min(mtu-3, 180)，
+/* 分片容量（docs/protocol-v4.md §2.1 / §3.2）：chunk_capacity = min(mtu-3, 180)，
  * 单次写的数据上限再减 1 字节分片头。 */
 #define LUMEN_MAX_CHUNK_CAPACITY 180
 #define LUMEN_MAX_CHUNK_DATA (LUMEN_MAX_CHUNK_CAPACITY - 1)
@@ -53,7 +54,7 @@ typedef enum {
     LUMEN_CMD_SET_LED_COUNT = 0x06,
     LUMEN_CMD_SELF_TEST = 0x07,
 
-    /* v2 新命令从 0x10 起（docs/protocol-v3.md §6）。 */
+    /* v2 新命令从 0x10 起（docs/protocol-v4.md §6）。 */
     LUMEN_CMD_SET_SEGMENT = 0x10,
     LUMEN_CMD_CLEAR_SEGMENT = 0x11,
     LUMEN_CMD_QUERY_STRIP = 0x12,
@@ -66,7 +67,7 @@ typedef enum {
     LUMEN_CMD_ACTIVATE_SCRIPT = 0x19,
     LUMEN_CMD_QUERY_SCRIPT = 0x1A,
 
-    /* v3 新增（docs/protocol-v3.md §6）。 */
+    /* v3 新增（docs/protocol-v4.md §6）。 */
     LUMEN_CMD_SET_STRIP_POWER = 0x1B,
     LUMEN_CMD_QUERY_STRIP_CONFIG = 0x1C,
     LUMEN_CMD_QUERY_DEVICE_INFO = 0x1D,
@@ -82,7 +83,7 @@ typedef enum {
     LUMEN_CMD_DEVICE_INFO_REPORT = 0x88,
 } lumen_command_t;
 
-/* ACK 载荷第二个字节，见 docs/protocol-v3.md §5。 */
+/* ACK 载荷第二个字节，见 docs/protocol-v4.md §5。 */
 typedef enum {
     LUMEN_RESULT_OK = 0x00,
     LUMEN_RESULT_INVALID_PARAM = 0x01,
@@ -94,18 +95,18 @@ typedef enum {
     LUMEN_RESULT_UNSUPPORTED_VERSION = 0x07,
     LUMEN_RESULT_BAD_MAGIC = 0x08,
     LUMEN_RESULT_INTERNAL_ERROR = 0x09,
-    /* 剧本编码后超过持久化上限（docs/protocol-v3.md §10.4）；#39 实现预检。 */
+    /* 剧本编码后超过持久化上限（docs/protocol-v4.md §10.4）；#39 实现预检。 */
     LUMEN_RESULT_SCRIPT_TOO_LARGE = 0x0A,
 } lumen_result_t;
 
-/* Event 0x81 的 event_code，见 docs/protocol-v3.md §7.4。 */
+/* Event 0x81 的 event_code，见 docs/protocol-v4.md §7.4。 */
 typedef enum {
     LUMEN_EVENT_STORAGE_FAILED = 0x01,
     /* ScriptCommit 校验失败（detail = 失败的 script_id），剧本下发见 §9.6。 */
     LUMEN_EVENT_SCRIPT_COMMIT_FAILED = 0x02,
 } lumen_event_t;
 
-/* 设备能力位（DeviceInfoReport 的 caps，docs/protocol-v3.md §7.4）。 */
+/* 设备能力位（DeviceInfoReport 的 caps，docs/protocol-v4.md §7.4）。 */
 #define LUMEN_CAP_TWO_LAYERS 0x01 /* bit0：支持两层叠加 */
 #define LUMEN_CAP_FADE 0x02       /* bit1：fade 已实现（当前为 0，#39 之后才置位） */
 
@@ -138,7 +139,7 @@ lumen_decode_status_t lumen_protocol_decode(const uint8_t *data, size_t len,
 
 /*
  * CRC16 CCITT-FALSE：poly 0x1021、init 0xFFFF、不反转、无末尾异或
- * （docs/protocol-v3.md §3.4）。标准校验值 "123456789" → 0x29B1。
+ * （docs/protocol-v4.md §3.4）。标准校验值 "123456789" → 0x29B1。
  */
 uint16_t lumen_protocol_crc16(const uint8_t *data, size_t len);
 
@@ -161,17 +162,15 @@ size_t lumen_protocol_encode_state_report(uint8_t seq,
                                           uint8_t *out, size_t out_cap);
 
 /*
- * SegmentReport 0x83：载荷与 §7.1 的 SetSegment 同构，**固定 21 字节**
- * （docs/protocol-v3.md §7.1；报告与下发同构）。
+ * SegmentReport 0x83：载荷与 §7.1 的 SetSegment 同构，**固定 23 字节**
+ * （docs/protocol-v4.md §7.1；报告与下发同构）。
  *
- * layer0 / layer1 都是 8 字节定宽层（type + 7 字节参数），由调用方按类型编码。
- * layer1 传 NULL 表示空层（写入 0xFF + 7 个 0）。layer0 不得为 NULL。
- *
- * #37 起调用方直接传两层的真实内容；#36 只把现有单层参数塞进 layer0。
+ * layer0 / layer1 都是 **9 字节**定宽层（type + 7 字节参数 + level），由调用方
+ * 按类型编码。layer1 传 NULL 表示空层（写入 0xFF + 8 个 0）。layer0 不得为 NULL。
  */
 size_t lumen_protocol_encode_segment_report(uint8_t seq, uint8_t strip_id, uint8_t seg_id,
                                             uint8_t start, uint8_t end, uint8_t blend,
-                                            const uint8_t layer0[8], const uint8_t layer1[8],
+                                            const uint8_t layer0[9], const uint8_t layer1[9],
                                             uint8_t *out, size_t out_cap);
 
 /* SegmentListEnd 0x84：载荷 [strip_id, seg_mask]，seq 回显 QueryStrip。 */
@@ -196,7 +195,7 @@ size_t lumen_protocol_encode_script_progress(uint8_t seq, uint8_t script_id,
  * StripConfigReport 0x87（24 字节）：8 × [strip_id, gpio, flags]。
  *
  * gpios 是构建期引脚表（长度 LUMEN_MAX_STRIPS）；第 i 条在 i < strip_count 时
- * 报真实引脚与 flags bit0=已分配，其余报 gpio=0xFF、flags=0（docs/protocol-v3.md §7.4）。
+ * 报真实引脚与 flags bit0=已分配，其余报 gpio=0xFF、flags=0（docs/protocol-v4.md §7.4）。
  * 协议只读引脚表，不能改映射。
  */
 size_t lumen_protocol_encode_strip_config_report(uint8_t seq,
@@ -206,7 +205,7 @@ size_t lumen_protocol_encode_strip_config_report(uint8_t seq,
 
 /*
  * DeviceInfoReport 0x88（15 字节）：固件版本、6 字节 BT MAC（打印顺序）、
- * 五个上限、caps、保留字节 0（docs/protocol-v3.md §7.4）。
+ * 五个上限、caps、保留字节 0（docs/protocol-v4.md §7.4）。
  */
 size_t lumen_protocol_encode_device_info_report(uint8_t seq, uint16_t firmware_version,
                                                 const uint8_t hw_id[6], uint8_t caps,

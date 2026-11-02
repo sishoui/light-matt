@@ -6,7 +6,7 @@
 /*
  * 段配置存储与合成。
  *
- * 重叠判定（docs/protocol.md §10.3 / 21-design.md §5）：**拒绝**，不是覆盖。
+ * 重叠判定（docs/protocol-v4.md §10.3 / 21-design.md §5）：**拒绝**，不是覆盖。
  * 设备持有全部 8 段，全局校验是可行的；同 seg_id 的重写视为「替换自身」，
  * 不与自己的旧区间冲突（否则改颜色会被自己的旧区间拒掉）。
  */
@@ -69,6 +69,10 @@ uint8_t lumen_segment_store_validate_params(uint8_t type, uint8_t flags, uint16_
          *   bit1-2 waveform、bit3-7 必须为 0；
          *   period_ms != 0 时必须 ≥ 334（≈3Hz，光敏性癫痫安全线）。
          * period_ms = 0 是合法值（静止），不受下限约束。
+         *
+         * **v4**：p5 从绝对 0-255 改为**相对百分比 0-100**（谷底 = level × p5%）。
+         * 101-255 一律 InvalidParam——旧程序的绝对量在这里会被明确拒绝，
+         * 而不是被静默解释成一个 255 倍的最暗基线。
          */
         if ((flags & 0xF8u) != 0) {
             return LUMEN_RESULT_INVALID_PARAM;
@@ -99,7 +103,7 @@ uint8_t lumen_segment_validate_shape(const lumen_segment_t *seg)
         return LUMEN_RESULT_INVALID_PARAM;
     }
     /*
-     * 严格按 docs/protocol-v3.md §7.1 的 1-7 步顺序。第 1 步（载荷精确长度）
+     * 严格按 docs/protocol-v4.md §7.1 的 1-8 步顺序。第 1 步（载荷精确长度）
      * 在命令层完成——本函数拿到的是已经解析好的结构。
      */
     const lumen_effect_layer_t *l0 = &seg->layer[0];
@@ -115,21 +119,29 @@ uint8_t lumen_segment_validate_shape(const lumen_segment_t *seg)
         return LUMEN_RESULT_INVALID_PARAM;
     }
     if (l1->type == LUMEN_LAYER_EMPTY && !lumen_layer_empty_params_zero(l1)) {
-        /* 空层的 7 字节参数必须全 0（§7.1 空层编码）。 */
+        /* 空层的 9 字节编码必须全 0（含 level，§7.1 第 3 步）。 */
         return LUMEN_RESULT_INVALID_PARAM;
     }
 
-    /* 第 4 步：layer1 为空 ⇒ blend 必须为 0。 */
+    /*
+     * 第 4 步（v4）：任一层的 level 必须在 0-100 内；空层（layer1）的 level
+     * 必须为 0（已在第 3 步经 empty_params_zero 判过）。
+     */
+    if (l0->level > LUMEN_LAYER_LEVEL_MAX || l1->level > LUMEN_LAYER_LEVEL_MAX) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+
+    /* 第 5 步：layer1 为空 ⇒ blend 必须为 0。 */
     if (l1->type == LUMEN_LAYER_EMPTY && seg->blend != 0) {
         return LUMEN_RESULT_INVALID_PARAM;
     }
 
-    /* 第 5 步：blend ≤ 2（不支持取最大）。 */
+    /* 第 6 步：blend ≤ 2（不支持取最大）。 */
     if (seg->blend > LUMEN_BLEND_MAX) {
         return LUMEN_RESULT_INVALID_PARAM;
     }
 
-    /* 第 6 步：静态层的 param[3..6] 必须全 0（对两层都生效）。 */
+    /* 第 7 步：静态层的 param[3..6] 必须全 0（对两层都生效）。 */
     if (l0->type == LUMEN_EFFECT_STATIC && !lumen_layer_static_reserved_zero(l0)) {
         return LUMEN_RESULT_INVALID_PARAM;
     }
@@ -137,14 +149,21 @@ uint8_t lumen_segment_validate_shape(const lumen_segment_t *seg)
         return LUMEN_RESULT_INVALID_PARAM;
     }
 
-    /* 第 7 步：各层按 type 校验参数（flags 保留位、周期下限）。 */
+    /* 第 8 步：各层按 type 校验参数（flags 保留位、周期下限、呼吸 p5 百分比）。 */
     if (lumen_segment_store_validate_params(l0->type, lumen_layer_flags(l0),
                                             lumen_layer_period_ms(l0)) != LUMEN_RESULT_OK) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    /* 呼吸层的 p5 是相对百分比：> 100 非法（绝对量的旧值一并不接受）。 */
+    if (l0->type == LUMEN_EFFECT_BREATHING && lumen_layer_p5(l0) > 100u) {
         return LUMEN_RESULT_INVALID_PARAM;
     }
     if (l1->type != LUMEN_LAYER_EMPTY &&
         lumen_segment_store_validate_params(l1->type, lumen_layer_flags(l1),
                                             lumen_layer_period_ms(l1)) != LUMEN_RESULT_OK) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    if (l1->type == LUMEN_EFFECT_BREATHING && lumen_layer_p5(l1) > 100u) {
         return LUMEN_RESULT_INVALID_PARAM;
     }
     return LUMEN_RESULT_OK;
@@ -320,9 +339,13 @@ void lumen_segment_store_state_rgb(const lumen_segment_store_t *store, uint8_t s
         return;
     }
     /*
-     * docs/protocol-v3.md §7.3：State 字节 2-4 是 **strip 0 / seg 0 层 0 的基准色**，
+     * docs/protocol-v4.md §7.3：State 字节 2-4 是 **strip 0 / seg 0 层 0 的基准色**，
      * 由 layer[0] 的 hue+sat 算出（静态层即其像素色），**不含动画包络、不含
      * layer1 与 blend**；seg 0 不存在时为 0。
+     *
+     * v4 裁决：**也不含本层 level**——它是「色」，不是「亮度」。否则调低光区
+     * 亮度会让 App 里显示的「当前颜色」跟着变暗，用户无法区分「颜色变了」
+     * 与「变暗了」（全局 brightness 已经单独上报）。
      */
     const lumen_segment_t *seg = &store->slot[strip_id][0];
     if (!seg->active) {

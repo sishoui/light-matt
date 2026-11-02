@@ -19,7 +19,7 @@ void lumen_state_defaults(lumen_state_t *state, uint16_t led_count)
     state->stage_index = 0;
     state->playback_state = 0;
     state->flags = 0;
-    /* docs/protocol-v3.md §10.5：默认全部打开。 */
+    /* docs/protocol-v4.md §10.5：默认全部打开。 */
     state->strip_power_mask = 0xFF;
     state->strip_anim_mask = 0;
 }
@@ -36,7 +36,7 @@ void lumen_state_to_bytes(const lumen_state_t *state, uint8_t max_brightness,
     if (state == NULL || out == NULL) {
         return;
     }
-    /* 0-12：全局状态与两个掩码（docs/protocol-v3.md §7.3）。 */
+    /* 0-12：全局状态与两个掩码（docs/protocol-v4.md §7.3）。 */
     out[0] = state->power;
     out[1] = lumen_state_clamp_brightness(state->brightness, max_brightness);
     out[2] = state->r;
