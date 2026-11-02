@@ -41,6 +41,9 @@ class FakeTransport {
   deviceInfoResult: DeviceInfo = DEVICE_INFO;
   failStripConfig = false;
   failDeviceInfo = false;
+  /** 取消连接：测试控制是否真的取消了一次进行中的尝试。 */
+  cancelConnectResult = false;
+  cancelConnectCalls = 0;
 
   private readonly linkListeners: Array<(state: LinkState, detail?: unknown) => void> = [];
   private readonly stateListeners: Array<(state: DeviceState) => void> = [];
@@ -57,6 +60,14 @@ class FakeTransport {
 
   emitState(state: DeviceState): void {
     for (const fn of this.stateListeners.slice()) fn(state);
+  }
+
+  cancelConnect(): boolean {
+    this.cancelConnectCalls += 1;
+    if (this.cancelConnectResult) {
+      this.linkState = "idle";
+    }
+    return this.cancelConnectResult;
   }
 
   sendAndWaitAck(req: CommandRequest): Promise<AckResult> {
@@ -264,5 +275,32 @@ describe("#40 setLedCount 维护逐带灯珠数", () => {
     expect(Array.from(transport.writes[0].payload)).toEqual([0x02, 0x37, 0x00]);
     expect(session.stripLedCount(2)).toBe(55);
     expect(session.deviceState?.ledCount).toBe(30);
+  });
+});
+
+/**
+ * 状态条上的「取消」：早期是假按钮——文案写了「取消」，`onStatusTap`
+ * 对 connecting 却直接 return。现在会话层提供 `cancelConnect`，
+ * 由页面在任何时候都能真正中断。
+ */
+describe("取消连接（会话层）", () => {
+  it("取消成功时同时清掉切换状态机", () => {
+    const transport = new FakeTransport();
+    const session = makeSession(transport);
+    transport.cancelConnectResult = true;
+
+    expect(session.cancelConnect()).toBe(true);
+    expect(transport.cancelConnectCalls).toBe(1);
+    /* 没有残留的切换目标：下次打开设备页不该看到「重试切换」。 */
+    expect(session.deviceSwitch.target).toBeNull();
+  });
+
+  it("没有进行中的尝试时返回 false，不误清切换状态", () => {
+    const transport = new FakeTransport();
+    const session = makeSession(transport);
+    transport.cancelConnectResult = false;
+
+    expect(session.cancelConnect()).toBe(false);
+    expect(session.deviceSwitch.target).toBeNull();
   });
 });

@@ -54,6 +54,8 @@ import {
 import { firstFreeSegId, percentOf255, spanText, tailText } from "../../utils/control/segment-view";
 import { ControlSession } from "../../utils/control/session";
 import { getSession } from "../../utils/control/session-singleton";
+import { createWxStorage } from "../../utils/control/device-cache";
+import { loadTheme, themeClass } from "../../utils/control/theme";
 import { queryInt } from "../../utils/control/routes";
 
 /** UI 上的灯效选项（第 2 层多一个「关闭」）。 */
@@ -122,6 +124,7 @@ const BLEND_OPTIONS: Array<{ value: BlendMode; name: string; hint: string }> = [
 
 Page({
   data: {
+    themeClass: "",
     ready: false,
     linkText: "未连接",
     stripId: 0,
@@ -185,14 +188,29 @@ Page({
   unsubscribers: [] as Array<() => void>,
 
   onLoad(options: Record<string, string | undefined>) {
+    /* 页面私有状态（不进 data）。Page() 不保证对象字面量字段会被复制到
+     * 实例上，所以必须在**任何提前 return 之前**兜底：本页有「URL 参数
+     * 越界就 return」的分支，若初始化放在它后面，onUnload 会因
+     * `this.unsubscribers` 为 undefined 而抛错，整个页面事件绑定失效。 */
+    this.unsubscribers = [];
+    this.reports = [];
+    this.collapsed = [false, true];
+    this.draft = null;
+    this.deviceSpec = null;
+    this.hasStrip = false;
+    this.loadedOnce = false;
+    this.unloaded = false;
+    this.reloadChain = Promise.resolve();
+
     const session = getSession();
     this.session = session;
+    this.setData({ themeClass: themeClass(loadTheme(createWxStorage())) });
     const stripId = queryInt(options, "stripId", -1);
     const rawSegId = queryInt(options, "segId", -1);
     /* 越界的 URL 参数按「新建 / 无灯带」处理：命令行构造器会抛 RangeError，
      * 但页面不该把一个手改的 URL 变成一次崩溃。 */
     if (stripId < 0 || stripId >= MAX_STRIPS) {
-      this.setData({ hint: "没有指定灯带，请从灯光页进入" });
+      this.setData({ hint: "没有指定灯带，请从设备控制页进入" });
       return;
     }
     const segId = rawSegId >= 0 && rawSegId < MAX_SEGMENTS ? rawSegId : -1;
@@ -276,7 +294,8 @@ Page({
   },
 
   unsubscribe() {
-    for (const off of this.unsubscribers) {
+    /* onUnload 可能先于 onLoad 的初始化跑到，undefined 兜底。 */
+    for (const off of this.unsubscribers ?? []) {
       off();
     }
     this.unsubscribers = [];
@@ -353,7 +372,7 @@ Page({
       ledCount: this.stripLedCount(state),
     });
     if (!ready) {
-      this.setData({ hint: "设备未连接：回到灯光页连接后再来" });
+      this.setData({ hint: "设备未连接：回到设备控制页连接后再来" });
       this.render({ keepHint: true });
       return;
     }

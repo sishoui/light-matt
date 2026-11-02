@@ -1,68 +1,183 @@
 /*
- * 全局样式（#41 拆页后共享）。
+ * 全局样式与设计变量。
  *
- * 拆页前这些规则都在 pages/index/index.wxss 里；拆页后多页复用同一套卡片 /
- * 状态条 / 日志面板外观，所以提到 app.wxss。页面自己的 wxss 只放该页独有的
- * 布局（例如灯光页的灯带切换条）。
+ * 主题：浅色为主（iOS「设置 / 家庭」观感），深色跟随系统或手动覆盖。
+ * 所有颜色都走 CSS 变量——页面 wxss **不要再写死 hex**，否则深色主题下
+ * 会出现白底白字。
  *
- * 颜色语义（不要散落硬编码）：
- *   #101014 页面底 / #18181e 卡片 / #2a2a32 边框
- *   #ffb478 主强调（连接、开关、主按钮）/ #4f8cff 次强调（动画参数）
- *   #ff8a8a 危险与拒绝 / #6f6f7a 弱提示
+ * 变量定义在 `.page` 上（每个页面的根节点），所以同一套变量也能被页内的
+ * 自定义导航栏继承；`page` 只负责兜底底色。
+ *
+ * 手动覆盖：页面根节点加 `theme-light` / `theme-dark`（见 utils/control/theme.ts）。
+ * 未加 class 时由 `prefers-color-scheme` 决定。
  */
 
 page {
-  background: #101014;
-  color: #f5f5f5;
+  background: #f2f2f7;
+  color: #1c1c1e;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue",
+    "Microsoft YaHei", sans-serif;
 }
 
 .page {
+  /* ---- 浅色（默认） ---- */
+  --bg: #f2f2f7;
+  --bg-elevated: #ffffff;
+  --card: #ffffff;
+  --card-2: #f7f7fa;
+  --card-press: #efeff4;
+  --text: #1c1c1e;
+  --text-2: #6e6e73;
+  --text-3: #a1a1a6;
+  --border: rgba(60, 60, 67, 0.1);
+  --divider: rgba(60, 60, 67, 0.08);
+  --accent: #ff9500;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(255, 149, 0, 0.12);
+  --blue: #007aff;
+  --blue-soft: rgba(0, 122, 255, 0.12);
+  --danger: #ff3b30;
+  --danger-soft: rgba(255, 59, 48, 0.1);
+  --ok: #34c759;
+  --ok-soft: rgba(52, 199, 89, 0.14);
+  --shadow: 0 16rpx 48rpx rgba(0, 0, 0, 0.06);
+  --shadow-card: 0 24rpx 64rpx rgba(0, 0, 0, 0.08);
+  --radius-xl: 40rpx;
+  --radius-lg: 28rpx;
+  --radius-md: 20rpx;
+  --radius-sm: 14rpx;
+
   min-height: 100vh;
-  padding: 24rpx;
   box-sizing: border-box;
-  background: #101014;
-  color: #f5f5f5;
+  padding: 0 32rpx calc(32rpx + env(safe-area-inset-bottom));
+  background: var(--bg);
+  color: var(--text);
   display: flex;
   flex-direction: column;
   gap: 24rpx;
 }
 
+@media (prefers-color-scheme: dark) {
+  page {
+    background: #000000;
+    color: #f5f5f7;
+  }
+
+  .page {
+    --bg: #000000;
+    --bg-elevated: #1c1c1e;
+    --card: #1c1c1e;
+    --card-2: #2c2c2e;
+    --card-press: #3a3a3c;
+    --text: #f5f5f7;
+    --text-2: #a1a1a6;
+    --text-3: #6e6e73;
+    --border: rgba(255, 255, 255, 0.12);
+    --divider: rgba(255, 255, 255, 0.08);
+    --accent: #ffb478;
+    --accent-ink: #1a1208;
+    --accent-soft: rgba(255, 180, 120, 0.16);
+    --blue: #4f8cff;
+    --blue-soft: rgba(79, 140, 255, 0.18);
+    --danger: #ff8a8a;
+    --danger-soft: rgba(255, 138, 138, 0.14);
+    --ok: #4dd17a;
+    --ok-soft: rgba(77, 209, 122, 0.16);
+    --shadow: 0 16rpx 48rpx rgba(0, 0, 0, 0.5);
+    --shadow-card: 0 24rpx 64rpx rgba(0, 0, 0, 0.6);
+  }
+}
+
+/* 手动覆盖必须放在媒体查询之后，靠源码顺序取胜。 */
+.page.theme-light {
+  --bg: #f2f2f7;
+  --bg-elevated: #ffffff;
+  --card: #ffffff;
+  --card-2: #f7f7fa;
+  --card-press: #efeff4;
+  --text: #1c1c1e;
+  --text-2: #6e6e73;
+  --text-3: #a1a1a6;
+  --border: rgba(60, 60, 67, 0.1);
+  --divider: rgba(60, 60, 67, 0.08);
+  --accent: #ff9500;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(255, 149, 0, 0.12);
+  --blue: #007aff;
+  --blue-soft: rgba(0, 122, 255, 0.12);
+  --danger: #ff3b30;
+  --danger-soft: rgba(255, 59, 48, 0.1);
+  --ok: #34c759;
+  --ok-soft: rgba(52, 199, 89, 0.14);
+  --shadow: 0 16rpx 48rpx rgba(0, 0, 0, 0.06);
+  --shadow-card: 0 24rpx 64rpx rgba(0, 0, 0, 0.08);
+  background: var(--bg);
+  color: var(--text);
+}
+
+.page.theme-dark {
+  --bg: #000000;
+  --bg-elevated: #1c1c1e;
+  --card: #1c1c1e;
+  --card-2: #2c2c2e;
+  --card-press: #3a3a3c;
+  --text: #f5f5f7;
+  --text-2: #a1a1a6;
+  --text-3: #6e6e73;
+  --border: rgba(255, 255, 255, 0.12);
+  --divider: rgba(255, 255, 255, 0.08);
+  --accent: #ffb478;
+  --accent-ink: #1a1208;
+  --accent-soft: rgba(255, 180, 120, 0.16);
+  --blue: #4f8cff;
+  --blue-soft: rgba(79, 140, 255, 0.18);
+  --danger: #ff8a8a;
+  --danger-soft: rgba(255, 138, 138, 0.14);
+  --ok: #4dd17a;
+  --ok-soft: rgba(77, 209, 122, 0.16);
+  --shadow: 0 16rpx 48rpx rgba(0, 0, 0, 0.5);
+  --shadow-card: 0 24rpx 64rpx rgba(0, 0, 0, 0.6);
+  background: var(--bg);
+  color: var(--text);
+}
+
 /* ---------------- 连接状态条 ---------------- */
 
 .statusbar {
-  position: sticky;
-  top: 0;
-  z-index: 10;
   display: flex;
   align-items: center;
   gap: 16rpx;
-  min-height: 96rpx;
-  padding: 16rpx 20rpx;
+  min-height: 104rpx;
+  padding: 20rpx 28rpx;
   box-sizing: border-box;
-  border-radius: 16rpx;
-  background: #18181e;
-  border: 1rpx solid #2a2a32;
+  border-radius: var(--radius-lg);
+  background: var(--card);
+  border: 1rpx solid var(--border);
+  box-shadow: var(--shadow);
 }
 
 .status-dot {
   width: 16rpx;
   height: 16rpx;
   border-radius: 50%;
-  background: #6f6f7a;
+  background: var(--text-3);
   flex-shrink: 0;
 }
 
 .link-ready .status-dot {
-  background: #4dd17a;
+  background: var(--ok);
+  box-shadow: 0 0 0 6rpx var(--ok-soft);
 }
 
 .link-busy .status-dot,
 .link-warn .status-dot {
-  background: #ffb478;
+  background: var(--accent);
+  box-shadow: 0 0 0 6rpx var(--accent-soft);
 }
 
 .link-error .status-dot {
-  background: #ff6b6b;
+  background: var(--danger);
+  box-shadow: 0 0 0 6rpx var(--danger-soft);
 }
 
 .status-main {
@@ -74,31 +189,33 @@ page {
 }
 
 .status-text {
-  font-size: 30rpx;
+  font-size: 32rpx;
   font-weight: 600;
+  letter-spacing: -0.2rpx;
 }
 
 .status-sub {
-  font-size: 22rpx;
-  color: #9a9aa5;
+  font-size: 23rpx;
+  color: var(--text-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .status-action {
-  font-size: 24rpx;
-  color: #ffb478;
+  font-size: 27rpx;
+  color: var(--accent);
+  font-weight: 500;
   flex-shrink: 0;
 }
 
 /* ---------------- 卡片与区块 ---------------- */
 
 .section {
-  background: #18181e;
-  border: 1rpx solid #2a2a32;
-  border-radius: 20rpx;
-  padding: 24rpx;
+  background: var(--card);
+  border-radius: var(--radius-lg);
+  padding: 28rpx;
+  box-shadow: var(--shadow);
   display: flex;
   flex-direction: column;
   gap: 20rpx;
@@ -106,7 +223,7 @@ page {
 
 .section.disabled,
 .presets.disabled {
-  opacity: 0.35;
+  opacity: 0.4;
   pointer-events: none;
 }
 
@@ -114,34 +231,36 @@ page {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16rpx;
 }
 
 .section-title {
-  font-size: 28rpx;
+  font-size: 30rpx;
   font-weight: 600;
+  letter-spacing: -0.2rpx;
 }
 
 .section-value {
   font-size: 26rpx;
-  color: #9a9aa5;
-  font-family: Menlo, Consolas, monospace;
+  color: var(--text-2);
 }
 
 .section-hint {
   font-size: 22rpx;
-  color: #6f6f7a;
+  color: var(--text-3);
   line-height: 1.6;
 }
 
 .swatch {
   width: 48rpx;
   height: 48rpx;
-  border-radius: 12rpx;
-  border: 1rpx solid #3a3a44;
+  border-radius: 50%;
+  border: 1rpx solid var(--border);
+  box-sizing: border-box;
 }
 
 .mono {
-  font-family: Menlo, Consolas, monospace;
+  font-family: Menlo, Consolas, "SF Mono", monospace;
 }
 
 /* ---------------- 大开关 ---------------- */
@@ -158,22 +277,22 @@ page {
   width: 240rpx;
   height: 240rpx;
   border-radius: 50%;
-  background: #1c1c23;
-  border: 2rpx solid #2f2f38;
+  background: var(--card-2);
+  border: 2rpx solid var(--border);
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 120ms ease;
+  transition: background 160ms ease, box-shadow 160ms ease;
 }
 
 .power-btn.on {
-  background: #2a2118;
-  border-color: #ffb478;
-  box-shadow: 0 0 48rpx rgba(255, 180, 120, 0.35);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  box-shadow: 0 0 64rpx var(--accent-soft);
 }
 
 .power-btn.disabled {
-  opacity: 0.35;
+  opacity: 0.4;
   pointer-events: none;
 }
 
@@ -187,13 +306,14 @@ page {
   position: relative;
   width: 96rpx;
   height: 96rpx;
-  border: 8rpx solid #c9c9d1;
+  border: 8rpx solid var(--text-2);
   border-radius: 50%;
   border-top-color: transparent;
+  box-sizing: border-box;
 }
 
 .power-btn.on .power-glyph {
-  border-color: #ffb478;
+  border-color: var(--accent);
   border-top-color: transparent;
 }
 
@@ -205,17 +325,17 @@ page {
   width: 8rpx;
   height: 48rpx;
   margin-left: -4rpx;
-  background: #c9c9d1;
+  background: var(--text-2);
   border-radius: 4rpx;
 }
 
 .power-btn.on .power-glyph::after {
-  background: #ffb478;
+  background: var(--accent);
 }
 
 .power-label {
   font-size: 26rpx;
-  color: #9a9aa5;
+  color: var(--text-2);
 }
 
 /* ---------------- 滑块与读数 ---------------- */
@@ -231,9 +351,9 @@ page {
 }
 
 .row-label {
-  width: 70rpx;
-  font-size: 22rpx;
-  color: #9a9aa5;
+  width: 84rpx;
+  font-size: 23rpx;
+  color: var(--text-2);
   flex-shrink: 0;
 }
 
@@ -242,10 +362,10 @@ page {
 }
 
 .row-value {
-  width: 130rpx;
+  width: 140rpx;
   text-align: right;
-  font-size: 22rpx;
-  color: #e8e8ee;
+  font-size: 23rpx;
+  color: var(--text);
   flex-shrink: 0;
 }
 
@@ -260,24 +380,22 @@ page {
 .chip {
   flex: 1 1 40%;
   text-align: center;
-  padding: 14rpx 0;
-  border-radius: 12rpx;
-  font-size: 22rpx;
-  color: #9a9aa5;
-  background: #101014;
-  border: 1rpx solid #2a2a32;
+  padding: 16rpx 0;
+  border-radius: var(--radius-sm);
+  font-size: 23rpx;
+  color: var(--text-2);
+  background: var(--card-2);
 }
 
 .chip.selected {
-  color: #1a1208;
-  background: #ffb478;
-  border-color: #ffb478;
+  color: var(--accent-ink);
+  background: var(--accent);
+  font-weight: 600;
 }
 
 .chip.blue.selected {
-  color: #cfe0ff;
-  background: #1a2438;
-  border-color: #4f8cff;
+  color: var(--blue);
+  background: var(--blue-soft);
 }
 
 /* ---------------- 预设色块 ---------------- */
@@ -287,10 +405,10 @@ page {
   flex-wrap: wrap;
   justify-content: space-between;
   gap: 12rpx 0;
-  padding: 20rpx;
-  background: #18181e;
-  border: 1rpx solid #2a2a32;
-  border-radius: 20rpx;
+  padding: 24rpx;
+  background: var(--card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
 }
 
 .preset {
@@ -307,21 +425,22 @@ page {
   width: 64rpx;
   height: 64rpx;
   border-radius: 50%;
-  border: 1rpx solid #3a3a44;
+  border: 1rpx solid var(--border);
   box-sizing: border-box;
 }
 
 .preset.selected .preset-dot {
-  box-shadow: 0 0 0 4rpx #101014, 0 0 0 8rpx #f5f5f5;
+  box-shadow: 0 0 0 4rpx var(--card), 0 0 0 7rpx var(--accent);
 }
 
 .preset-name {
   font-size: 20rpx;
-  color: #9a9aa5;
+  color: var(--text-2);
 }
 
 .preset.selected .preset-name {
-  color: #f5f5f5;
+  color: var(--text);
+  font-weight: 500;
 }
 
 /* ---------------- 色环 ---------------- */
@@ -356,28 +475,27 @@ page {
   display: flex;
   align-items: center;
   gap: 16rpx;
-  padding: 16rpx 20rpx;
-  border-radius: 14rpx;
-  background: #101014;
-  border: 1rpx solid #2a2a32;
+  padding: 18rpx 20rpx;
+  border-radius: var(--radius-sm);
+  background: var(--card-2);
 }
 
 .seg-row.selected {
-  border-color: #ffb478;
-  background: #1c1a17;
+  background: var(--accent-soft);
 }
 
 .seg-swatch {
   width: 40rpx;
   height: 40rpx;
-  border-radius: 10rpx;
-  border: 1rpx solid #3a3a44;
+  border-radius: 50%;
+  border: 1rpx solid var(--border);
   flex-shrink: 0;
+  box-sizing: border-box;
 }
 
 .seg-index {
   font-size: 24rpx;
-  color: #f5f5f5;
+  color: var(--text);
   flex-shrink: 0;
 }
 
@@ -391,13 +509,13 @@ page {
 
 .seg-range {
   font-size: 24rpx;
-  color: #9a9aa5;
-  font-family: Menlo, Consolas, monospace;
+  color: var(--text-2);
+  font-family: Menlo, Consolas, "SF Mono", monospace;
 }
 
 .seg-param {
   font-size: 20rpx;
-  color: #8fa8d4;
+  color: var(--blue);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -405,26 +523,25 @@ page {
 
 .seg-tag {
   font-size: 20rpx;
-  color: #9a9aa5;
-  padding: 2rpx 10rpx;
-  border-radius: 8rpx;
-  background: #23232b;
+  color: var(--text-2);
+  padding: 2rpx 12rpx;
+  border-radius: 999rpx;
+  background: var(--card-press);
 }
 
 .seg-tag.anim {
-  color: #9ec4ff;
-  background: #1a2438;
+  color: var(--blue);
+  background: var(--blue-soft);
 }
 
-/* #48：两层段徽标。与动效标签区分开（绿）——它是「结构」不是「效果」。 */
 .seg-tag.layers {
-  color: #8fe0b0;
-  background: #14261d;
+  color: var(--ok);
+  background: var(--ok-soft);
 }
 
 .seg-delete {
   font-size: 22rpx;
-  color: #ff8a8a;
+  color: var(--danger);
   padding: 4rpx 8rpx;
   flex-shrink: 0;
 }
@@ -433,7 +550,7 @@ page {
   padding: 24rpx 8rpx;
   font-size: 22rpx;
   line-height: 1.6;
-  color: #6f6f7a;
+  color: var(--text-3);
 }
 
 /* ---------------- 输入与按钮 ---------------- */
@@ -447,32 +564,31 @@ page {
 .range-input {
   flex: 1;
   min-width: 0;
-  height: 72rpx;
-  padding: 0 16rpx;
+  height: 76rpx;
+  padding: 0 20rpx;
   box-sizing: border-box;
-  border-radius: 12rpx;
-  background: #101014;
-  border: 1rpx solid #2a2a32;
-  color: #f5f5f5;
-  font-size: 26rpx;
+  border-radius: var(--radius-sm);
+  background: var(--card-2);
+  color: var(--text);
+  font-size: 27rpx;
   text-align: center;
 }
 
 .range-dash {
-  color: #6f6f7a;
+  color: var(--text-3);
   flex-shrink: 0;
 }
 
 .range-apply {
   flex-shrink: 0;
   width: 200rpx;
-  height: 72rpx;
-  line-height: 72rpx;
+  height: 76rpx;
+  line-height: 76rpx;
   padding: 0;
-  border-radius: 12rpx;
-  background: #ffb478;
-  color: #1a1208;
-  font-size: 26rpx;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 27rpx;
   font-weight: 600;
   text-align: center;
 }
@@ -482,31 +598,32 @@ page {
 }
 
 .btn {
-  height: 80rpx;
-  line-height: 80rpx;
+  height: 88rpx;
+  line-height: 88rpx;
   margin: 0;
   padding: 0 24rpx;
-  border-radius: 14rpx;
-  background: #2a2a32;
-  color: #d8d8e0;
-  font-size: 26rpx;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  color: var(--text);
+  font-size: 28rpx;
+  font-weight: 500;
   text-align: center;
 }
 
 .btn.primary {
-  background: #ffb478;
-  color: #1a1208;
+  background: var(--accent);
+  color: var(--accent-ink);
   font-weight: 600;
 }
 
 .btn.ghost {
-  background: #23232b;
-  color: #f5f5f5;
+  background: var(--card-2);
+  color: var(--text);
 }
 
 .btn.danger {
-  background: #2a1d1d;
-  color: #ff8a8a;
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .btn[disabled] {
@@ -523,18 +640,18 @@ page {
 .device-list {
   display: flex;
   flex-direction: column;
-  border: 1rpx solid #2a2a32;
-  border-radius: 16rpx;
+  border-radius: var(--radius-md);
   overflow: hidden;
+  background: var(--card-2);
 }
 
 .device-row {
-  padding: 20rpx 16rpx;
-  border-bottom: 1rpx solid #22222a;
+  padding: 24rpx 20rpx;
+  border-bottom: 1rpx solid var(--divider);
   display: flex;
   flex-direction: column;
   gap: 6rpx;
-  background: #101014;
+  background: transparent;
 }
 
 .device-row:last-child {
@@ -542,37 +659,38 @@ page {
 }
 
 .device-row.active {
-  background: #1c1a17;
+  background: var(--accent-soft);
 }
 
 .device-name {
   font-size: 28rpx;
+  font-weight: 500;
 }
 
 .device-meta {
   font-size: 22rpx;
-  color: #9a9aa5;
-  font-family: Menlo, Consolas, monospace;
+  color: var(--text-2);
+  font-family: Menlo, Consolas, "SF Mono", monospace;
   word-break: break-all;
 }
 
 .device-section-title {
   margin: 16rpx 0 8rpx;
   font-size: 24rpx;
-  color: #9a9aa5;
+  color: var(--text-2);
 }
 
 .device-empty {
-  padding: 32rpx 16rpx;
+  padding: 40rpx 16rpx;
   font-size: 24rpx;
-  color: #6f6f7a;
+  color: var(--text-3);
   line-height: 1.6;
   text-align: center;
 }
 
 .scan-hint {
   font-size: 22rpx;
-  color: #ffb478;
+  color: var(--accent);
 }
 
 .device-info {
@@ -590,12 +708,12 @@ page {
 }
 
 .info-label {
-  color: #9a9aa5;
+  color: var(--text-2);
   flex-shrink: 0;
 }
 
 .info-value {
-  color: #f5f5f5;
+  color: var(--text);
   word-break: break-all;
   text-align: right;
 }
@@ -604,7 +722,7 @@ page {
 
 .footer {
   margin-top: auto;
-  padding: 16rpx 0 calc(16rpx + env(safe-area-inset-bottom));
+  padding: 24rpx 0 calc(16rpx + env(safe-area-inset-bottom));
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -613,14 +731,15 @@ page {
 
 .version {
   font-size: 22rpx;
-  color: #6f6f7a;
-  font-family: Menlo, Consolas, monospace;
+  color: var(--text-3);
+  font-family: Menlo, Consolas, "SF Mono", monospace;
   padding: 8rpx 0;
 }
 
 .footer-hint {
   font-size: 22rpx;
-  color: #6f6f7a;
+  color: var(--text-3);
+  text-align: right;
 }
 
 /* ---------------- 隐藏协议日志面板（#13） ---------------- */
@@ -632,7 +751,7 @@ page {
   bottom: 0;
   left: 0;
   z-index: 200;
-  background: rgba(0, 0, 0, 0.72);
+  background: rgba(0, 0, 0, 0.4);
   display: flex;
   align-items: flex-end;
 }
@@ -641,12 +760,12 @@ page {
   width: 100%;
   height: 78vh;
   box-sizing: border-box;
-  padding: 20rpx 20rpx calc(20rpx + env(safe-area-inset-bottom));
-  background: #0c0c10;
-  border-radius: 28rpx 28rpx 0 0;
+  padding: 28rpx 24rpx calc(24rpx + env(safe-area-inset-bottom));
+  background: var(--bg-elevated);
+  border-radius: 40rpx 40rpx 0 0;
   display: flex;
   flex-direction: column;
-  gap: 14rpx;
+  gap: 16rpx;
 }
 
 .log-head {
@@ -656,14 +775,14 @@ page {
 }
 
 .log-title {
-  font-size: 28rpx;
+  font-size: 29rpx;
   font-weight: 600;
-  color: #f5f5f5;
+  color: var(--text);
 }
 
 .log-close {
   font-size: 26rpx;
-  color: #9a9aa5;
+  color: var(--text-2);
   padding: 4rpx 8rpx;
 }
 
@@ -674,27 +793,25 @@ page {
 
 .log-btn {
   flex: 1;
-  height: 64rpx;
-  line-height: 64rpx;
+  height: 68rpx;
+  line-height: 68rpx;
   text-align: center;
-  border-radius: 12rpx;
-  background: #1c1c23;
-  border: 1rpx solid #2f2f38;
+  border-radius: var(--radius-sm);
+  background: var(--card-2);
   font-size: 24rpx;
-  color: #f5f5f5;
+  color: var(--text);
 }
 
 .log-hint {
   font-size: 22rpx;
-  color: #ffb478;
+  color: var(--accent);
 }
 
 .log-list {
   flex: 1;
   min-height: 0;
-  border: 1rpx solid #22222a;
-  border-radius: 12rpx;
-  background: #101014;
+  border-radius: var(--radius-sm);
+  background: var(--card-2);
   padding: 8rpx;
   box-sizing: border-box;
 }
@@ -704,52 +821,52 @@ page {
   flex-wrap: wrap;
   gap: 8rpx 12rpx;
   padding: 8rpx 6rpx;
-  border-bottom: 1rpx solid #1c1c23;
-  font-family: Menlo, Consolas, monospace;
+  border-bottom: 1rpx solid var(--divider);
+  font-family: Menlo, Consolas, "SF Mono", monospace;
   font-size: 20rpx;
   line-height: 1.5;
-  color: #c9c9d1;
+  color: var(--text-2);
 }
 
 .log-row.tx .log-arrow {
-  color: #ffb478;
+  color: var(--accent);
 }
 
 .log-row.rx .log-arrow {
-  color: #4dd17a;
+  color: var(--ok);
 }
 
 .log-row.bad .log-parsed {
-  color: #ff8a8a;
+  color: var(--danger);
 }
 
 .log-time {
-  color: #6f6f7a;
+  color: var(--text-3);
 }
 
 .log-hex {
-  color: #9a9aa5;
+  color: var(--text-2);
   word-break: break-all;
 }
 
 .log-name {
-  color: #f5f5f5;
+  color: var(--text);
 }
 
 .log-parsed {
   width: 100%;
-  color: #9a9aa5;
+  color: var(--text-2);
   word-break: break-all;
 }
 
 .log-empty {
-  padding: 32rpx 12rpx;
+  padding: 40rpx 12rpx;
   font-size: 24rpx;
-  color: #6f6f7a;
+  color: var(--text-3);
   line-height: 1.6;
 }
 
 .log-foot {
   font-size: 20rpx;
-  color: #6f6f7a;
+  color: var(--text-3);
 }

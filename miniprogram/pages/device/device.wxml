@@ -1,15 +1,19 @@
-<view class="page">
-  <!-- 连接状态条：未连接时点它去设备页 -->
-  <view class="statusbar {{linkClass}}" bindtap="onGoDevices">
-    <view class="status-dot"></view>
-    <view class="status-main">
-      <text class="status-text">{{statusText}}</text>
-      <text class="status-sub">{{statusSub}}</text>
-    </view>
-    <text class="status-action">{{ready ? '设备' : '去连接'}}</text>
+<view class="page {{themeClass}}">
+  <nav-bar
+    title="{{deviceName}}"
+    subtitle="{{deviceId}}"
+    back="{{true}}"
+    action-text="信息"
+    bind:action="onGoDeviceInfo"
+  />
+
+  <!-- 连接提示：自动连接失败 / 需要先扫描时才有内容 -->
+  <view wx:if="{{connectHint}}" class="notice-card" bindtap="onRetryConnect">
+    <text class="notice-text">{{connectHint}}</text>
+    <text class="notice-action">重试</text>
   </view>
 
-  <!-- 灯带切换器（#41 的核心）：横向 chips，逐带显示灯珠数 / GPIO / 开关 / 段数 / 动画 -->
+  <!-- 灯带切换器（v3 核心）：横向 chips，逐带显示灯珠数 / GPIO / 开关 / 段数 -->
   <view class="strip-switcher {{ready ? '' : 'disabled'}}">
     <scroll-view scroll-x class="strip-scroll" enhanced show-scrollbar="{{false}}">
       <view class="strip-chip-row">
@@ -19,12 +23,12 @@
           class="strip-chip {{item.selected ? 'selected' : ''}} {{item.on ? '' : 'off'}}"
           data-strip-id="{{item.stripId}}"
           bindtap="onStripTap"
+          hover-class="strip-chip-hover"
         >
           <view class="strip-chip-head">
             <text class="strip-chip-title">带 {{item.stripId + 1}}</text>
             <view wx:if="{{item.animating}}" class="strip-anim-dot"></view>
           </view>
-          <text class="strip-chip-sub">{{item.gpioText}}</text>
           <text class="strip-chip-sub">{{item.summary}}</text>
         </view>
         <view wx:if="{{stripChips.length === 0}}" class="strip-empty">
@@ -35,30 +39,30 @@
     <text class="section-hint">{{stripHint}}</text>
   </view>
 
-  <!-- 当前灯带：独立开关（SetStripPower 0x1B）+ 总闸 -->
-  <view class="section {{ready ? '' : 'disabled'}}">
-    <view class="section-head">
-      <text class="section-title">{{stripTitle}}</text>
-      <text class="section-value">{{ledCount}} 灯</text>
-    </view>
+  <!-- 总闸 + 本条带独立开关 -->
+  <view class="control-card {{ready ? '' : 'disabled'}}">
     <view class="power-card">
       <view
         class="power-btn {{power ? 'on' : ''}} {{!ready ? 'disabled' : ''}} {{powerBusy ? 'busy' : ''}}"
         bindtap="onTogglePower"
+        hover-class="power-btn-hover"
       >
         <view class="power-glyph"></view>
       </view>
       <text class="power-label">{{powerLabel}}</text>
     </view>
+
     <view class="strip-power-row">
-      <text class="row-label">本条</text>
+      <view class="strip-power-main">
+        <text class="strip-power-title">{{stripTitle}} · {{ledCount}} 灯</text>
+        <text class="section-hint">只影响这一条带，其他带继续运行</text>
+      </view>
       <switch
         checked="{{stripOn}}"
-        color="#ffb478"
+        color="#ff9500"
         disabled="{{!ready || stripId < 0 || stripPowerBusy}}"
         bindchange="onToggleStripPower"
       />
-      <text class="section-hint inline">只影响这一条带，其他带继续运行</text>
     </view>
   </view>
 
@@ -75,22 +79,22 @@
       step="1"
       value="{{brightness}}"
       disabled="{{!ready}}"
-      activeColor="#ffb478"
-      backgroundColor="#2a2a32"
-      block-size="24"
+      activeColor="#ff9500"
+      backgroundColor="rgba(120, 120, 128, 0.2)"
+      block-size="26"
       bindchanging="onBrightnessChanging"
       bindchange="onBrightnessChange"
     />
     <text class="section-hint">{{brightnessHintText}}</text>
   </view>
 
-  <!-- 段列表：设备权威（QueryStrip(当前带)）；点一段改颜色，或进段编辑 -->
+  <!-- 段列表：设备权威（QueryStrip(当前带)） -->
   <view class="section {{ready ? '' : 'disabled'}}">
     <view class="section-head">
       <text class="section-title">段</text>
       <view class="seg-head-actions">
         <text class="section-action" bindtap="onRefreshSegments">刷新</text>
-        <text class="section-action" data-seg-id="-1" bindtap="onEditSegment">段编辑</text>
+        <text class="section-action" data-seg-id="-1" bindtap="onEditSegment">新建段</text>
       </view>
     </view>
 
@@ -101,6 +105,7 @@
         class="seg-row {{item.selected ? 'selected' : ''}}"
         data-seg-id="{{item.segId}}"
         bindtap="onSegmentTap"
+        hover-class="seg-row-hover"
       >
         <view class="seg-swatch" style="background: {{item.hex}}"></view>
         <text class="seg-index">段 {{item.segId}}</text>
@@ -109,27 +114,18 @@
           <text wx:if="{{item.paramText}}" class="seg-param">{{item.paramText}}</text>
         </view>
         <text class="seg-tag {{item.animated ? 'anim' : ''}}">{{item.typeText}}</text>
-        <!-- #48：两层段的徽标。改色只改第 1 层颜色，第 2 层与 blend 保留。 -->
         <text wx:if="{{item.twoLayer}}" class="seg-tag layers">{{item.layerText}}</text>
-        <text
-          class="seg-edit"
-          data-seg-id="{{item.segId}}"
-          catchtap="onEditSegment"
-        >编辑</text>
-        <text
-          class="seg-delete"
-          data-seg-id="{{item.segId}}"
-          catchtap="onSegmentDelete"
-        >删除</text>
+        <text class="seg-edit" data-seg-id="{{item.segId}}" catchtap="onEditSegment">编辑</text>
+        <text class="seg-delete" data-seg-id="{{item.segId}}" catchtap="onSegmentDelete">删除</text>
       </view>
       <view wx:if="{{segmentRows.length === 0}}" class="seg-empty">
-        这条灯带还没有段。点右上「段编辑」划一个灯珠区间；未覆盖的灯珠保持熄灭。
+        这条灯带还没有段。点右上「新建段」划一个灯珠区间；未覆盖的灯珠保持熄灭。
       </view>
     </view>
     <text class="section-hint">{{segmentHintText}}</text>
   </view>
 
-  <!-- 颜色：色环 + 饱和度，写入选中段（没有选中段时手势被忽略并提示） -->
+  <!-- 颜色：色环 + 饱和度，写入选中段 -->
   <view class="section {{ready ? '' : 'disabled'}}">
     <view class="section-head">
       <text class="section-title">颜色</text>
@@ -161,7 +157,7 @@
         value="{{colorSaturation}}"
         disabled="{{!ready}}"
         activeColor="{{colorHex}}"
-        backgroundColor="#2a2a32"
+        backgroundColor="rgba(120, 120, 128, 0.2)"
         block-size="20"
         bindchanging="onSaturationChanging"
         bindchange="onSaturationChange"
@@ -171,7 +167,7 @@
     <text class="section-hint">{{colorHintText}}</text>
   </view>
 
-  <!-- 预设：点击后把选中段改成该颜色（SetSegment 0x10），等 ACK -->
+  <!-- 预设：点击后把选中段改成该颜色 -->
   <view class="presets {{ready ? '' : 'disabled'}}">
     <view
       wx:for="{{presetList}}"
@@ -185,7 +181,21 @@
     </view>
   </view>
 
+  <!-- 其他入口 -->
+  <view class="link-list">
+    <view class="link-row" bindtap="onGoScripts" hover-class="link-row-hover">
+      <text class="link-label">剧本</text>
+      <text class="link-value">多阶段自动播放</text>
+      <view class="link-chevron"></view>
+    </view>
+    <view class="link-row" bindtap="onGoDeviceInfo" hover-class="link-row-hover">
+      <text class="link-label">设备信息</text>
+      <text class="link-value">固件 · 灯珠数 · 自检</text>
+      <view class="link-chevron"></view>
+    </view>
+  </view>
+
   <view class="footer">
-    <text class="footer-hint">开关与设备状态以设备为准；剧本在「剧本」页</text>
+    <text class="footer-hint">开关与设备状态以设备为准{{mock ? '（演示模式）' : ''}}</text>
   </view>
 </view>

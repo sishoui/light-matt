@@ -48,8 +48,10 @@ import { checkScriptBlobBytes, SCRIPT_BLOB_MAX_BYTES } from "../../utils/control
 import { MAX_SCRIPTS, MAX_STAGES } from "../../utils/protocol/constants";
 import { ControlSession } from "../../utils/control/session";
 import { getSession } from "../../utils/control/session-singleton";
+import { createWxStorage } from "../../utils/control/device-cache";
+import { loadTheme, themeClass } from "../../utils/control/theme";
 import { statusView } from "../../utils/control/status-view";
-import { TAB_ROUTES, switchTabTo } from "../../utils/control/routes";
+import { PAGE_ROUTES, TAB_ROUTES, pushTo, switchTabTo } from "../../utils/control/routes";
 import type {
   DeviceState,
   LinkState,
@@ -59,9 +61,10 @@ import type {
 
 Page({
   data: {
+    themeClass: "",
     statusText: "未连接",
-    statusSub: "点「设备」连接",
-    statusAction: "设备",
+    statusSub: "点「发现」连接设备",
+    statusAction: "发现",
     linkClass: "link-idle",
     ready: false,
 
@@ -128,17 +131,33 @@ Page({
   },
 
   onLoad() {
+    /* 页面私有状态（不进 data）。Page() 不保证对象字面量字段会被复制到
+     * 实例上，所以在这里显式兜底。 */
+    this.unsubscribers = [];
+    this.deviceSummaries = [];
+
     this.session = getSession();
     this.drafts = createScriptDrafts();
     this.syncRows();
+    this.setData({ themeClass: themeClass(loadTheme(createWxStorage())) });
   },
 
   onShow() {
     this.subscribe();
     this.syncFromSession();
+    this.syncTabBar();
+    this.setData({ themeClass: themeClass(loadTheme(createWxStorage())) });
     /* 回到页面就刷新摘要：设备可能在别处（或断电重启后）变了。 */
     if (this.data.ready) {
       void this.refreshSummaries();
+    }
+  },
+
+  /** 自定义 tabBar 的选中态（索引与 app.json 顺序一致）。 */
+  syncTabBar() {
+    const tabBar = this.getTabBar?.();
+    if (tabBar !== undefined && tabBar !== null) {
+      tabBar.setData({ selected: 1 });
     }
   },
 
@@ -170,7 +189,8 @@ Page({
   },
 
   unsubscribe() {
-    for (const off of this.unsubscribers) {
+    /* onUnload 可能先于 onLoad 的初始化跑到，undefined 兜底。 */
+    for (const off of this.unsubscribers ?? []) {
       off();
     }
     this.unsubscribers = [];
@@ -421,12 +441,12 @@ Page({
     }
     const target = session.activeSegment;
     if (target === null) {
-      wx.showToast({ title: "先在灯光页选一个段", icon: "none" });
+      wx.showToast({ title: "先在设备控制页选一个段", icon: "none" });
       return;
     }
     const report = session.segmentsOf(target.stripId).find((item) => item.segId === target.segId);
     if (report === undefined) {
-      wx.showToast({ title: "该段已不存在，请回灯光页刷新", icon: "none" });
+      wx.showToast({ title: "该段已不存在，请回设备控制页刷新", icon: "none" });
       return;
     }
     const stageIndex = this.data.scriptActiveStage;
@@ -647,8 +667,18 @@ Page({
     switchTabTo(TAB_ROUTES.devices);
   },
 
+  /** 去当前设备的控制页（剧本是设备级功能，控制面板在详情页）。 */
   onGoLight() {
-    switchTabTo(TAB_ROUTES.light);
+    pushTo(PAGE_ROUTES.device);
+  },
+
+  /** 导航栏右侧动作：已连接进控制页，否则去发现页。 */
+  onNavAction() {
+    if (this.data.ready) {
+      this.onGoLight();
+      return;
+    }
+    this.onGoDevices();
   },
 });
 

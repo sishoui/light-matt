@@ -1,4 +1,5 @@
 {
-  "navigationBarTitleText": "剧本",
-  "usingComponents": {}
+  "usingComponents": {
+    "nav-bar": "/components/nav-bar/nav-bar"
+  }
 }

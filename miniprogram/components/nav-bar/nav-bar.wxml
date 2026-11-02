@@ -1,0 +1,19 @@
+<!-- 自建导航栏：单一根节点（小程序组件要求一个根，多根会让挂载与命中测试异常） -->
+<view class="nav-root {{themeSwitchClass}}">
+  <view class="nav-spacer" style="height: {{barHeight}}px;"></view>
+  <view class="nav-fixed" style="padding-top: {{statusBarHeight}}px;">
+    <view class="nav-row" style="padding-right: {{sideWidth}}px;">
+      <view class="nav-left">
+        <view wx:if="{{back}}" class="nav-back" bindtap="onBackTap" hover-class="nav-back-hover">
+          <view class="nav-back-chevron"></view>
+        </view>
+        <view class="nav-titles">
+          <text wx:if="{{large}}" class="nav-title-large">{{title}}</text>
+          <text wx:else class="nav-title-small">{{title}}</text>
+          <text wx:if="{{subtitle}}" class="nav-subtitle">{{subtitle}}</text>
+        </view>
+      </view>
+      <text wx:if="{{actionText}}" class="nav-action" bindtap="onActionTap">{{actionText}}</text>
+    </view>
+  </view>
+</view>

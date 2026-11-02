@@ -32,6 +32,7 @@ import { FrameLog } from "../ble/log";
 import { LatestWinsThrottle, type TimerApi } from "../ble/throttle";
 import {
   BleTransport,
+  ConnectCancelledError,
   type BleTransportOptions,
   type LinkDetail,
   type SendOptions,
@@ -587,6 +588,11 @@ export class ControlSession {
     } catch (err) {
       // 连接失败：撤掉日志置位，避免后面不相干的 ready 误记一条。
       this.usageArmed = false;
+      /* 用户主动取消：不是错误。不做失败清理（transport 已经清干净），
+       * 也不弹提示——页面状态条此时已经是「未连接 / 已取消连接」。 */
+      if (err instanceof ConnectCancelledError) {
+        throw err;
+      }
       // 10002 / 10013：设备不在附近或 deviceId 失效（iOS UUID 会变），清缓存。
       if (err instanceof WxCallError && (err.errCode === 10002 || err.errCode === 10013)) {
         /* #44：知道 hardwareId 时按它删——旧 deviceId 已经失效，只有 hwId
@@ -644,6 +650,12 @@ export class ControlSession {
       await this.refreshState().catch(() => state);
       return state;
     } catch (err) {
+      /* 用户取消：回到 idle 状态机，不记成「切换失败」——否则下次打开
+       * 设备页还会看到一个要求重试的失败目标。 */
+      if (err instanceof ConnectCancelledError) {
+        this.switchState = abandonSwitch();
+        throw err;
+      }
       this.switchState = switchFailed(this.switchState, errorText(err));
       // 不清 cached：用户可能只是暂时连不上，重试入口还要用它。
       throw err;
@@ -668,6 +680,26 @@ export class ControlSession {
   /** 放弃切换 / 页面卸载：清状态机，不再保留目标。 */
   cancelSwitch(): void {
     this.switchState = abandonSwitch();
+  }
+
+  /**
+   * 用户点状态条上的「取消」：中止正在进行的连接尝试。
+   *
+   * 只对 `connecting` / `initializing` 有效。返回 `true` 表示确实取消了一次
+   * 进行中的尝试——页面据此决定要不要给提示。
+   *
+   * 与 `cancelSwitch` 的分工：那个清的是「切换目标」状态机（连都没开始连的
+   * 阶段），这个中断的是 transport 里正在跑的连接流水线。
+   */
+  cancelConnect(): boolean {
+    const cancelled = this.transport.cancelConnect();
+    if (cancelled) {
+      /* 取消后这个设备没有变成「最近连过」的资格：撤掉 usage 置位，
+       * 否则下一次不相干的 ready 会补记一条属于本次取消的假会话。 */
+      this.usageArmed = false;
+      this.cancelSwitch();
+    }
+    return cancelled;
   }
 
   get deviceSwitch(): SwitchState {

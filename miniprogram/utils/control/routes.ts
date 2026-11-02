@@ -10,13 +10,14 @@
 
 /** tabBar 三页（必须与 app.json 的 tabBar.list 完全一致）。 */
 export const TAB_ROUTES = {
-  devices: "/pages/devices/devices",
-  light: "/pages/light/light",
+  home: "/pages/home/home",
   scripts: "/pages/scripts/scripts",
+  devices: "/pages/devices/devices",
 } as const;
 
 /** 二级页（push 进入，不在 tabBar 里）。 */
 export const PAGE_ROUTES = {
+  device: "/pages/device/device",
   segmentEdit: "/pages/segment-edit/segment-edit",
   deviceInfo: "/pages/device-info/device-info",
 } as const;
@@ -52,4 +53,21 @@ export function queryInt(options: Record<string, string | undefined>, key: strin
   }
   const value = Number(raw);
   return Number.isInteger(value) ? value : fallback;
+}
+
+/** 从页面 options 里取一个字符串查询参数；缺失时返回 fallback。 */
+export function queryText(
+  options: Record<string, string | undefined>,
+  key: string,
+  fallback = "",
+): string {
+  const raw = options[key];
+  if (raw === undefined) {
+    return fallback;
+  }
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
 }

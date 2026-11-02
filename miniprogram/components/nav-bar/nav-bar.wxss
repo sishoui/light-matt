@@ -1,0 +1,162 @@
+/*
+ * 自建导航栏。
+ *
+ * ## 为什么组件内自带一套变量
+ *
+ * 导航栏用 `position: fixed` 定位，视觉上必须与页面底色一致。它的颜色
+ * 原本靠继承页面根节点（`.page`）上的 `--bg / --text`，但这不可靠：
+ *  - 组件在部分场景（自定义 tabBar 页面、分包）拿不到页面的变量；
+ *  - 一旦继承失效就会掉进 `var(--x, #1c1c1e)` 的兜底值——那个深色兜底
+ *    在深色主题下会让标题变成「深色字压深色底」，等于看不见。
+ *
+ * 所以这里按 `.nav-root` 自己声明两套值，并在深色媒体查询里整体替换。
+ * 这与 `app.wxss` 的取值保持一致；`tests/theme.test.ts` 会检查这一点。
+ */
+
+.nav-root {
+  /* 浅色默认值（与 app.wxss 的 .page 同步） */
+  --nav-bg: #f2f2f7;
+  --nav-text: #1c1c1e;
+  --nav-text-2: #6e6e73;
+  --nav-text-3: #a1a1a6;
+  --nav-accent: #ff9500;
+  --nav-press: rgba(120, 120, 128, 0.12);
+
+  /* 组件根节点：作为页面 flex 列的第一个子项，不参与拉伸。 */
+  display: block;
+  flex-shrink: 0;
+  width: 100%;
+}
+
+@media (prefers-color-scheme: dark) {
+  .nav-root {
+    --nav-bg: #000000;
+    --nav-text: #f5f5f7;
+    --nav-text-2: #a1a1a6;
+    --nav-text-3: #6e6e73;
+    --nav-accent: #ffb478;
+    --nav-press: rgba(255, 255, 255, 0.12);
+  }
+}
+
+/* 手动覆盖：组件样式隔离，外部 class 传不进来，所以由 JS 把 `theme` 属性
+ * 挂到根节点的 class 上（见 nav-bar.ts 的 applyTheme）。 */
+.nav-root.use-light {
+  --nav-bg: #f2f2f7;
+  --nav-text: #1c1c1e;
+  --nav-text-2: #6e6e73;
+  --nav-text-3: #a1a1a6;
+  --nav-accent: #ff9500;
+  --nav-press: rgba(120, 120, 128, 0.12);
+}
+
+.nav-root.use-dark {
+  --nav-bg: #000000;
+  --nav-text: #f5f5f7;
+  --nav-text-2: #a1a1a6;
+  --nav-text-3: #6e6e73;
+  --nav-accent: #ffb478;
+  --nav-press: rgba(255, 255, 255, 0.12);
+}
+
+.nav-spacer {
+  flex-shrink: 0;
+}
+
+.nav-fixed {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 90;
+  background: var(--nav-bg);
+  transition: box-shadow 160ms ease;
+}
+
+.nav-row {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12rpx;
+  padding-left: 16rpx;
+  box-sizing: border-box;
+}
+
+.nav-left {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+  min-width: 0;
+  flex: 1;
+}
+
+.nav-back {
+  width: 72rpx;
+  height: 72rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+
+.nav-back-hover {
+  background: var(--nav-press);
+}
+
+/* 返回箭头：两条 2rpx 边框拼成 chevron，纯 CSS，不引资源。 */
+.nav-back-chevron {
+  width: 18rpx;
+  height: 18rpx;
+  border-left: 4rpx solid var(--nav-text);
+  border-bottom: 4rpx solid var(--nav-text);
+  transform: rotate(45deg);
+  margin-left: 6rpx;
+  border-radius: 2rpx;
+}
+
+.nav-titles {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2rpx;
+  min-width: 0;
+}
+
+.nav-title-large {
+  font-size: 42rpx;
+  font-weight: 700;
+  letter-spacing: -0.8rpx;
+  color: var(--nav-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.25;
+}
+
+.nav-title-small {
+  font-size: 32rpx;
+  font-weight: 600;
+  letter-spacing: -0.3rpx;
+  color: var(--nav-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-subtitle {
+  font-size: 22rpx;
+  color: var(--nav-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-action {
+  font-size: 30rpx;
+  color: var(--nav-accent);
+  font-weight: 500;
+  padding: 8rpx 12rpx;
+  flex-shrink: 0;
+}

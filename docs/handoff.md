@@ -1,9 +1,121 @@
 # 交接：lumen 当前状态与下一步
 
-**最后更新**：2026-11-02　**分支**：`master`（v3 已通过 PR #51 合入，merge commit `f9f2fe3`）
+**最后更新**：2026-11-02　**分支**：`master`（v3 已合入；工作区有大量未提交改动，见 §0）
 
 这份文件是给**新会话**的入口。它只写「新会话必须知道、但代码和文档里读不到」的东西；
 其余一律给指针，不重复。
+
+---
+
+## 0. 2026-11-02 第四轮：灯效编辑重构（进行中）
+
+**这是当前唯一在做的任务。** 规格与实现票已全部落在 GitHub：
+
+- **规格**：[#52 小程序：灯效编辑重构（快捷 / 自定义两档 + 术语重写）](https://github.com/sishoui/light-matt/issues/52)（label `spec`）
+- **本地副本**：`.scratch/effect-editor-spec.md`（与 #52 同内容，离线可读）
+- **6 张实现票** `#53`–`#58`，原生 blocker 边已建立，全部 `ready-for-agent`
+
+### 为什么重构
+
+用户看不懂现有灯效编辑。能力被拆在三处且互不相通：设备页只能改颜色、段编辑页只能手打数字、
+剧本页必须先在设备页选段才能加进阶段。术语是工程语言（段/层/blend/剧本/下发/激活），
+段从 0 编号而阶段从 1 编号，「下发剧本」其实还会激活，页脚还指向一个**根本不存在的「灯光页」**。
+
+### 目标结构
+
+**一个页面、两档能力**（设备详情页顶部开关）：
+
+- **快捷**：6 张成品效果卡（暖白常亮 / 呼吸 / 彩虹流动 / 流光追逐 / 冷蓝氛围 / 紫色氛围），
+  点一下整组立刻生效；参数只暴露人话档位（颜色、慢/中/快、微亮/中暗/全暗、短/中/长、顺/逆、彩虹饱和度）
+- **自定义**：`灯效方案（4 槽）→ 步骤（≤8）→ 光区（≤8）→ 主效果 + 叠加效果 + 叠加方式`
+
+两档切换时自定义编排以**内存快照**保留（按设备 + 灯组隔离，不落存储）。
+
+### 依赖图与当前 frontier
+
+```
+#53 预重构：收敛光区的单一真相        ← 可立即开始（frontier）
+ ├─ #54 快捷档：成品效果卡
+ ├─ #55 自定义档：光区编辑（多分段）
+ │    └─ #56 自定义档：方案与步骤
+ ├────────┼─ #57 模式切换：保留并恢复编排   (阻塞于 #54, #56)
+ └────────┴─ #58 收尾：术语 + 删旧页 + 设备页收窄  (阻塞于 #54, #55, #56)
+```
+
+### 已完成的地基（重要：别重写）
+
+三份**纯逻辑模块已实现并通过 69 项单测**，是 #54/#55/#57 的直接依赖：
+
+| 模块 | 内容 | 测试 |
+|---|---|---|
+| `utils/control/quick-effects.ts` | 6 张卡定义、档位 → 协议值（含彩虹饱和度）、整组 spec 构造、从设备值反推卡片 | `tests/quick-effects.test.ts`（20） |
+| `utils/control/effect-layout.ts` | 区间校验、重叠拦截、整条/前半/后半/均分切分、逐灯珠归属 | `tests/effect-layout.test.ts`（33） |
+| `utils/control/effect-mode.ts` | 快捷↔自定义内存快照（按设备 + 灯组隔离）、切换决策 | `tests/effect-mode.test.ts`（16） |
+
+**新会话不要重新设计这三层**，直接从 #53 开始接线。
+
+### 几个必须知道的协议陷阱（写进了规格，实施时别踩）
+
+1. **方案播放期间实时光区不可见**：固件按 `active_segments` 渲染，`SetSegment` 仍写 `s_segments`
+   但不参与出光。所以快捷档点卡片时必须先 `SetPlayback(stop)` 并提示，否则用户点了看不到变化。
+2. **步骤里的光区是快照副本**：改实时光区不影响已存在的步骤（协议如此，不是 bug）。
+3. **方案内容无法从设备读回**，只有 4 字节摘要。本地草稿是唯一记录，界面必须如实说明。
+4. **快捷档的实时写入依赖 `SetSegment` 是绝对值命令**（重复下发只覆盖自己），所以防抖重发安全。
+5. 静态层的 `period/p5/flags` 必须为 0；呼吸周期 ≥334ms、动画 ≥200ms——否则设备回 `InvalidParam`。
+
+### 本轮已完成的其它工作（同工作区，未提交）
+
+- 小程序 UI 改版：苹果极简双主题、大卡首页 + 设备小图、灯光页并入设备详情、发现页、自建 tabBar / nav-bar
+- 演示模式（mock）：`mock-transport` + `mock-devices` + `mock-mode`，与真机同构
+- 设备自定义封面：用户相册选图存本地，按 hardwareId 隔离
+- 新增测试：`app-config` / `theme` / `home-view` / `mock-mode` / `mock-session` / `device-photo` / `page-fields`
+
+**当前基线**：`npx vitest run` → **769 通过**（42 文件）；`npx tsc --noEmit` 干净。
+
+> **工作区未提交**：58 个文件改动 + 28 个新文件。新会话开始前请先确认这些改动是否已提交，
+> 否则 `git checkout` 类操作会丢掉整个 UI 改版。
+
+---
+
+## 0.1 2026-11-02 第三轮：小程序 UI 改版（苹果极简 + 大卡首页）
+
+
+**做了什么**
+
+- **页面树重建**：`home`（大设备卡 + 下方设备小图）/ `scripts` / `devices`（改为「发现」）
+  三个 tab；`device`（原「灯光」页并入，成为设备控制页）与 `device-info` /
+  `segment-edit` 是二级页。**`pages/light` 已删除**，灯光控制全部在 `pages/device`。
+- **双主题**：`app.wxss` 引入 CSS 变量，浅色默认、深色跟随系统，并可在「发现 → 外观」
+  手动覆盖（存储 `lumen.theme.v1`）。所有页面 wxss 的硬编码 hex 已替换为变量。
+- **自建导航栏与 tabBar**：`components/nav-bar`（大标题 + 状态栏/胶囊避让）、
+  `custom-tab-bar`（3 项，图标纯 CSS）。`app.json` 全部 `navigationStyle: custom`。
+- **演示数据（mock）**：`utils/ble/mock-transport.ts` + `utils/control/mock-devices.ts`
+  + `utils/control/mock-mode.ts`。**与真机同构**：连接走 `ready`、State 由命令真实改变、
+  `QueryStrip` / `QueryStripConfig` / `QueryDeviceInfo` 都给出设备权威形状。
+  会话层没有任何 mock 分支。
+
+**交互契约（改首页前先读）**
+
+- 点**小图** = 只切换大卡展示，**不发起连接**（小程序只有一条连接）；
+- 点**大卡** = 进 `pages/device`，连接发生在那里（已连别的设备走 `switchTo`）；
+- 大卡上的**电源键**是 `catchtap` 快捷开关，未连接时先连上。
+
+**验收（本轮实测）**
+
+| 项 | 结果 |
+|---|---|
+| `npx vitest run` | **665 用例**（原 618 + 首页派生 14 + mock 传输 21 + mock 会话 12） |
+| `npx tsc --noEmit` | 干净 |
+| `node .auto/verify-redesign.mjs` | **28/28**（页面树 / 大卡 / 小图切换 / 主题 / tabBar） |
+| 截图 | `.auto/shots/`（浅色 + 深色各页） |
+
+**改页面后必须做的三件事**：跑 `tsc`、跑 `vitest`、跑 `verify-redesign.mjs`。
+后两者分别覆盖「TypeScript 看不出的运行时问题」和「只有渲染层能发现的问题」
+（白屏、bindtap 全失效、主题 class 没挂、tabBar 没渲染）。
+
+> **一个本轮踩到的坑**：自定义 tabBar 是 `position: fixed` 的，tab 页内容必须自己
+> 让出 `padding-bottom: calc(140rpx + env(safe-area-inset-bottom))`，否则底部内容
+> 被压在 tabBar 下面（截图才看得出来）。
 
 ---
 
@@ -48,6 +160,77 @@ TypeScript 能解析到 `index.ts`，`tsc --noEmit` 干净、607 个单测全过
 > **教训**：`tsc` 干净 + 单测全绿 + 构建成功，都不足以证明小程序能跑。
 > 模块解析层的问题只有模拟器/真机能发现。
 
+### 0.0001 2026-11-02 第三个「只有模拟器能发现」的缺陷：页面私有字段是 undefined
+
+**现象：设备页点「扫描」「连接」「取消」全都没反应**（模拟器实测，页面能渲染出来）。
+
+控制台真正的报错（红色，容易被上方的黄色 warning 淹没）：
+
+```
+TypeError: Cannot read properties of undefined (reading 'length')
+    at ui.applyListViews (devices.js)
+    at ui.refreshLocal (devices.js)
+    at ui.onLoad (devices.js)
+```
+
+**根因**：微信的 `Page({...})` 只保证 `data` 里的字段出现在 `this.data`。
+写在对象字面量上、但**不在 `data` 里**的私有字段（`remoteDevices: [] as X[]`
+这类）不保证被复制到页面实例，运行时就是 `undefined`。TS 断言只是编译期语法。
+
+`onLoad` → `refreshLocal` → `applyListViews` 读 `this.remoteDevices.length`
+直接抛错，**页面初始化中断，所有 `bindtap` 都不再响应**。构建、`tsc`、618 个
+单测全绿——因为单测直接 `new ControlSession`，根本不经过 `Page()`。
+
+**修复**：五个页面的 `onLoad` 开头显式初始化全部私有字段（且必须在任何
+提前 `return` 之前，`segment-edit` 就有这种分支）。`unsubscribe` 等循环加 `?? []`。
+**新增契约测试** `miniprogram/tests/page-fields.test.ts`：静态扫描每个页面，
+断言非 `data` 字段都在 `onLoad` 里赋值（变异验证过：删掉初始化会红）。
+
+> 这个契约测试自己踩过一次坑：用 `indexOf("onLoad")` 定位会匹配到**注释里**
+> 的字样，把 region 截断在注释中间 → 规则永远通过（假绿）。必须匹配方法定义
+> `/\n {2}onLoad\s*\(/`。
+
+### 0.0002 「取消」曾经是假按钮，以及 `already opened` 被当成失败
+
+两个同源缺陷：文案/状态承诺了行为，代码没做。
+
+**1) 状态条写着「取消」，点了什么也不发生。**
+`utils/control/status-view.ts` 在 `connecting` / `initializing` 显示「取消」，
+而 `pages/devices/devices.ts` 的 `onStatusTap` 对这两种状态**直接 return**。
+`cancelSwitch()` / `retrySwitch()` 在 `pages/` 里零调用点（死代码）。
+
+修复：`BleTransport.cancelConnect()` 用**连接代次号**让进行中的尝试作废
+（`createBLEConnection` / GATT 发现是 wx 的原子调用，**没有中断接口**，
+只能让它跑完然后丢弃结果）。流水线每个 `await` 之后核对代次，变了就抛
+`ConnectCancelledError` 静默退出。页面接线：`onStatusTap` 在 connecting 时
+真的调 `cancelConnect()`，并提示「已取消连接」。会话层 `session.cancelConnect()`
+同时清 `usageArmed` 与切换状态机。
+
+回归测试：`tests/transport.test.ts` 的「取消连接」4 条 + `tests/session-v3.test.ts`
+的「取消连接（会话层）」2 条；变异验证过（去掉 `connectEpoch += 1` 会红 3 条）。
+
+**2) `openBluetoothAdapter: fail already opened` 被当成失败。**
+适配器**已经打开**是成功状态，但代码只认 `errCode === 10001`，把它落进
+`fail` 分支并清掉 `scanRequested` → **扫描永远起不来**。热重载后必现
+（新模块实例的 `adapterOpened` 是 false，底层适配器还开着）。
+
+修复：`isAdapterAlreadyOpened()` 匹配 errMsg（这个错误**不带 errCode**）。
+回归测试：`tests/transport.test.ts`「适配器已打开」2 条，变异验证过。
+
+### 0.0003 模拟器验不了的：真实 BLE 连接
+
+开发者工具的模拟器**没有 BLE 外设**：`openBluetoothAdapter` 会超时、
+`createBLEConnection` 立即失败，扫描也扫不到真设备。所以：
+
+| 要验什么 | 用什么 |
+|---|---|
+| 真实扫描 / 连接 / 控制 | `npm run test:ble`（PC 蓝牙网关，8 项）或手机真机预览 |
+| 页面交互是否「点得动」 | `miniprogram-automator`（`.auto/verify-ui-interaction.mjs`） |
+| 取消逻辑 | `.auto/verify-cancel-stub.mjs`（在页面上下文给 `createBLEConnection` 打桩让它悬住） |
+
+> **automator 每次跑之前要重新编译**，否则连的是旧代码（变异测试会假绿）。
+
+
 ### 0.00a 本轮最重要的方法论结论：基线不能跨会话
 
 第一次 400s 用了上一会话的基线，判出 **58 个错色事件 / 87 次每 10 分钟**。
@@ -62,12 +245,15 @@ TypeScript 能解析到 `index.ts`，`tsc --noEmit` 干净、607 个单测全过
 
 ```bash
 cmd.exe //c "firmware\test\run-tests.cmd"   # 11053 项 + 58 向量
-cd miniprogram && npx vitest run            # 607 用例（不含 e2e）
+cd miniprogram && npx vitest run            # 618 用例（不含 e2e）
 cd miniprogram && npm run test:ble          # 8 项真机 e2e（无设备自动 skip）
 cd miniprogram && npx tsc --noEmit          # 干净
 cd server && npm test                       # 140 用例
 cd server && npm run typecheck              # 干净
 ```
+
+小程序侧从 607 涨到 **618**：取消连接 4 条 + 会话层 2 条 + already-opened 2 条
++ 页面私有字段契约 3 条 + 原有 2 条。
 
 ---
 

@@ -26,6 +26,7 @@ import { DeviceSync, syncApiOf } from "../../utils/control/device-sync";
 import { parseLedCountInput, ledCountResultHint } from "../../utils/control/ledCount";
 import { ControlSession } from "../../utils/control/session";
 import { getSession } from "../../utils/control/session-singleton";
+import { loadTheme, themeClass } from "../../utils/control/theme";
 import { MAX_STRIPS } from "../../utils/protocol/constants";
 import type { DeviceInfo, DeviceState, StripConfig } from "../../utils/protocol/types";
 
@@ -40,6 +41,7 @@ interface StripInfoRow {
 
 Page({
   data: {
+    themeClass: "",
     ready: false,
     deviceName: "",
     deviceId: "",
@@ -71,14 +73,19 @@ Page({
   registry: null as DeviceRegistry | null,
 
   onLoad() {
+    /* 页面私有状态显式兜底：Page() 不保证对象字面量字段被复制到实例上。 */
+    this.registry = null;
+
     this.session = getSession();
     this.sync = new DeviceSync({ api: syncApiOf(getDeviceApi()), storage: createWxStorage() });
     this.reloadRegistry();
+    this.setData({ themeClass: themeClass(loadTheme(createWxStorage())) });
     void this.reload();
   },
 
   onShow() {
     this.reloadRegistry();
+    this.setData({ themeClass: themeClass(loadTheme(createWxStorage())) });
     void this.reload();
   },
 

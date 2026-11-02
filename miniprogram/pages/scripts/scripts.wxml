@@ -1,4 +1,12 @@
-<view class="page">
+<view class="page {{themeClass}}">
+  <nav-bar
+    title="剧本"
+    subtitle="{{ready ? statusText : '连接设备后可下发剧本'}}"
+    action-text="{{ready ? '控制' : '连接'}}"
+    bind:action="onNavAction"
+    large="{{false}}"
+  />
+
   <view class="statusbar {{linkClass}}" bindtap="onGoDevices">
     <view class="status-dot"></view>
     <view class="status-main">
@@ -104,7 +112,7 @@
         清空本阶段段
       </button>
     </view>
-    <text class="section-hint">「当前段」= 灯光页选中的那条带的那个段；参数取设备上的值（两层一起带入）</text>
+    <text class="section-hint">「当前段」= 设备控制页选中的那条带的那个段；参数取设备上的值（两层一起带入）</text>
 
     <!-- 容量预检（§10.4）：本地就能看到会不会超 16KB -->
     <view class="capacity-row {{scriptOverCapacity ? 'over' : ''}}">

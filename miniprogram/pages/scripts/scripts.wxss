@@ -9,7 +9,7 @@
 
 .script-id-label {
   font-size: 24rpx;
-  color: #9a9aa5;
+  color: var(--text-2);
 }
 
 .script-id {
@@ -19,20 +19,20 @@
   text-align: center;
   font-size: 26rpx;
   border-radius: 12rpx;
-  background: #2a2a32;
-  color: #d8d8e0;
+  background: var(--border);
+  color: var(--text-2);
 }
 
 .script-id.selected {
-  background: #ffb478;
-  color: #1a1208;
+  background: var(--accent);
+  color: var(--accent-ink);
   font-weight: 600;
 }
 
 .script-id-hint {
   margin-left: auto;
   font-size: 22rpx;
-  color: #9a9aa5;
+  color: var(--text-2);
 }
 
 .script-stage-list {
@@ -46,12 +46,12 @@
   align-items: center;
   padding: 14rpx 16rpx;
   border-radius: 14rpx;
-  background: #202027;
-  border: 1rpx solid #2f2f38;
+  background: var(--card-2);
+  border: 1rpx solid var(--border);
 }
 
 .script-stage.selected {
-  border-color: #ffb478;
+  border-color: var(--accent);
 }
 
 .script-stage-main {
@@ -64,12 +64,12 @@
 
 .script-stage-title {
   font-size: 26rpx;
-  color: #f0f0f4;
+  color: var(--text);
 }
 
 .script-stage-segments {
   font-size: 21rpx;
-  color: #9a9aa5;
+  color: var(--text-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -96,8 +96,8 @@
   text-align: center;
   font-size: 22rpx;
   border-radius: 8rpx;
-  background: #2a2a32;
-  color: #d8d8e0;
+  background: var(--border);
+  color: var(--text-2);
 }
 
 .stage-move.off {
@@ -106,7 +106,7 @@
 
 .script-stage-strips {
   font-size: 21rpx;
-  color: #ffb478;
+  color: var(--accent);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -118,25 +118,25 @@
   font-size: 24rpx;
   text-align: right;
   border-radius: 8rpx;
-  background: #141418;
-  color: #f0f0f4;
-  border: 1rpx solid #2f2f38;
+  background: var(--card-2);
+  color: var(--text);
+  border: 1rpx solid var(--border);
 }
 
 .script-duration.invalid {
-  border-color: #e05a5a;
-  color: #e05a5a;
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 .script-duration-unit {
   font-size: 20rpx;
-  color: #6f6f7a;
+  color: var(--text-3);
 }
 
 .script-stage-delete {
   margin-left: 8rpx;
   font-size: 22rpx;
-  color: #9a9aa5;
+  color: var(--text-2);
   padding: 4rpx 8rpx;
 }
 
@@ -150,7 +150,7 @@
 
 .stage-seg-title {
   font-size: 22rpx;
-  color: #9a9aa5;
+  color: var(--text-2);
 }
 
 .stage-seg-row {
@@ -159,14 +159,14 @@
   gap: 12rpx;
   padding: 12rpx 16rpx;
   border-radius: 12rpx;
-  background: #101014;
-  border: 1rpx solid #2a2a32;
+  background: var(--bg);
+  border: 1rpx solid var(--border);
 }
 
 .stage-seg-text {
   flex: 1;
   font-size: 22rpx;
-  color: #d8d8e0;
+  color: var(--text-2);
   font-family: Menlo, Consolas, monospace;
 }
 
@@ -177,13 +177,13 @@
 .script-progress-bar {
   height: 10rpx;
   border-radius: 5rpx;
-  background: #2a2a32;
+  background: var(--border);
   overflow: hidden;
 }
 
 .script-progress-fill {
   height: 100%;
-  background: #ffb478;
+  background: var(--accent);
   transition: width 0.15s linear;
 }
 
@@ -191,7 +191,7 @@
   display: block;
   margin-top: 6rpx;
   font-size: 21rpx;
-  color: #9a9aa5;
+  color: var(--text-2);
 }
 
 .playback-row {
@@ -209,13 +209,13 @@
   line-height: 68rpx;
   font-size: 24rpx;
   border-radius: 12rpx;
-  background: #2a2a32;
-  color: #d8d8e0;
+  background: var(--border);
+  color: var(--text-2);
 }
 
 .playback-btn.active {
-  background: #ffb478;
-  color: #1a1208;
+  background: var(--accent);
+  color: var(--accent-ink);
   font-weight: 600;
 }
 
@@ -232,7 +232,7 @@
 
 .playback-loop-label {
   font-size: 22rpx;
-  color: #9a9aa5;
+  color: var(--text-2);
 }
 
 /* 容量预检（§10.4）：本地就能看到会不会超 16KB */
@@ -244,22 +244,22 @@
   margin-top: 12rpx;
   padding: 10rpx 14rpx;
   border-radius: 12rpx;
-  background: #141418;
-  border: 1rpx solid #2a2a32;
+  background: var(--card-2);
+  border: 1rpx solid var(--border);
 }
 
 .capacity-text {
   font-size: 21rpx;
-  color: #9a9aa5;
+  color: var(--text-2);
 }
 
 .capacity-row.over {
-  border-color: #e05a5a;
+  border-color: var(--danger);
 }
 
 .capacity-warn {
   font-size: 21rpx;
-  color: #ff8a8a;
+  color: var(--danger);
 }
 
 /* 设备上的剧本摘要（v3 只能读摘要） */
@@ -275,33 +275,33 @@
   gap: 14rpx;
   padding: 14rpx 16rpx;
   border-radius: 14rpx;
-  background: #202027;
-  border: 1rpx solid #2f2f38;
+  background: var(--card-2);
+  border: 1rpx solid var(--border);
 }
 
 .summary-row.selected {
-  border-color: #ffb478;
+  border-color: var(--accent);
 }
 
 .summary-row.active {
-  background: #2a2018;
+  background: var(--accent-soft);
 }
 
 .summary-title {
   font-size: 25rpx;
-  color: #f0f0f4;
+  color: var(--text);
   min-width: 110rpx;
 }
 
 .summary-text {
   flex: 1;
   font-size: 22rpx;
-  color: #9a9aa5;
+  color: var(--text-2);
 }
 
 .summary-empty {
   font-size: 22rpx;
-  color: #6f6f7a;
+  color: var(--text-3);
   padding: 10rpx 0;
 }
 
@@ -309,7 +309,7 @@
   display: block;
   margin-top: 8rpx;
   font-size: 21rpx;
-  color: #ff8a8a;
+  color: var(--danger);
 }
 
 .summary-note {
@@ -317,5 +317,10 @@
   margin-top: 10rpx;
   font-size: 21rpx;
   line-height: 1.5;
-  color: #8a8a95;
+  color: var(--text-3);
+}
+
+/* 自定义 tabBar 是 fixed 的，本页内容要让出它的高度。 */
+.page {
+  padding-bottom: calc(140rpx + env(safe-area-inset-bottom));
 }

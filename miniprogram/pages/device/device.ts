@@ -1,22 +1,31 @@
 /**
- * 灯光页（tab 2）：当前灯带的总控。
+ * 设备详情页（二级页）：从首页大卡进入，本页承担原来的「灯光控制」。
  *
- * 页面结构（spec §3.2）：顶部是**灯带切换器**（横向 chips），下面是选中那条
- * 带的开关 / 亮度 / 段列表。段的具体编辑（区间 + 两层 + blend）在二级页
- * `pages/segment-edit`（#42 细化草稿与两层 UI），本页只做「看见 + 快速改颜色 +
- * 删段」。
+ * ## 为什么灯光并入设备详情（本轮交互改版的决定）
  *
- * 关键不变量：
- *  - **灯带是显式参数**：本页所有设备调用都传 `data.stripId`（#41 已把
- *    `queryStrip` / `clearSegment` 的 stripId 改成必填）；
+ * 原来的 tab 结构是「设备 / 灯光 / 剧本」，用户要先在设备页连上、再切到灯光页
+ * 才能控制，而「这台设备」与「它的灯光」在概念上是一件事。改版后：
+ *   首页（大卡 + 小图）→ 点大卡 → 本页（这台设备的全部控制）
+ * 剧本仍留在 tab 里（它是设备级但独立的编辑器）。
+ *
+ * ## 进入时的连接语义
+ *
+ * 首页只负责「浏览」，所以本页必须自己把目标设备连上：
+ *  - 已连着它 → 什么都不做；
+ *  - 连着别的设备 → `switchTo`（主动切换，失败停在未连接并给重试）；
+ *  - 没连着 → `connect`。
+ *
+ * ## 关键不变量（沿用原灯光页）
+ *
+ *  - **灯带是显式参数**：所有设备调用都传 `data.stripId`；
  *  - **切换灯带只是重新读**：切带不清设备配置、不清登记表，只 `queryStrip(新带)`；
- *  - **每带灯珠数逐带真实**：chips 的灯珠数来自 `State.stripCounts[i]`，GPIO 来自
- *    `QueryStripConfig`，绝不把 strip 0 的数量复制给别的带；
- *  - 启用掩码只过滤 chips，隐藏一条带不丢它的段（设备是配置的唯一真相）。
+ *  - **每带灯珠数逐带真实**：chips 的灯珠数来自 `State.stripCounts[i]`；
+ *  - 启用掩码只过滤 chips，隐藏一条带不丢它的段。
  */
 
 import { errorText, resultText } from "../../utils/ble/errors";
 import type { LinkDetail } from "../../utils/ble/transport";
+import { ConnectCancelledError } from "../../utils/ble/transport";
 import {
   brightnessPercent as percentOf,
   clampBrightness,
@@ -42,8 +51,15 @@ import {
   type StripChip,
 } from "../../utils/control/strip-chips";
 import { ControlSession } from "../../utils/control/session";
-import { getSession } from "../../utils/control/session-singleton";
-import { PAGE_ROUTES, TAB_ROUTES, pushTo, switchTabTo } from "../../utils/control/routes";
+import { getSession, isMockSession } from "../../utils/control/session-singleton";
+import { loadTheme, themeClass, type ThemeMode } from "../../utils/control/theme";
+import {
+  PAGE_ROUTES,
+  TAB_ROUTES,
+  pushTo,
+  queryText,
+  switchTabTo,
+} from "../../utils/control/routes";
 import { statusView } from "../../utils/control/status-view";
 import { hsvForWheel, PRESETS, rgbToHex, segmentHueSatToRgb } from "../../utils/color/hsv";
 import { MAX_SEGMENTS, MAX_STRIPS, NO_EFFECT } from "../../utils/protocol/constants";
@@ -66,11 +82,20 @@ const INITIAL_HSV = hsvForWheel(PRESETS[0].rgb, 0);
 
 Page({
   data: {
+    themeClass: "",
+    mock: false,
+
     statusText: "未连接",
-    statusSub: "点「设备」连接",
-    statusAction: "设备",
+    statusSub: "正在连接…",
+    statusAction: "取消",
     linkClass: "link-idle",
     ready: false,
+    /** 顶部标题（设备备注名 / 广播名）。 */
+    deviceName: "",
+    deviceId: "",
+    /** 目标设备尚未连上时的提示（例如切换失败）。 */
+    connectHint: "",
+    connectBusy: false,
 
     // 灯带切换器
     stripChips: [] as StripChipView[],
@@ -122,11 +147,37 @@ Page({
   registry: null as DeviceRegistry | null,
   storage: null as SessionStorage | null,
   unsubscribers: [] as Array<() => void>,
+  /** 从首页带过来的设备 key（hardwareId 优先，空表示「连当前已连接的」）。 */
+  targetKey: "",
+  themeMode: "system" as ThemeMode,
+  /** 是否已经为这台设备发起过连接（避免 onShow 重复连接）。 */
+  autoConnectTried: false,
 
-  onLoad() {
+  onLoad(options: Record<string, string | undefined>) {
+    /* 页面私有状态（不进 data）。Page() 不保证对象字面量字段会被复制到
+     * 实例上，所以在这里显式兜底——漏掉会让 onLoad / onUnload 抛
+     * TypeError 并中断整页的事件绑定。 */
+    this.unsubscribers = [];
+    this.segmentReports = [];
+    this.selectedSegId = -1;
+    this.pageReady = false;
+    this.lastBrightnessUiAt = 0;
+    this.targetKey = "";
+    this.autoConnectTried = false;
+    this.registry = null;
+
+    const storage = createWxStorage();
+    this.storage = storage;
+    this.themeMode = loadTheme(storage);
+    this.registry = loadRegistry(storage);
+    this.targetKey = queryText(options, "key", "");
+
     this.session = getSession();
-    this.storage = createWxStorage();
-    this.registry = loadRegistry(this.storage);
+
+    this.setData({
+      themeClass: themeClass(this.themeMode),
+      mock: isMockSession(),
+    });
 
     this.wheelView = new WheelView(
       {
@@ -140,6 +191,8 @@ Page({
       },
       { hue: INITIAL_HSV.h, saturation: INITIAL_HSV.s },
     );
+
+    this.applyTargetName();
   },
 
   onReady() {
@@ -149,14 +202,14 @@ Page({
 
   onShow() {
     this.subscribe();
-    /* 设备页可能改过启用掩码：本页每次出现都重读本地登记表。 */
-    this.reloadRegistry();
     this.syncFromSession();
-    /* 回到本页时设备可能已被系统断开：让会话自己复核一次（不打断扫描）。 */
     void this.session?.onShow();
-    /* 段列表是设备权威、且设备不会主动上报：每次进页面重读当前带。 */
-    if (this.session?.linkState === "ready" && this.data.stripId >= 0) {
-      void this.refreshSegments();
+    void this.ensureConnected();
+    if (this.data.ready) {
+      /* 段列表是设备权威、且设备不会主动上报：每次进页面重读当前带。 */
+      if (this.data.stripId >= 0) {
+        void this.refreshSegments();
+      }
     }
     if (!this.pageReady) {
       return;
@@ -173,10 +226,11 @@ Page({
   },
 
   onUnload() {
-    /* tab 页不会被卸载；被系统回收时也不要 destroy 会话（App 级单例）。 */
+    /* 二级页会被真正卸载；但会话属于 App，绝不 destroy。 */
     this.unsubscribe();
     this.wheelView = null;
     this.session = null;
+    this.storage = null;
   },
 
   subscribe() {
@@ -191,6 +245,7 @@ Page({
        * 不用固定延时猜 GPIO 什么时候到。 */
       session.onDeviceConfig(() => {
         void this.refreshStripChips();
+        this.applyTargetName();
       }),
       /* #48：节流通道读不回完整 spec 时不会下发，但也没有 await 结果可看；
        * 会话用这条通道把原因送过来，本页弹一次提示（不假装改色成功）。 */
@@ -202,7 +257,7 @@ Page({
   },
 
   unsubscribe() {
-    for (const off of this.unsubscribers) {
+    for (const off of this.unsubscribers ?? []) {
       off();
     }
     this.unsubscribers = [];
@@ -215,14 +270,118 @@ Page({
     this.registry = loadRegistry(this.storage);
   },
 
+  // ---------------- 目标设备与连接 ----------------
+
+  /**
+   * 把 `key` 解析成可连接的 deviceId。
+   *
+   * key 是 hardwareId 优先的稳定标识（见 device-history.deviceKeyOf）；
+   * 只有后端记录的设备没有本机 deviceId，本页无法连接，返回 null 并提示。
+   */
+  resolveTarget(): { deviceId: string; name: string } | null {
+    const session = this.session;
+    const registry = this.registry ?? { devices: [] };
+    const key = this.targetKey;
+    if (key.length === 0) {
+      const deviceId = session?.transport.currentDeviceId ?? "";
+      return deviceId.length > 0 ? { deviceId, name: this.data.deviceName } : null;
+    }
+    const recent = session?.recentDevices ?? [];
+    const match =
+      recent.find((entry) => entry.deviceId === key || entry.hardwareId === key) ?? null;
+    if (match !== null) {
+      const entry = registry.devices.find(
+        (item) =>
+          item.deviceId === match.deviceId ||
+          (match.hardwareId !== undefined && item.hardwareId === match.hardwareId),
+      );
+      return {
+        deviceId: match.deviceId,
+        name: entry?.remark ?? match.name ?? match.deviceId,
+      };
+    }
+    /* 登记表里只有 deviceId（没连过）的条目也认，方便从发现页直达。 */
+    const entry = registry.devices.find(
+      (item) => item.deviceId === key || item.hardwareId === key,
+    );
+    if (entry !== undefined) {
+      return { deviceId: entry.deviceId, name: entry.remark ?? entry.deviceId };
+    }
+    return null;
+  },
+
+  /** 标题优先显示备注名（登记表），其次连接名，最后 deviceId。 */
+  applyTargetName() {
+    const session = this.session;
+    const registry = this.registry ?? { devices: [] };
+    const target = this.resolveTarget();
+    const deviceId = target?.deviceId ?? session?.transport.currentDeviceId ?? "";
+    const entry = registry.devices.find((item) => item.deviceId === deviceId);
+    const name =
+      entry?.remark ??
+      target?.name ??
+      session?.deviceInfo?.hwId ??
+      (deviceId.length > 0 ? deviceId : "设备");
+    this.setData({ deviceName: name, deviceId });
+  },
+
+  /**
+   * 进入页面时确保连着目标设备。
+   *
+   * 只做一次：连接失败后不自动重试（避免和用户手动点重试打架），
+   * 由页面上的提示条提供重试入口。
+   */
+  async ensureConnected() {
+    const session = this.session;
+    if (session === null || this.autoConnectTried) {
+      return;
+    }
+    const target = this.resolveTarget();
+    if (target === null) {
+      this.setData({ connectHint: "这台设备本机没有连接记录，请到「发现」页扫描" });
+      return;
+    }
+    this.autoConnectTried = true;
+    if (session.linkState === "ready" && session.transport.currentDeviceId === target.deviceId) {
+      return;
+    }
+    if (session.linkState === "connecting" || session.linkState === "initializing") {
+      return;
+    }
+    this.setData({ connectBusy: true, connectHint: "" });
+    try {
+      if (session.linkState === "ready") {
+        await session.switchTo(target.deviceId, target.name);
+      } else {
+        await session.connect(target.deviceId, target.name);
+      }
+      this.applyTargetName();
+    } catch (err) {
+      if (err instanceof ConnectCancelledError) {
+        return;
+      }
+      this.setData({ connectHint: `连接失败：${errorText(err)}` });
+    } finally {
+      this.setData({ connectBusy: false });
+    }
+  },
+
+  /** 手动重试连接（提示条点击）。 */
+  async onRetryConnect() {
+    this.autoConnectTried = false;
+    this.setData({ connectHint: "" });
+    await this.ensureConnected();
+  },
+
   // ---------------- 状态与派生视图 ----------------
 
-  /** 进页面时把会话已有状态铺到界面（切 tab 回来不闪空态）。 */
+  /** 进页面时把会话已有状态铺到界面（切页回来不闪空态）。 */
   syncFromSession() {
     const session = this.session;
     if (session === null) {
       return;
     }
+    this.registry = loadRegistry(createWxStorage());
     this.applyLink(session.linkState);
     const state = session.deviceState;
     if (state !== null) {
@@ -234,7 +393,7 @@ Page({
     const session = this.session;
     const view = statusView(
       state,
-      detail?.deviceName ?? session?.cachedDevice?.name ?? "",
+      detail?.deviceName ?? session?.cachedDevice?.name ?? this.data.deviceName,
       detail?.message,
       session?.reconnectPending ?? false,
       (session?.cachedDevice ?? null) !== null,
@@ -243,8 +402,12 @@ Page({
     this.setData({ ...view, ready });
     if (!ready) {
       this.clearDeviceViews();
+      if (state === "idle" && !this.autoConnectTried) {
+        void this.ensureConnected();
+      }
       return;
     }
+    this.applyTargetName();
     /* §9.1 的引脚表由会话在 ready 时异步补齐：这里先按 State 画一版，
      * 读完时 onDeviceConfig 会再触发一次 chips 重画（GPIO 到位）。 */
     const current = session?.deviceState;
@@ -295,7 +458,7 @@ Page({
       this.setData({ stripId: next });
     }
     if (next >= 0 && this.session !== null) {
-      /* 会话记住选择（跨 tab 保留），但本页所有调用仍显式传 stripId。 */
+      /* 会话记住选择（跨页保留），但本页所有调用仍显式传 stripId。 */
       this.session.setActiveStripId(next);
     }
     this.applyStripPowerView(state);
@@ -304,7 +467,7 @@ Page({
       stripHint:
         next >= 0
           ? "切带只重新读设备，不会清掉任何配置"
-          : "在「设备」页打开至少一条灯带的显示开关",
+          : "在「发现」页打开至少一条灯带的显示开关",
     });
     if (changed) {
       void this.refreshSegments();
@@ -450,6 +613,7 @@ Page({
       const result = await session.setPower(this.data.power !== 1);
       if (result.kind === "ok") {
         this.applyDeviceState(result.state);
+        wx.vibrateShort?.({ type: "light", fail: () => undefined });
         return;
       }
       if (result.kind === "ack-error") {
@@ -532,7 +696,7 @@ Page({
     );
     const report = this.segmentReports.find((item) => item.segId === segId);
     /* 把「当前编辑的段」交给会话：剧本页读它来「把当前段加进阶段」。
-     * 这是跨 tab 的唯一共享状态，属于会话而不是某个页面。 */
+     * 这是跨页的唯一共享状态，属于会话而不是某个页面。 */
     this.session?.setActiveSegment(this.currentTarget());
     if (report !== undefined) {
       const rgb = segmentHueSatToRgb(report.hue, report.sat);
@@ -555,14 +719,14 @@ Page({
       this.setData({
         segmentRows: rows,
         colorHintText: this.data.ready
-          ? "点一个段改颜色，或去「段编辑」新建区间"
+          ? "点一个段改颜色，或新建一个区间"
           : "连接后可调节",
       });
     }
     this.setData({
       segmentHintText:
         rows.length === 0
-          ? "这条灯带还没有段。点「段编辑」划一个灯珠区间。"
+          ? "这条灯带还没有段。点「新建段」划一个灯珠区间。"
           : `共 ${activeCount(rows)} / ${MAX_SEGMENTS} 段`,
     });
   },
@@ -630,7 +794,7 @@ Page({
     await this.refreshSegments();
   },
 
-  /** 进段编辑页：把当前灯带与选中段带过去（草稿从设备读，spec §3.4）。 */
+  /** 进段编辑页：把当前灯带与选中段带过去（草稿从设备读）。 */
   onEditSegment(e: WechatMiniprogram.TouchEvent) {
     const stripId = this.data.stripId;
     if (stripId < 0) {
@@ -641,8 +805,18 @@ Page({
     pushTo(PAGE_ROUTES.segmentEdit, { stripId, segId });
   },
 
-  onGoDevices() {
-    switchTabTo(TAB_ROUTES.devices);
+  /** 去「剧本」tab（剧本是独立编辑器）。 */
+  onGoScripts() {
+    switchTabTo(TAB_ROUTES.scripts);
+  },
+
+  /** 进设备信息页（身份 / 固件 / 灯珠数 / 自检 / 改名 / 断开 / 删除）。 */
+  onGoDeviceInfo() {
+    if (!this.data.ready) {
+      wx.showToast({ title: "先连接设备", icon: "none" });
+      return;
+    }
+    pushTo(PAGE_ROUTES.deviceInfo);
   },
 
   // ---------------- 颜色（写入选中段） ----------------

@@ -1,4 +1,5 @@
 {
-  "navigationBarTitleText": "段编辑",
-  "usingComponents": {}
+  "usingComponents": {
+    "nav-bar": "/components/nav-bar/nav-bar"
+  }
 }

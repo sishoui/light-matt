@@ -1,5 +1,12 @@
-<view class="page">
-  <!-- 连接状态（本页不提供连接入口：从灯光页进来时已经连上） -->
+<view class="page {{themeClass}}">
+  <nav-bar
+    title="{{stripTitle}} · {{segLabel}}"
+    subtitle="{{linkText}} · {{ledCount}} 颗灯珠"
+    back="{{true}}"
+    large="{{false}}"
+  />
+
+  <!-- 连接状态（本页不提供连接入口：从设备控制页进来时已经连上） -->
   <view class="statusbar {{ready ? 'link-ready' : 'link-idle'}}">
     <view class="status-dot"></view>
     <view class="status-main">
