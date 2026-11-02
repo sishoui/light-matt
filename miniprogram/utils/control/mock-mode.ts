@@ -47,9 +47,13 @@ export function isMockDeviceId(deviceId: string): boolean {
  * 判断顺序（后面的不会覆盖前面的）：
  *  1. 用户显式开关；
  *  2. 已有真实设备记录 → 关闭；
- *  3. 否则 → 开启。
+ *  3. 否则 → 按运行环境决定（见 `mockDefaultForEnv`）。
  */
-export function mockModeEnabled(storage: SessionStorage): boolean {
+export function mockModeEnabled(
+  storage: SessionStorage,
+  /** 当前运行环境；省略时按「自动开启」（模拟器/测试路径）。 */
+  env?: MockEnv,
+): boolean {
   const pref = storage.get(MOCK_PREF_KEY);
   if (pref === "1") {
     return true;
@@ -57,7 +61,33 @@ export function mockModeEnabled(storage: SessionStorage): boolean {
   if (pref === "0") {
     return false;
   }
-  return !hasRealDevices(storage);
+  if (hasRealDevices(storage)) {
+    return false;
+  }
+  return mockDefaultForEnv(env);
+}
+
+/** 运行环境（只影响「没有真机记录时」的默认值）。 */
+export interface MockEnv {
+  /** `wx.getDeviceInfo().platform`；开发者工具是 `devtools`。 */
+  platform?: string;
+}
+
+/**
+ * 自动判断时，这台环境该不该默认开演示模式。
+ *
+ * **只有开发者工具（模拟器）默认开。** 真机上必须默认关：
+ *
+ *  - 模拟器没有 BLE 外设，`openBluetoothAdapter` 会超时，页面什么都看不到；
+ *    演示数据让设计可见，这是它存在的理由。
+ *  - 真机有 BLE。若也默认开演示模式，`MockTransport` 根本不会去扫真实蓝牙，
+ *    于是永远拿不到真机记录 → 自动开启条件永远成立 → **死循环**，
+ *    用户必须在「发现」页底部找到那个开关才出得来。表现就是
+ *    「手机上预览搜不到我的设备」（其实扫的是假设备）。
+ */
+export function mockDefaultForEnv(env?: MockEnv): boolean {
+  const platform = String(env?.platform ?? "").toLowerCase();
+  return platform === "devtools";
 }
 
 /**
@@ -69,8 +99,12 @@ export function mockModeEnabled(storage: SessionStorage): boolean {
  *
  * 返回最终是否处于演示模式。
  */
-export function reconcileMockMode(storage: SessionStorage, nowMs: number = Date.now()): boolean {
-  const enabled = mockModeEnabled(storage);
+export function reconcileMockMode(
+  storage: SessionStorage,
+  nowMs: number = Date.now(),
+  env?: MockEnv,
+): boolean {
+  const enabled = mockModeEnabled(storage, env);
   if (enabled) {
     seedMockDevices(storage, nowMs);
     return true;

@@ -124,6 +124,24 @@ describe("isLumenDevice 判定", () => {
     expect(isLumenDevice({ localName: "lumen-5662" })).toBe(true);
   });
 
+  /*
+   * 回归：Android 上常见 `localName: ""` 配 `name: "Lumen-XXXX"`。
+   * 旧实现用 `localName ?? name`，空串不是 null 所以不会回落，真设备被
+   * 自己的过滤器丢掉——表现就是「手机上搜不到设备」。
+   */
+  it("localName 是空串 / 空白串时仍认 name", () => {
+    expect(isLumenDevice({ localName: "", name: "Lumen-5662" })).toBe(true);
+    expect(isLumenDevice({ localName: "   ", name: "Lumen-5662" })).toBe(true);
+    expect(isLumenDevice({ localName: null, name: "Lumen-5662" })).toBe(true);
+    expect(isLumenDevice({ localName: undefined, name: "Lumen-5662" })).toBe(true);
+  });
+
+  it("localName 与 name 都无消息时，仍能靠 UUID 认出", () => {
+    expect(
+      isLumenDevice({ localName: "", name: "", advertisServiceUUIDs: [SERVICE_UUID] }),
+    ).toBe(true);
+  });
+
   it("认 Service UUID（大小写不敏感）", () => {
     expect(isLumenDevice({ advertisServiceUUIDs: [SERVICE_UUID] })).toBe(true);
     expect(

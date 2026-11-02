@@ -8,14 +8,25 @@ import type { DeviceState, RGB } from "../protocol/types";
 
 /** 从 wx 取平台；devtools 归到 other（BLE 能力只模拟一部分）。 */
 export function detectPlatform(): "android" | "ios" | "other" {
+  const platform = detectRuntimePlatform();
+  if (platform === "android") return "android";
+  if (platform === "ios") return "ios";
+  return "other";
+}
+
+/**
+ * 原始运行平台串（`android` / `ios` / `devtools` / 空串）。
+ *
+ * 与 `detectPlatform()` 的区别：这里**保留 `devtools`**。演示模式的自动开启
+ * 只认这一个值——模拟器没有 BLE 外设，才需要演示数据兜底；真机必须走真实
+ * 蓝牙。`detectPlatform()` 为了 BLE 分支把 devtools 归成 other，两者不能混用。
+ */
+export function detectRuntimePlatform(): string {
   try {
     const info = wx.getDeviceInfo?.() ?? wx.getSystemInfoSync();
-    const platform = String((info as { platform?: string }).platform ?? "").toLowerCase();
-    if (platform === "android") return "android";
-    if (platform === "ios") return "ios";
-    return "other";
+    return String((info as { platform?: string }).platform ?? "").toLowerCase();
   } catch {
-    return "other";
+    return "";
   }
 }
 

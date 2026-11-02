@@ -48,7 +48,41 @@ Issue 与 spec 住在 GitHub Issues。所有操作走 `gh` CLI；在仓库目录
 
 v1（MVP）的 wayfinder 地图与决策票仍在 `docs/wayfinding/`（历史产物）。之后新开的 wayfinder effort 走 GitHub Issues。
 
-### 当前 effort：v3 扩展
+### 当前 effort：UI 重构 + 协议 v4
+
+- **规格**：[#60 导航重构 + 灯组详情页 + 进阶时间轴编辑器 + 协议 v4 逐光区亮度](https://github.com/sishoui/light-matt/issues/60)，label `spec`。
+- **本地副本**：`.scratch/ui-refactor-v4-spec.md`（与 #60 同内容，离线可读）；实现票底稿在 `.scratch/ui-refactor-tickets/`。
+- **交付顺序**：①路由与骨架 → ②发现页 + 我的页 → ③设备页 + 灯组页 → ④协议 v4。前三步是 UI 重构，第四步独立分支、只能最后合。
+- **三条不能忘的陷阱**：相对 import 不能指向目录；`Page({})` 的非 `data` 字段必须在 `onLoad` 初始化；快捷档写整组前必须先清掉其它光区。
+
+**实现票（9 张，原生阻塞边已建；#69 因 GitHub 循环依赖保护只能靠正文的 Parent 引用）**
+
+```
+#61 路由与页面骨架            ← frontier，可立即开始
+ ├─ #62 发现页 + 我的页
+ └─ #63 设备页瘦身
+      └─ #64 灯组页 · 简单档   (同时阻塞于 #61)
+           └─ #65 时间轴与时长
+                └─ #66 光区轴与灯珠弹窗
+                     └─ #67 效果面板
+                          └─ #69 小程序编解码接 v4  (同时阻塞于 #68)
+
+#68 协议 v4 · 契约、向量与固件  ← 独立分支，可与 #61–#67 并行
+```
+
+| 票 | 标题 | 阻塞于 |
+|---|---|---|
+| #61 | 路由与页面骨架 | — |
+| #62 | 发现页 + 我的页 | #61 |
+| #63 | 设备页瘦身 | #61 |
+| #64 | 灯组页 · 简单档 | #61 #63 |
+| #65 | 进阶档 · 时间轴与时长 | #64 |
+| #66 | 进阶档 · 光区轴与灯珠弹窗 | #65 |
+| #67 | 进阶档 · 效果面板 | #66 |
+| #68 | 协议 v4 · 契约、向量与固件 | — |
+| #69 | 小程序编解码接 v4 | #67 #68 |
+
+### 上一 effort：v3 扩展
 
 - **规格（实现层）**：[#35 lumen v3 · 实现规格](https://github.com/sishoui/light-matt/issues/35)，label `spec`。11 张实现票是它的 sub-issues。
 - **字节细节**的唯一真相是 `docs/protocol-v3.md`（v3 契约，含分片与两层段）；可执行副本是 `docs/protocol-testvectors-v3.json`，由 `scripts/gen-protocol-testvectors-v3.mjs` 生成 —— **改契约必须重新生成向量**。

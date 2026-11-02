@@ -164,20 +164,40 @@ describe("MockTransport：与真机同形", () => {
 });
 
 describe("演示数据播种（mock-mode）", () => {
-  it("没有任何记录时默认开启演示模式", () => {
+  it("没有任何记录时，模拟器默认开启演示模式", () => {
     const storage = createSessionStorage();
-    expect(mockModeEnabled(storage)).toBe(true);
+    expect(mockModeEnabled(storage, { platform: "devtools" })).toBe(true);
     expect(hasRealDevices(storage)).toBe(false);
   });
 
-  it("有真机记录时默认关闭", () => {
-    const storage = createSessionStorage({
-      [RECENT_DEVICES_KEY]: JSON.stringify([
-        { deviceId: "REAL:01", lastConnectedAt: 1000 },
-      ]),
-    });
-    expect(mockModeEnabled(storage)).toBe(false);
-    expect(hasRealDevices(storage)).toBe(true);
+  /*
+   * 回归：真机默认**必须**关。若真机也自动开启，MockTransport 不会去扫
+   * 真实蓝牙 → 永远没有真机记录 → 自动开启条件永远成立 → 死循环，
+   * 表现就是「手机上预览搜不到设备」（扫的是假设备）。
+   */
+  it("没有任何记录时，真机默认关闭演示模式（否则会死循环）", () => {
+    for (const platform of ["android", "ios", "windows", "mac", ""]) {
+      const storage = createSessionStorage();
+      expect(mockModeEnabled(storage, { platform })).toBe(false);
+    }
+  });
+
+  it("有真机记录时任何环境都关闭", () => {
+    for (const platform of ["devtools", "android", "ios"]) {
+      const storage = createSessionStorage({
+        [RECENT_DEVICES_KEY]: JSON.stringify([
+          { deviceId: "REAL:01", lastConnectedAt: 1000 },
+        ]),
+      });
+      expect(mockModeEnabled(storage, { platform })).toBe(false);
+      expect(hasRealDevices(storage)).toBe(true);
+    }
+  });
+
+  it("真机上用户仍可显式打开演示模式", () => {
+    const storage = createSessionStorage();
+    setMockMode(storage, true);
+    expect(mockModeEnabled(storage, { platform: "android" })).toBe(true);
   });
 
   it("用户显式开关优先于自动判断", () => {
@@ -250,8 +270,15 @@ describe("reconcileMockMode：开关与存储收敛", () => {
   it("自动开启时播种演示设备", async () => {
     const { reconcileMockMode } = await import("../utils/control/mock-mode");
     const storage = createSessionStorage();
-    expect(reconcileMockMode(storage, 1000)).toBe(true);
+    expect(reconcileMockMode(storage, 1000, { platform: "devtools" })).toBe(true);
     expect(loadRecentDevices(storage)).toHaveLength(MOCK_DEVICES.length);
+  });
+
+  it("真机首次启动：不播种演示设备，直接走真实蓝牙", async () => {
+    const { reconcileMockMode } = await import("../utils/control/mock-mode");
+    const storage = createSessionStorage();
+    expect(reconcileMockMode(storage, 1000, { platform: "android" })).toBe(false);
+    expect(loadRecentDevices(storage)).toHaveLength(0);
   });
 
   it("有真机记录且用户没显式关过：清掉残留的演示设备", async () => {

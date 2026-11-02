@@ -25,7 +25,7 @@
  */
 
 import { ControlSession } from "./session";
-import { detectDevMode, detectPlatform } from "./platform";
+import { detectDevMode, detectPlatform, detectRuntimePlatform } from "./platform";
 import { createWxStorage } from "./device-cache";
 import { reconcileMockMode } from "./mock-mode";
 import { BleTransport } from "../ble/transport";
@@ -62,8 +62,12 @@ export function getSession(): ControlSession {
     const platform = detectPlatform();
     const devMode = detectDevMode();
     /* 播种 / 清理演示设备必须在 new ControlSession 之前：会话只在构造时
-     * 读一次 recentDevices。 */
-    mockActive = reconcileMockMode(storage);
+     * 读一次 recentDevices。
+     *
+     * 必须把运行环境传进去：真机上默认**不该**走演示模式。否则 MockTransport
+     * 不会去扫真实蓝牙 → 永远没有真机记录 → 「无真机则自动开启」的条件永远
+     * 成立，形成死循环，用户必须在发现页底部手动关掉才出得来。 */
+    mockActive = reconcileMockMode(storage, Date.now(), { platform: detectRuntimePlatform() });
     const transport = mockActive
       ? new MockTransport({ log: new FrameLog({ mirrorToConsole: devMode }), platform })
       : new BleTransport({ log: new FrameLog({ mirrorToConsole: devMode }), platform });

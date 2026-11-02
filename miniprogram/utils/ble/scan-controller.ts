@@ -32,8 +32,17 @@ const NAME_PREFIX = "lumen-";
  * 响应包里，某些 Android 机型在只开被动扫描时也拿不到。只留一条会漏设备。
  */
 export function isLumenDevice(dev: any): boolean {
-  const name = String(dev?.localName ?? dev?.name ?? "").toLowerCase();
-  if (name.startsWith(NAME_PREFIX)) {
+  /*
+   * 两个名字字段都要看，不能用 `localName ?? name`。
+   *
+   * Android 上常见 `localName: ""`（空串）配 `name: "Lumen-XXXX"`：空串不是
+   * null，`??` 不会回落到 name，于是自己的过滤器把真设备丢掉——现象就是
+   * 「手机上搜不到设备」。空白串同理，所以先去空白再判非空。
+   */
+  const names = [dev?.localName, dev?.name]
+    .map((value) => String(value ?? "").trim().toLowerCase())
+    .filter((value) => value.length > 0);
+  if (names.some((name) => name.startsWith(NAME_PREFIX))) {
     return true;
   }
   const uuids: unknown = dev?.advertisServiceUUIDs;
