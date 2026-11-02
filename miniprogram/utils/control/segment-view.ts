@@ -96,7 +96,8 @@ export function overlapError(
       continue;
     }
     if (rangesOverlap({ start, end }, row)) {
-      return `与段 ${row.segId}（${row.start}-${row.end}）重叠`;
+      /* 术语（decisions §12）：界面不出现「段」，统一叫「光区」。 */
+      return `与光区 ${row.segId + 1}（${row.start}-${row.end}）重叠`;
     }
   }
   return null;

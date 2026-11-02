@@ -443,25 +443,6 @@
   transform: translateX(-100%);
 }
 
-/* ---------------- 进阶档占位 ---------------- */
-
-.placeholder-card {
-  padding: 48rpx 36rpx;
-  gap: 12rpx;
-}
-
-.placeholder-title {
-  font-size: 32rpx;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.placeholder-text {
-  font-size: 24rpx;
-  line-height: 1.6;
-  color: var(--text-2);
-}
-
 /* ---------------- 进阶档：光区轴（#66） ---------------- */
 
 .zone-section {
@@ -567,6 +548,146 @@
   background: transparent;
   color: var(--text-2);
   box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+/* ---------------- 进阶档：效果面板（#67） ---------------- */
+
+.panel-section {
+  gap: 16rpx;
+}
+
+.panel-head-right {
+  display: flex;
+  align-items: center;
+  gap: 14rpx;
+  min-width: 0;
+}
+
+/* 类型行：四个等宽按钮。选中态用底色 + 描边，不靠字号变化（会挤动布局）。 */
+.panel-types {
+  display: flex;
+  gap: 8rpx;
+  padding: 8rpx;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+.panel-type {
+  flex: 1 1 0;
+  text-align: center;
+  padding: 16rpx 0;
+  border-radius: var(--radius-sm);
+  font-size: 25rpx;
+  font-weight: 600;
+  color: var(--text-2);
+  transition: background 160ms ease;
+}
+
+.panel-type.on {
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: 0 0 0 2rpx var(--accent);
+}
+
+.panel-type-hover {
+  background: var(--card-press);
+}
+
+/* 没有可选的光区时，类型行整体变淡且点不动（引导文字会说明原因）。 */
+.panel-type.disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+/*
+ * 色相滑轨的彩虹底。slider 盖在上面，轨道与已滑过部分都设成透明，
+ * 让底下的渐变透出来——这样「滑到哪就是什么颜色」一眼可见。
+ */
+.hue-track {
+  border-radius: 999rpx;
+  padding: 0 18rpx;
+  height: 44rpx;
+  display: flex;
+  align-items: center;
+}
+
+.hue-slider {
+  flex: 1;
+  margin: 0;
+}
+
+/* 波形 / 方向：一行选项按钮，与类型行同一套选中语义。 */
+.panel-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+}
+
+.panel-choice-row {
+  display: flex;
+  gap: 8rpx;
+}
+
+.panel-option {
+  flex: 1 1 0;
+  text-align: center;
+  padding: 14rpx 0;
+  border-radius: var(--radius-sm);
+  font-size: 23rpx;
+  color: var(--text-2);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+.panel-option.on {
+  color: var(--accent-ink);
+  background: var(--accent);
+  font-weight: 600;
+}
+
+/* 没得编辑时的引导卡：不是一片空白，而是告诉用户下一步做什么。 */
+.panel-guide {
+  padding: 28rpx 24rpx;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+.panel-guide-text {
+  font-size: 24rpx;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+
+/* 两条必须让用户知道的事实：内容只在本机、换机要重编。 */
+.panel-facts {
+  gap: 8rpx;
+}
+
+.facts-title {
+  font-size: 23rpx;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.facts-row {
+  display: flex;
+  gap: 10rpx;
+  align-items: flex-start;
+}
+
+.facts-dot {
+  font-size: 23rpx;
+  color: var(--text-3);
+  line-height: 1.6;
+}
+
+.facts-text {
+  flex: 1;
+  font-size: 22rpx;
+  line-height: 1.6;
+  color: var(--text-3);
 }
 
 /* ---------------- 灯珠弹窗（#66） ---------------- */
@@ -720,12 +841,5 @@
 .apply-error {
   font-size: 22rpx;
   color: var(--danger);
-  line-height: 1.5;
-}
-
-/* 「这个档位还用不了」这类说明：小字、不抢注意力但必须看得见。 */
-.apply-note {
-  font-size: 21rpx;
-  color: var(--text-3);
   line-height: 1.5;
 }

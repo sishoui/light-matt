@@ -44,6 +44,27 @@ import {
   writeStepZones,
 } from "../../utils/control/advanced-draft";
 import {
+  applyChoice,
+  applyPanelToZone,
+  applySlider,
+  buildEffectPanel,
+  buildTypeViews,
+  HUE_RAMP_GRADIENT,
+  PANEL_EMPTY_PLAN_GUIDE,
+  PANEL_EMPTY_STEP_GUIDE,
+  PANEL_FACTS,
+  PANEL_NO_ZONE_GUIDE,
+  PANEL_TYPE_OPTIONS,
+  isPanelSliderKey,
+  panelTypeOf,
+  paramsFromLayer,
+  switchPanelType,
+  type PanelChoiceView,
+  type PanelSliderView,
+  type PanelType,
+} from "../../utils/control/effect-panel";
+import { planIsEmpty } from "../../utils/control/plan-editor";
+import {
   buildPickerCells,
   commitPicker,
   createPickerState,
@@ -105,8 +126,8 @@ import {
   type ZoneAxisBlock,
 } from "../../utils/control/zone-axis";
 import type { ScriptDraft } from "../../utils/control/script-view";
-import { MAX_LEDS } from "../../utils/protocol/constants";
-import type { DeviceState, LinkState, SegmentReport } from "../../utils/protocol/types";
+import { MAX_LEDS, SEGMENT_TYPE } from "../../utils/protocol/constants";
+import type { DeviceState, LinkState, SegmentReport, SegmentSpec } from "../../utils/protocol/types";
 
 /** 编辑档位：简单（点效果卡）/ 进阶（时间轴 + 光区）。 */
 type StripMode = "simple" | "advanced";
@@ -198,6 +219,29 @@ Page({
     quickBusy: false,
     quickHint: "",
 
+    /* ---- 进阶档：效果面板（#67） ---- */
+    /** 四个等宽效果类型按钮（静态 / 呼吸 / 彩虹 / 流光）。 */
+    panelTypes: buildTypeViews("static"),
+    panelType: "static" as PanelType,
+    /** 参数区滑块（按类型整体替换）。 */
+    panelSliders: [] as PanelSliderView[],
+    /** 参数区选择控件（波形 / 方向）。 */
+    panelChoices: [] as PanelChoiceView[],
+    /** 预览色块（拖色相 / 饱和度时的即时反馈）。 */
+    panelColorHex: "",
+    /** 一行摘要（「呼吸 · 2 秒 · 最暗 40% · 正弦」）。 */
+    panelSummary: "",
+    /** 当前选中的光区是否可编辑（否则只有引导文字）。 */
+    panelHasZone: false,
+    /** 没得编辑时的引导（方案为空 / 这一步为空 / 没选中光区）。 */
+    panelGuide: "",
+    /** 色相滑轨的彩虹渐变。 */
+    hueRamp: HUE_RAMP_GRADIENT,
+    /** 界面必须告知的两条事实（内容只存在本机 / 换机要重编）。 */
+    panelFacts: PANEL_FACTS,
+    /** 面板上的一次性反馈（切换类型 / 选控件）。 */
+    panelHint: "",
+
     /* ---- 底部：应用并播放 ---- */
     applying: false,
     applyError: "",
@@ -255,6 +299,22 @@ Page({
   pickedSegId: -1,
   /** 灯珠弹窗的选择状态（纯数据，规则在 `led-picker`）。 */
   picker: { segId: null, anchor: null, cursor: null } as PickerState,
+  /** 面板参数属于「哪一步 × 哪个光区」；变化时从草稿重新读层（保住未下发的亮度草稿）。 */
+  panelKey: "",
+  /** 面板当前的效果类型（同时镜像到 `data.panelType` 给 WXML）。 */
+  panelMode: "static" as PanelType,
+  /** 面板的本地参数草稿（颜色 / 亮度跨类型保留）。 */
+  panelParams: paramsFromLayer("static", { type: 0, hue: 7281, sat: 255, periodMs: 0, p5: 0, flags: 0 }),
+  /** 面板的一次性反馈（`data.panelHint` 的镜像，换目标时清空）。 */
+  panelHintText: "",
+  /**
+   * 逐光区的亮度草稿（`panelKey → level`）。
+   *
+   * `level` 是协议 v4 字段，小程序编解码还没接（#69），所以它没有任何落盘位置。
+   * 用一个小表按「方案:步骤:光区」记住，用户切到另一个光区再切回来时亮度不会被
+   * 悄悄重置成 100%。#69 接上之后整张表可以直接删掉（值改从 `layer0.level` 读）。
+   */
+  panelLevels: {} as Record<string, number>,
 
   onLoad(options: Record<string, string | undefined>) {
     /* 私有状态显式兜底：Page() 不保证对象字面量字段被复制到实例上，漏掉会让
@@ -286,6 +346,18 @@ Page({
     this.timelineMeasured = false;
     this.pickedSegId = -1;
     this.picker = createPickerState(null);
+    this.panelKey = "";
+    this.panelMode = "static";
+    this.panelParams = paramsFromLayer("static", {
+      type: SEGMENT_TYPE.STATIC,
+      hue: 7281,
+      sat: 255,
+      periodMs: 0,
+      p5: 0,
+      flags: 0,
+    });
+    this.panelHintText = "";
+    this.panelLevels = {};
 
     const storage = createWxStorage();
     this.storage = storage;
@@ -536,6 +608,7 @@ Page({
     this.drafts = createAdvancedDrafts();
     this.timelineIndex = 0;
     this.pickedSegId = -1;
+    this.resetPanel();
     this.setData({
       ledCount: 0,
       ledText: "连接后显示灯珠数",
@@ -553,6 +626,15 @@ Page({
       zoneHint: "",
       pickerOpen: false,
       pickerCells: [],
+      panelTypes: buildTypeViews("static"),
+      panelType: "static",
+      panelSliders: [],
+      panelChoices: [],
+      panelColorHex: "",
+      panelSummary: "",
+      panelHasZone: false,
+      panelGuide: "",
+      panelHint: "",
     });
   },
 
@@ -634,7 +716,10 @@ Page({
     const selected = selectedZoneAfter(axisZones, this.pickedSegId);
     this.pickedSegId = selected;
     const selectedInput = axisZones.find((zone) => zone.segId === selected);
+    /* 效果面板与两条轴来自同一份草稿：选中哪一块、这一块是什么效果，都由这里一次算好。 */
+    const panel = this.panelData();
     this.setData({
+      ...panel,
       steps: blocks,
       stepCount: timelineSteps.length,
       stepIndex: this.timelineIndex,
@@ -693,6 +778,191 @@ Page({
   /** 当前灯组的灯珠数（门禁：没读到就不能划光区）。 */
   currentLedCount(): number {
     return Math.min(this.stripLedCount(), MAX_LEDS);
+  },
+
+  // ---------------- 进阶档：效果面板（#67） ----------------
+
+  /**
+   * 面板的派生数据（`setData` 片段）。
+   *
+   * 两件事在这里发生：
+   *
+   *  1. **换目标时从草稿重新读层**。`panelKey = 方案:步骤:光区`，一变就把那一片
+   *     `layer0` 读成面板草稿；没变就**保留**页面上的草稿——亮度 `level` 协议还
+   *     没有（#69），它只活在面板草稿里，每次重画都从设备读会把它冲掉；
+   *  2. **没得编辑时给引导**。方案为空 / 这一步为空 / 有光区但没选中，三种情况
+   *     文案不同：一片空白会让人以为界面坏了。
+   */
+  panelData(): Record<string, unknown> {
+    const zones = this.currentZones();
+    const zone = zones.find((item) => item.segId === this.pickedSegId) ?? null;
+    const key = `${this.data.planSlot}:${this.timelineIndex}:${zone === null ? -1 : zone.segId}`;
+    if (key !== this.panelKey) {
+      this.panelKey = key;
+      this.panelHintText = "";
+      if (zone === null) {
+        this.panelMode = "static";
+        this.panelParams = paramsFromLayer("static", {
+          type: SEGMENT_TYPE.STATIC,
+          hue: 7281,
+          sat: 255,
+          periodMs: 0,
+          p5: 0,
+          flags: 0,
+        });
+      } else {
+        this.panelMode = panelTypeOf(zone.layer0.type);
+        this.panelParams = paramsFromLayer(this.panelMode, zone.layer0);
+      }
+      /* 亮度草稿没有落盘位置（协议 v4 才有 level）：按目标记在页面里，切回来还在。 */
+      const remembered = this.panelLevels[key];
+      if (remembered !== undefined) {
+        this.panelParams = { ...this.panelParams, level: remembered };
+      }
+    }
+    const view = buildEffectPanel(this.panelMode, this.panelParams);
+    let guide = "";
+    if (zone === null) {
+      if (zones.length > 0) {
+        guide = PANEL_NO_ZONE_GUIDE;
+      } else {
+        guide = planIsEmpty(this.currentDraft()) ? PANEL_EMPTY_PLAN_GUIDE : PANEL_EMPTY_STEP_GUIDE;
+      }
+    }
+    return {
+      panelTypes: view.types,
+      panelType: view.type,
+      /* 没有可编辑的光区时不留任何滑块 / 选择控件：用户不该看到一个改不动的旋钮，
+       * 引导文字会告诉他下一步做什么。 */
+      panelSliders: zone === null ? [] : view.sliders,
+      panelChoices: zone === null ? [] : view.choices,
+      /* 预览色块与摘要也只在真有可编辑的光区时才显示：没有目标时的「静态 · 40°」
+       * 是一句凭空捏造的描述。 */
+      panelColorHex: zone === null ? "" : view.colorHex,
+      panelSummary: zone === null ? "" : view.summary,
+      panelHasZone: zone !== null,
+      panelGuide: guide,
+      panelFacts: PANEL_FACTS,
+      hueRamp: HUE_RAMP_GRADIENT,
+      panelHint: this.panelHintText,
+    };
+  },
+
+  /** 面板的一次性反馈：私有字段与 `data` 一起写，重画时不会又冒出来 / 又消失。 */
+  setPanelHint(text: string): void {
+    this.panelHintText = text;
+    this.setData({ panelHint: text });
+  },
+
+  /** 清掉面板的一次性反馈。 */
+  clearPanelHint(): void {
+    this.setPanelHint("");
+  },
+
+  /** 面板草稿回到「静态 + 默认色」（断开 / 换目标 / 无选中时用）。 */
+  resetPanel(): void {
+    this.panelKey = "";
+    this.panelMode = "static";
+    this.panelParams = paramsFromLayer("static", {
+      type: SEGMENT_TYPE.STATIC,
+      hue: 7281,
+      sat: 255,
+      periodMs: 0,
+      p5: 0,
+      flags: 0,
+    });
+    /* 亮度草稿属于「这台设备的这条灯组」：断开后连表一起作废。 */
+    this.panelLevels = {};
+    this.clearPanelHint();
+  },
+
+  /** 只重画面板（拖滑块时用：不动时间轴与光区轴，拖动才跟手）。 */
+  renderPanel(patch: Record<string, unknown> = {}): void {
+    this.setData({ ...this.panelData(), ...patch });
+  },
+
+  /**
+   * 把面板草稿写进「当前步骤 × 当前灯组 × 当前光区」的那一片。
+   *
+   * 装配走 `applyPanelToZone` → `zone-model.buildZoneSpec`：叠加层为空时叠加方式
+   * 归一为覆盖、两层定宽、深拷贝——面板只改效果，不顺手把叠加层弄丢。
+   */
+  commitPanel(): void {
+    const segId = this.pickedSegId;
+    if (segId < 0) {
+      return;
+    }
+    const zones = this.currentZones();
+    if (!zones.some((zone) => zone.segId === segId)) {
+      return;
+    }
+    this.applyStepZones(applyPanelToZone(zones, segId, this.panelMode, this.panelParams));
+  },
+
+  /** 点四个效果类型按钮之一：参数区整体替换，颜色与亮度保留。 */
+  onPanelTypeTap(e: WechatMiniprogram.TouchEvent) {
+    const type = String(e.currentTarget.dataset.type ?? "") as PanelType;
+    if (!PANEL_TYPE_OPTIONS.some((option) => option.type === type)) {
+      return;
+    }
+    /* 没有可编辑的光区时类型行是灰的（点不动），这里再挡一次渲染层的意外事件。 */
+    if (this.data.panelHasZone !== true || type === this.panelMode) {
+      return;
+    }
+    /* 先换算再改类型：`switchPanelType` 需要知道「从哪个类型切过来」。 */
+    this.panelParams = switchPanelType(this.panelParams, this.panelMode, type);
+    this.panelMode = type;
+    this.setPanelHint("颜色已经保留，其余参数按新效果重置了");
+    /* 类型是离散动作：立刻落进草稿（但不写设备——写设备只走「应用并播放」）。 */
+    this.commitPanel();
+    this.renderTimeline();
+  },
+
+  /** 滑块拖动中：只改本地草稿与预览色块（绝不逐帧写设备）。 */
+  onPanelSliderChanging(e: WechatMiniprogram.SliderChanging) {
+    this.applyPanelSlider(String((e.currentTarget.dataset as { key?: string }).key ?? ""), Number(e.detail.value));
+  },
+
+  /** 松开滑块：落进草稿（写设备仍然只走「应用并播放」）。 */
+  onPanelSliderChange(e: WechatMiniprogram.SliderChange) {
+    const key = String((e.currentTarget.dataset as { key?: string }).key ?? "");
+    if (this.applyPanelSlider(key, Number(e.detail.value))) {
+      this.commitPanel();
+      this.clearPanelHint();
+      this.renderTimeline();
+    }
+  },
+
+  /** 滑块值 → 面板草稿（返回是否真的变了）。 */
+  applyPanelSlider(key: string, value: number): boolean {
+    if (!isPanelSliderKey(key) || !Number.isFinite(value)) {
+      return false;
+    }
+    const next = applySlider(this.panelParams, key, value);
+    this.panelParams = next;
+    if (key === "level") {
+      this.panelLevels[this.panelKey] = next.level;
+    }
+    if (this.data.mode === "advanced") {
+      this.renderPanel();
+    }
+    return true;
+  },
+
+  /** 波形 / 方向：点一下就是一次离散改动，直接落进草稿。 */
+  onPanelChoiceTap(e: WechatMiniprogram.TouchEvent) {
+    const key = String(e.currentTarget.dataset.key ?? "");
+    const value = Number(e.currentTarget.dataset.value);
+    if (key !== "waveform" && key !== "direction") {
+      return;
+    }
+    if (!Number.isFinite(value) || this.data.panelHasZone !== true) {
+      return;
+    }
+    this.panelParams = applyChoice(this.panelParams, key, value);
+    this.commitPanel();
+    this.clearPanelHint();
+    this.renderTimeline();
   },
 
   /**
@@ -1389,26 +1659,27 @@ Page({
   /**
    * 底部唯一的主按钮。
    *
-   * 有未写入的改动（或设备上不是「整组一张卡」）→ 先写入；成功后再播放。
-   * 写入失败就在按钮下方就地显示原因，不弹模态。已经在播放时只给提示，
+   * 简单档：有未写入的改动（或设备上不是「整组一张卡」）→ 先写入，成功后再播放。
+   * 进阶档：把当前步骤 × 当前灯组的光区写进设备（`replaceStepZonesInList`
+   * 语义：只替换这一片，别的灯组 / 别的步骤一字不动），再播放整套方案。
+   *
+   * 两种档位写入失败都在按钮下方就地显示原因，不弹模态。已经在播放时只给提示，
    * 不重复发播放命令。
    */
   async onApplyAndPlay() {
     const session = this.session;
-    /* 进阶档的时间轴还写不进设备（光区在 #66 / #67）：按下去会误写简单档
-     * 的那张卡，所以这里直接拒绝并说明原因。 */
-    if (this.data.mode === "advanced") {
-      wx.showToast({ title: "光区接上后才能播放进阶编排", icon: "none" });
-      return;
-    }
     const reason = this.disabledReason();
     if (session === null || reason !== "") {
       if (reason !== "") {
-        wx.showToast({ title: reason, icon: "none" });
+        this.setData({ applyError: reason });
       }
       return;
     }
     if (this.data.applying) {
+      return;
+    }
+    if (this.data.mode === "advanced") {
+      await this.applyAdvanced();
       return;
     }
     if (this.quickCardId === null) {
@@ -1449,5 +1720,126 @@ Page({
     } finally {
       this.setData({ applying: false });
     }
+  },
+
+  /**
+   * 进阶档的「应用并播放」：写入当前步骤 × 当前灯组 → 再播放。
+   *
+   * 写入的语义是 `replaceStepZonesInList`：只替换**当前步骤里当前灯组**那一片
+   * 光区，别的灯组、别的步骤一字不动（草稿里已经这么存，这里只是把它落到设备）。
+   * 这与 #64 简单档的「写整组再播」是同一条路径，区别只在写多少：
+   *
+   *  1. 写入前若在播放 → 先停（设备按方案渲染时实时光区不可见）；
+   *  2. 先 `queryStrip` 读回真实光区，把**这一组**的旧光区全清掉——
+   *     协议要求同组光区不重叠，不清就会回 `InvalidParam`（陷阱 #3）；
+   *  3. 按草稿逐个 `setSegment`；
+   *  4. `setPlayback(1, loop)`。
+   *
+   * 任何一步失败都落到 `applyError`（按钮下方就地显示），不弹模态。
+   */
+  async applyAdvanced(): Promise<void> {
+    const session = this.session;
+    if (session === null) {
+      return;
+    }
+    const zones = this.currentZones();
+    if (zones.length === 0) {
+      this.setData({
+        applyError: planIsEmpty(this.currentDraft())
+          ? PANEL_EMPTY_PLAN_GUIDE
+          : PANEL_EMPTY_STEP_GUIDE,
+      });
+      return;
+    }
+    const stripId = this.data.stripId;
+    this.setPanelHint("");
+    this.setData({ applying: true, applyError: "" });
+    /* 写入前先快照设备上这一组的光区：清空之后任何一帧失败都能**尽力还原**，
+     * 否则用户会看到灯直接灭了（比「写入失败」更糟）。 */
+    let restore: SegmentSpec[] = [];
+    try {
+      const state = session.deviceState;
+      if (state !== null && state.playbackState !== 0) {
+        await session.setPlayback(0, (state.flags & 0x01) !== 0);
+      }
+      /* ① 当前步骤 × 当前灯组：先读回、清掉这一组的旧光区，再逐个写。 */
+      const current = await session.queryStrip(stripId);
+      if (current.kind === "ok") {
+        this.segmentReports = current.reports.filter((report) => report.stripId === stripId);
+      }
+      restore = this.segmentReports.map((report) => ({
+        stripId: report.stripId,
+        segId: report.segId,
+        start: report.start,
+        end: report.end,
+        blend: report.blend,
+        layer0: { ...report.layer0 },
+        layer1: { ...report.layer1 },
+      }));
+      for (const report of this.segmentReports) {
+        const cleared = await session.clearSegment(stripId, report.segId);
+        if (!cleared.ok) {
+          throw new Error(resultText(cleared.resultCode));
+        }
+      }
+      for (const zone of zones) {
+        const ack = await session.setSegment(zone);
+        if (!ack.ok) {
+          throw new Error(resultText(ack.resultCode));
+        }
+      }
+      /* ② 播放（读回的 State 是权威，用它刷播放态）。 */
+      const loop = state !== null && (state.flags & 0x01) === 1;
+      const played = await session.setPlayback(1, loop);
+      if (played.kind !== "ok") {
+        const message =
+          played.kind === "ack-error"
+            ? resultText(played.ack.resultCode)
+            : played.kind === "stale"
+              ? "连接已经切换，这次播放的结果已丢弃"
+              : played.message;
+        this.setData({ applyError: message });
+        await this.refreshSegments();
+        return;
+      }
+      if (played.state !== undefined && played.state !== null) {
+        this.applyDeviceState(played.state);
+      }
+      this.setPanelHint("已写入并开始播放");
+      await this.refreshSegments();
+    } catch (err) {
+      this.setData({ applyError: `写入失败：${errorText(err)}` });
+      await this.restoreZones(restore);
+    } finally {
+      this.setData({ applying: false });
+    }
+  },
+
+  /**
+   * 尽力把写入前的光区写回去（失败路径用，**不再报错**）。
+   *
+   * 「清空 → 逐个写」之间任何一帧失败都会让这一组变暗；先快照再还原，用户最多
+   * 看到灯闪一下，而不是莫名其妙全灭。还原本身失败就算了——原来的错误更重要。
+   */
+  async restoreZones(zones: readonly SegmentSpec[]): Promise<void> {
+    const session = this.session;
+    if (session === null) {
+      return;
+    }
+    try {
+      const stripId = this.data.stripId;
+      const current = await session.queryStrip(stripId);
+      if (current.kind === "ok") {
+        for (const report of current.reports.filter((item) => item.stripId === stripId)) {
+          await session.clearSegment(stripId, report.segId);
+        }
+      }
+      for (const zone of zones) {
+        await session.setSegment(zone);
+      }
+    } catch {
+      /* 还原失败不改变已显示的原始原因。 */
+    }
+    await this.refreshSegments();
   },
 });

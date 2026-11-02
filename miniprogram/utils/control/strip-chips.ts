@@ -81,7 +81,8 @@ export function buildStripChips(input: StripChipInput): StripChip[] {
 
 /** 一条 chip 的文字摘要（窄屏与调试共用一份规则）。 */
 export function stripChipSummary(chip: Pick<StripChip, "ledCount" | "segCount" | "on">): string {
-  return `${chip.ledCount} 灯 · ${chip.segCount} 段 · ${chip.on ? "开" : "关"}`;
+  /* 术语（decisions §12）：界面不出现「段」，统一叫「光区」。 */
+  return `${chip.ledCount} 灯 · ${chip.segCount} 个光区 · ${chip.on ? "开" : "关"}`;
 }
 
 /**
