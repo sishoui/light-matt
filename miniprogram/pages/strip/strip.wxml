@@ -256,12 +256,104 @@
       <text wx:if="{{zoneHint}}" class="section-hint">{{zoneHint}}</text>
     </view>
 
-    <!-- 效果参数：本票仍是占位（#67 接上） -->
-    <view class="section placeholder-card">
-      <text class="placeholder-title">效果参数即将可用</text>
-      <text class="placeholder-text">
-        光区已经能划了；下一步为每个光区选效果与参数。
-      </text>
+    <!-- ---------------- 进阶档：效果面板（#67） ---------------- -->
+    <view class="section panel-section">
+      <view class="section-head">
+        <text class="section-title">效果</text>
+        <view class="panel-head-right">
+          <text class="section-value">{{panelSummary}}</text>
+          <view wx:if="{{panelColorHex}}" class="param-preview" style="background: {{panelColorHex}}"></view>
+        </view>
+      </view>
+
+      <!--
+        效果类型行在最上：四个等宽按钮。切换后参数区**整体替换**（列表来自
+        effect-panel.SLIDER_KEYS，页面不按类型写 wx:if 集合）。
+      -->
+      <view class="panel-types">
+        <view
+          wx:for="{{panelTypes}}"
+          wx:key="type"
+          class="panel-type {{item.selected ? 'on' : ''}} {{panelHasZone ? '' : 'disabled'}}"
+          data-type="{{item.type}}"
+          bindtap="onPanelTypeTap"
+          hover-class="panel-type-hover"
+        >{{item.name}}</view>
+      </view>
+
+      <block wx:if="{{panelHasZone}}">
+        <view wx:for="{{panelSliders}}" wx:key="key" class="param-row">
+          <view class="param-head">
+            <text class="param-label">{{item.label}}</text>
+            <text class="param-value mono">{{item.display}}</text>
+          </view>
+          <!-- 色相滑轨铺一条彩虹渐变（hsl，不是 hex 常量）；其余滑轨走主题色。 -->
+          <view wx:if="{{item.rainbow}}" class="hue-track" style="background: {{hueRamp}}">
+            <slider
+              class="param-slider hue-slider"
+              min="{{item.min}}"
+              max="{{item.max}}"
+              step="{{item.step}}"
+              value="{{item.value}}"
+              data-key="{{item.key}}"
+              disabled="{{!ready}}"
+              activeColor="rgba(0, 0, 0, 0)"
+              backgroundColor="rgba(0, 0, 0, 0)"
+              block-size="22"
+              bindchanging="onPanelSliderChanging"
+              bindchange="onPanelSliderChange"
+            />
+          </view>
+          <slider
+            wx:else
+            class="param-slider"
+            min="{{item.min}}"
+            max="{{item.max}}"
+            step="{{item.step}}"
+            value="{{item.value}}"
+            data-key="{{item.key}}"
+            disabled="{{!ready}}"
+            activeColor="#ff9500"
+            backgroundColor="rgba(120, 120, 128, 0.2)"
+            block-size="22"
+            bindchanging="onPanelSliderChanging"
+            bindchange="onPanelSliderChange"
+          />
+          <!-- 逐光区亮度要等小程序编解码接上 v4（#69）才真正生效。 -->
+          <text wx:if="{{item.note}}" class="param-note">{{item.note}}</text>
+        </view>
+
+        <view wx:for="{{panelChoices}}" wx:key="key" class="panel-choice">
+          <text class="param-label">{{item.label}}</text>
+          <view class="panel-choice-row">
+            <view
+              wx:for="{{item.options}}"
+              wx:for-item="option"
+              wx:key="value"
+              class="panel-option {{option.value === item.value ? 'on' : ''}}"
+              data-key="{{item.key}}"
+              data-value="{{option.value}}"
+              bindtap="onPanelChoiceTap"
+            >{{option.label}}</view>
+          </view>
+        </view>
+
+        <text wx:if="{{panelHint}}" class="section-hint">{{panelHint}}</text>
+      </block>
+
+      <!-- 没得编辑时给引导，而不是一片空白 -->
+      <view wx:else class="panel-guide">
+        <text class="panel-guide-text">{{panelGuide}}</text>
+      </view>
+    </view>
+
+    <!-- 两条必须让用户知道的事实：内容只在本机 / 换机要重编 -->
+    <view class="section panel-facts">
+      <text class="facts-title">关于这套方案</text>
+      <view wx:for="{{panelFacts}}" wx:key="*this" class="facts-row">
+        <text class="facts-dot">·</text>
+        <text class="facts-text">{{item}}</text>
+      </view>
     </view>
   </block>
 
@@ -316,13 +408,10 @@
   <view class="apply-bar">
     <button
       class="btn primary apply-play"
-      disabled="{{!ready || applying || mode === 'advanced'}}"
+      disabled="{{!ready || applying}}"
       bindtap="onApplyAndPlay"
     >{{applying ? '正在应用…' : '应用并播放'}}</button>
-    <!-- 进阶档还不能写入：说清楚原因，别让用户点了没反应 -->
-    <text wx:if="{{mode === 'advanced'}}" class="apply-note">
-      进阶编排的「应用并播放」要等效果参数接上之后可用；现在可以先用「简单」档。
-    </text>
+    <!-- 写入失败就地说明原因（不弹模态），见 decisions §5 -->
     <text wx:if="{{applyError}}" class="apply-error">{{applyError}}</text>
   </view>
 

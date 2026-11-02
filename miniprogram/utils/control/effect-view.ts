@@ -79,11 +79,11 @@ export const WAVEFORM_OPTIONS: ReadonlyArray<{ value: number; name: string }> = 
   { value: WAVEFORM.SQUARE, name: WAVEFORM_NAMES[WAVEFORM.SQUARE] },
 ];
 
-/** 叠加方式选项（顺序 = 协议值），带一行说明。 */
+/** 叠加方式选项（顺序 = 协议值），带一行说明（界面不出现「层」这个字）。 */
 export const BLEND_OPTIONS: ReadonlyArray<{ value: BlendMode; name: string; hint: string }> = [
-  { value: BLEND.OVER, name: "覆盖", hint: "第 2 层直接替换第 1 层" },
-  { value: BLEND.MULTIPLY, name: "相乘", hint: "两层相乘：明暗叠加、颜色不变形" },
-  { value: BLEND.ADD, name: "相加", hint: "两层相加，更亮（可能过曝到白）" },
+  { value: BLEND.OVER, name: "覆盖", hint: "叠加效果直接替换主效果" },
+  { value: BLEND.MULTIPLY, name: "相乘", hint: "两者相乘：明暗叠加、颜色不变形" },
+  { value: BLEND.ADD, name: "相加", hint: "两者相加，更亮（可能过曝到白）" },
 ];
 
 /** 叠加方式名称（未知值按覆盖显示）。 */
@@ -162,7 +162,7 @@ export function setCollapsed(
 
 /** 一层的展示态（WXML 只读这一份，编辑一律回写到草稿）。 */
 export interface LayerView {
-  /** 显示名：「第 1 层（必填）」/「第 2 层（可选）」（#58 再统一术语）。 */
+  /** 显示名：「主效果（必填）」/「叠加效果（可选）」（界面不出现「层」，见 decisions §12）。 */
   label: string;
   mode: LayerMode;
   /** 该层是否为空（只有叠加效果可能为空）。 */
@@ -205,8 +205,9 @@ export function layerView(
   const empty = layer.type === NO_EFFECT;
   const mode = layerModeOf(layer.type);
   return {
-    /* #53 是纯重构：文案保持原样，#58 才统一术语。 */
-    label: index === 0 ? "第 1 层（必填）" : "第 2 层（可选）",
+    /* 术语（decisions §12）：界面只有「灯组 / 光区 / 步骤 / 方案」，「层」不能出现，
+     * 所以两层改叫主效果 / 叠加效果。 */
+    label: index === 0 ? "主效果（必填）" : "叠加效果（可选）",
     mode,
     empty,
     /* 空层永远展开：否则「叠加效果」只剩一行标题，用户找不到打开它的入口。 */
@@ -265,6 +266,6 @@ export function buildLayerPanel(
     blend: effective,
     blendHint: enabled
       ? (BLEND_OPTIONS.find((option) => option.value === effective)?.hint ?? "")
-      : "第 2 层关闭时固定为覆盖",
+      : "叠加效果关闭时固定为覆盖",
   };
 }

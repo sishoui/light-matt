@@ -100,10 +100,10 @@ describe("#41 strip chips：逐带真实灯珠数与 GPIO", () => {
     expect(chips.map((chip) => chip.selected)).toEqual([false, true, false]);
   });
 
-  it("摘要文本包含灯珠数 / 段数 / 开关（调试与窄屏共用一份规则）", () => {
+  it("摘要文本包含灯珠数 / 光区数 / 开关（调试与窄屏共用一份规则）", () => {
     const chip = buildStripChips({ state: state(), config: config(), enabled: [0, 1, 2] })[2];
-    expect(stripChipSummary(chip)).toBe("60 灯 · 5 段 · 开");
-    expect(stripChipSummary({ ...chip, on: false, animating: false })).toBe("60 灯 · 5 段 · 关");
+    expect(stripChipSummary(chip)).toBe("60 灯 · 5 个光区 · 开");
+    expect(stripChipSummary({ ...chip, on: false, animating: false })).toBe("60 灯 · 5 个光区 · 关");
   });
 });
 
