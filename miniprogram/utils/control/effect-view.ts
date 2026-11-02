@@ -25,7 +25,7 @@ import {
 import type { BlendMode, EffectLayer } from "../protocol/types";
 import { PRESETS, rgbToHex, rgbToSegmentParams, segmentHueSatToRgb, type ColorPreset } from "../color/hsv";
 import { blendEnabled, effectiveBlend, layerPeriodFloor } from "./segment-editor";
-import { percentOf255, spanText, tailText } from "./segment-view";
+import { percentOf100, spanText, tailText } from "./segment-view";
 
 /**
  * 层在界面上的灯效档位。
@@ -218,7 +218,8 @@ export function layerView(
     periodText: empty ? "—" : layer.periodMs === 0 ? "静止" : `${layer.periodMs}ms`,
     periodFloor: layerPeriodFloor(layer.type),
     minLevel: layer.p5,
-    minLevelText: percentOf255(layer.p5),
+    /* v4：呼吸的最低亮是相对百分比 0-100（不是 0-255）。 */
+    minLevelText: percentOf100(layer.p5),
     waveform: (layer.flags >> 1) & 0x03,
     waveformOptions: WAVEFORM_OPTIONS,
     span: layer.p5,

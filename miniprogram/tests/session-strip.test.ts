@@ -32,7 +32,7 @@ const REPORT_STATIC: SegmentReport = {
   start: 0,
   end: 9,
   blend: 0,
-  layer0: { type: 0, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0 },
+  layer0: { type: 0, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0, level: 100 },
   layer1: { ...EMPTY_EFFECT },
   type: 0,
   hue: 0,

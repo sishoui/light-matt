@@ -3,8 +3,8 @@
  *
  * ## 为什么要有这个模块
  *
- * 光区的线上形状是 `SegmentSpec`（21 字节：灯组 / 槽位 / 区间 / 叠加方式 +
- * 两层定宽灯效）。此前有三处各自拼这个对象：
+ * 光区的线上形状是 `SegmentSpec`（v4 是 23 字节：灯组 / 槽位 / 区间 / 叠加方式 +
+ * 两层各 9 字节灯效）。此前有三处各自拼这个对象：
  *
  *  - `segment-editor.assembleSpec`（段编辑页的草稿 → spec）
  *  - `quick-effects.buildQuickSpec`（快捷档整组 → spec）
@@ -19,12 +19,17 @@
  *  - **区间与布局**归 `effect-layout`（校验 / 重叠 / 切分 / 逐灯珠）
  *  - **灯效参数校验**归 `segment-editor`
  *  - **本模块只做装配与读取**，不判断灯效参数是否合法——那是预检的事；
- *    这里只保证结构正确（层数定宽、空层叠加方式归一、字段深拷贝）。
+ *    这里只保证结构正确（层数定宽、空层叠加方式归一、**level 归一**、字段深拷贝）。
+ *
+ * v4 的 `level`（逐光区亮度）在装配时统一归一（`normalizeLayerLevel`）：
+ * 空层恒 0、非空层钳到 0-100 且缺失按满亮。**所有构造光区的路径都必须经过
+ * 这里**，否则「用户调了亮度却被设备拒」只会在真机上暴露。
  *
  * 纯函数、不碰 wx / BLE。
  */
 
 import { BLEND, NO_EFFECT } from "../protocol/constants";
+import { normalizeLayerLevel } from "../protocol/segment-shapes";
 import type { BlendMode, EffectLayer, SegmentReport, SegmentSpec } from "../protocol/types";
 import { emptyLayer } from "./segment-model";
 
@@ -81,14 +86,15 @@ export function normalizedBlend(layer1: EffectLayer | null | undefined, blend: B
 }
 
 function copyLayer(layer: EffectLayer): EffectLayer {
-  return { ...layer };
+  return normalizeLayerLevel(layer);
 }
 
 /**
  * 构造一个光区（`SegmentSpec`）。
  *
- * 保证三件事：两层定宽（没有叠加效果时补空层）、叠加方式已归一、
- * 两层都是副本（改调用方的草稿不会污染已下发的对象）。
+ * 保证四件事：两层定宽（没有叠加效果时补空层）、叠加方式已归一、
+ * 两层都是副本（改调用方的草稿不会污染已下发的对象）、**level 已归一**
+ * （空层恒 0、非空层 0-100、缺失按满亮）。
  */
 export function buildZoneSpec(zone: ZoneInput): SegmentSpec {
   const layer1 = hasOverlay(zone.layer1) ? copyLayer(zone.layer1 as EffectLayer) : emptyLayer();

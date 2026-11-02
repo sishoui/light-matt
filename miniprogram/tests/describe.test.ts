@@ -56,28 +56,28 @@ describe("describeCommand", () => {
     );
   });
 
-  it("v3 段命令：两层一起写出来（单层也显式写 layer1=empty）", () => {
-    /* 21 字节单层静态段：strip 0 / seg 0 / [0-9] / blend 0 / 静态红 / 空层。 */
+  it("v4 段命令：两层一起写出来（含各自亮度；单层也显式写 layer1=empty）", () => {
+    /* 23 字节单层静态段：strip 0 / seg 0 / [0-9] / blend 0 / 静态红(level 100) / 空层。 */
     expect(
       describeCommand(
         CMD.SET_SEGMENT,
-        hexToBytes("0000000900000000FF00000000FF00000000000000") as Uint8Array,
+        hexToBytes("0000000900000000FF0000000064FF0000000000000000") as Uint8Array,
       ),
     ).toBe(
       "SetSegment strip=0 seg=0 range=0-9 blend=over " +
-        "layer0=static(hue=0 sat=255) layer1=empty",
+        "layer0=static(hue=0 sat=255 level=100) layer1=empty",
     );
 
     /* 两层：彩虹打底 + 呼吸相乘。 */
     expect(
       describeCommand(
         CMD.SET_SEGMENT,
-        hexToBytes("0003003F01020000FFA00FFF0001000000DC051400") as Uint8Array,
+        hexToBytes("0003003F01020000FFA00FFF006401000000DC05140064") as Uint8Array,
       ),
     ).toBe(
       "SetSegment strip=0 seg=3 range=0-63 blend=multiply " +
-        "layer0=rainbow(hue=0 sat=255 period=4000 span=255 reverse=0 flags=0x00) " +
-        "layer1=breathing(hue=0 sat=0 period=1500 min_level=20 waveform=正弦 flags=0x00)",
+        "layer0=rainbow(hue=0 sat=255 level=100 period=4000 span=255 reverse=0 flags=0x00) " +
+        "layer1=breathing(hue=0 sat=0 level=100 period=1500 min_level=20 waveform=正弦 flags=0x00)",
     );
   });
 
@@ -183,7 +183,7 @@ describe("describeAck / describeState / describeEvent", () => {
 
   it("State read 长度不是 37 时保留长度而不是瞎解析", () => {
     expect(describeStateReadBytes(new Uint8Array(14))).toBe(
-      "State read（14 字节，无法解析；v3 要求 37 字节）",
+      "State read（14 字节，无法解析；v4 要求 37 字节）",
     );
   });
 
@@ -199,7 +199,7 @@ describe("describeAck / describeState / describeEvent", () => {
 describe("v3 新增报告的描述", () => {
   it("SegmentReport 描述含 blend 与两层", () => {
     const report = parseSegmentReport(
-      hexToBytes("0003003F01020000FFA00FFF0001000000DC051400") as Uint8Array,
+      hexToBytes("0003003F01020000FFA00FFF006401000000DC05140064") as Uint8Array,
     );
     expect(describeSegmentReport(report)).toContain("blend=multiply");
     expect(describeSegmentReport(report)).toContain("layer1=breathing(");

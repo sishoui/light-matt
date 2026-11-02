@@ -2,7 +2,7 @@
  * #13 自检命令的小程序侧测试。
  *
  * 覆盖：
- *  1. SelfTest 是 0 字节载荷的 0x07，编码与 docs/protocol-testvectors-v3.json
+ *  1. SelfTest 是 0 字节载荷的 0x07，编码与 docs/protocol-testvectors-v4.json
  *     的 `self_test` 向量逐字节一致；
  *  2. session.selfTest() 只发一帧、不改本地状态/UI（自检是设备侧临时覆盖）；
  *  3. ACK 非 0 与异常都如实上报，不伪装成功；
@@ -33,7 +33,7 @@ interface VectorCase {
 }
 
 const vectors = JSON.parse(
-  readFileSync(new URL("../../docs/protocol-testvectors-v3.json", import.meta.url), "utf8"),
+  readFileSync(new URL("../../docs/protocol-testvectors-v4.json", import.meta.url), "utf8"),
 ) as { cases: VectorCase[] };
 
 function vector(name: string): VectorCase {

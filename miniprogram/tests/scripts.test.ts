@@ -1,7 +1,7 @@
 /**
  * #32 剧本在 v3 下的形状：命令构造器 / 载荷解析 / 下发计划 / 进度视图 / 校验。
  *
- * 字节期望值直接来自 docs/protocol-testvectors-v3.json（两端共用的唯一真相）。
+ * 字节期望值直接来自 docs/protocol-testvectors-v4.json（两端共用的唯一真相）。
  * v3 变化：ScriptStage 6 字节（fade）、ScriptSegment 23 字节（两层 21 字节）、
  * ScriptBegin 允许 8 条灯带、ScriptCommit 可能回 ScriptTooLarge(0x0A)。
  *
@@ -63,7 +63,7 @@ interface VectorCase {
 }
 
 const vectors = JSON.parse(
-  readFileSync(new URL("../../docs/protocol-testvectors-v3.json", import.meta.url), "utf8"),
+  readFileSync(new URL("../../docs/protocol-testvectors-v4.json", import.meta.url), "utf8"),
 ) as { cases: VectorCase[] };
 
 function vector(name: string): VectorCase {
@@ -122,7 +122,7 @@ describe("#32 剧本命令构造器与 v3 向量逐字节一致", () => {
     );
   });
 
-  it("ScriptSegment 固定 23 字节（两层 21 + script/stage）", () => {
+  it("ScriptSegment 固定 25 字节（两层 23 + script/stage）", () => {
     const c = vector("script_segment_two_layer");
     const req = cmdScriptSegment(0, 0, {
       stripId: 0,
@@ -137,8 +137,9 @@ describe("#32 剧本命令构造器与 v3 向量逐字节一致", () => {
         periodMs: 4000,
         p5: 255,
         flags: 0,
+        level: 100,
       },
-      layer1: { type: SEGMENT_TYPE.BREATHING, hue: 0, sat: 0, periodMs: 1500, p5: 20, flags: 0 },
+      layer1: { type: SEGMENT_TYPE.BREATHING, hue: 0, sat: 0, periodMs: 1500, p5: 20, flags: 0, level: 100 },
     });
     expect(req.payload.length).toBe(SCRIPT_SEGMENT_BYTES);
     expect(bytesToCompactHex(req.payload)).toBe(c.payload_hex);
@@ -162,11 +163,15 @@ describe("#32 剧本命令构造器与 v3 向量逐字节一致", () => {
     expect(() => parseSegmentPayload(payload.subarray(2))).toThrow(RangeError);
   });
 
-  it("扁平段草稿也能进剧本（自动补空层），整帧不再顶到 20 字节", () => {
+  it("扁平段草稿也能进剧本（自动补空层，level 满亮）", () => {
     const req = cmdScriptSegment(0, 0, staticSegment(0, 0, 0, 29, 0x0000, 0xff));
-    expect(req.payload.length).toBe(23);
-    expect(req.payload.length + 8).toBe(31);
-    expect(req.payload[2 + 13]).toBe(0xff); /* layer1 空 */
+    expect(req.payload.length).toBe(SCRIPT_SEGMENT_BYTES);
+    expect(req.payload.length).toBe(25);
+    expect(req.payload.length + 8).toBe(33);
+    /* layer1 从段体的偏移 14 起，前面还有 script/stage 两字节 → 16。 */
+    expect(req.payload[2 + 14]).toBe(0xff); /* layer1 空 */
+    /* layer0 的 level 在段体偏移 13（→ 载荷偏移 15）。 */
+    expect(req.payload[2 + 13]).toBe(100);
   });
 
   it("构造器拒绝越界参数（不猜、不静默截断）", () => {
@@ -209,7 +214,7 @@ describe("#32 剧本命令构造器与 v3 向量逐字节一致", () => {
       ),
     ).toBe(
       "ScriptSegment script=0 stage=1 strip=0 seg=0 range=0-29 blend=over " +
-        "layer0=static(hue=0 sat=255) layer1=empty",
+        "layer0=static(hue=0 sat=255 level=100) layer1=empty",
     );
     expect(describeCommand(0x17, cmdScriptCommit(0).payload)).toBe("ScriptCommit script=0");
     expect(describeCommand(0x18, cmdScriptAbort(0).payload)).toBe("ScriptAbort script=0");
@@ -324,7 +329,7 @@ describe("#32 下发计划（帧序是协议要求）", () => {
       expect(step.request.payload[4] | (step.request.payload[5] << 8)).toBe(0);
     }
 
-    /* 所有 Segment 都是 23 字节，且都能解析回两层。 */
+    /* 所有 Segment 都是 25 字节，且都能解析回两层。 */
     for (const step of plan.steps.filter((s) => s.kind === "segment")) {
       expect(step.request.payload.length).toBe(SCRIPT_SEGMENT_BYTES);
       const spec = parseSegmentPayload(step.request.payload.slice(2));

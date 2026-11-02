@@ -288,7 +288,7 @@ export function buildAbort(scriptId: number): CommandRequest {
   return cmdScriptAbort(scriptId);
 }
 
-/* ---------------- v3 容量预检（§10.4） ---------------- */
+/* ---------------- 容量预检（§10.4，v4 记录宽度） ---------------- */
 
 /**
  * 剧本 blob 的持久化上限（protocol-v3.md §10.4 / firmware script_blob.h）。
@@ -309,18 +309,32 @@ const SCRIPT_SLOT_HEADER_BYTES = 3;
 const SCRIPT_STAGE_HEADER_BYTES = 4;
 
 /**
+ * 一层在脚本 blob 里的宽度（firmware script_blob.c 的 `layer_wire_len`）：
+ *
+ *   - 空层：只有 type 1 字节（level 恒 0，**不写**）；
+ *   - 非空层：type 1 + 该类型的**有效**参数 + **level 1**（v4 新增）。
+ *
+ * 注意这与线上定宽 9 字节的层编码不同：blob 是变长稀疏编码，所以同一个剧本
+ * 的「下发字节数」与「持久化字节数」不是一回事。
+ */
+function layerBlobBytes(type: number): number {
+  if (type === NO_EFFECT) {
+    return 1;
+  }
+  return 1 + layerParamLength(type) + 1;
+}
+
+/**
  * 一条段记录的持久化宽度（firmware script_blob.c 的 `segment_record_len`）：
  *
- *   `3 + (1 + paramLen(layer0)) + (1 + paramLen(layer1))`
+ *   `3 + blobWidth(layer0) + blobWidth(layer1)`
  *
- * 记录头 3（start/end/blend），每层是 type 1 字节 + 该类型的**有效**参数
- * 字节数（动画 7、静态 3、空层 0）。注意这与线上定宽 8 字节的层编码不同：
- * blob 是变长稀疏编码，所以同一个剧本的「下发字节数」与「持久化字节数」
- * 不是一回事。
+ * 记录头 3（start/end/blend）。v4 在每条**非空**层多一个 level 字节，所以记录
+ * 宽度上限从 19 升到 21（`LUMEN_SCRIPT_SEGMENT_MAX` 同样是 21）。
  */
 export function scriptSegmentRecordBytes(segment: ScriptSegment): number {
   const shape = segmentShape(segment);
-  return 3 + (1 + layerParamLength(shape.layer0Type)) + (1 + layerParamLength(shape.layer1Type));
+  return 3 + layerBlobBytes(shape.layer0Type) + layerBlobBytes(shape.layer1Type);
 }
 
 /** 一套剧本的容量预估（分量 + 总量 + 是否超限）。 */

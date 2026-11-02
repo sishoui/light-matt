@@ -17,7 +17,7 @@
  * 纯函数、不碰 wx / BLE。
  */
 
-import { BLEND, MAX_STAGES } from "../protocol/constants";
+import { BLEND, LAYER_LEVEL_MAX, MAX_STAGES } from "../protocol/constants";
 import type { ScriptDraft, ScriptStageDraft } from "./script-view";
 import type { ScriptSegment } from "./script-plan";
 import type { SegmentSpec } from "../protocol/types";
@@ -102,6 +102,8 @@ export function zonesOfStep(
               periodMs: segment.periodMs,
               p5: segment.p5,
               flags: segment.flags,
+              /* 扁平草稿没有亮度字段：按满亮（等价 v3 行为）。 */
+              level: LAYER_LEVEL_MAX,
             },
             layer1: null,
           }),

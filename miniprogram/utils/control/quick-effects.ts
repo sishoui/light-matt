@@ -16,6 +16,7 @@
 
 import {
   BLEND,
+  LAYER_LEVEL_MAX,
   MAX_LEDS,
   SEGMENT_TYPE,
   WAVEFORM,
@@ -70,11 +71,17 @@ const SPEED_MS: Record<QuickSpeed, { breathing: number; animation: number }> = {
   fast: { breathing: 800, animation: 1000 },
 };
 
-/** 呼吸最暗档 → min_level（0-255，越大越暗）。 */
+/**
+ * 呼吸最暗档 → min_level **百分比**（0-100，越大越暗）。
+ *
+ * v4 起呼吸的 p5 是相对百分比（谷底 = 层亮度 × p5%），不再是绝对 0-255；
+ * 101-255 会被设备拒绝。三档沿用原来的「越大越暗」直觉（16/47/82 是旧
+ * 40/120/210 换算成百分比后的近似值）。
+ */
 const LEVEL_P5: Record<QuickLevel, number> = {
-  dim: 40,
-  mid: 120,
-  dark: 210,
+  dim: 16,
+  mid: 47,
+  dark: 82,
 };
 
 /** 流光尾长档 → tail（0-255）。 */
@@ -187,15 +194,23 @@ export function defaultParams(card: QuickEffectCard): Required<QuickParams> {
  *
  * 静态卡片的 period / p5 / flags 必须为 0（§7.1 第 6 条），这里保证；
  * 呼吸的 flags 只写波形位，彩虹/流光的 flags 只写方向位。
+ *
+ * `level` 是 v4 的逐光区亮度（0-100）；省略时为满亮 100（等价 v3 行为）。
+ * 它由灯组页的亮度滑块给出，与卡片自己的「最暗」档（`QuickParams.level`）无关。
  */
-export function buildQuickLayer(card: QuickEffectCard, params: QuickParams = {}): EffectLayer {
+export function buildQuickLayer(
+  card: QuickEffectCard,
+  params: QuickParams = {},
+  level: number = LAYER_LEVEL_MAX,
+): EffectLayer {
   const p = { ...defaultParams(card), ...params };
   const hue = clampUint16(p.hue);
   const sat = clampByte(p.sat);
+  const zoneLevel = clampLevel100(level);
 
   switch (card.kind) {
     case "solid":
-      return { type: SEGMENT_TYPE.STATIC, hue, sat, periodMs: 0, p5: 0, flags: 0 };
+      return { type: SEGMENT_TYPE.STATIC, hue, sat, periodMs: 0, p5: 0, flags: 0, level: zoneLevel };
     case "breathing":
       return {
         type: SEGMENT_TYPE.BREATHING,
@@ -204,6 +219,7 @@ export function buildQuickLayer(card: QuickEffectCard, params: QuickParams = {})
         periodMs: SPEED_MS[p.speed].breathing,
         p5: LEVEL_P5[p.level],
         flags: breathingFlags(WAVEFORM.SINE),
+        level: zoneLevel,
       };
     case "rainbow":
       return {
@@ -214,6 +230,7 @@ export function buildQuickLayer(card: QuickEffectCard, params: QuickParams = {})
         /* 彩虹的 span 固定铺满整圈，用户真正关心的是快慢与饱和度。 */
         p5: 255,
         flags: directionFlags(p.direction === "reverse"),
+        level: zoneLevel,
       };
     case "comet":
       return {
@@ -223,9 +240,10 @@ export function buildQuickLayer(card: QuickEffectCard, params: QuickParams = {})
         periodMs: SPEED_MS[p.speed].animation,
         p5: TAIL_P5[p.tail],
         flags: directionFlags(p.direction === "reverse"),
+        level: zoneLevel,
       };
     default:
-      return { type: SEGMENT_TYPE.STATIC, hue, sat, periodMs: 0, p5: 0, flags: 0 };
+      return { type: SEGMENT_TYPE.STATIC, hue, sat, periodMs: 0, p5: 0, flags: 0, level: zoneLevel };
   }
 }
 
@@ -242,6 +260,7 @@ export function buildQuickSpec(
   params: QuickParams,
   stripId: number,
   ledCount: number,
+  level: number = LAYER_LEVEL_MAX,
 ): SegmentSpec {
   const last = Math.max(0, Math.min(ledCount, MAX_LEDS) - 1);
   return buildZoneSpec({
@@ -250,7 +269,7 @@ export function buildQuickSpec(
     start: 0,
     end: last,
     blend: BLEND.OVER,
-    layer0: buildQuickLayer(card, params),
+    layer0: buildQuickLayer(card, params, level),
     layer1: null,
   });
 }
@@ -310,6 +329,14 @@ export function paramsSummary(card: QuickEffectCard, params: QuickParams = {}): 
 
 function clampByte(value: number): number {
   return Math.max(0, Math.min(255, Math.round(value)));
+}
+
+/** v4 的层亮度 0-100（非有限值按满亮）。 */
+function clampLevel100(value: number): number {
+  if (!Number.isFinite(value)) {
+    return LAYER_LEVEL_MAX;
+  }
+  return Math.max(0, Math.min(LAYER_LEVEL_MAX, Math.round(value)));
 }
 
 function clampUint16(value: number): number {

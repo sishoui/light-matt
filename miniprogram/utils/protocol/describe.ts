@@ -7,8 +7,9 @@
  * 原则：命令名 + 参数都从字节里解析，不猜、不省略；解析不了时退回 hex，
  * 保证日志永远有可对照的原始数据。
  *
- * v3：段载荷定宽 21/23 字节、两层；State 37 字节。日志必须把两层都写出来，
- * 否则「设备上的第二层」在排查时完全不可见。
+ * v4：段载荷定宽 23/25 字节、两层（每层 9 字节，含 v4 的 level）；State 37 字节。
+ * 日志必须把两层（含各自亮度）都写出来，否则「设备上的第二层」与「某层被压暗」
+ * 在排查时完全不可见。
  */
 
 import {
@@ -18,6 +19,7 @@ import {
   MAX_STRIPS,
   NO_EFFECT,
   NO_SCRIPT,
+  SCRIPT_SEGMENT_BYTES,
   SEGMENT_TYPE,
   STATE_BYTES,
   WAVEFORM_NAMES,
@@ -86,19 +88,19 @@ export function blendName(blend: number): string {
 }
 
 /**
- * 一层的展示文本，按 type 解释同一个 p5 字段：
- *   0x00 静态：`static(hue=.. sat=..)`；
- *   0x01 呼吸：period / min_level / waveform；
+ * 一层的展示文本，按 type 解释同一个 p5 字段，并带上 v4 的 `level`：
+ *   0x00 静态：`static(hue=.. sat=.. level=..)`；
+ *   0x01 呼吸：period / min_level(百分比) / waveform；
  *   0x02 彩虹：period / span / reverse；
  *   0x03 流光：period / tail / reverse；
- *   0xFF 空层：`empty`。
+ *   0xFF 空层：`empty`（空层没有亮度可言，不写 level）。
  */
 export function describeLayer(layer: EffectLayer): string {
   const name = layerTypeName(layer.type);
   if (layer.type === NO_EFFECT) {
     return name;
   }
-  const head = `${name}(hue=${layer.hue} sat=${layer.sat}`;
+  const head = `${name}(hue=${layer.hue} sat=${layer.sat} level=${layer.level}`;
   if (layer.type === SEGMENT_TYPE.STATIC) {
     return `${head})`;
   }
@@ -124,7 +126,7 @@ function segmentText(spec: SegmentSpec): string {
   );
 }
 
-/** 载荷能否按 21 字节段解析（不能就退回 hex，不猜半截参数）。 */
+/** 载荷能否按 23 字节段解析（不能就退回 hex，不猜半截参数）。 */
 function trySegment(payload: Uint8Array): SegmentSpec | null {
   try {
     return parseSegmentPayload(payload);
@@ -181,8 +183,8 @@ export function describeCommand(command: number, payload: Uint8Array): string {
             `duration=${payload[2] | (payload[3] << 8)}ms fade=${payload[4] | (payload[5] << 8)}ms`
         : `${name} ${bytesToHex(payload)}`;
     case CMD.SCRIPT_SEGMENT: {
-      /* 载荷 script, stage, 再 21 字节段。 */
-      if (payload.length !== 23) {
+      /* 载荷 script, stage, 再 23 字节段。 */
+      if (payload.length !== SCRIPT_SEGMENT_BYTES) {
         return fallback(name, payload);
       }
       const spec = trySegment(payload.slice(2));
@@ -271,7 +273,7 @@ export function describeStateReadBytes(bytes: Uint8Array): string {
   try {
     return describeStateRead(parseState(bytes));
   } catch {
-    return `State read（${bytes.length} 字节，无法解析；v3 要求 ${STATE_BYTES} 字节）`;
+    return `State read（${bytes.length} 字节，无法解析；v4 要求 ${STATE_BYTES} 字节）`;
   }
 }
 

@@ -4,7 +4,7 @@
  * 三类断言：
  *  1. 方案槽位按钮的文案与轮换（空槽位必须明说「空白」）；
  *  2. HSV 滑块 ↔ 协议值的换算（色相 0-360 ↔ 0-65535、饱和度 % ↔ 0-255），
- *     以及亮度滑块**不下发**、带「固件更新后可用」标记；
+ *     以及亮度滑块**真实下发**（v4 的逐光区 level）；
  *  3. 设备读回值只有在「整组一个光区 + 无叠加层」时才敢回填成某张卡。
  */
 
@@ -19,7 +19,6 @@ import {
   LEVEL_DEFAULT,
   LEVEL_MAX,
   LEVEL_MIN,
-  LEVEL_UNAVAILABLE_NOTE,
   planSlotLabel,
   planSlotSub,
   satFromPercent,
@@ -36,6 +35,7 @@ function report(overrides: Partial<SegmentReport> = {}): SegmentReport {
     periodMs: 0,
     p5: 0,
     flags: 0,
+    level: 100,
   };
   return {
     stripId: 0,
@@ -44,7 +44,7 @@ function report(overrides: Partial<SegmentReport> = {}): SegmentReport {
     end: 29,
     blend: 0,
     layer0,
-    layer1: { type: NO_EFFECT, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0 },
+    layer1: { type: NO_EFFECT, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 },
     type: layer0.type,
     hue: layer0.hue,
     sat: layer0.sat,
@@ -155,19 +155,24 @@ describe("参数区：只显示该卡支持的滑块", () => {
     }
   });
 
-  it("亮度滑块不下发，并带「固件更新后可用」", () => {
+  it("亮度滑块真实下发（v4 的 level），没有待生效标记", () => {
     const view = buildSimpleParams("warm", {}, 60)!;
     const level = view.sliders.find((slider) => slider.key === "level")!;
-    expect(level.sends).toBe(false);
-    expect(level.note).toBe(LEVEL_UNAVAILABLE_NOTE);
+    expect(level.sends).toBe(true);
+    expect(level.note).toBe("");
     expect(level.value).toBe(60);
     expect(level.display).toBe("60%");
-    /* 色相与饱和度是真的会下发的。 */
-    for (const key of ["hue", "sat"] as const) {
+    /* 三个滑块都真的会改变设备。 */
+    for (const key of ["hue", "sat", "level"] as const) {
       const slider = view.sliders.find((item) => item.key === key)!;
-      expect(slider.sends).toBe(true);
-      expect(slider.note).toBe("");
+      expect(slider.sends, key).toBe(true);
+      expect(slider.note, key).toBe("");
     }
+  });
+
+  it("设备读回的 level 原样回显（含合法的 0）", () => {
+    expect(inferSimpleState([report({ end: 29, layer0: { ...report().layer0, level: 40 } })], 30)?.level).toBe(40);
+    expect(inferSimpleState([report({ end: 29, layer0: { ...report().layer0, level: 0 } })], 30)?.level).toBe(0);
   });
 
   it("参数覆盖与卡片默认合并（色相读数跟着参数走）", () => {
@@ -204,7 +209,7 @@ describe("设备读回 → 当前卡片", () => {
 
   it("呼吸 / 彩虹 / 流光按层类型认得出", () => {
     const breathing = report({
-      layer0: { type: SEGMENT_TYPE.BREATHING, hue: 0, sat: 255, periodMs: 2000, p5: 120, flags: 0 },
+      layer0: { type: SEGMENT_TYPE.BREATHING, hue: 0, sat: 255, periodMs: 2000, p5: 120, flags: 0, level: 100 },
     });
     expect(inferSimpleState([breathing], 30)!.cardId).toBe("breathe");
     expect(
@@ -227,14 +232,14 @@ describe("设备读回 → 当前卡片", () => {
 
   it("有叠加层认不出（不是单纯的快捷卡）", () => {
     const layered = report({
-      layer1: { type: SEGMENT_TYPE.STATIC, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0 },
+      layer1: { type: SEGMENT_TYPE.STATIC, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0, level: 100 },
     });
     expect(inferSimpleState([layered], 30)).toBeNull();
   });
 
   it("空层认不出（设备上没设效果）", () => {
     const empty = report({
-      layer0: { type: NO_EFFECT, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0 },
+      layer0: { type: NO_EFFECT, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 },
     });
     expect(inferSimpleState([empty], 30)).toBeNull();
   });

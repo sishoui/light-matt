@@ -1,4 +1,4 @@
-/** 命令构造器与载荷解析（v3：21/23 字节定宽两层段 + 37 字节 State）。 */
+/** 命令构造器与载荷解析（v4：23/25 字节定宽两层段 + 37 字节 State）。 */
 
 import { describe, expect, it } from "vitest";
 
@@ -206,35 +206,55 @@ describe("parseState（v3：37 字节）", () => {
   });
 });
 
-describe("段载荷解析（21 字节定宽两层）", () => {
+describe("段载荷解析（23 字节定宽两层）", () => {
   it("单层静态：layer1 = 空层、blend = 覆盖", () => {
     const spec = parseSegmentPayload(
-      hexToBytes("0000000900000000FF00000000FF00000000000000") as Uint8Array,
+      hexToBytes("0000000900000000FF0000000064FF0000000000000000") as Uint8Array,
     );
     expect(spec.stripId).toBe(0);
     expect(spec.segId).toBe(0);
     expect(spec.start).toBe(0);
     expect(spec.end).toBe(9);
     expect(spec.blend).toBe(BLEND.OVER);
-    expect(spec.layer0).toEqual({ type: 0, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0 });
+    expect(spec.layer0).toEqual({
+      type: 0,
+      hue: 0,
+      sat: 255,
+      periodMs: 0,
+      p5: 0,
+      flags: 0,
+      level: 100,
+    });
     expect(spec.layer1.type).toBe(0xff);
+    /* 空层的 9 字节必须全 0，所以 level 也是 0。 */
+    expect(spec.layer1.level).toBe(0);
   });
 
   it("两层（彩虹 + 呼吸，相乘）完整还原", () => {
     const spec = parseSegmentPayload(
-      hexToBytes("0003003F01020000FFA00FFF0001000000DC051400") as Uint8Array,
+      hexToBytes("0003003F01020000FFA00FFF006401000000DC05140064") as Uint8Array,
     );
     expect(spec.stripId).toBe(0);
     expect(spec.segId).toBe(3);
     expect(spec.start).toBe(0);
     expect(spec.end).toBe(0x3f);
     expect(spec.blend).toBe(BLEND.MULTIPLY);
-    expect(spec.layer0).toMatchObject({ type: SEGMENT_TYPE.RAINBOW, periodMs: 0x0fa0, p5: 255 });
-    expect(spec.layer1).toMatchObject({ type: SEGMENT_TYPE.BREATHING, periodMs: 1500, p5: 20 });
+    expect(spec.layer0).toMatchObject({
+      type: SEGMENT_TYPE.RAINBOW,
+      periodMs: 0x0fa0,
+      p5: 255,
+      level: 100,
+    });
+    expect(spec.layer1).toMatchObject({
+      type: SEGMENT_TYPE.BREATHING,
+      periodMs: 1500,
+      p5: 20,
+      level: 100,
+    });
   });
 
-  it("长度不是 21 一律拒绝", () => {
-    for (const length of [0, 8, 20, 22, 23]) {
+  it("长度不是 23 一律拒绝", () => {
+    for (const length of [0, 8, 21, 22, 24, 25]) {
       expect(() => parseSegmentPayload(new Uint8Array(length)), String(length)).toThrow(RangeError);
     }
   });
@@ -242,13 +262,15 @@ describe("段载荷解析（21 字节定宽两层）", () => {
   it("layer0 为空 / blend 越界 / layer1 为空却带 blend 都被拒", () => {
     /* 合法骨架：单层静态段 seg 0 / [0-9]，layer1 空。 */
     const base = (): Uint8Array => {
-      const payload = new Uint8Array(21);
+      const payload = new Uint8Array(23);
       payload[2] = 0;
       payload[3] = 9;
       payload[4] = 0;
       payload[5] = SEGMENT_TYPE.STATIC;
       payload[8] = 255;
-      payload[13] = 0xff; /* layer1 空 */
+      /* layer0 的 level（偏移 13）必须给合法值：单层段满亮。 */
+      payload[13] = 100;
+      payload[14] = 0xff; /* layer1 空（从 14 起，9 字节全 0） */
       return payload;
     };
 
@@ -272,15 +294,37 @@ describe("段载荷解析（21 字节定宽两层）", () => {
   });
 
   it("静态层的保留字节必须为 0（防止旧固件静默接受漂移语义）", () => {
-    const payload = new Uint8Array(21);
+    const payload = new Uint8Array(23);
     payload[3] = 9;
     payload[5] = SEGMENT_TYPE.STATIC;
     payload[8] = 255;
-    payload[13] = 0xff;
+    payload[13] = 100;
+    payload[14] = 0xff;
     expect(() => parseSegmentPayload(payload)).not.toThrow();
 
     payload[9] = 1; /* layer0 的保留区（静态层 param[4]） */
     expect(() => parseSegmentPayload(payload)).toThrow(RangeError);
+  });
+
+  it("v4 层亮度：0 / 50 / 100 解出原值，101 与空层带非零亮度都被拒", () => {
+    const make = (level: number): Uint8Array => {
+      const payload = new Uint8Array(23);
+      payload[3] = 9;
+      payload[5] = SEGMENT_TYPE.STATIC;
+      payload[8] = 255;
+      payload[13] = level;
+      payload[14] = 0xff;
+      return payload;
+    };
+    for (const level of [0, 50, 100]) {
+      expect(parseSegmentPayload(make(level)).layer0.level, String(level)).toBe(level);
+    }
+    expect(() => parseSegmentPayload(make(101))).toThrow(RangeError);
+
+    /* 空层（layer1）带 level = 50：9 字节不全 0 → 协议不匹配。 */
+    const emptyWithLevel = make(100);
+    emptyWithLevel[22] = 50;
+    expect(() => parseSegmentPayload(emptyWithLevel)).toThrow(RangeError);
   });
 });
 

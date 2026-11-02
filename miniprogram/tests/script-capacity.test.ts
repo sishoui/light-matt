@@ -36,7 +36,7 @@ import { resultText } from "../utils/ble/errors";
 import { BLEND, MAX_STRIPS, SEGMENT_TYPE } from "../utils/protocol/constants";
 import type { EffectLayer, SegmentSpec } from "../utils/protocol/types";
 
-/** 两层都是动画（呼吸 + 流光）的段：记录宽度 19（理论最坏）。 */
+/** 两层都是动画（呼吸 + 流光）的段：v4 记录宽度 21（3 + 9 + 9，理论最坏）。 */
 function animationSegment(stripId: number, segId: number): SegmentSpec {
   const breathing: EffectLayer = {
     type: SEGMENT_TYPE.BREATHING,
@@ -45,6 +45,7 @@ function animationSegment(stripId: number, segId: number): SegmentSpec {
     periodMs: 1000,
     p5: 0,
     flags: 0,
+    level: 100,
   };
   const comet: EffectLayer = {
     type: SEGMENT_TYPE.COMET,
@@ -53,6 +54,7 @@ function animationSegment(stripId: number, segId: number): SegmentSpec {
     periodMs: 1000,
     p5: 0,
     flags: 0,
+    level: 100,
   };
   /* 每段一颗灯，槽位互不重叠。 */
   return {
@@ -74,8 +76,8 @@ function mixedSegment(stripId: number, segId: number): SegmentSpec {
     start: segId,
     end: segId,
     blend: BLEND.MULTIPLY,
-    layer0: { type: SEGMENT_TYPE.STATIC, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0 },
-    layer1: { type: SEGMENT_TYPE.RAINBOW, hue: 0, sat: 255, periodMs: 2000, p5: 255, flags: 0 },
+    layer0: { type: SEGMENT_TYPE.STATIC, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0, level: 100 },
+    layer1: { type: SEGMENT_TYPE.RAINBOW, hue: 0, sat: 255, periodMs: 2000, p5: 255, flags: 0, level: 100 },
   };
 }
 
@@ -103,61 +105,63 @@ function gridScript(
   return { scriptId, stripCount: strips, stages: stageList };
 }
 
-describe("#45 容量预估：protocol-v3.md §10.4 的四个场景", () => {
-  it("8 带 × 8 阶段 × 8 段，两层全动画：表格 9792 B / 实际 9835 B", () => {
+describe("#45 容量预估：protocol-v4.md §10.4 的四个场景（记录宽度 21）", () => {
+  it("8 带 × 8 阶段 × 8 段，两层全动画：表格 10752 B / 实际 10859 B", () => {
     const estimate = estimateScriptBlob(gridScript(8, 8, 8, animationSegment));
-    /* 512 条记录 × 19 B；8 带 × 8 阶段 × 1 B seg_mask。 */
-    expect(estimate.recordBytes).toBe(512 * 19);
+    /* 512 条记录 × 21 B（3 + 9 + 9）；8 带 × 8 阶段 × 1 B seg_mask。 */
+    expect(estimate.recordBytes).toBe(512 * 21);
     expect(estimate.maskBytes).toBe(8 * 8);
-    expect(estimate.tableBytes).toBe(9792);
-    /* 精确总字节 = 8 头 + 3 槽位 + 8×4 阶段头 + 64 mask + 9728 记录。 */
+    expect(estimate.tableBytes).toBe(10816);
+    /* 精确总字节 = 8 头 + 3 槽位 + 8×4 阶段头 + 64 mask + 10752 记录。 */
     expect(estimate.stageBytes).toBe(32);
-    expect(estimate.total).toBe(8 + 3 + 32 + 64 + 9728);
-    expect(estimate.total).toBe(9835);
+    expect(estimate.total).toBe(8 + 3 + 32 + 64 + 10752);
+    expect(estimate.total).toBe(10859);
     expect(estimate.overLimit).toBe(false);
-    expect(estimateScriptBlobBytes(gridScript(8, 8, 8, animationSegment))).toBe(9835);
+    expect(estimateScriptBlobBytes(gridScript(8, 8, 8, animationSegment))).toBe(10859);
   });
 
-  it("同样形状 ×4 套：文档 39176 B（表格口径）/ 实际 39316 B，都超 16384", () => {
+  it("同样形状 ×4 套：远超 16384（单套已在 10KB 量级）", () => {
     const heavy = gridScript(8, 8, 8, animationSegment);
-    /* 文档的「4 套合计」= 8 字节 blob 头 + 4 × 9792（表格口径）。 */
-    expect(8 + 4 * estimateScriptBlob(heavy).tableBytes).toBe(39176);
+    /* 文档「4 套合计」= 4 × 10752（表格口径，不含 blob 头）。 */
+    expect(4 * estimateScriptBlob(heavy).tableBytes).toBe(43264);
 
     const suites = [0, 1, 2, 3].map((id) => ({ ...heavy, scriptId: id }));
     const total = estimateScriptsTotalBytes(suites);
-    /* 精确：8 头 + 4 × (3 槽位 + 32 阶段头 + 64 mask + 9728 记录)。 */
-    expect(total).toBe(8 + 4 * (3 + 32 + 64 + 9728));
-    expect(total).toBe(39316);
+    /* 精确：8 头 + 4 × (3 槽位 + 32 阶段头 + 64 mask + 10752 记录)。 */
+    expect(total).toBe(8 + 4 * (3 + 32 + 64 + 10752));
+    expect(total).toBe(43412);
     expect(total).toBeGreaterThan(SCRIPT_BLOB_MAX_BYTES);
     expect(checkScriptCapacity(suites).ok).toBe(false);
   });
 
-  it("2 带 × 4 阶段 × 4 段，两层全动画：表格 616 B", () => {
+  it("2 带 × 4 阶段 × 4 段，两层全动画：表格 680 B", () => {
     const estimate = estimateScriptBlob(gridScript(2, 4, 4, animationSegment));
-    expect(estimate.recordBytes).toBe(32 * 19);
+    expect(estimate.recordBytes).toBe(32 * 21);
     expect(estimate.maskBytes).toBe(2 * 4);
-    expect(estimate.tableBytes).toBe(616);
+    expect(estimate.tableBytes).toBe(680);
+    /* 典型用法远低于 16KB 上限。 */
     expect(estimate.overLimit).toBe(false);
   });
 
-  it("4 带 × 8 阶段 × 8 段，两层全动画：表格 4896 B（4 套 19584 B 超限）", () => {
+  it("4 带 × 8 阶段 × 8 段，两层全动画：表格 5408 B（4 套 21632 B 超限）", () => {
     const heavy = gridScript(4, 8, 8, animationSegment);
     const estimate = estimateScriptBlob(heavy);
-    expect(estimate.recordBytes).toBe(256 * 19);
+    expect(estimate.recordBytes).toBe(256 * 21);
     expect(estimate.maskBytes).toBe(4 * 8);
-    expect(estimate.tableBytes).toBe(4896);
-    /* 文档「4 套合计」列：4 × 4896 = 19584（这一列没算 blob 头）。 */
-    expect(4 * estimate.tableBytes).toBe(19584);
+    expect(estimate.tableBytes).toBe(5408);
+    /* 文档「4 套合计」列：4 × 5408 = 21632（这一列没算 blob 头）。 */
+    expect(4 * estimate.tableBytes).toBe(21632);
     const suites = [0, 1, 2, 3].map((id) => ({ ...heavy, scriptId: id }));
     expect(checkScriptCapacity(suites).ok).toBe(false);
   });
 
-  it("1 带 × 4 阶段 × 3 段，一层静态一层动画：表格 184 B", () => {
+  it("1 带 × 4 阶段 × 3 段，一层静态一层动画：表格 208 B", () => {
     const estimate = estimateScriptBlob(gridScript(1, 4, 3, mixedSegment));
-    /* 记录 3 + (1+3) + (1+7) = 15。 */
-    expect(estimate.recordBytes).toBe(12 * 15);
+    /* 记录 3 + (1+3+1) + (1+7+1) = 17。 */
+    expect(estimate.recordBytes).toBe(12 * 17);
     expect(estimate.maskBytes).toBe(4);
-    expect(estimate.tableBytes).toBe(184);
+    /* 204 记录 + 4 mask。 */
+    expect(estimate.tableBytes).toBe(208);
     expect(estimate.overLimit).toBe(false);
   });
 
@@ -180,9 +184,9 @@ describe("#45 容量预估：protocol-v3.md §10.4 的四个场景", () => {
       stripCount: 1,
       stages: [{ durationMs: 1000, segments: [staticSegment(0, 0, 0, 9, 0, 255)] }],
     });
-    /* 静态 + 空：3 + (1+3) + (1+0) = 8。 */
-    expect(flat.recordBytes).toBe(8);
-    expect(flat.tableBytes).toBe(9);
+    /* 静态 + 空：3 + (1+3+1) + 1 = 9（v4 非空层多一个 level 字节）。 */
+    expect(flat.recordBytes).toBe(9);
+    expect(flat.tableBytes).toBe(10);
   });
 
   it("超限提示：明确「剧本过大」、给出减少方向、并声明未下发", () => {
@@ -246,8 +250,8 @@ describe("#45 校验修正：seg_id 每条灯带独立唯一", () => {
               start: 0,
               end: 9,
               blend: BLEND.OVER,
-              layer0: { type: 0x42, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0 },
-              layer1: { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0 },
+              layer0: { type: 0x42, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0, level: 100 },
+              layer1: { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 },
             },
           ],
         },
@@ -268,8 +272,8 @@ describe("#45 校验修正：seg_id 每条灯带独立唯一", () => {
               start: 0,
               end: 9,
               blend: BLEND.OVER,
-              layer0: { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0 },
-              layer1: { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0 },
+              layer0: { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 },
+              layer1: { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 },
             },
           ],
         },
@@ -293,7 +297,7 @@ describe("#45 校验修正：seg_id 每条灯带独立唯一", () => {
 });
 
 describe("#45 下发计划仍是 Begin → Stage×N → Segment×M → Commit", () => {
-  it("两层段原样进计划：23 字节，layer1 / blend 不丢", () => {
+  it("两层段原样进计划：25 字节，layer1 / blend / level 不丢", () => {
     const script: ScriptConfig = {
       scriptId: 2,
       stripCount: 8,
@@ -308,7 +312,7 @@ describe("#45 下发计划仍是 Begin → Stage×N → Segment×M → Commit", 
     expect((stage?.request.payload[4] ?? 1) | ((stage?.request.payload[5] ?? 1) << 8)).toBe(0);
 
     const segment = plan.steps.find((s) => s.kind === "segment");
-    expect(segment?.request.payload.length).toBe(23);
+    expect(segment?.request.payload.length).toBe(25);
     expect(segment?.request.payload[2]).toBe(7); /* strip */
     expect(segment?.request.payload[3]).toBe(7); /* seg */
     const spec = parseSegmentPayload(
@@ -316,6 +320,8 @@ describe("#45 下发计划仍是 Begin → Stage×N → Segment×M → Commit", 
     );
     expect(spec.layer1.type).toBe(SEGMENT_TYPE.COMET);
     expect(spec.blend).toBe(BLEND.ADD);
+    expect(spec.layer0.level).toBe(100);
+    expect(spec.layer1.level).toBe(100);
   });
 
   it("声明 8 条灯带的 Begin 帧被接受（v2 的 7 条上限已修）", () => {

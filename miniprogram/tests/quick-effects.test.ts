@@ -206,7 +206,7 @@ describe("从设备值反推卡片", () => {
   });
 
   it("空层认不出（返回 null，让用户自选）", () => {
-    expect(inferQuickCard({ type: NO_EFFECT, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0 })).toBeNull();
+    expect(inferQuickCard({ type: NO_EFFECT, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 })).toBeNull();
   });
 });
 

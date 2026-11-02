@@ -1,8 +1,8 @@
 /**
- * 协议常量。唯一真相是 docs/protocol-v3.md；这里只是照抄字节值。
+ * 协议常量。唯一真相是 docs/protocol-v4.md；这里只是照抄字节值。
  *
  * 所有 UUID 统一用大写比较（微信在不同平台/系统版本返回的大小写不一致）。
- * 协议版本 v3（不向后兼容；v2 已退役）。
+ * 协议版本 v4（不向后兼容；v2 / v3 已退役）。
  */
 
 export const SERVICE_UUID = "6C756D65-6E00-4B1E-9A3C-000000000001";
@@ -15,7 +15,7 @@ export const STATE_UUID = "6C756D65-6E00-4B1E-9A3C-000000000004";
  * 整帧 = 8 + length；CRC16 覆盖 magic 到 payload 末字节。
  */
 export const MAGIC = 0xa6;
-export const PROTOCOL_VERSION = 0x03;
+export const PROTOCOL_VERSION = 0x04;
 export const HEADER_BYTES = 6;
 export const FRAME_OVERHEAD = 8;
 
@@ -52,13 +52,17 @@ export const NO_EFFECT = 0xff;
 /** 每段最多两层（§1.1）。 */
 export const MAX_LAYERS = 2;
 
-/** State 固定 37 字节（State read 与 StateReport 0x82 共用，§7.3）。 */
+/** State 固定 37 字节（State read 与 StateReport 0x82 共用，§7.3；v4 未改）。 */
 export const STATE_BYTES = 37;
-/** 段载荷定宽：SetSegment 21、ScriptSegment 23、SegmentReport 21（§7.1）。 */
-export const SEGMENT_BYTES = 21;
-export const SCRIPT_SEGMENT_BYTES = 23;
-/** 层编码定宽 8 字节（type + 7 字节参数）。 */
-export const LAYER_BYTES = 8;
+/** 段载荷定宽：SetSegment 23、ScriptSegment 25、SegmentReport 23（§7.1）。 */
+export const SEGMENT_BYTES = 23;
+export const SCRIPT_SEGMENT_BYTES = 25;
+/** 段头：strip / seg / start / end / blend（层从偏移 5 起，layer1 在 14）。 */
+export const SEGMENT_HEADER_BYTES = 5;
+/** 层编码定宽 9 字节（type + 7 字节参数 + level）。 */
+export const LAYER_BYTES = 9;
+/** 本层亮度档位上限（§7.1）：100 满亮、0 不出光；> 100 一律 InvalidParam。 */
+export const LAYER_LEVEL_MAX = 100;
 /** SegmentReport 0x87 / DeviceInfoReport 0x88 的固定载荷长度（§7.4）。 */
 export const STRIP_CONFIG_BYTES = 24;
 export const STRIP_CONFIG_RECORD_BYTES = 3;

@@ -36,14 +36,14 @@ function zone(stripId: number, segId: number, start: number, end: number): Segme
     start,
     end,
     blend: BLEND.OVER,
-    layer0: { type: SEGMENT_TYPE.STATIC, hue: 7281, sat: 255, periodMs: 0, p5: 0, flags: 0 },
+    layer0: { type: SEGMENT_TYPE.STATIC, hue: 7281, sat: 255, periodMs: 0, p5: 0, flags: 0, level: 100 },
     layer1: null,
   });
 }
 
 function report(stripId: number, segId: number, start: number, end: number, hue = 7281): SegmentReport {
   const layer0 = { type: SEGMENT_TYPE.STATIC, hue, sat: 255, periodMs: 0, p5: 0, flags: 0 };
-  const layer1 = { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0 };
+  const layer1 = { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 };
   return {
     stripId,
     segId,

@@ -29,7 +29,17 @@ import { PRESETS, rgbToSegmentParams } from "../utils/color/hsv";
 import type { EffectLayer } from "../utils/protocol/types";
 
 function layer(type: number, overrides: Partial<EffectLayer> = {}): EffectLayer {
-  return { type, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, ...overrides };
+  return {
+    type,
+    hue: 0,
+    sat: 0,
+    periodMs: 0,
+    p5: 0,
+    flags: 0,
+    /* 空层的 level 必须为 0；非空层默认满亮。 */
+    level: type === NO_EFFECT ? 0 : 100,
+    ...overrides,
+  };
 }
 
 describe("灯效选项表", () => {
@@ -219,7 +229,8 @@ describe("一层视图（layerView）", () => {
     );
     expect(view.breathing).toBe(true);
     expect(view.periodText).toBe("1000ms");
-    expect(view.minLevelText).toBe("20%");
+    /* v4：呼吸的 p5 是相对百分比，51 就是 51%。 */
+    expect(view.minLevelText).toBe("51%");
     expect(view.waveform).toBe(WAVEFORM.TRIANGLE);
     expect(view.periodFloor).toBe(BREATHING_MIN_PERIOD_MS);
   });
