@@ -125,7 +125,25 @@ export function replaceStepZones(
   if (step === undefined) {
     return draft;
   }
-  const others = step.segments.filter((segment) => segment.stripId !== stripId);
+  const segments = replaceStepZonesInList(step.segments, stripId, zones);
+  const stages = draft.stages.map((item, index) =>
+    index === stepIndex ? { ...item, segments } : item,
+  );
+  return { ...draft, stages };
+}
+
+/**
+ * 「步骤 × 灯组」替换的**列表层实现**（`replaceStepZones` 与进阶档的步骤草稿共用）。
+ *
+ * 进阶档（#66）只保存「每一步的光区列表」，没有完整的方案草稿；它需要的正是
+ * 同一条语义：**只替换当前灯组那一片**。规则只在这里写一份，两条路径不会漂移。
+ */
+export function replaceStepZonesInList(
+  segments: readonly ScriptSegment[],
+  stripId: number,
+  zones: readonly SegmentSpec[],
+): ScriptSegment[] {
+  const others = segments.filter((segment) => segment.stripId !== stripId);
   const next = zones.map((zone) => ({
     stripId: zone.stripId,
     segId: zone.segId,
@@ -135,10 +153,7 @@ export function replaceStepZones(
     layer0: { ...zone.layer0 },
     layer1: { ...zone.layer1 },
   }));
-  const stages = draft.stages.map((item, index) =>
-    index === stepIndex ? { ...item, segments: [...others, ...next] } : item,
-  );
-  return { ...draft, stages };
+  return [...others, ...next];
 }
 
 /** 当前步骤里覆盖了哪些灯组（三级树的面包屑与摘要用）。 */

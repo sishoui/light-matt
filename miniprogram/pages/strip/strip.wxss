@@ -462,6 +462,247 @@
   color: var(--text-2);
 }
 
+/* ---------------- 进阶档：光区轴（#66） ---------------- */
+
+.zone-section {
+  gap: 16rpx;
+}
+
+.axis-head-right {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+}
+
+/*
+ * 光区轴的容器：块在里面绝对定位（left / width 由 zone-axis.ts 按灯珠比例
+ * 算好写进 style）。相对定位是必须的，否则 left 会相对整页算。
+ */
+.zone-axis {
+  position: relative;
+  height: 76rpx;
+  border-radius: var(--radius-sm);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+  overflow: hidden;
+}
+
+.zone-block {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 4rpx;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+/* 光区本体：颜色只铺在块里，块的选中态另加描边（不换色）。 */
+.zone-fill {
+  position: absolute;
+  top: 4rpx;
+  bottom: 4rpx;
+  left: 2rpx;
+  right: 2rpx;
+  border-radius: var(--radius-sm);
+}
+
+/*
+ * 选中态：2px 描边，不改颜色（光区自身就有颜色，换底色会混淆）——
+ * 与 `.timeline-block.selected` 同一套处理方式。z-index 抬起来，
+ * 否则窄光区的描边会被邻块盖住一半。
+ */
+.zone-block.selected {
+  z-index: 2;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+/* 没被覆盖的灯珠：灰条（走 --border，深浅主题都看得见），点不动。 */
+.zone-gap {
+  background: var(--border);
+  pointer-events: none;
+}
+
+.zone-label {
+  position: relative;
+  font-size: 19rpx;
+  font-weight: 600;
+  color: var(--accent-ink);
+  text-shadow: 0 0 6rpx rgba(0, 0, 0, 0.45);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.zone-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16rpx;
+}
+
+.zone-count {
+  font-size: 21rpx;
+  color: var(--text-3);
+  flex-shrink: 0;
+}
+
+.zone-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+}
+
+.timeline-actions-right {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  flex-shrink: 0;
+}
+
+/* 「删步骤」是次要动作：底色退到卡片色，不抢「+ 加步骤」的注意力。 */
+.timeline-add.ghost {
+  background: transparent;
+  color: var(--text-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+/* ---------------- 灯珠弹窗（#66） ---------------- */
+
+.picker-mask {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 100;
+  display: flex;
+  align-items: flex-end;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.picker-sheet {
+  width: 100%;
+  box-sizing: border-box;
+  max-height: 86vh;
+  padding: 32rpx 32rpx calc(32rpx + env(safe-area-inset-bottom));
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  background: var(--bg-elevated);
+  display: flex;
+  flex-direction: column;
+  gap: 18rpx;
+}
+
+.picker-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16rpx;
+}
+
+.picker-title {
+  font-size: 32rpx;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.picker-led {
+  font-size: 21rpx;
+  color: var(--text-3);
+}
+
+.picker-range {
+  font-size: 25rpx;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+/* 12 列网格：列数由页面写进 style，这里只管间距与格子。 */
+.picker-grid {
+  display: grid;
+  gap: 8rpx;
+}
+
+/*
+ * 一格灯珠。宽度由网格均分；高度固定（不用 aspect-ratio——低版本基础库
+ * 不支持，格子会塌成零高）。
+ */
+.picker-cell {
+  position: relative;
+  height: 44rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+  line-height: 1;
+}
+
+.picker-cell-no {
+  font-size: 18rpx;
+  color: var(--text-3);
+}
+
+/* 属于其它光区时的小色点：置灰之后仍然看得出「它归哪一块」。 */
+.picker-owner-dot {
+  position: absolute;
+  top: 3rpx;
+  right: 3rpx;
+  width: 10rpx;
+  height: 10rpx;
+  border-radius: 50%;
+}
+
+/* 属于其它光区：置灰且点不动（不靠颜色深浅，靠斑马纹与降低不透明度）。 */
+.picker-cell.disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+/* 选中的灯珠：描边 + 提亮（选中不是颜色变化，与光区轴同一套语义）。 */
+.picker-cell.selected {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.picker-cell.selected .picker-cell-no {
+  color: var(--text);
+}
+
+/* 锚点（第一次点的那一颗）：实心小点，告诉用户「起点在这里」。 */
+.picker-cell.anchor::after {
+  content: "";
+  position: absolute;
+  width: 8rpx;
+  height: 8rpx;
+  border-radius: 50%;
+  background: var(--accent-ink);
+}
+
+.picker-cell.conflict {
+  box-shadow: 0 0 0 2px var(--danger);
+}
+
+.picker-error {
+  font-size: 22rpx;
+  color: var(--danger);
+  line-height: 1.5;
+}
+
+.picker-foot {
+  display: flex;
+  gap: 12rpx;
+}
+
+.picker-btn {
+  flex: 1;
+  height: 80rpx;
+  line-height: 80rpx;
+  font-size: 27rpx;
+}
+
 /* ---------------- 底部：应用并播放 ---------------- */
 
 .apply-bar {

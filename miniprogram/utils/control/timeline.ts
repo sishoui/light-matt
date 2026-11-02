@@ -49,6 +49,8 @@ export const MAX_DURATION_MS = 30000;
 export const DURATION_STEP_MS = 500;
 /** 新步骤的默认时长：1 秒。 */
 export const DEFAULT_STEP_MS = 1000;
+/** 刚进进阶档时有几个步骤。光区轴按「当前步骤」取，默认给两个才看得出步骤间差异。 */
+export const DEFAULT_STEP_COUNT = 2;
 /** 时间轴最多 8 个步骤（与协议每套方案 8 个步骤一致）。 */
 export const MAX_STEPS = 8;
 /** 时间轴块的最小宽度（px）：0.5 秒的步骤在多块并列时仍然点得到。 */

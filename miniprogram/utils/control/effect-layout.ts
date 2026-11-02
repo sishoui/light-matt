@@ -342,6 +342,63 @@ export function zoneColorMap(reports: readonly SegmentReport[]): Map<number, str
   return map;
 }
 
+/** 未被覆盖的一段连续灯珠（闭区间）。 */
+export interface UncoveredRange {
+  start: number;
+  end: number;
+}
+
+/**
+ * 未被任何光区覆盖的**连续区间**（光区轴上的灰条，#66）。
+ *
+ * `uncoveredCount` 只回答「几颗不亮」，画轴需要知道「哪几颗、连成几段」。
+ *
+ * 规则（都有单测）：
+ *  1. 完全落在灯珠范围之外的区间被**丢弃**，部分越界的被裁剪到 `0..ledCount-1`
+ *     ——把越界的 20..99 钳到最后一颗会在轴上画出一条假灰条；
+ *  2. 相接（0–9 与 10–19）算**连续覆盖**，中间不插灰条；
+ *  3. 输入允许乱序与重叠，输出按起点升序且互不相接；
+ *  4. 没有任何光区 → 整条都是灰条；整条覆盖 → 空数组。
+ *
+ * 灯珠数按协议上限 `MAX_LEDS` 截断，与 `buildZoneCells` 一致。
+ */
+export function uncoveredRanges(
+  zones: ReadonlyArray<{ start: number; end: number }>,
+  ledCount: number,
+): UncoveredRange[] {
+  const count = Number.isFinite(ledCount)
+    ? Math.max(0, Math.min(MAX_LEDS, Math.floor(ledCount)))
+    : 0;
+  if (count < 1) {
+    return [];
+  }
+  const covered = zones
+    .map((zone) => ({
+      start: Math.floor(Number.isFinite(zone.start) ? zone.start : 0),
+      end: Math.floor(Number.isFinite(zone.end) ? zone.end : -1),
+    }))
+    /* 整段都在范围外：丢弃，不钳进 0..count-1（那是另一颗灯珠）。 */
+    .filter((zone) => zone.end >= 0 && zone.start <= count - 1 && zone.start <= zone.end)
+    .map((zone) => ({ start: Math.max(0, zone.start), end: Math.min(count - 1, zone.end) }))
+    .sort((a, b) => a.start - b.start);
+
+  const out: UncoveredRange[] = [];
+  let cursor = 0;
+  for (const zone of covered) {
+    if (zone.start > cursor) {
+      out.push({ start: cursor, end: zone.start - 1 });
+    }
+    cursor = Math.max(cursor, zone.end + 1);
+    if (cursor >= count) {
+      break;
+    }
+  }
+  if (cursor < count) {
+    out.push({ start: cursor, end: count - 1 });
+  }
+  return out;
+}
+
 /** 未被任何光区覆盖的灯珠数（即熄灭的灯珠）。 */
 export function uncoveredCount(ledCount: number, zones: readonly ZoneRange[]): number {
   const count = Math.max(0, Math.min(ledCount, MAX_LEDS));
