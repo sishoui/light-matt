@@ -1,29 +1,162 @@
-/* 「我的」页：骨架阶段只有一个占位说明卡。 */
+/* 「我的」页：本机身份 / 外观 / 演示设备 / 我的设备 / 页脚。 */
 
 .page {
   /* 自定义 tabBar 是 fixed 的，tab 页内容必须让出它的高度。 */
   padding-bottom: calc(140rpx + env(safe-area-inset-bottom));
 }
 
-.placeholder-card {
-  margin-top: 16rpx;
-  padding: 48rpx 36rpx;
-  border-radius: var(--radius-xl);
-  background: var(--card);
-  box-shadow: var(--shadow);
-  display: flex;
-  flex-direction: column;
-  gap: 12rpx;
+/* ---------------- 本机身份 ---------------- */
+
+.profile-card {
+  flex-direction: row;
+  align-items: center;
+  gap: 24rpx;
 }
 
-.placeholder-title {
+/* 去掉 <button> 的默认外观，只留一个圆形点击区。 */
+.avatar-btn {
+  width: 128rpx;
+  height: 128rpx;
+  margin: 0;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+  overflow: hidden;
+  flex-shrink: 0;
+  line-height: normal;
+}
+
+.avatar-btn::after {
+  border: none;
+}
+
+.avatar-img {
+  width: 128rpx;
+  height: 128rpx;
+  border-radius: 50%;
+  display: block;
+}
+
+/* 默认头像：纯 CSS 人物剪影（上圆头 + 下圆拱肩）。 */
+.avatar-fallback {
+  width: 128rpx;
+  height: 128rpx;
+  border-radius: 50%;
+  background: var(--card-2);
+  border: 1rpx solid var(--border);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6rpx;
+}
+
+.avatar-head {
+  width: 40rpx;
+  height: 40rpx;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+
+.avatar-shoulders {
+  width: 68rpx;
+  height: 34rpx;
+  border-radius: 40rpx 40rpx 0 0;
+  background: var(--text-3);
+}
+
+.profile-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+}
+
+.nickname-input {
+  height: 64rpx;
   font-size: 32rpx;
   font-weight: 600;
   color: var(--text);
 }
 
-.placeholder-text {
+.profile-hint {
+  font-size: 21rpx;
+  color: var(--text-3);
+}
+
+/* ---------------- 外观分段控件 ---------------- */
+
+.segmented {
+  display: flex;
+  padding: 6rpx;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+}
+
+.segment {
+  flex: 1;
+  text-align: center;
+  padding: 16rpx 0;
+  border-radius: var(--radius-sm);
   font-size: 24rpx;
-  line-height: 1.6;
   color: var(--text-2);
+  transition: background 160ms ease;
+}
+
+.segment.on {
+  background: var(--card);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.08);
+}
+
+/* ---------------- 我的设备行 ---------------- */
+
+.device-item {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1rpx solid var(--divider);
+}
+
+.device-item:last-child {
+  border-bottom: none;
+}
+
+.device-item .device-row {
+  flex: 1;
+  border-bottom: none;
+  /* 左名称 / 右徽标，覆盖 app.wxss 的纵向 device-row。 */
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+}
+
+.device-main {
+  display: flex;
+  flex-direction: column;
+  gap: 6rpx;
+  min-width: 0;
+}
+
+.device-badge {
+  font-size: 18rpx;
+  color: var(--accent);
+  padding: 2rpx 12rpx;
+  border-radius: 999rpx;
+  background: var(--accent-soft);
+  flex: 0 0 auto;
+}
+
+.device-delete {
+  flex: 0 0 auto;
+  width: 104rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22rpx;
+  color: var(--danger);
+  border-left: 1rpx solid var(--divider);
 }

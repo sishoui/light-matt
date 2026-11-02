@@ -1,10 +1,47 @@
 <view class="page {{themeClass}}">
   <nav-bar title="发现设备" subtitle="扫描附近的 Lumen 灯控" back="{{true}}" />
 
-  <view class="placeholder-card">
-    <text class="placeholder-title">扫描入口</text>
-    <text class="placeholder-text">
-      扫描按钮与附近设备列表正在从原发现页搬过来。
-    </text>
+  <!-- 唯一的动作按钮：扫描 / 停止 / 取消连接（三态由 data.scanLabel 决定） -->
+  <button class="btn primary scan-btn {{scanning ? 'busy' : ''}}" bindtap="onScanTap">
+    {{scanLabel}}
+  </button>
+
+  <!-- 一行连接状态 -->
+  <view class="statusbar {{linkClass}}">
+    <view class="status-dot"></view>
+    <view class="status-main">
+      <text class="status-text">{{statusText}}</text>
+      <text class="status-sub" wx:if="{{statusSub}}">{{statusSub}}</text>
+    </view>
+  </view>
+
+  <!-- 扫描结果：已知设备带「已知」徽标，点一行连上并回到来源页 -->
+  <view class="section">
+    <view class="section-head">
+      <text class="section-title">附近的设备</text>
+      <text class="section-value">{{scanned.length}} 台</text>
+    </view>
+    <view wx:if="{{scanned.length === 0}}" class="device-empty">{{scanHint || emptyText}}</view>
+    <view wx:else class="device-list">
+      <view
+        wx:for="{{scanned}}"
+        wx:key="deviceId"
+        class="device-row {{item.current ? 'active' : ''}}"
+        data-device-id="{{item.deviceId}}"
+        data-name="{{item.name}}"
+        bindtap="onRowTap"
+      >
+        <view class="scan-main">
+          <text class="device-name">{{item.name || item.deviceId}}</text>
+          <text class="device-meta">{{item.deviceId}} · {{item.rssiText}}</text>
+        </view>
+        <view class="scan-side">
+          <text wx:if="{{item.current}}" class="device-badge">当前</text>
+          <text wx:elif="{{item.known}}" class="device-badge ghost">已知</text>
+        </view>
+      </view>
+    </view>
+    <text wx:if="{{scanHint && scanned.length > 0}}" class="scan-hint">{{scanHint}}</text>
+    <text wx:if="{{busy}}" class="scan-hint">正在连接…</text>
   </view>
 </view>

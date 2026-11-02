@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 import type { SyncedDevice } from "../utils/control/device-api";
 import type { RecentDevice } from "../utils/control/device-history";
 import type { DeviceRegistryEntry } from "../utils/control/device-registry";
-import { buildMyDevices, buildNearby } from "../utils/control/device-list";
+import { buildMyDevices, buildNearby, buildScanRows } from "../utils/control/device-list";
 
 const HW_A = "AA:BB:CC:DD:EE:01";
 const HW_B = "AA:BB:CC:DD:EE:02";
@@ -241,5 +241,59 @@ describe("#44 附近设备：已知标记", () => {
       mine,
     });
     expect(rows).toHaveLength(2);
+  });
+});
+
+describe("#62 发现页的扫描结果行（不过滤已知设备）", () => {
+  it("已登记设备照样成行，只打「已知」标记（新发现页没有并排的设备列表）", () => {
+    const mine = buildMyDevices({ recent: [recent()], registry: [], backend: null });
+    const rows = buildScanRows({
+      discovered: [{ deviceId: "DEV-A", name: "Lumen-1A2B", rssi: -40 }],
+      mine,
+      currentDeviceId: "DEV-A",
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      deviceId: "DEV-A",
+      known: true,
+      current: true,
+      rssiText: "-40 dBm",
+    });
+  });
+
+  it("未知设备 known 为假（没有徽标）", () => {
+    const mine = buildMyDevices({ recent: [], registry: [], backend: null });
+    const rows = buildScanRows({
+      discovered: [{ deviceId: "DEV-Z", name: "Lumen-FFFF", rssi: -88 }],
+      mine,
+    });
+    expect(rows[0].known).toBe(false);
+    expect(rows[0].rssiText).toBe("-88 dBm");
+  });
+
+  it("按信号强度降序（最强的最上面）", () => {
+    const mine = buildMyDevices({ recent: [], registry: [], backend: null });
+    const rows = buildScanRows({
+      discovered: [
+        { deviceId: "DEV-WEAK", name: "A", rssi: -90 },
+        { deviceId: "DEV-STRONG", name: "B", rssi: -40 },
+        { deviceId: "DEV-MID", name: "C", rssi: -65 },
+      ],
+      mine,
+    });
+    expect(rows.map((row) => row.deviceId)).toEqual(["DEV-STRONG", "DEV-MID", "DEV-WEAK"]);
+  });
+
+  it("同一台重复广播仍然各自成行（扫描阶段不去重）", () => {
+    const mine = buildMyDevices({ recent: [], registry: [], backend: null });
+    const rows = buildScanRows({
+      discovered: [
+        { deviceId: "DEV-A", name: "Lumen-1A2B", rssi: -40 },
+        { deviceId: "DEV-A", name: "Lumen-1A2B", rssi: -45 },
+      ],
+      mine,
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.rssi)).toEqual([-40, -45]);
   });
 });
