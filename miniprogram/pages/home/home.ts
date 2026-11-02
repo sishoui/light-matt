@@ -106,6 +106,15 @@ Page({
   },
 
   onShow() {
+    /* #62：演示设备开关在「我的」页，它会**重建会话**（`reloadSession`）。
+     * 本页在 onLoad 里抓的实例已经 destroy，监听全失效、列表也停在旧数据上
+     * （用户关掉演示设备后首页仍显示三台占位设备）。所以每次显示都重新取
+     * 单例——`getSession()` 在没重建时返回同一个实例，代价只是一次判断。 */
+    const current = getSession();
+    if (current !== this.session) {
+      this.unsubscribe();
+      this.session = current;
+    }
     this.subscribe();
     /* 从详情页/发现页回来：设备可能刚连上或刚被删除，全部重算一次。
      * 登记表也要重读（备注名可能改了）。 */
@@ -114,6 +123,10 @@ Page({
     const expectedTheme = themeClass(this.themeMode);
     if (this.data.themeClass !== expectedTheme) {
       this.setData({ themeClass: expectedTheme });
+    }
+    /* 演示模式在「我的」页切换（会话重建），提示条也要跟着走。 */
+    if (this.data.mock !== isMockSession()) {
+      this.setData({ mock: isMockSession() });
     }
     this.syncFromSession();
     this.refresh();

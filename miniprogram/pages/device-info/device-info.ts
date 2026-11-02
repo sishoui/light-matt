@@ -19,6 +19,7 @@ import {
   loadRegistry,
   removeDevice,
   setRemark,
+  setStripEnabled,
   type DeviceRegistry,
 } from "../../utils/control/device-registry";
 import { getDeviceApi } from "../../utils/control/device-api-singleton";
@@ -310,6 +311,32 @@ Page({
       wx.showToast({ title: result.message, icon: "none" });
     } finally {
       this.setData({ ledCountBusy: false });
+    }
+  },
+
+  // ---------------- 显示的灯组（App 本地偏好，永不下发） ----------------
+
+  /**
+   * 灯组显隐开关（裁决 §7：从发现页搬到本页，与逐组灯珠数同页）。
+   *
+   * 这是**本机偏好**：WS2812B 无法回报物理接线，设备判断不了某条带是否真的
+   * 插着。隐藏只是从设备页的灯组切换器里去掉，设备上的光区配置一个字节都
+   * 不动，存储仍是 `lumen.deviceRegistry.v1` 的 `stripMask`。
+   */
+  async onTrimStrip(e: WechatMiniprogram.SwitchChange) {
+    const deviceId = this.data.deviceId;
+    const stripId = Number(e.currentTarget.dataset.stripId ?? -1);
+    if (!deviceId || stripId < 0) {
+      return;
+    }
+    try {
+      this.registry = setStripEnabled(createWxStorage(), deviceId, stripId, Boolean(e.detail.value));
+      const rows = this.data.stripRows.map((row) =>
+        row.stripId === stripId ? { ...row, visible: Boolean(e.detail.value) } : row,
+      );
+      this.setData({ stripRows: rows });
+    } catch (err) {
+      wx.showToast({ title: errorText(err), icon: "none" });
     }
   },
 

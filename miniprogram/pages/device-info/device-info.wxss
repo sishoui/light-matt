@@ -31,12 +31,11 @@
   text-align: right;
 }
 
-.strip-info-hidden {
-  font-size: 20rpx;
-  color: var(--text-3);
-  padding: 2rpx 8rpx;
-  border-radius: 8rpx;
-  background: var(--card-2);
+/* 显示的灯组开关（本机偏好，永不下发）：压在行尾，缩小默认尺寸。 */
+.strip-info-switch {
+  flex: 0 0 auto;
+  transform: scale(0.8);
+  transform-origin: right center;
 }
 
 /* 灯带选择 chip 排一行（最多 8 个，短标签） */
