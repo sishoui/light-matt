@@ -30,6 +30,33 @@ import type { LinkDetail } from "../../utils/ble/transport";
 import { ConnectCancelledError } from "../../utils/ble/transport";
 import { createWxStorage, type SessionStorage } from "../../utils/control/device-cache";
 import {
+  addStepStage,
+  advancedDraftOf,
+  canAddStepStage,
+  createAdvancedDrafts,
+  moveStepStage,
+  removeStepStage,
+  seedStepFromReports,
+  setStageDurationMs,
+  stageDurationMs,
+  stepZonesOf,
+  timelineStepsOf,
+  writeStepZones,
+} from "../../utils/control/advanced-draft";
+import {
+  buildPickerCells,
+  commitPicker,
+  createPickerState,
+  deletePickerZone,
+  otherZones,
+  PICKER_COLUMNS,
+  pickerCheck,
+  pickerRangeText,
+  pickerTap,
+  type LedPickerCell,
+  type PickerState,
+} from "../../utils/control/led-picker";
+import {
   buildQuickCardViews,
   buildQuickSpec,
   quickCardOf,
@@ -54,24 +81,31 @@ import {
 } from "../../utils/control/strip-simple";
 import { loadTheme, themeClass, type ThemeMode } from "../../utils/control/theme";
 import {
-  addStep as addStepToTimeline,
   blockIndexAtRects,
-  canAddStep as canAddMoreSteps,
   clampDuration,
-  createTimeline,
+  DEFAULT_STEP_MS,
   durationText,
   durationTicks,
   layoutBlocks,
   LONG_PRESS_MS,
   MAX_STEPS,
-  moveBlock,
   selectionAfterMove,
-  setStepDuration,
   timelineRowWidth,
   type DurationTickView,
   type TimelineBlockView,
-  type TimelineStep,
 } from "../../utils/control/timeline";
+import {
+  axisColorMap,
+  axisZonesOf,
+  buildZoneAxis,
+  canAddZoneAt,
+  MAX_ZONES,
+  selectedZoneAfter,
+  zoneAxisSummary,
+  type ZoneAxisBlock,
+} from "../../utils/control/zone-axis";
+import type { ScriptDraft } from "../../utils/control/script-view";
+import { MAX_LEDS } from "../../utils/protocol/constants";
 import type { DeviceState, LinkState, SegmentReport } from "../../utils/protocol/types";
 
 /** 编辑档位：简单（点效果卡）/ 进阶（时间轴 + 光区）。 */
@@ -135,6 +169,28 @@ Page({
     durationTicks: [] as DurationTickView[],
     stepHint: "",
 
+    /* ---- 进阶档：光区轴（#66） ---- */
+    zoneBlocks: [] as ZoneAxisBlock[],
+    zoneSummary: "",
+    zoneCount: 0,
+    zoneCanAdd: false,
+    maxZones: MAX_ZONES,
+    selectedSegId: -1,
+    selectedZoneText: "",
+    zoneHint: "",
+
+    /* ---- 进阶档：灯珠弹窗（#66） ---- */
+    pickerOpen: false,
+    pickerCells: [] as LedPickerCell[],
+    pickerColumns: PICKER_COLUMNS,
+    pickerRangeText: "",
+    pickerError: "",
+    pickerCanConfirm: false,
+    /** 新建还是改已有光区（按钮文案与「删除」的可用性）。 */
+    pickerEditing: false,
+    pickerTitle: "选一段灯珠",
+    pickerLedText: "",
+
     /* ---- 简单档：六张成品卡 ---- */
     quickCards: [] as QuickCardView[],
     simpleParams: null as SimpleParamView | null,
@@ -172,9 +228,9 @@ Page({
   /** 方案摘要读取代次（并发读时旧一轮作废）。 */
   planEpoch: 0,
 
-  /* ---- 进阶档：时间轴的本地草稿（#65，不进设备） ---- */
-  /** 时间轴的步骤（纯数据，页面只转发事件）。 */
-  timelineSteps: [] as TimelineStep[],
+  /* ---- 进阶档：时间轴与光区的本地草稿（#65 / #66，不进设备） ---- */
+  /** 4 个方案槽位各自的草稿（`ScriptDraft`：步骤 → 光区）；进阶档的唯一真相。 */
+  drafts: [] as ScriptDraft[],
   /** 时间轴选中步骤的下标（0 起）。 */
   timelineIndex: 0,
   /** 时间轴容器（scroll-view）的宽度（px）；0 = 还没测量。 */
@@ -195,6 +251,10 @@ Page({
   dragTapUntil: 0,
   /** 已经做过测量的标记（不需要每次 setData 后重新测量）。 */
   timelineMeasured: false,
+  /** 光区轴选中的槽位；-1 = 没选中。 */
+  pickedSegId: -1,
+  /** 灯珠弹窗的选择状态（纯数据，规则在 `led-picker`）。 */
+  picker: { segId: null, anchor: null, cursor: null } as PickerState,
 
   onLoad(options: Record<string, string | undefined>) {
     /* 私有状态显式兜底：Page() 不保证对象字面量字段被复制到实例上，漏掉会让
@@ -213,7 +273,7 @@ Page({
     this.dirty = false;
     this.planStepCounts = null;
     this.planEpoch = 0;
-    this.timelineSteps = createTimeline();
+    this.drafts = createAdvancedDrafts();
     this.timelineIndex = 0;
     this.timelineContainerWidth = 0;
     this.timelineWidth = 0;
@@ -224,6 +284,8 @@ Page({
     this.timelineLeft = 0;
     this.dragTapUntil = 0;
     this.timelineMeasured = false;
+    this.pickedSegId = -1;
+    this.picker = createPickerState(null);
 
     const storage = createWxStorage();
     this.storage = storage;
@@ -469,6 +531,11 @@ Page({
     this.quickParams = {};
     this.dirty = false;
     this.planStepCounts = null;
+    /* 进阶草稿属于「这台设备的这条灯组」：断开后一律作废，免得下次连上另一台
+     * 设备时把上一台的编排当成它的。 */
+    this.drafts = createAdvancedDrafts();
+    this.timelineIndex = 0;
+    this.pickedSegId = -1;
     this.setData({
       ledCount: 0,
       ledText: "连接后显示灯珠数",
@@ -478,6 +545,14 @@ Page({
       quickDisabledReason: this.disabledReason(),
       quickHint: "",
       applyError: "",
+      zoneBlocks: [],
+      zoneCount: 0,
+      zoneSummary: "还没有光区",
+      zoneCanAdd: false,
+      selectedSegId: -1,
+      zoneHint: "",
+      pickerOpen: false,
+      pickerCells: [],
     });
   },
 
@@ -498,59 +573,126 @@ Page({
       this.renderQuick({ quickHint: "" });
       return;
     }
+    /* 第一次进进阶档：把灯控现在的光区填进当前步骤，用户从「现在的样子」改，
+     * 而不是面对一条空白。已有草稿的步骤不会被覆盖。 */
+    this.seedAdvancedFromDevice();
     /* 进进阶档才渲染时间轴：块的宽度依赖真实行宽，行不在 DOM 里就量不到。 */
     this.renderTimeline();
     this.measureTimeline(true);
   },
 
+  /** 把设备读回的当前灯组光区填进当前步骤（只填空步骤，不覆盖草稿）。 */
+  seedAdvancedFromDevice(): void {
+    const reports = this.segmentReports;
+    if (reports.length === 0) {
+      return;
+    }
+    const draft = this.currentDraft();
+    const next = seedStepFromReports(draft, this.timelineIndex, this.data.stripId, reports);
+    if (next !== draft) {
+      this.setDraft(next);
+    }
+  },
+
   // ---------------- 进阶档：时间轴（#65） ----------------
 
   /**
-   * 重画时间轴（唯一派生入口）。
+   * 重画进阶档（唯一派生入口）：时间轴 + 光区轴一起算。
    *
-   * 只调 `layoutBlocks` + 一次 `setData`：拖时长条时块宽跟着变，但页面结构
-   * 不动（不 reLaunch / 不重建列表），所以拖动是连续的。
+   * 两条轴必须来自**同一份草稿**：分开各自派生迟早会出现「轴上三段、块里
+   * 两条色带」。所以只有这一个入口，任何一步改动都走它。
+   *
+   * 只调纯函数 + 一次 `setData`：拖时长条时块宽跟着变，但页面结构不动，
+   * 所以拖动是连续的。
    */
   renderTimeline(patch: Record<string, unknown> = {}, callback?: () => void): void {
     const ledCount = this.stripLedCount();
+    const stripId = this.data.stripId;
+    const draft = this.currentDraft();
+    const timelineSteps = timelineStepsOf(draft, stripId);
     /* 容器宽度没量到之前不能算像素（会把首帧算成 88px），退回时长权重 +
      * CSS 最小宽度；量到之后按「容器宽 / 保底下限 / 比例下限」三者取大分配。 */
     const measured = this.timelineContainerWidth > 0;
-    const durations = this.timelineSteps.map((step) => clampDuration(step.durationMs));
+    const durations = timelineSteps.map((step) => clampDuration(step.durationMs));
     const rowWidth = timelineRowWidth(durations, this.timelineContainerWidth);
     this.timelineWidth = rowWidth;
-    const blocks = layoutBlocks(this.timelineSteps, {
+    const blocks = layoutBlocks(timelineSteps, {
       widthPx: measured ? rowWidth : 0,
       selected: this.timelineIndex,
       dragIndex: this.dragFrom >= 0 ? this.dragFrom : -1,
       dropIndex: this.dragFrom >= 0 ? this.dragTo : -1,
       ledCount,
     });
-    const current = this.timelineSteps[this.timelineIndex] ?? null;
-    const durationMs = current === null ? null : clampDuration(current.durationMs);
-    const totalMs = this.timelineSteps.reduce(
-      (sum, step) => sum + clampDuration(step.durationMs),
-      0,
-    );
+    const durationMs = this.currentDurationMs();
+    const totalMs = durations.reduce((sum, ms) => sum + ms, 0);
     /* 拖动期间关掉横向滚动：否则手指一横移，滚动容器先动、块纹丝不动，
      * 长按拖动就永远读不出落点。松手后恢复。 */
     const scrollable =
       measured && rowWidth > this.timelineContainerWidth && this.dragFrom < 0;
+    const zones = stepZonesOf(draft, this.timelineIndex, stripId);
+    const axisZones = axisZonesOf(zones);
+    const selected = selectedZoneAfter(axisZones, this.pickedSegId);
+    this.pickedSegId = selected;
+    const selectedInput = axisZones.find((zone) => zone.segId === selected);
     this.setData({
       steps: blocks,
-      stepCount: this.timelineSteps.length,
+      stepCount: timelineSteps.length,
       stepIndex: this.timelineIndex,
-      stepCanAdd: canAddMoreSteps(this.timelineSteps),
+      stepCanAdd: canAddStepStage(draft),
       timelineRowStyle: measured ? `width: ${rowWidth}px;` : "width: 100%;",
       timelineScrollable: scrollable,
       timelineSummary:
-        this.timelineSteps.length === 0
+        timelineSteps.length === 0
           ? "还没有步骤"
-          : `${this.timelineSteps.length} 个步骤 · 共 ${durationText(totalMs)}`,
-      stepDurationSeconds: durationMs === null ? 1 : durationMs / 1000,
-      stepDurationText: durationMs === null ? "1 秒" : durationText(durationMs),
+          : `${timelineSteps.length} 个步骤 · 共 ${durationText(totalMs)}`,
+      stepDurationSeconds: durationMs / 1000,
+      stepDurationText: durationText(durationMs),
+      zoneSummary: zoneAxisSummary(axisZones, ledCount),
+      zoneCount: axisZones.length,
+      zoneCanAdd: canAddZoneAt(axisZones),
+      selectedSegId: selected,
+      selectedZoneText:
+        selectedInput === undefined
+          ? axisZones.length === 0
+            ? "点「+ 新增」划出第一个光区"
+            : "点一块选中它，再点一次改范围"
+          : `光区 ${selectedInput.segId + 1} · 第 ${selectedInput.start + 1}–${selectedInput.end + 1} 颗`,
+      zoneBlocks: buildZoneAxis({ zones: axisZones, ledCount, selectedSegId: selected }),
       ...patch,
     }, callback);
+  },
+
+  /** 当前方案槽位的草稿（进阶档的唯一真相）。 */
+  currentDraft(): ScriptDraft {
+    if (this.drafts.length === 0) {
+      this.drafts = createAdvancedDrafts();
+    }
+    return advancedDraftOf(this.drafts, this.data.planSlot);
+  },
+
+  /** 写回当前槽位的草稿；新对象才替换（引用相等 = 什么都没变）。 */
+  setDraft(next: ScriptDraft): void {
+    if (next === this.currentDraft()) {
+      return;
+    }
+    const slot = this.data.planSlot;
+    this.drafts = this.drafts.map((draft, index) => (index === slot ? next : draft));
+  },
+
+  /** 当前步骤里当前灯组的光区。 */
+  currentZones() {
+    return stepZonesOf(this.currentDraft(), this.timelineIndex, this.data.stripId);
+  },
+
+  /** 当前步骤的时长（毫秒，已钳位）。 */
+  currentDurationMs(): number {
+    const stage = this.currentDraft().stages[this.timelineIndex];
+    return stage === undefined ? clampDuration(DEFAULT_STEP_MS) : stageDurationMs(stage);
+  },
+
+  /** 当前灯组的灯珠数（门禁：没读到就不能划光区）。 */
+  currentLedCount(): number {
+    return Math.min(this.stripLedCount(), MAX_LEDS);
   },
 
   /**
@@ -596,13 +738,14 @@ Page({
       return;
     }
     const index = Number(e.currentTarget.dataset.index);
-    if (!Number.isInteger(index) || index < 0 || index >= this.timelineSteps.length) {
+    if (!Number.isInteger(index) || index < 0 || index >= this.currentDraft().stages.length) {
       return;
     }
     if (index === this.timelineIndex) {
       return;
     }
     this.timelineIndex = index;
+    /* 换步骤后原来选中的光区可能不存在了：让 `selectedZoneAfter` 重新挑一个。 */
     this.renderTimeline({ stepHint: "" });
   },
 
@@ -618,7 +761,7 @@ Page({
    */
   onStepTouchStart(e: WechatMiniprogram.TouchEvent) {
     const index = Number(e.currentTarget.dataset.index);
-    if (!Number.isInteger(index) || index < 0 || index >= this.timelineSteps.length) {
+    if (!Number.isInteger(index) || index < 0 || index >= this.currentDraft().stages.length) {
       return;
     }
     this.clearLongPress();
@@ -686,14 +829,15 @@ Page({
       this.renderTimeline({ stepHint: "" });
       return;
     }
-    const moved = moveBlock(this.timelineSteps, from, to);
-    /* `moveBlock` 对越界 / 自身返回同一个数组：引用没变就是没挪动。 */
-    if (moved === this.timelineSteps) {
+    const draft = this.currentDraft();
+    const moved = moveStepStage(draft, from, to);
+    /* `moveStepStage` 对越界 / 自身返回同一个对象：引用没变就是没挪动。 */
+    if (moved === draft) {
       this.renderTimeline({ stepHint: "" });
       return;
     }
     const selected = selectionAfterMove(this.timelineIndex, from, to);
-    this.timelineSteps = moved;
+    this.setDraft(moved);
     this.timelineIndex = selected;
     this.renderTimeline({
       stepHint: `已把第 ${from + 1} 个步骤挪到第 ${to + 1} 位`,
@@ -719,16 +863,31 @@ Page({
 
   /** 「+ 加步骤」：新增一个默认时长的空步骤并选中它；8 个步骤后不可用。 */
   onStepAdd() {
-    const result = addStepToTimeline(this.timelineSteps);
-    if (result === null) {
+    const draft = this.currentDraft();
+    if (!canAddStepStage(draft)) {
       this.renderTimeline({ stepHint: `最多 ${MAX_STEPS} 个步骤` });
       return;
     }
-    this.timelineSteps = result.steps;
-    this.timelineIndex = result.selected;
+    const next = addStepStage(draft);
+    this.setDraft(next);
+    this.timelineIndex = next.stages.length - 1;
+    this.pickedSegId = -1;
     this.renderTimeline({ stepHint: "" });
   },
 
+  /** 删掉当前步骤（至少留一个）。 */
+  onStepRemove() {
+    const draft = this.currentDraft();
+    const next = removeStepStage(draft, this.timelineIndex);
+    if (next === draft) {
+      this.renderTimeline({ stepHint: "至少要留一个步骤" });
+      return;
+    }
+    this.setDraft(next);
+    this.timelineIndex = Math.max(0, Math.min(next.stages.length - 1, this.timelineIndex));
+    this.pickedSegId = -1;
+    this.renderTimeline({ stepHint: "" });
+  },
   /** 拖时长条：块宽实时跟着变（拖动中也走 `renderTimeline`，只是不写设备）。 */
   onDurationChanging(e: WechatMiniprogram.SliderChanging) {
     this.applyDuration(Number(e.detail.value));
@@ -741,18 +900,19 @@ Page({
   /**
    * 时长条的值（秒）→ 当前步骤的时长。
    *
-   * 滑块步进 0.5 秒，但真机上仍可能给出 0.4999 之类的值：`setStepDuration` 会
-   * 再钳一次，所以这里只管传。
+   * 滑块步进 0.5 秒，但真机上仍可能给出 0.4999 之类的值：`setStageDurationMs`
+   * 会再钳一次，所以这里只管传。
    */
   applyDuration(seconds: number) {
-    if (this.timelineSteps.length === 0 || !Number.isFinite(seconds)) {
+    const draft = this.currentDraft();
+    if (draft.stages.length === 0 || !Number.isFinite(seconds)) {
       return;
     }
-    const next = setStepDuration(this.timelineSteps, this.timelineIndex, seconds * 1000);
-    if (next === this.timelineSteps) {
+    const next = setStageDurationMs(draft, this.timelineIndex, seconds * 1000);
+    if (next === draft) {
       return;
     }
-    this.timelineSteps = next;
+    this.setDraft(next);
     this.renderTimeline();
   },
 
@@ -765,6 +925,215 @@ Page({
     this.applyDuration(ms / 1000);
   },
 
+  // ---------------- 进阶档：光区轴（#66） ----------------
+
+  /**
+   * 点光区轴上的一块。
+   *
+   * 第一次点只**选中**它（选中态是 2px 描边）；再点已选中的那一块才打开
+   * 弹窗改范围。分成两步是因为窄光区（30 颗时可能只有 20px）一次点击既要
+   * 选中又要开弹窗，用户就永远看不到「选中」这件事。灰条（没被覆盖的
+   * 部分）点不动。
+   */
+  onZoneAxisTap(e: WechatMiniprogram.TouchEvent) {
+    const segId = Number(e.currentTarget.dataset.segId);
+    if (!Number.isInteger(segId) || segId < 0) {
+      return;
+    }
+    if (segId === this.pickedSegId) {
+      this.openPicker(segId);
+      return;
+    }
+    this.pickedSegId = segId;
+    this.renderTimeline({ zoneHint: "" });
+  },
+
+  /** 长按光区块：直接打开弹窗改它的范围（跳过一次「再点一下」）。 */
+  onZoneAxisLongPress(e: WechatMiniprogram.TouchEvent) {
+    const segId = Number(e.currentTarget.dataset.segId);
+    if (!Number.isInteger(segId) || segId < 0) {
+      return;
+    }
+    this.pickedSegId = segId;
+    this.openPicker(segId);
+  },
+
+  /** 「+ 新增」：打开灯珠弹窗，从空白开始选。8 个光区后不可用。 */
+  onZoneAdd() {
+    const reason = this.disabledReason();
+    if (reason !== "") {
+      this.renderTimeline({ zoneHint: reason });
+      return;
+    }
+    if (!canAddZoneAt(axisZonesOf(this.currentZones()))) {
+      this.renderTimeline({ zoneHint: `每组最多 ${MAX_ZONES} 个光区，请先删掉一个` });
+      return;
+    }
+    this.openPicker(null);
+  },
+
+  /** 「改范围」：对当前选中的光区打开弹窗；没选中时给提示。 */
+  onZoneEditSelected() {
+    if (this.pickedSegId < 0) {
+      this.renderTimeline({ zoneHint: "先点一块光区" });
+      return;
+    }
+    this.openPicker(this.pickedSegId);
+  },
+
+  /** 打开灯珠弹窗（`segId === null` = 新建）。 */
+  openPicker(segId: number | null) {
+    const ledCount = this.currentLedCount();
+    if (ledCount < 1) {
+      this.renderTimeline({ zoneHint: "还没读到这组的灯珠数量，稍等片刻" });
+      return;
+    }
+    const zones = this.currentZones();
+    const existing =
+      segId === null
+        ? null
+        : zones.find((zone) => zone.segId === segId) ?? null;
+    if (segId !== null && existing === null) {
+      this.renderTimeline({ zoneHint: "这个光区不在了，请重新选" });
+      return;
+    }
+    this.picker = createPickerState(
+      segId,
+      existing === null ? null : { start: existing.start, end: existing.end },
+    );
+    this.renderPicker({ pickerError: "", pickerOpen: true });
+  },
+
+  /** 重画弹窗（唯一派生入口：格子、区间文字、能否确定、标题）。 */
+  renderPicker(patch: Record<string, unknown> = {}): void {
+    const ledCount = this.currentLedCount();
+    const zones = this.currentZones();
+    const others = otherZones(zones, this.picker.segId);
+    const colors = axisColorMap(zones);
+    const check = pickerCheck(this.picker, {
+      ledCount,
+      others,
+      zoneCount: zones.length,
+    });
+    /* 冲突在弹窗里**当场**显示：用户划到别人的格子上时立刻看到原因，
+     * 而不是按了确定才被拒。`patch` 放在后面，提交失败的专门文案可以覆盖它。 */
+    this.setData({
+      pickerOpen: true,
+      pickerCells: buildPickerCells(this.picker, { ledCount, others, colors }),
+      pickerColumns: PICKER_COLUMNS,
+      pickerRangeText: pickerRangeText(this.picker),
+      pickerError: check.ok ? "" : check.message,
+      pickerCanConfirm: check.ok,
+      pickerEditing: this.picker.segId !== null,
+      pickerTitle: this.picker.segId === null ? "新增光区" : "改光区范围",
+      pickerLedText: `这组一共 ${ledCount} 颗灯珠`,
+      ...patch,
+    });
+  },
+
+  /** 点弹窗里的一颗灯珠（第一次设锚点、第二次定区间、同一颗两次取消）。 */
+  onPickerCellTap(e: WechatMiniprogram.TouchEvent) {
+    const index = Number(e.currentTarget.dataset.index);
+    const ledCount = this.currentLedCount();
+    const others = otherZones(this.currentZones(), this.picker.segId);
+    const outcome = pickerTap(this.picker, index, { ledCount, others });
+    /* 属于其它光区的格子「点不动」：状态一点不变（灰底与小色点已经说明归属）。 */
+    if (outcome.disabled) {
+      return;
+    }
+    this.picker = outcome.state;
+    /* 不传 pickerError：由 `renderPicker` 按新状态重新判定（跨过别人的格子
+     * 时立刻报重叠，取消后错误自动消失）。 */
+    this.renderPicker();
+  },
+
+  /** 确定：把区间写进「当前步骤 × 当前灯组」，只替换这一片。 */
+  onPickerConfirm() {
+    const ledCount = this.currentLedCount();
+    const zones = this.currentZones();
+    const result = commitPicker(this.picker, zones, this.data.stripId, ledCount);
+    if (result.error !== "") {
+      /* 失败：弹窗保留、不落草稿（票面硬要求），错误就地显示。 */
+      this.renderPicker({ pickerError: result.error });
+      return;
+    }
+    if (!result.changed) {
+      this.closePicker({ zoneHint: "范围没变" });
+      return;
+    }
+    const before = new Set(zones.map((zone) => zone.segId));
+    const added = this.picker.segId === null;
+    this.applyStepZones(result.zones);
+    this.pickedSegId = this.lastSegIdOf(result.zones, this.picker.segId, before);
+    this.closePicker({
+      zoneHint: added ? "已新增一个光区" : "范围已更新",
+    });
+  },
+
+  /** 删除：只对已有光区可用（新建状态下按钮隐藏）。 */
+  onPickerDelete() {
+    const segId = this.picker.segId;
+    if (segId === null) {
+      return;
+    }
+    const zones = this.currentZones();
+    const next = deletePickerZone(zones, segId);
+    if (next === zones) {
+      this.closePicker({ zoneHint: "这个光区已经不在了" });
+      return;
+    }
+    this.applyStepZones(next);
+    this.pickedSegId = -1;
+    this.closePicker({ zoneHint: "已删掉这个光区" });
+  },
+
+  /** 把光区列表写进「当前步骤 × 当前灯组」（多灯组语义只在这一处落地）。 */
+  applyStepZones(zones: Parameters<typeof writeStepZones>[3]): void {
+    const draft = this.currentDraft();
+    this.setDraft(writeStepZones(draft, this.timelineIndex, this.data.stripId, zones));
+  },
+
+  /** 取消：什么都不改。 */
+  onPickerCancel() {
+    this.closePicker({});
+  },
+
+  /** 点遮罩：等同取消（不会误删正在划的选择——选择本来就只存在弹窗里）。 */
+  onPickerMaskTap() {
+    this.closePicker({});
+  },
+
+  /** 弹窗自身的点击：吃掉，别冒泡到遮罩上变成取消。 */
+  onPickerStopPropagation() {
+    /* 空实现就是它的全部职责（`catchtap` 已经阻止冒泡）。 */
+  },
+
+  /** 关掉弹窗并重画两条轴。 */
+  closePicker(patch: Record<string, unknown> = {}): void {
+    this.picker = createPickerState(null);
+    this.setData({ pickerOpen: false, pickerError: "", pickerCells: [] });
+    this.renderTimeline(patch);
+  },
+
+  /**
+   * 提交后的选中的槽位：新建取「这次加进去的那一个」，修改保持原槽位。
+   *
+   * `addZone` 占的是最小空闲槽位，所以要在新旧集合的差里找；找不到就退回
+   * 原值（页面不会崩，只是没选中）。`before` 由调用方在写入前取好——写入
+   * 之后 `currentZones()` 已经是新的了。
+   */
+  lastSegIdOf(
+    next: readonly { segId: number }[],
+    previous: number | null,
+    before: ReadonlySet<number>,
+  ): number {
+    if (previous !== null && next.some((zone) => zone.segId === previous)) {
+      return previous;
+    }
+    const fresh = next.find((zone) => !before.has(zone.segId));
+    return fresh === undefined ? previous ?? -1 : fresh.segId;
+  },
+
   // ---------------- 方案槽位 ----------------
 
   /** 顶部「方案 ①」按钮：点一下轮换到下一个槽位。 */
@@ -775,6 +1144,12 @@ Page({
       planLabel: planSlotLabel(next),
       planSub: this.planSubOf(next),
     });
+    /* 换方案 = 换一份草稿：步骤下标与光区选中都要重新落到合法值。 */
+    this.timelineIndex = 0;
+    this.pickedSegId = -1;
+    if (this.data.mode === "advanced") {
+      this.renderTimeline();
+    }
   },
 
   planSubOf(slot: number): string {

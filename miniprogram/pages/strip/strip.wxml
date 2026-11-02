@@ -156,12 +156,19 @@
       </scroll-view>
 
       <view class="timeline-actions">
-        <text class="section-hint">长按一个步骤后可以左右拖动换位置</text>
-        <view
-          class="timeline-add {{stepCanAdd ? '' : 'disabled'}}"
-          hover-class="{{stepCanAdd ? 'timeline-add-hover' : ''}}"
-          bindtap="onStepAdd"
-        >+ 加步骤</view>
+        <text class="section-hint">长按步骤可拖动换位置</text>
+        <view class="timeline-actions-right">
+          <view
+            class="timeline-add ghost {{stepCount <= 1 ? 'disabled' : ''}}"
+            hover-class="{{stepCount > 1 ? 'timeline-add-hover' : ''}}"
+            bindtap="onStepRemove"
+          >删步骤</view>
+          <view
+            class="timeline-add {{stepCanAdd ? '' : 'disabled'}}"
+            hover-class="{{stepCanAdd ? 'timeline-add-hover' : ''}}"
+            bindtap="onStepAdd"
+          >+ 加步骤</view>
+        </view>
       </view>
 
       <!-- 时长：拖动时上方块宽实时变化，最小单位 0.5 秒 -->
@@ -198,14 +205,112 @@
       <text wx:if="{{stepHint}}" class="section-hint">{{stepHint}}</text>
     </view>
 
-    <!-- 光区与效果参数：本票仍是占位（#66 / #67 接上） -->
+    <!-- ---------------- 进阶档：光区轴（#66） ---------------- -->
+    <view class="section zone-section">
+      <view class="section-head">
+        <text class="section-title">光区</text>
+        <view class="axis-head-right">
+          <text class="section-value">{{zoneSummary}}</text>
+          <view
+            class="timeline-add zone-add {{zoneCanAdd ? '' : 'disabled'}}"
+            hover-class="{{zoneCanAdd ? 'timeline-add-hover' : ''}}"
+            bindtap="onZoneAdd"
+          >+ 新增</view>
+        </view>
+      </view>
+
+      <!--
+        光区轴：每个光区按灯珠下标比例定位（left = 起点 / 灯珠数），没被覆盖的
+        灯珠画成灰条（点不动）。选中态用 2px 描边而不是换底色——光区本身就有
+        颜色，换底色会让人分不清「这是它的颜色」还是「它被选中了」。
+      -->
+      <view class="zone-axis">
+      <view
+        wx:for="{{zoneBlocks}}"
+        wx:key="key"
+        class="zone-block {{item.kind === 'gap' ? 'zone-gap' : 'zone-solid'}} {{item.selected ? 'selected' : ''}}"
+        style="{{item.style}}"
+        data-seg-id="{{item.segId}}"
+        bindtap="onZoneAxisTap"
+        bindlongpress="onZoneAxisLongPress"
+      >
+          <view wx:if="{{item.kind === 'zone'}}" class="zone-fill" style="background: {{item.hex}}"></view>
+          <text wx:if="{{item.showLabel}}" class="zone-label">{{item.label}}</text>
+        </view>
+      </view>
+
+      <view class="zone-meta">
+        <text class="section-hint">{{selectedZoneText}}</text>
+        <text class="zone-count">{{zoneCount}} / {{maxZones}}</text>
+      </view>
+
+      <view class="zone-actions">
+        <view
+          class="timeline-add {{selectedSegId >= 0 ? '' : 'disabled'}}"
+          hover-class="{{selectedSegId >= 0 ? 'timeline-add-hover' : ''}}"
+          bindtap="onZoneEditSelected"
+        >改范围</view>
+        <text class="section-hint">点一块选中；再点一次（或长按）改范围</text>
+      </view>
+
+      <text wx:if="{{zoneHint}}" class="section-hint">{{zoneHint}}</text>
+    </view>
+
+    <!-- 效果参数：本票仍是占位（#67 接上） -->
     <view class="section placeholder-card">
-      <text class="placeholder-title">光区划分即将可用</text>
+      <text class="placeholder-title">效果参数即将可用</text>
       <text class="placeholder-text">
-        下一步可以在这里把「第 {{stepIndex + 1}} 个步骤」切成几个光区，各自配效果。
+        光区已经能划了；下一步为每个光区选效果与参数。
       </text>
     </view>
   </block>
+
+  <!-- ---------------- 灯珠弹窗（#66）：不进主界面，只在新增 / 改范围时出现 ---------------- -->
+  <view wx:if="{{pickerOpen}}" class="picker-mask" bindtap="onPickerMaskTap">
+    <view class="picker-sheet" catchtap="onPickerStopPropagation">
+      <view class="picker-head">
+        <text class="picker-title">{{pickerTitle}}</text>
+        <text class="picker-led">{{pickerLedText}}</text>
+      </view>
+
+      <text class="picker-range">{{pickerRangeText}}</text>
+
+      <!-- 灯珠网格：一次渲染该灯组全部灯珠（有几颗画几颗）。 -->
+      <view class="picker-grid" style="grid-template-columns: repeat({{pickerColumns}}, 1fr);">
+        <view
+          wx:for="{{pickerCells}}"
+          wx:key="index"
+          class="picker-cell {{item.disabled ? 'disabled' : ''}} {{item.selected ? 'selected' : ''}} {{item.anchor ? 'anchor' : ''}} {{item.conflict ? 'conflict' : ''}}"
+          data-index="{{item.index}}"
+          bindtap="onPickerCellTap"
+        >
+          <text class="picker-cell-no">{{item.label}}</text>
+          <!-- 别人光区的格子置灰，只留一个小色点说明它归哪个光区。 -->
+          <view
+            wx:if="{{item.ownerHex}}"
+            class="picker-owner-dot"
+            style="background: {{item.ownerHex}}"
+          ></view>
+        </view>
+      </view>
+
+      <text wx:if="{{pickerError}}" class="picker-error">{{pickerError}}</text>
+
+      <view class="picker-foot">
+        <button class="btn ghost picker-btn" bindtap="onPickerCancel">取消</button>
+        <button
+          wx:if="{{pickerEditing}}"
+          class="btn danger picker-btn"
+          bindtap="onPickerDelete"
+        >删除</button>
+        <button
+          class="btn primary picker-btn"
+          disabled="{{!pickerCanConfirm}}"
+          bindtap="onPickerConfirm"
+        >确定</button>
+      </view>
+    </view>
+  </view>
 
   <!-- ---------------- 底部：唯一的主按钮 ---------------- -->
   <view class="apply-bar">
@@ -216,7 +321,7 @@
     >{{applying ? '正在应用…' : '应用并播放'}}</button>
     <!-- 进阶档还不能写入：说清楚原因，别让用户点了没反应 -->
     <text wx:if="{{mode === 'advanced'}}" class="apply-note">
-      进阶编排的「应用并播放」会在光区接上之后可用；现在可以先用「简单」档。
+      进阶编排的「应用并播放」要等效果参数接上之后可用；现在可以先用「简单」档。
     </text>
     <text wx:if="{{applyError}}" class="apply-error">{{applyError}}</text>
   </view>
