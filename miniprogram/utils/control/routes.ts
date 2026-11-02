@@ -11,18 +11,23 @@
 /**
  * tabBar 两页（必须与 app.json 的 tabBar.list 完全一致）。
  *
- * #58：删除「剧本」tab —— 灯效方案已并入设备详情页的自定义档，
- * 独立的时间轴编辑器不再有入口，留着只会让用户以为还有第二个地方能编。
+ * #61：底部只剩「设备 / 我的」。原来的「发现」tab 降级成二级页
+ * （`PAGE_ROUTES.discover`），入口是设备页右上角的菜单——发现的动作
+ * 是「偶发的一次扫描」，不值得占一个常驻 tab。
  */
 export const TAB_ROUTES = {
   home: "/pages/home/home",
-  devices: "/pages/devices/devices",
+  me: "/pages/me/me",
 } as const;
 
 /** 二级页（push 进入，不在 tabBar 里）。 */
 export const PAGE_ROUTES = {
   device: "/pages/device/device",
   deviceInfo: "/pages/device-info/device-info",
+  /** 扫描附近设备（设备页菜单 / 首页空态进入）。 */
+  discover: "/pages/discover/discover",
+  /** 单个灯组的编辑页；query `strip` 指明是哪一组。 */
+  strip: "/pages/strip/strip",
 } as const;
 
 /** 切换到 tab 页（不会压栈）。 */

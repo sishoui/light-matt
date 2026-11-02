@@ -212,6 +212,11 @@ Page({
     connectHint: "",
     connectBusy: false,
 
+    /* 右上角下拉菜单（#61）：nav-bar 没有 slot，菜单在本页自建。 */
+    menuOpen: false,
+    /** 菜单面板的 top（px）= 状态栏高度 + nav-bar 的 44px 标题行。 */
+    menuTop: 88,
+
     // 灯带切换器
     stripChips: [] as StripChipView[],
     stripId: -1,
@@ -345,6 +350,8 @@ Page({
   previewEpoch: 0,
   /** 手势代次号（测量未完成就抬手时作废）。 */
   touchEpoch: 0,
+  /** 菜单里的断开连接正在进行（防重复点击）。 */
+  menuBusy: false,
 
   onLoad(options: Record<string, string | undefined>) {
     /* 页面私有状态（不进 data）。Page() 不保证对象字面量字段会被复制到
@@ -370,6 +377,7 @@ Page({
     this.ledBarWidth = 0;
     this.previewEpoch = 0;
     this.touchEpoch = 0;
+    this.menuBusy = false;
 
     const storage = createWxStorage();
     this.storage = storage;
@@ -382,9 +390,25 @@ Page({
     this.setData({
       themeClass: themeClass(this.themeMode),
       mock: isMockSession(),
+      menuTop: this.navBottom(),
     });
 
     this.applyTargetName();
+  },
+
+  /** nav-bar 的下边界（px）= 状态栏高度 + 44px 标题行；菜单贴着它展开。 */
+  navBottom(): number {
+    let statusBarHeight = 44;
+    try {
+      const info = wx.getWindowInfo?.() ?? wx.getSystemInfoSync();
+      const height = Number((info as { statusBarHeight?: number }).statusBarHeight);
+      if (Number.isFinite(height) && height > 0) {
+        statusBarHeight = height;
+      }
+    } catch {
+      /* 取不到就用兜底值：与 nav-bar 组件的兜底一致。 */
+    }
+    return statusBarHeight + 44;
   },
 
   onReady() {
@@ -408,6 +432,10 @@ Page({
     this.unsubscribe();
     /* 防抖定时器不属于 UI：页面隐藏后它还会跑一次，可能在断线后白发一帧。 */
     this.clearTimers();
+    /* 离开页面时收起菜单：否则返回时遮罩还在，第一下点击会被它吃掉。 */
+    if (this.data.menuOpen) {
+      this.setData({ menuOpen: false });
+    }
   },
 
   /** 清掉两个防抖定时器（幂等）。 */
@@ -914,7 +942,70 @@ Page({
     this.syncQuickFromDevice();
   },
 
-  /** 进设备信息页（身份 / 固件 / 灯珠数 / 自检 / 改名 / 断开 / 删除）。 */
+  // ---------------- 右上角菜单（#61） ----------------
+
+  /**
+   * 点导航栏右侧「菜单」：展开 / 收起。
+   *
+   * 遮罩的 z-index 低于 nav-bar（90），所以按钮永远不会被遮罩挡住——
+   * 「再次点按钮收起」不会变成「先点遮罩」。
+   */
+  onMenuTap() {
+    this.setData({ menuOpen: !this.data.menuOpen, menuTop: this.navBottom() });
+  },
+
+  /** 点遮罩：收起。 */
+  onMenuClose() {
+    if (!this.data.menuOpen) {
+      return;
+    }
+    this.setData({ menuOpen: false });
+  },
+
+  /** 遮罩上的 touchmove：吞掉滚动，避免底层页面跟着动。 */
+  onMenuNoop() {
+    /* 故意为空：catchtouchmove 的目的就是阻止滚动穿透。 */
+  },
+
+  /** 添加设备 → 发现页（二级页，压栈；返回回到本页）。 */
+  onMenuDiscover() {
+    this.setData({ menuOpen: false });
+    pushTo(PAGE_ROUTES.discover);
+  },
+
+  /** 设备信息（未连接时给出提示，不压一个空页面上去）。 */
+  onMenuDeviceInfo() {
+    this.setData({ menuOpen: false });
+    this.onGoDeviceInfo();
+  },
+
+  /**
+   * 断开连接：未连接时不可用（WXML 置灰，这里再兜一次）。
+   *
+   * 断开后会话进入 `idle`，本页由 `applyLink` 清空设备视图并显示提示条；
+   * 不走 `navigateBack`——用户可能想就地在同一页重新连。
+   */
+  async onMenuDisconnect() {
+    const session = this.session;
+    if (!this.data.ready || session === null || this.menuBusy) {
+      return;
+    }
+    this.menuBusy = true;
+    this.setData({ menuOpen: false });
+    /* 断开后不自动重连：`disconnect` 会同步发出 idle 事件，`applyLink` 的
+     * idle 分支看到 autoConnectTried 为假就会立刻连回去。标记必须在 await
+     * 之前立起来，否则用户看到的是「点了没反应」。 */
+    this.autoConnectTried = true;
+    try {
+      await session.disconnect();
+      this.setData({ connectHint: "已断开，点这里重新连接" });
+      wx.showToast({ title: "已断开", icon: "none" });
+    } finally {
+      this.menuBusy = false;
+    }
+  },
+
+  /** 进设备信息页（身份 / 固件 / 灯珠数 / 自检 / 改名 / 删除）。 */
   onGoDeviceInfo() {
     if (!this.data.ready) {
       wx.showToast({ title: "先连接设备", icon: "none" });

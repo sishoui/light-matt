@@ -1,0 +1,10 @@
+<view class="page {{themeClass}}">
+  <nav-bar title="{{title}}" subtitle="灯光编辑" back="{{true}}" />
+
+  <view class="placeholder-card">
+    <text class="placeholder-title">灯组编辑</text>
+    <text class="placeholder-text">
+      简单档与高级编排正在从设备详情页搬到这里。
+    </text>
+  </view>
+</view>

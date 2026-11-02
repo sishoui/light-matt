@@ -111,7 +111,9 @@ describe("页面非 data 字段必须在 onLoad 里初始化", () => {
   it("扫描到全部页面（防止规则空过）", () => {
     const names = files.map((f) => relative(ROOT, f).replace(/\\/g, "/"));
     expect(names).toContain("pages/home/home.ts");
-    expect(names).toContain("pages/devices/devices.ts");
+    expect(names).toContain("pages/me/me.ts");
+    expect(names).toContain("pages/discover/discover.ts");
+    expect(names).toContain("pages/strip/strip.ts");
     expect(names).toContain("pages/device/device.ts");
     expect(names).toContain("pages/device-info/device-info.ts");
   });

@@ -1,5 +1,5 @@
 /**
- * 自定义 tabBar（设备 / 发现）。
+ * 自定义 tabBar（设备 / 我的）。
  *
  * 为什么自建：原生 tabBar 只能给图标位放位图，做不出「细线条 + 选中强调色 +
  * 半透明底」的极简观感；位图在不同分辨率下还会糊。
@@ -17,12 +17,12 @@ import { THEME_KEY } from "../utils/control/theme";
 /**
  * 与 app.json tabBar.list 的顺序**必须一致**。
  *
- * #58 起只有两项（设备 / 发现）：灯效编排在设备详情页里，
- * 独立的「剧本」tab 已删除。
+ * #61 起是「设备 / 我的」：原来的「发现」tab 降级成二级页，
+ * 从设备页右上角的菜单进入。
  */
 const TABS = [
   { path: "/pages/home/home", label: "设备" },
-  { path: "/pages/devices/devices", label: "发现" },
+  { path: "/pages/me/me", label: "我的" },
 ] as const;
 
 /** 主题变化的监听（模块级：整个 App 只有一个 tabBar 实例）。 */

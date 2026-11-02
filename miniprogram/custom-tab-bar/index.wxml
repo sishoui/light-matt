@@ -13,8 +13,9 @@
         <view class="glyph-home-body"></view>
       </block>
       <block wx:else>
-        <view class="glyph-discover-ring"></view>
-        <view class="glyph-discover-dot"></view>
+        <!-- 我的：人物轮廓（头 + 肩），纯 CSS，不引位图 -->
+        <view class="glyph-person-head"></view>
+        <view class="glyph-person-body"></view>
       </block>
     </view>
     <text class="tab-label">{{item.label}}</text>

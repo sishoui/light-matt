@@ -1,0 +1,10 @@
+<view class="page {{themeClass}}">
+  <nav-bar title="发现设备" subtitle="扫描附近的 Lumen 灯控" back="{{true}}" />
+
+  <view class="placeholder-card">
+    <text class="placeholder-title">扫描入口</text>
+    <text class="placeholder-text">
+      扫描按钮与附近设备列表正在从原发现页搬过来。
+    </text>
+  </view>
+</view>

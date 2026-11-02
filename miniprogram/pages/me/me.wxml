@@ -1,0 +1,10 @@
+<view class="page {{themeClass}}">
+  <nav-bar title="我的" subtitle="外观 · 演示设备 · 我的设备" />
+
+  <view class="placeholder-card">
+    <text class="placeholder-title">设置搬到这里</text>
+    <text class="placeholder-text">
+      外观、演示设备、我的设备与版本号正在从原发现页搬过来。
+    </text>
+  </view>
+</view>
