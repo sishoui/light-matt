@@ -17,7 +17,16 @@
 
 import { ControlSession } from "./session";
 import { detectDevMode, detectPlatform } from "./platform";
-import { createDefaultUsageLogger } from "../usage";
+/*
+ * 必须写全 `../usage/index`，不能写 `../usage`。
+ *
+ * 微信小程序的模块解析器**不认目录 index**：`../usage` 会在运行时报
+ * `module 'utils/usage.js' is not defined`，而 TypeScript 编译期完全正常
+ * （`tsc --noEmit` 干净、node 侧测试也全过），所以只有真机/模拟器才暴露。
+ * 这个文件是 App 启动链的必经节点，一崩整棵页面树全部 `Page() has not been
+ * registered yet` —— 表现为整个小程序白屏。
+ */
+import { createDefaultUsageLogger } from "../usage/index";
 import type { UsageLogSink } from "../usage/logger";
 
 let session: ControlSession | null = null;
