@@ -88,114 +88,141 @@
     <text class="section-hint">{{brightnessHintText}}</text>
   </view>
 
-  <!-- 段列表：设备权威（QueryStrip(当前带)） -->
-  <view class="section {{ready ? '' : 'disabled'}}">
-    <view class="section-head">
-      <text class="section-title">段</text>
-      <view class="seg-head-actions">
-        <text class="section-action" bindtap="onRefreshSegments">刷新</text>
-        <text class="section-action" data-seg-id="-1" bindtap="onEditSegment">新建段</text>
-      </view>
-    </view>
-
-    <view class="seg-list">
-      <view
-        wx:for="{{segmentRows}}"
-        wx:key="segId"
-        class="seg-row {{item.selected ? 'selected' : ''}}"
-        data-seg-id="{{item.segId}}"
-        bindtap="onSegmentTap"
-        hover-class="seg-row-hover"
-      >
-        <view class="seg-swatch" style="background: {{item.hex}}"></view>
-        <text class="seg-index">段 {{item.segId}}</text>
-        <view class="seg-main">
-          <text class="seg-range">{{item.rangeText}}</text>
-          <text wx:if="{{item.paramText}}" class="seg-param">{{item.paramText}}</text>
-        </view>
-        <text class="seg-tag {{item.animated ? 'anim' : ''}}">{{item.typeText}}</text>
-        <text wx:if="{{item.twoLayer}}" class="seg-tag layers">{{item.layerText}}</text>
-        <text class="seg-edit" data-seg-id="{{item.segId}}" catchtap="onEditSegment">编辑</text>
-        <text class="seg-delete" data-seg-id="{{item.segId}}" catchtap="onSegmentDelete">删除</text>
-      </view>
-      <view wx:if="{{segmentRows.length === 0}}" class="seg-empty">
-        这条灯带还没有段。点右上「新建段」划一个灯珠区间；未覆盖的灯珠保持熄灭。
-      </view>
-    </view>
-    <text class="section-hint">{{segmentHintText}}</text>
-  </view>
-
-  <!-- 颜色：色环 + 饱和度，写入选中段 -->
-  <view class="section {{ready ? '' : 'disabled'}}">
-    <view class="section-head">
-      <text class="section-title">颜色</text>
-      <view class="color-readout">
-        <view class="swatch" style="background: {{colorHex}}"></view>
-        <text class="section-value mono">{{colorHex}}</text>
-      </view>
-    </view>
-
-    <view class="wheel-wrap">
-      <canvas
-        type="2d"
-        id="color-wheel"
-        class="wheel-canvas"
-        bindtouchstart="onWheelTouchStart"
-        bindtouchmove="onWheelTouchMove"
-        bindtouchend="onWheelTouchEnd"
-        bindtouchcancel="onWheelTouchEnd"
-      ></canvas>
-    </view>
-
-    <view class="row">
-      <text class="row-label">饱和</text>
-      <slider
-        class="row-slider"
-        min="0"
-        max="100"
-        step="1"
-        value="{{colorSaturation}}"
-        disabled="{{!ready}}"
-        activeColor="{{colorHex}}"
-        backgroundColor="rgba(120, 120, 128, 0.2)"
-        block-size="20"
-        bindchanging="onSaturationChanging"
-        bindchange="onSaturationChange"
-      />
-      <text class="row-value">{{colorSaturation}}%</text>
-    </view>
-    <text class="section-hint">{{colorHintText}}</text>
-  </view>
-
-  <!-- 预设：点击后把选中段改成该颜色 -->
-  <view class="presets {{ready ? '' : 'disabled'}}">
+  <!-- ============ 灯效：快捷 / 自定义 两档开关 ============ -->
+  <view class="mode-switch">
     <view
-      wx:for="{{presetList}}"
-      wx:key="name"
-      class="preset {{selectedPreset === item.name ? 'selected' : ''}}"
-      data-index="{{index}}"
-      bindtap="onPresetTap"
+      class="mode-tab {{effectMode === 'quick' ? 'on' : ''}}"
+      data-mode="quick"
+      bindtap="onModeTap"
     >
-      <view class="preset-dot" style="background: {{item.hex}}"></view>
-      <text class="preset-name">{{item.name}}</text>
+      <text class="mode-tab-label">快捷</text>
+      <text class="mode-tab-sub">点一下就好</text>
     </view>
+    <view
+      class="mode-tab {{effectMode === 'custom' ? 'on' : ''}}"
+      data-mode="custom"
+      bindtap="onModeTap"
+    >
+      <text class="mode-tab-label">自定义</text>
+      <text class="mode-tab-sub">自己编排</text>
+    </view>
+  </view>
+
+  <!-- ---------------- 快捷档：6 张成品效果卡 ---------------- -->
+  <block wx:if="{{effectMode === 'quick'}}">
+    <view class="section">
+      <view class="section-head">
+        <text class="section-title">选一个效果</text>
+        <text class="section-value">{{quickPanel.cardName || '整组生效'}}</text>
+      </view>
+
+      <view class="quick-grid {{quickDisabledReason ? 'disabled' : ''}}">
+        <view
+          wx:for="{{quickCards}}"
+          wx:key="id"
+          class="quick-card {{item.selected ? 'selected' : ''}}"
+          data-card-id="{{item.id}}"
+          bindtap="onQuickCardTap"
+          hover-class="quick-card-hover"
+        >
+          <view class="quick-swatch" style="background: {{item.hex}}"></view>
+          <view class="quick-body">
+            <text class="quick-name">{{item.name}}</text>
+            <text class="quick-hint">{{item.hint}}</text>
+          </view>
+          <view wx:if="{{item.selected}}" class="quick-check"></view>
+        </view>
+      </view>
+
+      <text wx:if="{{quickDisabledReason}}" class="section-hint">{{quickDisabledReason}}</text>
+    </view>
+
+    <!-- 选中卡的参数：只显示它支持的档位 -->
+    <view wx:if="{{quickPanel}}" class="section quick-panel">
+      <view class="section-head">
+        <text class="section-title">{{quickPanel.cardName}}的参数</text>
+        <text wx:if="{{quickPanel.summary}}" class="section-value">{{quickPanel.summary}}</text>
+      </view>
+
+      <!-- 颜色：与预设同一套色块（快捷档不给色环） -->
+      <view wx:if="{{quickPanel.showsColor}}" class="quick-presets">
+        <view
+          wx:for="{{quickPresets}}"
+          wx:key="name"
+          class="quick-preset {{quickPresetFlags[index] ? 'on' : ''}}"
+          style="background: {{item.hex}}"
+          data-index="{{index}}"
+          bindtap="onQuickPresetTap"
+        ></view>
+      </view>
+
+      <!-- 三档选择：快慢 / 最暗 / 尾长 / 方向 -->
+      <view wx:for="{{quickPanel.choices}}" wx:key="key" class="quick-choice">
+        <text class="quick-choice-label">{{item.label}}</text>
+        <view class="quick-choice-options">
+          <view
+            wx:for="{{item.options}}"
+            wx:for-item="option"
+            wx:key="value"
+            class="quick-option {{option.active ? 'on' : ''}}"
+            data-key="{{item.key}}"
+            data-value="{{option.value}}"
+            bindtap="onQuickChoiceTap"
+          >{{option.label}}</view>
+        </view>
+      </view>
+
+      <!-- 彩虹专属：饱和度 -->
+      <view wx:if="{{quickPanel.showsSaturation}}" class="row">
+        <text class="row-label">饱和度</text>
+        <slider
+          class="row-slider"
+          min="0"
+          max="100"
+          step="1"
+          value="{{quickPanel.saturation}}"
+          activeColor="#ff9500"
+          backgroundColor="rgba(120, 120, 128, 0.2)"
+          block-size="20"
+          bindchanging="onQuickSaturationChanging"
+          bindchange="onQuickSaturationChange"
+        />
+        <text class="row-value">{{quickPanel.saturation}}%</text>
+      </view>
+
+      <text wx:if="{{quickHint}}" class="section-hint">{{quickHint}}</text>
+      <text wx:else class="section-hint">改完立刻生效，整组一起变</text>
+    </view>
+  </block>
+
+  <!-- ---------------- 自定义档 ---------------- -->
+  <block wx:if="{{effectMode === 'custom'}}">
+    <view class="section">
+      <text class="section-title">自定义编排</text>
+      <text class="section-hint">{{customHint}}</text>
+    </view>
+  </block>
+
+  <!-- 当前灯效：一行摘要，点它进对应档位的编辑 -->
+  <view class="effect-row {{ready ? '' : 'disabled'}}" bindtap="onEffectSummaryTap" hover-class="link-row-hover">
+    <view class="effect-row-main">
+      <text class="effect-row-label">当前灯效</text>
+      <text class="effect-row-value">{{effectSummary}}</text>
+    </view>
+    <text class="effect-row-edit">编辑</text>
+    <view class="link-chevron"></view>
   </view>
 
   <!-- 其他入口 -->
   <view class="link-list">
-    <view class="link-row" bindtap="onGoScripts" hover-class="link-row-hover">
-      <text class="link-label">剧本</text>
-      <text class="link-value">多阶段自动播放</text>
-      <view class="link-chevron"></view>
-    </view>
     <view class="link-row" bindtap="onGoDeviceInfo" hover-class="link-row-hover">
-      <text class="link-label">设备信息</text>
+      <text class="link-label">灯控信息</text>
       <text class="link-value">固件 · 灯珠数 · 自检</text>
       <view class="link-chevron"></view>
     </view>
   </view>
 
   <view class="footer">
-    <text class="footer-hint">开关与设备状态以设备为准{{mock ? '（演示模式）' : ''}}</text>
+    <text class="footer-hint">开关与灯控状态以灯控为准{{mock ? '（演示模式）' : ''}}</text>
   </view>
 </view>

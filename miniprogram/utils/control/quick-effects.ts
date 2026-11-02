@@ -22,6 +22,7 @@ import {
 } from "../protocol/constants";
 import type { EffectLayer, SegmentSpec } from "../protocol/types";
 import { breathingFlags, directionFlags } from "../protocol/commands";
+import { rgbToHex, rgbToSegmentParams, segmentHueSatToRgb, PRESETS, type ColorPreset } from "../color/hsv";
 import { buildZoneSpec } from "./zone-model";
 
 /** 卡片对应的灯效类型。 */
@@ -338,3 +339,141 @@ export const DIRECTION_OPTIONS: ReadonlyArray<{ value: QuickDirection; label: st
   { value: "forward", label: "顺向" },
   { value: "reverse", label: "逆向" },
 ];
+
+/**
+ * 颜色预设里哪一个与当前参数同色（按 hue+sat 判定，不比 hex 字符串）。
+ *
+ * 快捷档不给色环：用户要的是「换个颜色」而不是「调色相 0-65535」，
+ * 所以用同一套预设色块，选中态由协议值反推（改档位不会让色块误高亮）。
+ */
+export function quickPresetFlags(
+  params: QuickParams = {},
+  presets: readonly ColorPreset[] = PRESETS,
+): boolean[] {
+  const hue = clampUint16(params.hue ?? 0);
+  const sat = clampByte(params.sat ?? 0);
+  return presets.map((preset) => {
+    const converted = rgbToSegmentParams(preset.rgb);
+    return converted.hue === hue && converted.sat === sat;
+  });
+}
+
+/* ---------------- 页面视图派生（#54） ---------------- */
+
+/** 卡片在界面上的样子（WXML 只读这个，不再自己算色）。 */
+export interface QuickCardView {
+  id: string;
+  name: string;
+  hint: string;
+  /** 卡片预览色块（由卡片默认色相/饱和度算出）。 */
+  hex: string;
+  /** 当前选中（设备上的效果能反推出是它时也高亮）。 */
+  selected: boolean;
+}
+
+/** 参数区的一个三档控件。 */
+export interface QuickChoiceView {
+  key: "speed" | "level" | "tail" | "direction";
+  label: string;
+  value: string;
+  options: ReadonlyArray<{ value: string; label: string; active: boolean }>;
+}
+
+/** 选中卡片的完整参数区（只含该卡支持的控件）。 */
+export interface QuickPanelView {
+  cardId: string;
+  cardName: string;
+  /** 当前参数摘要（「快慢 中 · 最暗 中暗」）；没有可调项时为空串。 */
+  summary: string;
+  colorHex: string;
+  /** 是否有任何可调参数（常亮卡只显示颜色）。 */
+  hasChoices: boolean;
+  choices: QuickChoiceView[];
+  /** 是否显示颜色预设（彩虹卡自己循环变色，换色没有意义）。 */
+  showsColor: boolean;
+  /** 彩虹卡的饱和度（0-100）与是否显示滑杆。 */
+  saturation: number;
+  showsSaturation: boolean;
+}
+
+function choiceOf<T extends string>(
+  key: QuickChoiceView["key"],
+  label: string,
+  value: T,
+  options: ReadonlyArray<{ value: T; label: string }>,
+): QuickChoiceView {
+  return {
+    key,
+    label,
+    value,
+    options: options.map((option) => ({
+      value: option.value,
+      label: option.label,
+      active: option.value === value,
+    })),
+  };
+}
+
+/**
+ * 六张卡的视图：`selectedId` 由页面给出（设备反推或用户点的）。
+ *
+ * 图片预览色块按卡片的默认色相/饱和度算：彩虹卡默认 hue 为 0 且会自己循环，
+ * 这里给一个渐变感更强的多色彩块由 wxss 处理，不在数据里拼字符串。
+ */
+export function buildQuickCardViews(
+  selectedId: string | null,
+  params: QuickParams = {},
+): QuickCardView[] {
+  return QUICK_CARDS.map((card) => {
+    const p = { ...defaultParams(card), ...params };
+    const hue = card.id === selectedId ? p.hue : card.hue;
+    const sat = card.id === selectedId ? p.sat : card.sat;
+    return {
+      id: card.id,
+      name: card.name,
+      hint: card.hint,
+      hex: rgbToHex(segmentHueSatToRgb(hue, sat)),
+      selected: card.id === selectedId,
+    };
+  });
+}
+
+/**
+ * 参数区：只有该卡 `shows.*` 为真的控件才出现（票面验收：其余不出现）。
+ *
+ * 返回 null 表示没有选中卡片（界面显示卡片列表即可）。
+ */
+export function buildQuickPanel(
+  cardId: string | null,
+  params: QuickParams = {},
+): QuickPanelView | null {
+  const card = cardId === null ? null : quickCardOf(cardId);
+  if (card === null) {
+    return null;
+  }
+  const p = { ...defaultParams(card), ...params };
+  const choices: QuickChoiceView[] = [];
+  if (card.shows.speed) {
+    choices.push(choiceOf("speed", "快慢", p.speed, SPEED_OPTIONS));
+  }
+  if (card.shows.level) {
+    choices.push(choiceOf("level", "最暗", p.level, LEVEL_OPTIONS));
+  }
+  if (card.shows.tail) {
+    choices.push(choiceOf("tail", "尾长", p.tail, TAIL_OPTIONS));
+  }
+  if (card.shows.direction) {
+    choices.push(choiceOf("direction", "方向", p.direction, DIRECTION_OPTIONS));
+  }
+  return {
+    cardId: card.id,
+    cardName: card.name,
+    summary: paramsSummary(card, p),
+    colorHex: rgbToHex(segmentHueSatToRgb(p.hue, p.sat)),
+    hasChoices: choices.length > 0,
+    choices,
+    showsColor: card.shows.color,
+    saturation: Math.round((clampByte(p.sat) / 255) * 100),
+    showsSaturation: card.shows.saturation,
+  };
+}

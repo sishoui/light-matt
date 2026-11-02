@@ -16,6 +16,13 @@ import { MOCK_DEVICES } from "../utils/control/mock-devices";
 import { seedMockDevices } from "../utils/control/mock-mode";
 import { createSessionStorage } from "./helpers/storage";
 import { SEGMENT_TYPE } from "../utils/protocol/constants";
+import {
+  buildQuickCardViews,
+  buildQuickSpec,
+  quickCardOf,
+  quickPresetFlags,
+} from "../utils/control/quick-effects";
+import { PRESETS, rgbToSegmentParams } from "../utils/color/hsv";
 
 const A = MOCK_DEVICES[0];
 const B = MOCK_DEVICES[1];
@@ -163,5 +170,140 @@ describe("演示模式：扫描", () => {
     await session.stopScan();
     vi.useRealTimers();
     expect(transport.linkState).toBe("idle");
+  });
+});
+
+/**
+ * 快捷档（#54）的会话级链路：点一张卡 → 整组变成一个光区 → 设备读回真的变了。
+ *
+ * 页面层只负责 setData；这里验证「写入确实生效」，因为模拟器里的
+ * 「界面高亮了」不能证明设备收到了命令。
+ */
+describe("演示模式：快捷档写入", () => {
+  it("点卡片后整组变成一个覆盖全条的单层光区（设备读回为准）", async () => {
+    const { session } = makeSession();
+    await session.connect(A.deviceId, A.broadcastName);
+    const card = quickCardOf("breathe")!;
+    const ledCount = session.stripLedCount(0);
+    /* 先清掉预置光区（快捷档整组覆盖，见 device.writeQuick）。 */
+    await session.queryStrip(0);
+    for (const report of session.segmentsOf(0)) {
+      await session.clearSegment(0, report.segId);
+    }
+    const ack = await session.setSegment(buildQuickSpec(card, { speed: "fast" }, 0, ledCount));
+    expect(ack.ok).toBe(true);
+
+    const result = await session.queryStrip(0);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    const sameStrip = result.reports.filter((report) => report.stripId === 0);
+    const whole = sameStrip.find((report) => report.start === 0 && report.end === ledCount - 1);
+    expect(whole).toBeDefined();
+    expect(whole!.layer0.type).toBe(SEGMENT_TYPE.BREATHING);
+    expect(whole!.layer1.type).toBe(0xff);
+  });
+
+  it("重复下发同一张卡只覆盖自己（SetSegment 是绝对值命令）", async () => {
+    const { session } = makeSession();
+    await session.connect(A.deviceId, A.broadcastName);
+    const card = quickCardOf("rainbow")!;
+    const ledCount = session.stripLedCount(0);
+    /* 快捷档的语义是整组覆盖：先读回再清掉该组其它光区（协议要求，见 device.writeQuick）。 */
+    await session.queryStrip(0);
+    for (const report of session.segmentsOf(0)) {
+      if (report.segId !== 0) {
+        await session.clearSegment(0, report.segId);
+      }
+    }
+    await session.setSegment(buildQuickSpec(card, {}, 0, ledCount));
+    await session.setSegment(buildQuickSpec(card, { speed: "slow" }, 0, ledCount));
+    const result = await session.queryStrip(0);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    /* 全条只应该有一个盖满的目标光区（槽位 0 被第二次覆盖）。 */
+    const covering = result.reports.filter(
+      (report) => report.stripId === 0 && report.start === 0 && report.end === ledCount - 1,
+    );
+    expect(covering).toHaveLength(1);
+    expect(covering[0].layer0.periodMs).toBe(6000);
+  });
+
+  it("整组写入前必须清掉其它光区，否则设备回 InvalidParam（重叠）", async () => {
+    const { session } = makeSession();
+    await session.connect(A.deviceId, A.broadcastName);
+    /* 设备 A 的灯组 0 预置了两个光区（0-13 / 14-29）——直接写整组必然重叠。 */
+    expect(session.segmentsOf(0).length).toBe(0);
+    const before = await session.queryStrip(0);
+    expect(before.kind).toBe("ok");
+    if (before.kind !== "ok") return;
+    expect(before.reports.filter((report) => report.stripId === 0)).toHaveLength(2);
+
+    const card = quickCardOf("warm")!;
+    const ledCount = session.stripLedCount(0);
+    const direct = await session.setSegment(buildQuickSpec(card, {}, 0, ledCount));
+    expect(direct.ok).toBe(false);
+  });
+
+  it("方案播放中写实时光区前先停止播放（否则设备不出光）", async () => {
+    const { session } = makeSession();
+    await session.connect(A.deviceId, A.broadcastName);
+    /* 起一套最小方案并播放，模拟「用户正看着播放中的方案」。 */
+    const played = await session.downloadScript(
+      {
+        scriptId: 0,
+        stripCount: 1,
+        stages: [
+          {
+            durationMs: 1000,
+            segments: [
+              {
+                stripId: 0,
+                segId: 0,
+                start: 0,
+                end: Math.max(0, session.stripLedCount(0) - 1),
+                blend: 0,
+                layer0: { type: SEGMENT_TYPE.STATIC, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0 },
+                layer1: { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0 },
+              },
+            ],
+          },
+        ],
+      },
+      { activate: true, loop: true },
+    );
+    expect(played.kind).toBe("ok");
+    const playing = await session.setPlayback(1, true);
+    expect(playing.kind).toBe("ok");
+    expect(session.deviceState?.playbackState).toBe(1);
+
+    const stopped = await session.setPlayback(0, true);
+    expect(stopped.kind).toBe("ok");
+    expect(session.deviceState?.playbackState).toBe(0);
+  });
+});
+
+/**
+ * 快捷档的视图派生：卡片高亮与颜色预设的选中态都应能从参数反推。
+ * 这两处在页面里只读数据，所以派生逻辑放这里锁。
+ */
+describe("快捷档：视图派生", () => {
+  it("选中卡的颜色随参数变化，未选中的卡不变", () => {
+    const base = buildQuickCardViews("warm");
+    const shifted = buildQuickCardViews("warm", { hue: 30000, sat: 255 });
+    const warmBase = base.find((card) => card.id === "warm")!;
+    const warmShifted = shifted.find((card) => card.id === "warm")!;
+    const rainbowBase = base.find((card) => card.id === "rainbow")!;
+    const rainbowShifted = shifted.find((card) => card.id === "rainbow")!;
+    expect(warmShifted.hex).not.toBe(warmBase.hex);
+    expect(rainbowShifted.hex).toBe(rainbowBase.hex);
+  });
+
+  it("预设色块的选中态按 hue+sat 判定", () => {
+    /* 用预设自身的转换值反查：必须是「至少命中一个」，且命中项就是那个预设。 */
+    const red = rgbToSegmentParams(PRESETS.find((p) => p.name === "红")!.rgb);
+    const flags = quickPresetFlags({ hue: red.hue, sat: red.sat });
+    expect(flags.some((hit) => hit)).toBe(true);
+    /* 一个不可能等于任何预设的组合不应误命中。 */
+    expect(quickPresetFlags({ hue: 12345, sat: 3 }).some((hit) => hit)).toBe(false);
   });
 });

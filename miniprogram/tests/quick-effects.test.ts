@@ -10,7 +10,9 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  buildQuickCardViews,
   buildQuickLayer,
+  buildQuickPanel,
   buildQuickSpec,
   defaultParams,
   inferQuickCard,
@@ -205,5 +207,88 @@ describe("从设备值反推卡片", () => {
 
   it("空层认不出（返回 null，让用户自选）", () => {
     expect(inferQuickCard({ type: NO_EFFECT, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0 })).toBeNull();
+  });
+});
+
+describe("卡片视图（#54）", () => {
+  it("六张卡都带名称、说明与预览色，且只有选中的高亮", () => {
+    const views = buildQuickCardViews("breathe");
+    expect(views).toHaveLength(6);
+    for (const view of views) {
+      expect(view.name.length).toBeGreaterThan(0);
+      expect(view.hint.length).toBeGreaterThan(0);
+      expect(view.hex).toMatch(/^#[0-9a-f]{6}$/i);
+    }
+    expect(views.filter((view) => view.selected).map((view) => view.id)).toEqual(["breathe"]);
+  });
+
+  it("没有选中时全部不高亮", () => {
+    expect(buildQuickCardViews(null).some((view) => view.selected)).toBe(false);
+  });
+
+  it("选中卡的预览色跟随参数变化（换颜色后色块要变）", () => {
+    const warm = buildQuickCardViews("warm").find((view) => view.id === "warm")!;
+    const shifted = buildQuickCardViews("warm", { hue: 30000, sat: 255 }).find(
+      (view) => view.id === "warm",
+    )!;
+    expect(shifted.hex).not.toBe(warm.hex);
+  });
+
+  it("未选中的卡不受当前参数影响（避免「调一张卡、六张都变色」）", () => {
+    const base = buildQuickCardViews("warm").find((view) => view.id === "rainbow")!;
+    const withParams = buildQuickCardViews("warm", { hue: 50000 }).find(
+      (view) => view.id === "rainbow",
+    )!;
+    expect(withParams.hex).toBe(base.hex);
+  });
+
+  it("没有选中卡时参数区为 null", () => {
+    expect(buildQuickPanel(null)).toBeNull();
+    expect(buildQuickPanel("nope")).toBeNull();
+  });
+
+  it("参数区只显示该卡支持的控件", () => {
+    /* 常亮：只有颜色（hasChoices=false，且没有饱和度滑杆）。 */
+    const solid = buildQuickPanel("warm")!;
+    expect(solid.hasChoices).toBe(false);
+    expect(solid.choices).toEqual([]);
+    expect(solid.showsSaturation).toBe(false);
+
+    /* 呼吸：快慢 + 最暗，没有尾长/方向。 */
+    const breathing = buildQuickPanel("breathe")!;
+    expect(breathing.choices.map((choice) => choice.key)).toEqual(["speed", "level"]);
+
+    /* 彩虹：快慢 + 方向 + 饱和度滑杆，没有颜色/最暗/尾长。 */
+    const rainbow = buildQuickPanel("rainbow")!;
+    expect(rainbow.choices.map((choice) => choice.key)).toEqual(["speed", "direction"]);
+    expect(rainbow.showsSaturation).toBe(true);
+
+    /* 流光：快慢 + 尾长 + 方向。 */
+    const comet = buildQuickPanel("comet")!;
+    expect(comet.choices.map((choice) => choice.key)).toEqual(["speed", "tail", "direction"]);
+  });
+
+  it("当前档位在选项里被标为 active，且只有一个", () => {
+    const panel = buildQuickPanel("breathe", { speed: "fast", level: "dark" })!;
+    const speed = panel.choices.find((choice) => choice.key === "speed")!;
+    expect(speed.value).toBe("fast");
+    expect(speed.options.filter((option) => option.active).map((option) => option.value)).toEqual([
+      "fast",
+    ]);
+    const level = panel.choices.find((choice) => choice.key === "level")!;
+    expect(level.options.filter((option) => option.active).map((option) => option.value)).toEqual([
+      "dark",
+    ]);
+  });
+
+  it("彩虹饱和度按百分比显示（0-100），并与 sat 双向对应", () => {
+    expect(buildQuickPanel("rainbow", { sat: 0 })!.saturation).toBe(0);
+    expect(buildQuickPanel("rainbow", { sat: 255 })!.saturation).toBe(100);
+    expect(buildQuickPanel("rainbow", { sat: 128 })!.saturation).toBe(50);
+  });
+
+  it("参数区摘要与 paramsSummary 一致", () => {
+    const params: QuickParams = { speed: "slow", tail: "long", direction: "reverse" };
+    expect(buildQuickPanel("comet", params)!.summary).toBe(paramsSummary(quickCardOf("comet")!, params));
   });
 });
