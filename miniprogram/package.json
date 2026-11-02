@@ -6,7 +6,8 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:ble": "vitest run --config vitest.e2e.config.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
