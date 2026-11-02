@@ -10,7 +10,7 @@
  * 「区间」这一维的实现只在本模块存在一份。上层模块（`segment-editor`、
  * `segment-view`、将来的自定义档）一律**委托**到这里，不再各写一套：
  *
- *  - 区间校验：[`parseRangeText`] / [`checkRange`]（同一个 `validateRange`）
+ *  - 区间校验：[`parseRangeText`] / [`checkRange`]
  *  - 重叠判定：[`rangesOverlap`] / [`findConflict`] / [`findConflictInList`]
  *  - 槽位分配：[`firstFreeSlot`] / [`nextFreeSegId`]
  *  - 逐灯珠归属：[`scanLedOwnership`]（`buildZoneCells` / `buildLedCells` 的共用核心）

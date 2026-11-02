@@ -307,3 +307,61 @@ describe("快捷档：视图派生", () => {
     expect(quickPresetFlags({ hue: 12345, sat: 3 }).some((hit) => hit)).toBe(false);
   });
 });
+
+/**
+ * 逐灯组灯珠数（review P0 回归）：多灯组设备的每组长度不同。
+ *
+ * 协议里 `state.ledCount` 是 **strip 0** 的派生值；编辑第 4 组时若拿它当
+ * 该组长度，灯珠条会画错格数、拖动落到不存在的灯珠上、切分产出越界区间。
+ * 这里锁住「能拿到逐组真实值」这件事本身（页面用的就是同一个来源）。
+ */
+describe("演示模式：逐灯组灯珠数", () => {
+  it("设备 B 的灯组长度确实不同（前提成立，否则本组测试无意义）", () => {
+    expect(B.stripCounts[0]).not.toBe(B.stripCounts[4]);
+  });
+
+  it("会话按灯组给出真实灯珠数，与 strip 0 不同", async () => {
+    const { session } = makeSession();
+    await session.connect(B.deviceId, B.broadcastName);
+    expect(session.stripLedCount(0)).toBe(B.stripCounts[0]);
+    expect(session.stripLedCount(4)).toBe(B.stripCounts[4]);
+    /* 这正是页面曾经用错的那个值。 */
+    expect(session.deviceState?.ledCount).toBe(B.stripCounts[0]);
+    expect(session.stripLedCount(4)).not.toBe(session.deviceState?.ledCount);
+  });
+
+  it("按该组真实长度构造的整组光区会被设备接受", async () => {
+    const { session } = makeSession();
+    await session.connect(B.deviceId, B.broadcastName);
+    const stripId = 4;
+    const ledCount = session.stripLedCount(stripId);
+    /* 设备 B 的第 4 组预置了一个覆盖全条的静态段，先清掉再写。 */
+    await session.queryStrip(stripId);
+    for (const report of session.segmentsOf(stripId)) {
+      await session.clearSegment(stripId, report.segId);
+    }
+    const card = quickCardOf("warm")!;
+    const ack = await session.setSegment(buildQuickSpec(card, {}, stripId, ledCount));
+    expect(ack.ok).toBe(true);
+    const result = await session.queryStrip(stripId);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    const zone = result.reports.find((report) => report.stripId === stripId);
+    expect(zone?.end).toBe(ledCount - 1);
+    expect(zone?.end).toBeLessThan(B.stripCounts[0] - 1);
+  });
+
+  it("用 strip 0 的长度去写短灯组会被设备拒绝（说明为何必须逐组取）", async () => {
+    const { session } = makeSession();
+    await session.connect(B.deviceId, B.broadcastName);
+    const stripId = 4;
+    await session.queryStrip(stripId);
+    for (const report of session.segmentsOf(stripId)) {
+      await session.clearSegment(stripId, report.segId);
+    }
+    const card = quickCardOf("warm")!;
+    /* 故意用第 0 组长度（60）去覆盖只有 24 颗的第 4 组。 */
+    const ack = await session.setSegment(buildQuickSpec(card, {}, stripId, B.stripCounts[0]));
+    expect(ack.ok).toBe(false);
+  });
+});

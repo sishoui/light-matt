@@ -214,3 +214,46 @@ export const PLAN_READBACK_NOTE =
 
 /** 容量超限的说明（16KB 由 4 套方案共享）。 */
 export const PLAN_CAPACITY_NOTE = "4 套方案共用 16KB 空间，超了要先精简再写入。";
+
+/**
+ * 把 `script-plan` / `errors` 的**旧术语**消息翻成本轮口径（#58）。
+ *
+ * 为什么要在页面边界翻译而不去改底层：`script-plan` 的文案是 v3 验收
+ * 逐字核对过的（`docs/acceptance-v3.md` 有它的原文断言），改它要连着改
+ * 验收记录；而用户看到的必须是新词（没有「剧本 / 阶段 / 毫秒」）。
+ * 所以在「面向用户」的这一层做映射，底层保持协议口径。
+ */
+export function planMessageText(message: string): string {
+  return message
+    .replace(/剧本过大/g, "这套方案太大")
+    .replace(/阶段数/g, "步骤数")
+    .replace(/段数/g, "光区数")
+    .replace(/灯带数/g, "灯组数")
+    .replace(/剧本/g, "方案")
+    .replace(/阶段/g, "步骤")
+    .replace(/下发/g, "写入")
+    .replace(/激活/g, "启用")
+    .replace(/(\d+)\s*ms/g, "$1 毫秒");
+}
+
+/** 把带 `ms` 的时长描述换成秒（界面不出现「毫秒」这个词）。 */
+export function durationMessageText(message: string): string {
+  return message.replace(/(\d+)\s*ms/g, (_, raw: string) => {
+    const ms = Number(raw);
+    if (!Number.isFinite(ms) || ms <= 0) {
+      return raw;
+    }
+    /* 不足 1 秒时说「不足 1 秒」：0.001 秒这种数字对用户毫无意义，
+     * 而「毫秒」本身是禁用词。 */
+    if (ms < 1000) {
+      return "不足 1 秒";
+    }
+    const seconds = ms / 1000;
+    return `${Number.isInteger(seconds) ? String(seconds) : seconds.toFixed(1)} 秒`;
+  });
+}
+
+/** 面向用户的方案校验消息：换术语 + 把毫秒换成秒。 */
+export function planUserMessage(message: string): string {
+  return durationMessageText(planMessageText(message));
+}

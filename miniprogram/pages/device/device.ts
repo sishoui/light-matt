@@ -63,6 +63,7 @@ import {
   buildQuickPanel,
   buildQuickSpec,
   inferQuickCard,
+  defaultParams,
   quickCardOf,
   quickPresetFlags,
   type QuickCardView,
@@ -81,7 +82,9 @@ import {
   addZone,
   cellFromRatio,
   checkZoneAdd,
+  DEFAULT_BLEND,
   defaultZoneLayer,
+  emptyOverlayLayer,
   draftConflicts,
   dragRange,
   EMPTY_DRAG,
@@ -97,6 +100,7 @@ import {
 import { readZone } from "../../utils/control/zone-model";
 import {
   buildZoneCells,
+  parseRangeText,
   zonesSummary,
   type ZoneCell,
 } from "../../utils/control/effect-layout";
@@ -115,6 +119,7 @@ import {
   nearestDurationLabel,
   PLAN_CAPACITY_NOTE,
   PLAN_READBACK_NOTE,
+  planUserMessage,
   replaceStepZones,
   STEP_DURATION_OPTIONS,
   stripsOfStep,
@@ -139,7 +144,7 @@ import {
   saveCustomSnapshot,
   type CustomSnapshot,
 } from "../../utils/control/effect-mode";
-import { MAX_SCRIPTS } from "../../utils/protocol/constants";
+import { MAX_SCRIPTS, MAX_SEGMENTS } from "../../utils/protocol/constants";
 import type { ScriptConfig } from "../../utils/control/script-plan";
 import { blendName } from "../../utils/control/effect-view";
 import { rgbToHex, segmentHueSatToRgb } from "../../utils/color/hsv";
@@ -336,6 +341,10 @@ Page({
   /** 灯珠条的实测左边界与宽度（触摸坐标换算用）。 */
   ledBarLeft: 0,
   ledBarWidth: 0,
+  /** 步骤预览的代次号（并发预览时旧的一轮静默退出）。 */
+  previewEpoch: 0,
+  /** 手势代次号（测量未完成就抬手时作废）。 */
+  touchEpoch: 0,
 
   onLoad(options: Record<string, string | undefined>) {
     /* 页面私有状态（不进 data）。Page() 不保证对象字面量字段会被复制到
@@ -359,6 +368,8 @@ Page({
     this.stepZones = [];
     this.ledBarLeft = 0;
     this.ledBarWidth = 0;
+    this.previewEpoch = 0;
+    this.touchEpoch = 0;
 
     const storage = createWxStorage();
     this.storage = storage;
@@ -395,11 +406,26 @@ Page({
 
   onHide() {
     this.unsubscribe();
+    /* 防抖定时器不属于 UI：页面隐藏后它还会跑一次，可能在断线后白发一帧。 */
+    this.clearTimers();
+  },
+
+  /** 清掉两个防抖定时器（幂等）。 */
+  clearTimers() {
+    if (this.quickTimer !== null) {
+      clearTimeout(this.quickTimer);
+      this.quickTimer = null;
+    }
+    if (this.zoneTimer !== null) {
+      clearTimeout(this.zoneTimer);
+      this.zoneTimer = null;
+    }
   },
 
   onUnload() {
     /* 二级页会被真正卸载；但会话属于 App，绝不 destroy。 */
     this.unsubscribe();
+    this.clearTimers();
     this.session = null;
     this.storage = null;
   },
@@ -599,7 +625,10 @@ Page({
       brightnessPercent: percentOf(brightness, max),
       maxBrightness: max,
       brightnessHintText: brightnessHintText(brightness, this.data.ready),
-      ledCount: state.ledCount,
+      /* ledCount 是「当前选中灯组」的灯珠数。`state.ledCount` 按协议是
+       * stripCounts[0] 的派生值——多灯组设备的每组长度不同（演示设备就有
+       * 60 与 24），拿 strip 0 的值画灯珠条会让拖动落到不存在的灯珠上。 */
+      ledCount: state.stripCounts[this.data.stripId] ?? 0,
       stripCount: state.stripCount,
     });
     this.applyStripSelection(state);
@@ -627,6 +656,8 @@ Page({
     }
     this.applyStripPowerView(state);
     this.setData({
+      /* 切组后灯珠条要按新组的长度重画（见 applyDeviceState 的同名注释）。 */
+      ledCount: next >= 0 ? state.stripCounts[next] ?? 0 : 0,
       stripTitle: next >= 0 ? `灯组 ${next + 1}` : "无可见灯组",
       stripHint:
         next >= 0
@@ -636,6 +667,21 @@ Page({
     if (changed) {
       void this.refreshSegments();
     }
+  },
+
+  /**
+   * 当前灯组的灯珠数（设备权威）。
+   *
+   * 一律走这里，不要直接用 `data.ledCount` 或 `state.ledCount`：
+   * 后者按协议只代表 strip 0，多灯组设备上会算错灯珠条与区间。
+   */
+  stripLedCount(): number {
+    const state = this.session?.deviceState;
+    const stripId = this.data.stripId;
+    if (state === null || state === undefined || stripId < 0) {
+      return 0;
+    }
+    return state.stripCounts[stripId] ?? 0;
   },
 
   /** 可见的灯带号：`State.stripCount` 截断后套用 App 本地启用掩码。 */
@@ -706,7 +752,17 @@ Page({
       quickPanel: null,
       quickDisabledReason: "连接灯控后才能调灯效",
       effectSummary: "还没有灯效",
+      /* 自定义档：断线后不能继续显示上一台设备的光区（否则用户以为还能改）。 */
+      zoneCells: [],
+      zoneRows: [],
+      draftRangeText: "",
+      draftConflict: false,
+      zoneHintText: "",
+      customDisabledReason: "连接灯控后才能编排",
+      stepHint: "",
     });
+    this.drag = EMPTY_DRAG;
+    this.stepZones = [];
   },
 
   // ---------------- 灯带切换 ----------------
@@ -733,10 +789,16 @@ Page({
       colorHintText: "点一个段改颜色",
     });
     this.applyStripPowerView(session.deviceState);
+    /* 灯珠数按新组重算：拖动的比例换算、切分按钮都依赖它。 */
+    this.setData({ ledCount: this.stripLedCount() });
     await this.refreshSegments();
     await this.refreshStripChips();
-    /* 换灯组：快捷参数按组隔离，重画一次就不会带着上一组的值。 */
+    /* 换灯组：快捷 / 自定义两档的编辑态都按组隔离。
+     * 自定义档必须重画——否则 `stepZones` 还是上一组的，随后任何光区编辑
+     * 都会把上一组的光区写进当前组（并且预览会发到上一组）。 */
+    this.drag = EMPTY_DRAG;
     this.renderQuick({ quickHint: "" });
+    this.renderCustom({ stepHint: "" });
   },
 
   /** 当前灯带的设备独立开关（SetStripPower 0x1B）。 */
@@ -993,18 +1055,9 @@ Page({
 
   /* ================= 自定义档（#55 光区 / #56 方案与步骤） ================= */
 
-  /** 自定义档是否可用 + 不可用的原因。 */
+  /** 自定义档是否可用 + 不可用的原因（与快捷档同一条判断，动作词不同）。 */
   customDisabledReasonOf(): string {
-    if (!this.data.ready) {
-      return "连接灯控后才能编排";
-    }
-    if (this.data.stripId < 0) {
-      return "先在「发现」页打开至少一条灯组";
-    }
-    if (this.data.ledCount < 1) {
-      return "还没读到这组的灯珠数量，稍等片刻";
-    }
-    return "";
+    return this.editorDisabledReason("连接灯控后才能编排");
   },
 
   /** 确保三级草稿存在（第一次进自定义档时按设备真实值初始化）。 */
@@ -1023,7 +1076,7 @@ Page({
     const draft = currentPlanDraft(plan);
     const step = currentStep(plan);
     const stripId = this.data.stripId;
-    const ledCount = this.data.ledCount;
+    const ledCount = this.stripLedCount();
 
     /* 光区以「当前步骤 × 当前灯组」为准；没有草稿时用设备读回值铺底。 */
     const zones = zonesOfStep(step, stripId);
@@ -1107,14 +1160,14 @@ Page({
 
   /** 光区提示（数量上限 / 熄灭灯珠）。 */
   zoneHintTextOf(count: number, ledCount: number, zones: readonly SegmentSpec[]): string {
-    if (this.data.ledCount < 1) {
+    if (ledCount < 1) {
       return "";
     }
     const summary = zonesSummary(
       ledCount,
       zones.map((zone) => ({ segId: zone.segId, start: zone.start, end: zone.end })),
     );
-    return count >= 8 ? `${summary} · 已达上限 8 个` : summary;
+    return count >= MAX_SEGMENTS ? `${summary} · 已达上限 ${MAX_SEGMENTS} 个` : summary;
   },
 
   /** 设备控制页的「当前灯效」摘要（自定义档时显示方案/步骤）。 */
@@ -1272,6 +1325,16 @@ Page({
     if (session === null || this.customDisabledReasonOf() !== "" || stripId < 0) {
       return;
     }
+    /* 预览是「读 → 清空 → 逐条写」的多帧流程，并发跑两次会交错写出半套配置。
+     * 用代次号让旧的一轮在下一个 await 后静默退出（与 quickEpoch 同一手法）。 */
+    this.previewEpoch += 1;
+    const epoch = this.previewEpoch;
+    /* 快照当前要预览的光区：await 期间用户可能又改了草稿。 */
+    const zones = this.stepZones.map((zone) => ({
+      ...zone,
+      layer0: { ...zone.layer0 },
+      layer1: { ...zone.layer1 },
+    }));
     try {
       const state = session.deviceState;
       if (state !== null && state.playbackState !== 0) {
@@ -1284,18 +1347,24 @@ Page({
        * 某个旧光区——不清的话旧光区会留在设备上，预览与草稿不一致。
        */
       const queried = await session.queryStrip(stripId);
-      if (queried.kind !== "ok") {
+      if (queried.kind !== "ok" || epoch !== this.previewEpoch) {
         return;
       }
       const existing = queried.reports.filter((report) => report.stripId === stripId);
       for (const report of existing) {
         const cleared = await session.clearSegment(stripId, report.segId);
+        if (epoch !== this.previewEpoch) {
+          return;
+        }
         if (!cleared.ok) {
           throw new Error(resultText(cleared.resultCode));
         }
       }
-      for (const zone of this.stepZones) {
+      for (const zone of zones) {
         const ack = await session.setSegment(zone);
+        if (epoch !== this.previewEpoch) {
+          return;
+        }
         if (!ack.ok) {
           throw new Error(resultText(ack.resultCode));
         }
@@ -1319,8 +1388,13 @@ Page({
     if (this.customDisabledReasonOf() !== "") {
       return;
     }
-    /* 必须先测量再换算：宽度为 0 时 cellAt 返回 -1，拖动会整个失效。 */
+    /* 记住这次手势，measureLedBar 的 Promise 回来时如果用户已经抬手就放弃：
+     * 否则会在松手之后补上一个「幽灵拖动」，下次点哪都显示一段选区。 */
+    const gesture = (this.touchEpoch += 1);
     await this.measureLedBar();
+    if (gesture !== this.touchEpoch) {
+      return;
+    }
     const index = this.cellAt(e);
     if (index < 0) {
       return;
@@ -1343,6 +1417,7 @@ Page({
 
   /** 松手：确认划出的区间（冲突 / 非法时**不写入设备**，就地提示）。 */
   onZoneTouchEnd() {
+    this.touchEpoch += 1;
     const range = dragRange(this.drag);
     this.drag = EMPTY_DRAG;
     if (range === null) {
@@ -1357,7 +1432,7 @@ Page({
     const touch = (e.touches?.[0] ?? e.changedTouches?.[0]) as
       | { clientX?: number; pageX?: number; x?: number }
       | undefined;
-    const ledCount = this.data.ledCount;
+    const ledCount = this.stripLedCount();
     if (touch === undefined || ledCount < 1) {
       return -1;
     }
@@ -1396,7 +1471,7 @@ Page({
     }
     const id = String(e.currentTarget.dataset.id ?? "");
     const stripId = this.data.stripId;
-    const ledCount = this.data.ledCount;
+    const ledCount = this.stripLedCount();
     let zones: SegmentSpec[];
     if (id === "whole" || id === "firstHalf" || id === "secondHalf") {
       zones = splitWhole(id, ledCount, stripId, this.stepZones.map(readZone));
@@ -1439,26 +1514,30 @@ Page({
     this.setData({ editEndText: String(e.detail.value ?? "") });
   },
 
-  /** 确认区间：新建或改已有的那个（非法 / 重叠就地提示，一帧不发）。 */
+  /**
+   * 确认区间：新建或改已有的那个（非法 / 重叠就地提示，一帧不发）。
+   *
+   * 区间规则**委托给 `effect-layout.parseRangeText`**（#53 的单一真相）：
+   * 自己写一遍 `Number()` 判断会把空串当成 0（`Number("") === 0`），
+   * 用户清空输入框再点确定就会静默把光区改到第 0 颗灯珠上。
+   */
   onRangeConfirm() {
-    const start = Number(this.data.editStartText);
-    const end = Number(this.data.editEndText);
-    const stripId = this.data.stripId;
-    if (!Number.isInteger(start) || !Number.isInteger(end)) {
-      wx.showToast({ title: "起点与终点都要填整数", icon: "none" });
+    const ledCount = this.stripLedCount();
+    const parsed = parseRangeText(this.data.editStartText, this.data.editEndText, ledCount);
+    if (!parsed.ok) {
+      wx.showToast({ title: parsed.message, icon: "none" });
       return;
     }
-    if (start < 0 || end < 0 || start > end) {
-      wx.showToast({ title: "区间不合法：起点不能大于终点", icon: "none" });
-      return;
-    }
-    if (end > Math.max(0, this.data.ledCount - 1)) {
-      wx.showToast({ title: `终点不能超过第 ${this.data.ledCount} 颗`, icon: "none" });
-      return;
-    }
+    const { start, end } = parsed;
     if (this.data.editSegId >= 0) {
+      const before = this.stepZones.find((zone) => zone.segId === this.data.editSegId);
       const next = resizeZone(this.stepZones, this.data.editSegId, start, end);
       if (next === null) {
+        /* null 有两种原因：区间没变（不是错误）与与别人重叠。 */
+        if (before !== undefined && before.start === start && before.end === end) {
+          this.setData({ editRangeOpen: false });
+          return;
+        }
         wx.showToast({ title: "与其它光区重叠，请调整", icon: "none" });
         return;
       }
@@ -1467,7 +1546,7 @@ Page({
       this.applyZones(zones, "光区区间已更新");
       return;
     }
-    const added = addZone(this.stepZones, stripId, start, end);
+    const added = addZone(this.stepZones, this.data.stripId, start, end);
     if (added === null) {
       const check = checkZoneAdd(
         this.stepZones.map((zone) => ({ segId: zone.segId, start: zone.start, end: zone.end })),
@@ -1515,11 +1594,9 @@ Page({
       return;
     }
     const layer = applyModeToLayer(zone.layer0, mode);
-    /* 只在防抖里写一次：连续点不同灯效不该发一堆积压帧。 */
-    const zones = this.stepZones.map((item) =>
-      item.segId === segId ? { ...item, layer0: layer, layer1: { ...item.layer1 } } : item,
-    );
-    this.applyZones(zones, "");
+    /* 复用 `zone-editor.setZoneLayer0`：只动 layer0、叠加层与叠加方式原样保留。
+     * 写入走 300ms 防抖：连续点不同灯效不该发一堆积压帧。 */
+    this.applyZones(setZoneLayer0(this.stepZones, segId, layer), "");
   },
 
   /** 改光区颜色（预设色块）。 */
@@ -1547,15 +1624,12 @@ Page({
     }
     const hasOverlay = zone.layer1.type !== NO_EFFECT;
     const zones = hasOverlay
-      ? setZoneOverlay(this.stepZones, segId, null, 0)
+      ? setZoneOverlay(this.stepZones, segId, null, DEFAULT_BLEND)
       : setZoneOverlay(
           this.stepZones,
           segId,
-          applyModeToLayer(
-            { type: NO_EFFECT, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0 },
-            "rainbow",
-          ),
-          0,
+          applyModeToLayer(emptyOverlayLayer(), "rainbow"),
+          DEFAULT_BLEND,
         );
     this.applyZones(zones, hasOverlay ? "叠加效果已关闭" : "已开启叠加效果");
   },
@@ -1591,17 +1665,19 @@ Page({
     const script = draftToConfig(draft, Math.max(1, this.data.stripCount));
     const precheck = session.validateScriptForDevice(script);
     if (!precheck.ok) {
-      this.setData({ stepHint: precheck.message });
-      wx.showToast({ title: precheck.message, icon: "none" });
+      /* script-plan 的文案是协议口径（「阶段」「ms」），面向用户要换成新词。 */
+      const message = planUserMessage(precheck.message);
+      this.setData({ stepHint: message });
+      wx.showToast({ title: message, icon: "none" });
       return;
     }
     const capacity = checkScriptBlobBytes(
       draftCapacityBytes(plan.drafts, [], plan.planId, script.stripCount),
     );
     if (!capacity.ok) {
-      const message = `${capacity.message}（${PLAN_CAPACITY_NOTE}）`;
+      const message = `${planUserMessage(capacity.message)}（${PLAN_CAPACITY_NOTE}）`;
       this.setData({ stepHint: message });
-      wx.showToast({ title: capacity.message, icon: "none" });
+      wx.showToast({ title: planUserMessage(capacity.message), icon: "none" });
       return;
     }
 
@@ -1628,10 +1704,10 @@ Page({
       }
       const message =
         result.kind === "too-large"
-          ? `${result.message}；设备上的上一套方案仍可用`
+          ? `${planUserMessage(result.message)}；灯控上的上一套方案仍可用`
           : result.kind === "ack-error"
-            ? `写入被拒绝（${resultText(result.ack.resultCode)}），设备上的上一套方案仍可用`
-            : result.message;
+            ? `写入被拒绝（${resultText(result.ack.resultCode)}），灯控上的上一套方案仍可用`
+            : planUserMessage(result.message);
       this.setData({ stepHint: message });
       wx.showToast({ title: message, icon: "none" });
     } finally {
@@ -1673,32 +1749,45 @@ Page({
     const cardId = this.quickCardByStrip.get(this.data.stripId) ?? null;
     const params = this.quickParamsOf(cardId);
     const disabledReason = this.quickDisabledReasonOf();
+    /* 预设高亮要用「卡片默认 + 覆盖」之后的值：`buildQuickPanel` 也是这么算的，
+     * 否则刚点开一张卡时色块是默认色却没有一个高亮。 */
+    const card = cardId === null ? null : quickCardOf(cardId);
+    const effective = card === null ? params : { ...defaultParams(card), ...params };
     this.setData({
       quickCards: buildQuickCardViews(cardId, params),
       quickPanel: buildQuickPanel(cardId, params),
-      quickPresetFlags: quickPresetFlags(params),
+      quickPresetFlags: quickPresetFlags(effective),
       quickDisabledReason: disabledReason,
-      effectSummary: this.effectSummaryText(cardId, params),
+      /* 自定义档的摘要由 syncEffectSummary 维护（方案 N · 步骤 M/T）；
+       * 快捷档的重画不能把它冲掉。 */
+      ...(this.data.effectMode === "quick"
+        ? { effectSummary: this.effectSummaryText(cardId) }
+        : {}),
       ...patch,
     });
   },
 
   /** 为什么不能点（未连接 / 没有灯组 / 灯珠数未知）。 */
   quickDisabledReasonOf(): string {
+    return this.editorDisabledReason("连接灯控后才能调灯效");
+  },
+
+  /** 两档共用的禁用判据；`notReady` 是各自的动作文案。 */
+  editorDisabledReason(notReady: string): string {
     if (!this.data.ready) {
-      return "连接灯控后才能调灯效";
+      return notReady;
     }
     if (this.data.stripId < 0) {
       return "先在「发现」页打开至少一条灯组";
     }
-    if (this.data.ledCount < 1) {
+    if (this.stripLedCount() < 1) {
       return "还没读到这组的灯珠数量，稍等片刻";
     }
     return "";
   },
 
   /** 设备控制页要显示的一行「现在亮的是什么」。 */
-  effectSummaryText(cardId: string | null, params: QuickParams): string {
+  effectSummaryText(cardId: string | null): string {
     if (this.data.effectMode === "custom") {
       return "自定义编排（点这里继续编辑）";
     }
@@ -1706,8 +1795,7 @@ Page({
     if (card === null) {
       return this.segmentReports.length > 0 ? `${this.segmentReports.length} 个光区` : "还没有灯效";
     }
-    const extra = Object.keys(params).length > 0 ? "" : "";
-    return `${card.name}${extra}`;
+    return card.name;
   },
 
   /** 从设备读回的段推断「现在大概是哪张卡」（判断不出就不高亮）。 */
@@ -1719,17 +1807,21 @@ Page({
     /* 整组只有一个覆盖全条的光区时，才有「某张快捷卡」可言。 */
     const reports = this.segmentReports;
     if (reports.length !== 1) {
-      if (!this.quickCardByStrip.has(stripId)) {
+      /* 不是「整组一个光区」就推不出某张快捷卡：清掉选中态与参数，
+       * 否则卡片会一直高亮着一个设备上早就不存在的效果。 */
+      if (this.quickCardByStrip.has(stripId)) {
         this.quickCardByStrip.delete(stripId);
+        this.quickParamsByStrip.delete(stripId);
       }
       this.renderQuick();
       return;
     }
     const only = reports[0];
-    const coversWhole = only.start === 0 && only.end >= Math.max(0, this.data.ledCount - 1);
+    const coversWhole = only.start === 0 && only.end >= Math.max(0, this.stripLedCount() - 1);
     const inferred = coversWhole && only.layer1.type === NO_EFFECT ? inferQuickCard(only.layer0) : null;
     if (inferred === null) {
       this.quickCardByStrip.delete(stripId);
+      this.quickParamsByStrip.delete(stripId);
     } else {
       this.quickCardByStrip.set(stripId, inferred);
       /* 从设备反推时也把参数回填成设备真实值，界面不显示「默认档」骗用户。 */
@@ -1738,11 +1830,15 @@ Page({
     this.renderQuick();
   },
 
-  /** 设备的一层灯效 → 快捷档参数（只取该形态能表达的档位）。 */
+  /**
+   * 设备的一层灯效 → 快捷档参数。
+   *
+   * 只取颜色：周期 / 最暗 / 尾长 / 方向这些档位在设备值上无法唯一反推
+   * （例如「2 秒周期」既可能是慢也可能是中），所以宁可回到卡片默认档，
+   * 界面不会假装知道用户当初选了什么。颜色是精确的（hue+sat 是协议值）。
+   */
   paramsFromLayer(report: SegmentReport): QuickParams {
-    const layer = report.layer0;
-    const params: QuickParams = { hue: layer.hue, sat: layer.sat };
-    return params;
+    return { hue: report.layer0.hue, sat: report.layer0.sat };
   },
 
   onQuickCardTap(e: WechatMiniprogram.TouchEvent) {
@@ -1876,7 +1972,7 @@ Page({
         this.setData({ quickHint: "已停止方案，改为实时灯效" });
         wx.showToast({ title: "已停止方案，改为实时灯效", icon: "none" });
       }
-      const ledCount = this.data.ledCount > 0 ? this.data.ledCount : this.session?.stripLedCount(stripId) ?? 0;
+      const ledCount = this.stripLedCount();
       const spec = buildQuickSpec(card, this.quickParamsOf(cardId), stripId, ledCount);
       /*
        * 协议要求同带光区不重叠（§9.2「调用方需先清段」），而快捷档的语义是

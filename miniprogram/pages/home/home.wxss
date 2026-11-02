@@ -176,6 +176,10 @@
   flex-shrink: 0;
 }
 
+/*
+ * 大卡上的状态点是**压在图片/压暗层之上**的固定亮色，不跟随主题：
+ * 这里的两处 hex 是有意保留的（背景恒定偏暗，浅色主题变量会看不清）。
+ */
 .tone-on .hero-dot {
   background: #4dd17a;
 }
@@ -371,6 +375,7 @@
   width: 22rpx;
   height: 22rpx;
   border-radius: 50%;
+  /* 缩略图上的「正在连接」点：同样压在图片/设备色块上，见上方 .hero-dot 的注释。 */
   background: #4dd17a;
   border: 4rpx solid var(--card);
   box-sizing: border-box;

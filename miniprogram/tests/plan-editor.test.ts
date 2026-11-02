@@ -12,6 +12,9 @@
 import { describe, expect, it } from "vitest";
 import {
   clampPlan,
+  durationMessageText,
+  planMessageText,
+  planUserMessage,
   createPlanState,
   currentPlanDraft,
   currentStep,
@@ -218,5 +221,44 @@ describe("空态与时长档位", () => {
 
   it("步骤上限是协议的 8", () => {
     expect(MAX_PLAN_STEPS).toBe(8);
+  });
+});
+
+/**
+ * 面向用户的方案消息（#58）：底层是协议口径，界面必须是新词。
+ *
+ * 这些文案直接进 toast，出现「剧本 / 阶段 / 毫秒」就是验收失败
+ * （`.auto/verify-effect-editor.mjs` 也在渲染层再查一遍）。
+ */
+describe("方案消息的术语翻译", () => {
+  it("剧本 / 阶段 / 段 / 灯带 都换成本轮口径", () => {
+    const text = planMessageText("剧本过大，请减少阶段数/段数/灯带数");
+    expect(text).toContain("方案");
+    expect(text).toContain("步骤数");
+    expect(text).toContain("光区数");
+    expect(text).toContain("灯组数");
+    for (const banned of ["剧本", "阶段", "段数", "灯带数"]) {
+      expect(text).not.toContain(banned);
+    }
+  });
+
+  it("毫秒换成秒（界面不出现「毫秒」）", () => {
+    expect(durationMessageText("时长必须 ≥ 1ms（收到 0）")).toBe("时长必须 ≥ 不足 1 秒（收到 0）");
+    expect(durationMessageText("500ms 太短")).toBe("不足 1 秒 太短");
+    expect(durationMessageText("2000ms 太长")).toBe("2 秒 太长");
+    expect(durationMessageText("没有单位")).toBe("没有单位");
+  });
+
+  it("planUserMessage 同时做两件事", () => {
+    const text = planUserMessage("阶段 2的时长必须 ≥ 1ms（收到 0）");
+    expect(text).not.toContain("阶段");
+    expect(text).not.toContain("ms");
+    expect(text).toContain("步骤");
+    expect(text).toContain("秒");
+  });
+
+  it("下发 / 激活也翻成写入 / 启用", () => {
+    expect(planMessageText("请先下发")).toBe("请先写入");
+    expect(planMessageText("已激活")).toBe("已启用");
   });
 });
