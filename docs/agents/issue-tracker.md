@@ -82,6 +82,21 @@ v1（MVP）的 wayfinder 地图与决策票仍在 `docs/wayfinding/`（历史产
 | #68 | 协议 v4 · 契约、向量与固件 | — |
 | #69 | 小程序编解码接 v4 | #67 #68 |
 
+**实现进度**（集成分支 `integration/ui-refactor-v4`）
+
+| 票 | 状态 | 证据 |
+|---|---|---|
+| #61 | ✅ 已合入 | 928 用例；tsc 干净 |
+| #68 | ✅ 已合入 | 固件 11449 断言 / 64 向量；`docs/protocol-v4.md` |
+| #62 | ✅ 已合入 | 949 用例；模拟器 41/41 |
+| #63 | ✅ 已合入 | 模拟器 26/26（两列卡片 + 逐组灯珠数） |
+| #64 | ✅ 已合入 | 973 用例；模拟器 57/57 |
+| #65–#67 #69 | ⏳ 进行中 | — |
+
+**协议 v4 尺寸（实现期裁决，规格原文笔误已修正）**：层 9 字节 → 段载荷 **23**、
+ScriptSegment **25**、SegmentReport **23**、State blob 段记录 22 / 总长 1440。
+v3 的 State blob 版本号已是 4，协议 v4 用 **5**；脚本 blob version 2 → 3。
+
 ### 上一 effort：v3 扩展
 
 - **规格（实现层）**：[#35 lumen v3 · 实现规格](https://github.com/sishoui/light-matt/issues/35)，label `spec`。11 张实现票是它的 sub-issues。
