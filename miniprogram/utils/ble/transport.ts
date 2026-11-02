@@ -394,11 +394,22 @@ export class BleTransport {
     this.setLink("scanning", { message: "扫描中…" });
 
     try {
+      /*
+       * **全量扫描，不带 `services` 过滤。**
+       *
+       * 曾经写成 `services: [SERVICE_UUID]`，指望系统只回 lumen 设备。这在
+       * 不少 Android 机型上会把真设备一起滤掉：微信把该参数下发给系统级
+       * ScanFilter，而广播包里的 128-bit UUID 常被截断/拿不到，系统判定
+       * 「UUID 不匹配」→ 设备明明在广播却一条也不回。表现就是「手机上搜不到
+       * 设备」，而 PC 侧用 bleak 能正常扫到同一台。
+       *
+       * 改成全量扫描 + JS 层过滤（见 DeviceScanner.addDevices）。代价是扫描
+       * 期间会收到周边所有蓝牙设备，但用户看不到——列表在 JS 里已筛过。
+       */
       await wxCall(
         "startBluetoothDevicesDiscovery",
         wx.startBluetoothDevicesDiscovery,
         {
-          services: [SERVICE_UUID],
           allowDuplicatesKey: true,
           interval: 500,
         },

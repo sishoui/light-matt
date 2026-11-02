@@ -11,9 +11,38 @@
  */
 
 import type { DiscoveredDevice } from "../protocol/types";
+import { SERVICE_UUID } from "../protocol/constants";
 import type { TransportListeners } from "./link-listeners";
 
 const DEVICE_FLUSH_MS = 300;
+
+/** 固件的广播名前缀（`Lumen-%02X%02X`，见 firmware/main/ble_link.c）。 */
+const NAME_PREFIX = "lumen-";
+
+/**
+ * 这台扫描结果是不是 lumen 设备。
+ *
+ * 扫描是全量的（不带系统级 `services` 过滤，原因见 transport.startScan），
+ * 所以判定必须在这里做。两条判据任一命中即可：
+ *
+ *  - 广播名以 `Lumen-` 开头；
+ *  - 广告包里带 lumen 的 Service UUID。
+ *
+ * 为什么两条都要：iOS 经常不给 `advertisServiceUUIDs`；而广播名放在扫描
+ * 响应包里，某些 Android 机型在只开被动扫描时也拿不到。只留一条会漏设备。
+ */
+export function isLumenDevice(dev: any): boolean {
+  const name = String(dev?.localName ?? dev?.name ?? "").toLowerCase();
+  if (name.startsWith(NAME_PREFIX)) {
+    return true;
+  }
+  const uuids: unknown = dev?.advertisServiceUUIDs;
+  if (!Array.isArray(uuids)) {
+    return false;
+  }
+  const target = SERVICE_UUID.toLowerCase();
+  return uuids.some((uuid) => String(uuid).toLowerCase() === target);
+}
 
 export class DeviceScanner {
   private readonly devices = new Map<string, DiscoveredDevice>();
@@ -43,12 +72,26 @@ export class DeviceScanner {
   /**
    * 记录一批扫描结果；返回是否真的加入了新设备。
    * 广播名优先取扫描响应里的 localName，name 仅兜底。
+   *
+   * **这里是唯一的过滤点**：扫描本身是全量的（不带 `services`，见 transport
+   * 的 startScan 注释），所以必须在这里把非 lumen 设备挡掉。判据有两条，
+   * 命中任意一条即算 lumen：
+   *
+   *  1. 广播名以 `Lumen-` 开头（固件用 `Lumen-%02X%02X` 生成）；
+   *  2. 广播里带 lumen 的 Service UUID。
+   *
+   * 两条都要，因为不同平台/机型给的信息不一样：iOS 常常不给
+   * `advertisServiceUUIDs`（只在系统缓存里有），而广播名在扫描响应包里、
+   * 需要主动 scan 才能拿到。只靠 UUID 会漏，只靠名字会漏掉改名的情况。
    */
   addDevices(found: any[]): boolean {
     let changed = false;
     for (const dev of found) {
       const id = dev?.deviceId;
       if (!id) {
+        continue;
+      }
+      if (!isLumenDevice(dev)) {
         continue;
       }
       const name = dev.localName || dev.name || "(无名)";
