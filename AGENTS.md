@@ -41,7 +41,8 @@ SHA-256 索引、配置丢失记录。
 
 ```bash
 cmd.exe //c "firmware\\test\\run-tests.cmd"   # 11053 项断言 + 58 条 v3 向量
-cd miniprogram && npx vitest run              # 604 用例
+cd miniprogram && npx vitest run              # 607 用例（不含 e2e）
+cd miniprogram && npm run test:ble            # 8 项真机 e2e（无设备自动 skip）
 cd miniprogram && npx tsc --noEmit            # 必须干净
 cd server && npm test                         # 140 用例
 cd server && npm run typecheck                # 必须干净
@@ -64,6 +65,8 @@ GitHub Issues（`sishoui/light-matt`）。**当前 effort 的规格父票是 `#3
 - `scripts/probe-v3.py` —— 协议层 47 项真机验证（PC 当 central，需 bleak）
 - `scripts/probe-v3-deep.py` —— 行为语义 69 项（段回滚 / 逐带独立 / 剧本推进 /
   断连续播 / 过大回滚），`--skip-heavy` 跳过 ~900 帧大剧本下发
+- `scripts/ble-gateway.py` —— BLE 网关（bleak → JSON over stdio），**由 e2e 自动拉起**。
+  让 Node 侧的小程序代码直连 PC 真实蓝牙，无需手机
 - `scripts/stress-fragment-v3.py` —— 分片重组压力测试
 - `scripts/capture-serial.py` —— 抓串口日志（`--reset` 用 DTR/RTS 复位）
 - `scripts/build-firmware.cmd` / `flash-firmware.cmd COM6` —— 编译与烧录

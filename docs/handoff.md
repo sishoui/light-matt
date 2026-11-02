@@ -29,6 +29,7 @@
 - `stability-400s-2026-11-02.md` —— 400s 数据 + 跨会话基线反例
 - `visual-acceptance-2026-11-02.md` —— **观感项相机实测（替代人眼）**
 - `ui-acceptance-2026-11-02.md` —— **微信开发者工具自动化 UI 验收（19/19）**
+- `real-device-e2e-2026-11-02.md` —— **真机 BLE 全链路 8/8（无需手机）**
 
 **§1.1–1.8 的 38 项现在是 ✅ 32 / ◐ 0 / ☐ 0**（§1.7 多设备 5 项已决定不作验收）。
 **验收项全部闭环。**
@@ -61,9 +62,10 @@ TypeScript 能解析到 `index.ts`，`tsc --noEmit` 干净、607 个单测全过
 
 ```bash
 cmd.exe //c "firmware\test\run-tests.cmd"   # 11053 项 + 58 向量
-cd miniprogram && npx vitest run            # 604 用例（AGENTS.md 写的 601 是旧值）
+cd miniprogram && npx vitest run            # 607 用例（不含 e2e）
+cd miniprogram && npm run test:ble          # 8 项真机 e2e（无设备自动 skip）
 cd miniprogram && npx tsc --noEmit          # 干净
-cd server && npm test                       # 140 用例（AGENTS.md 写的 139 是旧值）
+cd server && npm test                       # 140 用例
 cd server && npm run typecheck              # 干净
 ```
 
