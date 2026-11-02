@@ -116,21 +116,108 @@
     </view>
   </block>
 
-  <!-- ---------------- 进阶档：本票只给占位 ---------------- -->
-  <view wx:if="{{mode === 'advanced'}}" class="section placeholder-card">
-    <text class="placeholder-title">进阶编辑即将可用</text>
-    <text class="placeholder-text">
-      时间轴、光区划分与效果面板会在后续版本里接上。现在先用「简单」档选一个成品效果。
-    </text>
-  </view>
+  <!-- ---------------- 进阶档：时间轴 + 时长（#65） ---------------- -->
+  <block wx:if="{{mode === 'advanced'}}">
+    <view class="section timeline-section">
+      <view class="section-head">
+        <text class="section-title">时间轴</text>
+        <text class="section-value">{{timelineSummary}}</text>
+      </view>
+
+      <!--
+        每个步骤一个块，宽度按时长比例分配；点选、长按后横向拖动重排。
+        八个步骤时 8×40px 保底可能比屏幕宽，所以外面套一层横向滚动容器。
+      -->
+      <scroll-view
+        class="timeline-scroll {{timelineScrollable ? 'scrollable' : ''}}"
+        scroll-x="{{timelineScrollable}}"
+      >
+        <view class="timeline-row" style="{{timelineRowStyle}}">
+          <view
+            wx:for="{{steps}}"
+            wx:key="key"
+            class="timeline-block {{item.selected ? 'selected' : ''}} {{item.dragging ? 'dragging' : ''}} {{item.dropTarget ? 'drop-target' : ''}}"
+            style="{{item.style}}"
+            data-index="{{item.index}}"
+            bindtap="onStepTap"
+            bindtouchstart="onStepTouchStart"
+            bindtouchmove="onStepTouchMove"
+            bindtouchend="onStepTouchEnd"
+            bindtouchcancel="onStepTouchCancel"
+          >
+            <!-- 缩略色带：按这一步的光区灯珠比例铺满整条 -->
+            <view class="timeline-bands">
+              <view wx:for="{{item.bands}}" wx:for-item="band" wx:key="key" class="timeline-band" style="{{band.style}}"></view>
+            </view>
+            <text wx:if="{{item.showLabel}}" class="timeline-label">{{item.durationText}}</text>
+            <text class="timeline-order">{{item.index + 1}}</text>
+          </view>
+        </view>
+      </scroll-view>
+
+      <view class="timeline-actions">
+        <text class="section-hint">长按一个步骤后可以左右拖动换位置</text>
+        <view
+          class="timeline-add {{stepCanAdd ? '' : 'disabled'}}"
+          hover-class="{{stepCanAdd ? 'timeline-add-hover' : ''}}"
+          bindtap="onStepAdd"
+        >+ 加步骤</view>
+      </view>
+
+      <!-- 时长：拖动时上方块宽实时变化，最小单位 0.5 秒 -->
+      <view class="duration-block">
+        <view class="duration-head">
+          <text class="duration-label">这一步时长</text>
+          <text class="duration-value mono">{{stepDurationText}}</text>
+        </view>
+        <slider
+          class="duration-slider"
+          min="0.5"
+          max="30"
+          step="0.5"
+          value="{{stepDurationSeconds}}"
+          disabled="{{stepCount === 0}}"
+          activeColor="#ff9500"
+          backgroundColor="rgba(120, 120, 128, 0.2)"
+          block-size="24"
+          bindchanging="onDurationChanging"
+          bindchange="onDurationChange"
+        />
+        <view class="duration-ticks">
+          <text
+            wx:for="{{durationTicks}}"
+            wx:key="key"
+            class="duration-tick tick-{{item.align}}"
+            style="left: {{item.percent}}%"
+            data-ms="{{item.durationMs}}"
+            bindtap="onDurationTickTap"
+          >{{item.label}}</text>
+        </view>
+      </view>
+
+      <text wx:if="{{stepHint}}" class="section-hint">{{stepHint}}</text>
+    </view>
+
+    <!-- 光区与效果参数：本票仍是占位（#66 / #67 接上） -->
+    <view class="section placeholder-card">
+      <text class="placeholder-title">光区划分即将可用</text>
+      <text class="placeholder-text">
+        下一步可以在这里把「第 {{stepIndex + 1}} 个步骤」切成几个光区，各自配效果。
+      </text>
+    </view>
+  </block>
 
   <!-- ---------------- 底部：唯一的主按钮 ---------------- -->
   <view class="apply-bar">
     <button
       class="btn primary apply-play"
-      disabled="{{!ready || applying}}"
+      disabled="{{!ready || applying || mode === 'advanced'}}"
       bindtap="onApplyAndPlay"
     >{{applying ? '正在应用…' : '应用并播放'}}</button>
+    <!-- 进阶档还不能写入：说清楚原因，别让用户点了没反应 -->
+    <text wx:if="{{mode === 'advanced'}}" class="apply-note">
+      进阶编排的「应用并播放」会在光区接上之后可用；现在可以先用「简单」档。
+    </text>
     <text wx:if="{{applyError}}" class="apply-error">{{applyError}}</text>
   </view>
 

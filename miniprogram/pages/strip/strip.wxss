@@ -250,6 +250,199 @@
   color: var(--text-3);
 }
 
+/* ---------------- 进阶档：时间轴 ---------------- */
+
+.timeline-section {
+  gap: 18rpx;
+}
+
+/*
+ * 时间轴容器。八段时 8×40px 保底 + 7 个间隙 = 376px，比多数手机可用宽度更宽，
+ * 此时允许横向滚动（见 timeline.ts 的 timelineRowWidth），而不是把块压到点不到。
+ */
+.timeline-scroll {
+  width: 100%;
+  /* scroll-view 自己不给高度，显式定高，否则块会被压扁。 */
+  height: 108rpx;
+  white-space: nowrap;
+}
+
+.timeline-scroll.scrollable {
+  /* 可滚动时留一条细边，提示「右边还有」。 */
+  padding-bottom: 2rpx;
+}
+
+/*
+ * 每个步骤一个块。宽度由 flex-grow 决定（页面算好像素后写进 style），
+ * 行本身不换行：块再多也是横向排开。
+ */
+.timeline-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  height: 108rpx;
+}
+
+.timeline-block {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-width: 40px;
+  box-sizing: border-box;
+  padding: 10rpx 8rpx;
+  border-radius: var(--radius-sm);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+  overflow: hidden;
+  transition: box-shadow 140ms ease;
+}
+
+/*
+ * 选中态用 2px 描边，**不改颜色**：块里铺的是这一步光区的缩略色带，
+ * 换底色会把色带本身盖掉。box-shadow 描边不占布局，块宽不会跳。
+ */
+.timeline-block.selected {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* 拖动中：被拖的块浮起来，落点块用虚线示意会排到这里。 */
+.timeline-block.dragging {
+  opacity: 0.7;
+  z-index: 2;
+}
+
+.timeline-block.drop-target {
+  box-shadow: 0 0 0 2px var(--blue);
+}
+
+/* 缩略色带：贴块底，按该步骤光区的灯珠比例分成若干条。 */
+.timeline-bands {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 6px;
+  display: flex;
+}
+
+.timeline-band {
+  height: 100%;
+  /* 留白色带没有 background，用低饱和的底色兜底（深浅主题都看得见）。 */
+  background: var(--border);
+}
+
+/* 时长文字：块太窄时页面把 showLabel 关掉，不会压到邻块上。 */
+.timeline-label {
+  position: relative;
+  font-size: 20rpx;
+  color: var(--text-2);
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* 序号：永远看得见，是「这是第几个步骤」的唯一线索。 */
+.timeline-order {
+  position: absolute;
+  top: 8rpx;
+  left: 8rpx;
+  font-size: 18rpx;
+  font-weight: 600;
+  color: var(--text-3);
+}
+
+.timeline-block.selected .timeline-order {
+  color: var(--accent);
+}
+
+.timeline-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+}
+
+.timeline-add {
+  flex-shrink: 0;
+  padding: 14rpx 26rpx;
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 24rpx;
+  font-weight: 600;
+}
+
+.timeline-add-hover {
+  background: var(--card-press);
+}
+
+/* 八段之后按钮不可用：变淡且不接收点击。 */
+.timeline-add.disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+/* ---------------- 进阶档：时长拖拽条 ---------------- */
+
+.duration-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+}
+
+.duration-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16rpx;
+}
+
+.duration-label {
+  font-size: 25rpx;
+  color: var(--text-2);
+}
+
+.duration-value {
+  font-size: 26rpx;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.duration-slider {
+  margin: 0;
+}
+
+/*
+ * 三档刻度：绝对定位在轨道两端与中间。两端贴边（不越出容器），中间居中，
+ * 否则「0.5 秒」会被裁成「5 秒」。
+ */
+.duration-ticks {
+  position: relative;
+  height: 30rpx;
+}
+
+.duration-tick {
+  position: absolute;
+  top: 0;
+  font-size: 19rpx;
+  color: var(--text-3);
+  line-height: 30rpx;
+  white-space: nowrap;
+}
+
+.duration-tick.tick-first {
+  transform: translateX(0);
+}
+
+.duration-tick.tick-mid {
+  transform: translateX(-50%);
+}
+
+.duration-tick.tick-last {
+  transform: translateX(-100%);
+}
+
 /* ---------------- 进阶档占位 ---------------- */
 
 .placeholder-card {
@@ -286,5 +479,12 @@
 .apply-error {
   font-size: 22rpx;
   color: var(--danger);
+  line-height: 1.5;
+}
+
+/* 「这个档位还用不了」这类说明：小字、不抢注意力但必须看得见。 */
+.apply-note {
+  font-size: 21rpx;
+  color: var(--text-3);
   line-height: 1.5;
 }
