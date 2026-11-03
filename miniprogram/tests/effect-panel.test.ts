@@ -44,6 +44,15 @@ import {
   panelTypeOf,
   panelTypeValue,
   paramsFromLayer,
+  emptyOverlayDraft,
+  overlayDraftOf,
+  overlayEnabled,
+  overlayLayer,
+  overlaySummary,
+  switchOverlayType,
+  OVERLAY_BLEND_OPTIONS,
+  OVERLAY_CHOICE_OPTIONS,
+  type OverlayDraft,
   sliderView,
   SLIDER_KEYS,
   strobePeriodMs,
@@ -881,6 +890,167 @@ describe("摘要与两条事实", () => {
         expect(text, `${type}: ${text}`).not.toMatch(forbidden);
       }
     }
+  });
+});
+
+
+/* ================= 叠加层（#71 US49 / US50） ================= */
+
+describe("叠加层：选项、草稿与装配", () => {
+  it("叠加层选项是「关闭」+ 六种类型，且不含熄灭", () => {
+    const values = OVERLAY_CHOICE_OPTIONS.map((option) => option.value);
+    expect(values[0]).toBe("none");
+    expect(values).toContain("strobe");
+    expect(values).toContain("heartbeat");
+    /* US50：叠加层里没有「熄灭」——叠一层黑等于没做事。 */
+    expect(values).not.toContain("off");
+    expect(OVERLAY_CHOICE_OPTIONS).toHaveLength(7);
+  });
+
+  it("叠加方式只有覆盖 / 相乘 / 相加三种", () => {
+    expect(OVERLAY_BLEND_OPTIONS.map((option) => option.value)).toEqual([
+      BLEND.OVER,
+      BLEND.MULTIPLY,
+      BLEND.ADD,
+    ]);
+  });
+
+  it("默认草稿是关闭状态，且不产出任何叠加层", () => {
+    const draft = emptyOverlayDraft();
+    expect(draft.type).toBe("none");
+    expect(overlayEnabled(draft)).toBe(false);
+    expect(overlayLayer(draft).type).toBe(NO_EFFECT);
+    expect(overlaySummary(draft)).toBe("");
+  });
+
+  it("开启爆闪后产出的 layer1 是真实的爆闪层", () => {
+    const draft = switchOverlayType(emptyOverlayDraft(), "strobe");
+    expect(overlayEnabled(draft)).toBe(true);
+    const built = overlayLayer(draft);
+    expect(built.type).toBe(SEGMENT_TYPE.STROBE);
+    expect(built.periodMs).toBeGreaterThanOrEqual(STROBE_MIN_PERIOD_MS);
+    /* 叠加层也有自己的亮度（v4 的 level）。 */
+    expect(built.level).toBeGreaterThan(0);
+  });
+
+  it("心跳可以当叠加层用（US49），且周期落在协议区间内", () => {
+    const draft = switchOverlayType(emptyOverlayDraft(), "heartbeat");
+    const built = overlayLayer(draft);
+    expect(built.type).toBe(SEGMENT_TYPE.HEARTBEAT);
+    expect(built.periodMs).toBeGreaterThanOrEqual(HEARTBEAT_MIN_PERIOD_MS);
+    expect(layerCheck(built).ok).toBe(true);
+  });
+
+  it("关闭叠加层后保留原参数，再开回来还能接着调", () => {
+    let draft = switchOverlayType(emptyOverlayDraft(), "breathing");
+    draft = { ...draft, params: { ...draft.params, minLevel: 12, periodMs: 3000 } };
+    const off = switchOverlayType(draft, "none");
+    expect(overlayEnabled(off)).toBe(false);
+    const back = switchOverlayType(off, "breathing");
+    expect(back.params.minLevel).toBe(12);
+    expect(back.params.periodMs).toBe(3000);
+  });
+
+  it("两种类型之间切换时按新类型语义重置，颜色留下", () => {
+    const draft = switchOverlayType(emptyOverlayDraft(), "breathing");
+    const moved = switchOverlayType(draft, "rainbow");
+    expect(moved.type).toBe("rainbow");
+    /* 颜色保留（与主效果的 switchPanelType 同一规则）。 */
+    expect(moved.params.hue).toBe(draft.params.hue);
+    expect(moved.params.sat).toBe(draft.params.sat);
+  });
+
+  it("从设备读回空层 → 关闭态", () => {
+    const draft = overlayDraftOf(layer(NO_EFFECT), BLEND.OVER);
+    expect(draft.type).toBe("none");
+    expect(overlayEnabled(draft)).toBe(false);
+  });
+
+  it("从设备读回真实叠加层 → 原类型与参数", () => {
+    const src = panelLayer("comet", { ...defaultParams("comet"), hue: 1234, sat: 200 });
+    const draft = overlayDraftOf(src, BLEND.MULTIPLY);
+    expect(draft.type).toBe("comet");
+    expect(draft.blend).toBe(BLEND.MULTIPLY);
+    expect(draft.params.hue).toBe(1234);
+    expect(draft.params.sat).toBe(200);
+  });
+
+  it("设备上是「熄灭」叠加层时按关闭处理（界面不提供这个选项）", () => {
+    const offLayer = panelLayer("off", defaultParams("off"));
+    const draft = overlayDraftOf(offLayer, BLEND.OVER);
+    expect(draft.type).toBe("none");
+  });
+
+  it("applyPanelToZone 传叠加层时同时替换 layer1 与叠加方式", () => {
+    const zones: SegmentSpec[] = [
+      buildZoneSpec({
+        stripId: 0,
+        segId: 0,
+        start: 0,
+        end: 9,
+        blend: BLEND.OVER,
+        layer0: panelLayer("static", params()),
+        layer1: null,
+      }),
+    ];
+    const overlay: OverlayDraft = {
+      type: "strobe",
+      params: defaultParams("strobe"),
+      blend: BLEND.ADD,
+    };
+    const next = applyPanelToZone(zones, 0, "rainbow", defaultParams("rainbow"), overlay);
+    expect(next[0].layer0.type).toBe(SEGMENT_TYPE.RAINBOW);
+    expect(next[0].layer1.type).toBe(SEGMENT_TYPE.STROBE);
+    expect(next[0].blend).toBe(BLEND.ADD);
+  });
+
+  it("applyPanelToZone 不传叠加层时保留设备上原有的叠加层", () => {
+    const existing = panelLayer("heartbeat", defaultParams("heartbeat"));
+    const zones: SegmentSpec[] = [
+      buildZoneSpec({
+        stripId: 0,
+        segId: 0,
+        start: 0,
+        end: 9,
+        blend: BLEND.MULTIPLY,
+        layer0: panelLayer("static", params()),
+        layer1: existing,
+      }),
+    ];
+    const next = applyPanelToZone(zones, 0, "comet", defaultParams("comet"));
+    expect(next[0].layer0.type).toBe(SEGMENT_TYPE.COMET);
+    expect(next[0].layer1.type).toBe(SEGMENT_TYPE.HEARTBEAT);
+    expect(next[0].blend).toBe(BLEND.MULTIPLY);
+  });
+
+  it("关闭叠加层后写出去的光区叠加方式归一为覆盖、layer1 为空层", () => {
+    const zones: SegmentSpec[] = [
+      buildZoneSpec({
+        stripId: 0,
+        segId: 0,
+        start: 0,
+        end: 9,
+        blend: BLEND.ADD,
+        layer0: panelLayer("static", params()),
+        layer1: panelLayer("strobe", defaultParams("strobe")),
+      }),
+    ];
+    const next = applyPanelToZone(zones, 0, "static", params(), emptyOverlayDraft());
+    expect(next[0].layer1.type).toBe(NO_EFFECT);
+    /* 空叠加层必须归一为覆盖，否则设备回 InvalidParam。 */
+    expect(next[0].blend).toBe(BLEND.OVER);
+  });
+
+  it("两层一起过 layersCheck：叠加爆闪的超短周期会被拦住", () => {
+    const fast = layer(SEGMENT_TYPE.STROBE, { periodMs: 50 });
+    expect(layersCheck([layer(SEGMENT_TYPE.STATIC), fast]).ok).toBe(false);
+  });
+
+  it("叠加层摘要给出类型与参数，不含禁用术语", () => {
+    const draft = switchOverlayType(emptyOverlayDraft(), "heartbeat");
+    const summary = overlaySummary(draft);
+    expect(summary).toContain("心跳");
+    expect(summary).not.toMatch(/毫秒|段|阶段|剧本|下发|激活|第.层|blend/i);
   });
 });
 

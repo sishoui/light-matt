@@ -422,6 +422,83 @@
         </view>
 
         <text wx:if="{{panelHint}}" class="section-hint">{{panelHint}}</text>
+
+        <!-- ---------------- 叠加层（#71 US49 / US50） ----------------
+             主效果之上可以再叠一层：爆闪 / 心跳这类短促效果叠在底色上就是「闪光」。
+             选项里没有「熄灭」（叠一层黑等于没做事，US50）。 -->
+        <view class="overlay-block">
+          <view class="section-head overlay-head">
+            <text class="section-title">叠加效果</text>
+            <text class="section-value">{{overlayEnabled ? overlaySummary : '关闭'}}</text>
+          </view>
+
+          <view class="overlay-types">
+            <view
+              wx:for="{{overlayChoices}}"
+              wx:key="value"
+              class="overlay-type {{overlayChoice === item.value ? 'on' : ''}}"
+              data-value="{{item.value}}"
+              bindtap="onOverlayTypeTap"
+            >{{item.name}}</view>
+          </view>
+
+          <block wx:if="{{overlayEnabled}}">
+            <!-- 叠加方式：只在真有叠加层时出现（关闭时问「怎么叠」没有意义） -->
+            <view class="panel-choice overlay-blend">
+              <text class="param-label">叠加方式</text>
+              <view class="panel-choice-row">
+                <view
+                  wx:for="{{overlayBlendOptions}}"
+                  wx:for-item="option"
+                  wx:key="value"
+                  class="panel-option {{option.value === overlayBlend ? 'on' : ''}}"
+                  data-value="{{option.value}}"
+                  bindtap="onOverlayBlendTap"
+                >{{option.name}}</view>
+              </view>
+            </view>
+
+            <!-- 叠加层自己的参数：与主效果同一套「按类型整体替换」 -->
+            <view wx:for="{{overlaySlider}}" wx:key="key" class="param-row">
+              <view class="param-head">
+                <text class="param-label">{{item.label}}</text>
+                <text class="param-value mono">{{item.display}}</text>
+              </view>
+              <view wx:if="{{item.rainbow}}" class="hue-track" style="background: {{hueRamp}}">
+                <slider
+                  class="param-slider hue-slider"
+                  min="{{item.min}}"
+                  max="{{item.max}}"
+                  step="{{item.step}}"
+                  value="{{item.value}}"
+                  data-key="{{item.key}}"
+                  disabled="{{!ready}}"
+                  activeColor="rgba(0, 0, 0, 0)"
+                  backgroundColor="rgba(0, 0, 0, 0)"
+                  block-size="22"
+                  bindchanging="onOverlaySliderChanging"
+                  bindchange="onOverlaySliderChange"
+                />
+              </view>
+              <slider
+                wx:else
+                class="param-slider"
+                min="{{item.min}}"
+                max="{{item.max}}"
+                step="{{item.step}}"
+                value="{{item.value}}"
+                data-key="{{item.key}}"
+                disabled="{{!ready}}"
+                activeColor="#ff9500"
+                backgroundColor="rgba(120, 120, 128, 0.2)"
+                block-size="22"
+                bindchanging="onOverlaySliderChanging"
+                bindchange="onOverlaySliderChange"
+              />
+              <text wx:if="{{item.note}}" class="param-note">{{item.note}}</text>
+            </view>
+          </block>
+        </view>
       </block>
 
       <!-- 没得编辑时给引导，而不是一片空白 -->

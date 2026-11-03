@@ -50,8 +50,16 @@ import {
   applySlider,
   buildEffectPanel,
   buildTypeViews,
+  emptyOverlayDraft,
+  overlayLayer,
   HUE_RAMP_GRADIENT,
   layersCheck,
+  OVERLAY_BLEND_OPTIONS,
+  OVERLAY_CHOICE_OPTIONS,
+  overlayDraftOf,
+  overlayEnabled,
+  overlaySummary,
+  switchOverlayType,
   PANEL_EMPTY_PLAN_GUIDE,
   PANEL_EMPTY_STEP_GUIDE,
   PANEL_FACTS,
@@ -62,6 +70,8 @@ import {
   panelTypeOf,
   paramsFromLayer,
   switchPanelType,
+  type OverlayChoice,
+  type OverlayDraft,
   type PanelChoiceView,
   type PanelSliderView,
   type PanelType,
@@ -232,6 +242,19 @@ function defaultPanelLayer(): EffectLayer {
     flags: 0,
     level: 100,
   };
+}
+
+/**
+ * 叠加层的参数滑块（#71）。
+ *
+ * 与主效果走同一个 `buildEffectPanel`，所以「按类型整体替换」的规则只有一份；
+ * 关闭叠加层时不给任何旋钮（用户看到的应该是「选一个叠加效果」，不是一堆灰色滑块）。
+ */
+function overlayPanelSliders(draft: OverlayDraft): PanelSliderView[] {
+  if (!overlayEnabled(draft)) {
+    return [];
+  }
+  return buildEffectPanel(draft.type as PanelType, draft.params).sliders;
 }
 
 Page({
@@ -502,6 +525,13 @@ Page({
    * 一旦落进草稿/设备，`paramsFromLayer` 会从层里读回来，不再依赖这张表。
    */
   panelLevels: {} as Record<string, number>,
+  /**
+   * 叠加层草稿（#71 US49）：跟随 `panelKey`，与主效果的参数互相独立。
+   *
+   * 叠加层也有自己的亮度与周期，所以整份 `EffectParams` 都要记住；
+   * 关闭时**保留参数**，用户再开回来还能接着调。
+   */
+  panelOverlay: emptyOverlayDraft() as OverlayDraft,
 
   onLoad(options: Record<string, string | undefined>) {
     /* 私有状态显式兜底：Page() 不保证对象字面量字段被复制到实例上，漏掉会让
@@ -545,6 +575,7 @@ Page({
     this.panelParams = paramsFromLayer("static", defaultPanelLayer());
     this.panelHintText = "";
     this.panelLevels = {};
+    this.panelOverlay = emptyOverlayDraft();
     this.ledDraft = null;
     this.ledCountSeen = 0;
 
@@ -1427,9 +1458,12 @@ Page({
       if (zone === null) {
         this.panelMode = "static";
         this.panelParams = paramsFromLayer("static", defaultPanelLayer());
+        this.panelOverlay = emptyOverlayDraft();
       } else {
         this.panelMode = panelTypeOf(zone.layer0.type);
         this.panelParams = paramsFromLayer(this.panelMode, zone.layer0);
+        /* 叠加层从设备权威值还原（空层 → 关闭）。 */
+        this.panelOverlay = overlayDraftOf(zone.layer1, zone.blend);
       }
       /* 还没写进草稿的滑块值：按目标记在页面里，切回来还在。 */
       const remembered = this.panelLevels[key];
@@ -1465,6 +1499,19 @@ Page({
       panelFacts: PANEL_FACTS,
       hueRamp: HUE_RAMP_GRADIENT,
       panelHint: this.panelHintText,
+      /* ---- 叠加层（#71 US49/US50）：没有光区时整块隐藏 ---- */
+      overlayChoices: zone === null ? [] : OVERLAY_CHOICE_OPTIONS,
+      overlayChoice: this.panelOverlay.type,
+      overlayEnabled: zone !== null && overlayEnabled(this.panelOverlay),
+      overlaySummary: zone === null ? "" : overlaySummary(this.panelOverlay),
+      overlayBlendOptions: zone === null ? [] : OVERLAY_BLEND_OPTIONS,
+      overlayBlend: this.panelOverlay.blend,
+      /* 叠加层自己的旋钮：与主效果同一套「按类型整体替换」的规则。 */
+      overlaySlider: zone === null ? [] : overlayPanelSliders(this.panelOverlay),
+      overlayColorHex:
+        zone === null || !overlayEnabled(this.panelOverlay)
+          ? ""
+          : buildEffectPanel(this.panelOverlay.type as PanelType, this.panelOverlay.params).colorHex,
     };
   },
 
@@ -1484,6 +1531,7 @@ Page({
     this.panelKey = "";
     this.panelMode = "static";
     this.panelParams = paramsFromLayer("static", defaultPanelLayer());
+    this.panelOverlay = emptyOverlayDraft();
     /* 亮度草稿属于「这台设备的这条灯组」：断开后连表一起作废。 */
     this.panelLevels = {};
     this.clearPanelHint();
@@ -1519,7 +1567,15 @@ Page({
       this.setPanelHint(check.message);
       return false;
     }
-    this.applyStepZones(applyPanelToZone(zones, segId, this.panelMode, this.panelParams));
+    /* 叠加层也要过同一道预检：两层都是真实帧内容，越界一样会被设备拒。 */
+    const overlayCheck = layersCheck([overlayLayer(this.panelOverlay)]);
+    if (!overlayCheck.ok) {
+      this.setPanelHint(overlayCheck.message);
+      return false;
+    }
+    this.applyStepZones(
+      applyPanelToZone(zones, segId, this.panelMode, this.panelParams, this.panelOverlay),
+    );
     return true;
   },
 
@@ -1588,6 +1644,99 @@ Page({
       return;
     }
     this.panelParams = applyChoice(this.panelParams, key, value);
+    if (this.commitPanel()) {
+      this.clearPanelHint();
+    }
+    this.renderTimeline();
+  },
+
+  /* ---------------- 叠加层（#71 US49 / US50） ---------------- */
+
+  /**
+   * 选叠加层类型（「关闭」或六种效果之一）。
+   *
+   * 「熄灭」在选项里根本不存在（US50），这里再挡一次：叠加一层黑等于把下面
+   * 那层乘成黑，用户真正想要的是「不加东西」，应该点「关闭」。
+   */
+  onOverlayTypeTap(e: WechatMiniprogram.TouchEvent) {
+    const next = String(e.currentTarget.dataset.value ?? "") as OverlayChoice;
+    if (!OVERLAY_CHOICE_OPTIONS.some((option) => option.value === next)) {
+      return;
+    }
+    if (this.data.panelHasZone !== true) {
+      return;
+    }
+    this.panelOverlay = switchOverlayType(this.panelOverlay, next);
+    if (this.commitPanel()) {
+      this.setPanelHint(next === "none" ? "叠加效果已关闭" : "叠加效果已设置");
+    }
+    this.renderTimeline();
+  },
+
+  /** 叠加方式：覆盖 / 相乘 / 相加。只在有叠加层时可用。 */
+  onOverlayBlendTap(e: WechatMiniprogram.TouchEvent) {
+    const value = Number(e.currentTarget.dataset.value);
+    if (!OVERLAY_BLEND_OPTIONS.some((option) => option.value === value)) {
+      return;
+    }
+    if (!overlayEnabled(this.panelOverlay)) {
+      return;
+    }
+    this.panelOverlay = { ...this.panelOverlay, blend: value as typeof this.panelOverlay.blend };
+    if (this.commitPanel()) {
+      this.clearPanelHint();
+    }
+    this.renderTimeline();
+  },
+
+  /** 叠加层滑块拖动中：只改本地草稿与预览（绝不逐帧写设备）。 */
+  onOverlaySliderChanging(e: WechatMiniprogram.SliderChanging) {
+    this.applyOverlaySlider(
+      String((e.currentTarget.dataset as { key?: string }).key ?? ""),
+      Number(e.detail.value),
+    );
+  },
+
+  /** 叠加层滑块松手：落进草稿。 */
+  onOverlaySliderChange(e: WechatMiniprogram.SliderChange) {
+    const key = String((e.currentTarget.dataset as { key?: string }).key ?? "");
+    if (this.applyOverlaySlider(key, Number(e.detail.value))) {
+      if (this.commitPanel()) {
+        this.clearPanelHint();
+      }
+      this.renderTimeline();
+    }
+  },
+
+  /** 叠加层滑块值 → 叠加层草稿（返回是否真的变了）。 */
+  applyOverlaySlider(key: string, value: number): boolean {
+    if (!isPanelSliderKey(key) || !Number.isFinite(value) || !overlayEnabled(this.panelOverlay)) {
+      return false;
+    }
+    this.panelOverlay = {
+      ...this.panelOverlay,
+      params: applySlider(this.panelOverlay.params, key, value),
+    };
+    if (this.data.mode === "advanced") {
+      this.renderPanel();
+    }
+    return true;
+  },
+
+  /** 叠加层的波形 / 方向 / 占空比。 */
+  onOverlayChoiceTap(e: WechatMiniprogram.TouchEvent) {
+    const key = String(e.currentTarget.dataset.key ?? "");
+    const value = Number(e.currentTarget.dataset.value);
+    if (key !== "waveform" && key !== "direction" && key !== "duty") {
+      return;
+    }
+    if (!Number.isFinite(value) || !overlayEnabled(this.panelOverlay)) {
+      return;
+    }
+    this.panelOverlay = {
+      ...this.panelOverlay,
+      params: applyChoice(this.panelOverlay.params, key, value),
+    };
     if (this.commitPanel()) {
       this.clearPanelHint();
     }

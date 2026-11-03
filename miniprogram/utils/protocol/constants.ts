@@ -166,6 +166,42 @@ export const BLEND = {
 } as const;
 
 /**
+ * 哪些类型值是**真实灯效**（不含空层 `0xFF`）。
+ *
+ * 单一真相：任何「这个 type 认不认识」的判断都从这里出发。曾经
+ * `segment-editor.isKnownType` 与 `script-view.typeName` 各写一份四类型清单，
+ * #74 加了爆闪 / 心跳 / 熄灭之后它们没跟上——校验会把新灯效判成非法、摘要会
+ * 显示成 `0x04`。这类「枚举扩了、判断没扩」的漏洞只靠单测很难发现，所以把
+ * 清单放在枚举旁边，由 `isKnownEffectType` 统一回答。
+ */
+export const KNOWN_EFFECT_TYPES: readonly number[] = [
+  SEGMENT_TYPE.STATIC,
+  SEGMENT_TYPE.BREATHING,
+  SEGMENT_TYPE.RAINBOW,
+  SEGMENT_TYPE.COMET,
+  SEGMENT_TYPE.STROBE,
+  SEGMENT_TYPE.HEARTBEAT,
+  SEGMENT_TYPE.OFF,
+];
+
+/** `type` 是否是真实灯效类型（空层 `0xFF` 不算）。 */
+export function isKnownEffectType(type: number): boolean {
+  return KNOWN_EFFECT_TYPES.includes(type);
+}
+
+/** 灯效类型的中文名（UI 与日志用；空层给「无」，未知给 hex）。 */
+export const EFFECT_TYPE_NAMES: Record<number, string> = {
+  [SEGMENT_TYPE.STATIC]: "静态",
+  [SEGMENT_TYPE.BREATHING]: "呼吸",
+  [SEGMENT_TYPE.RAINBOW]: "彩虹",
+  [SEGMENT_TYPE.COMET]: "流光",
+  [SEGMENT_TYPE.STROBE]: "爆闪",
+  [SEGMENT_TYPE.HEARTBEAT]: "心跳",
+  [SEGMENT_TYPE.OFF]: "熄灭",
+  [SEGMENT_TYPE.EMPTY]: "无",
+};
+
+/**
  * 呼吸波形（flags bit1-2，effects-spec §2.2）。
  * UI 的顺序就是枚举值：0 正弦 / 1 三角 / 2 锯齿 / 3 方波。
  */

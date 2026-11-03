@@ -21,6 +21,7 @@ import {
   ANIMATION_MIN_PERIOD_MS,
   BLEND,
   BREATHING_MIN_PERIOD_MS,
+  isKnownEffectType,
   LAYER_LEVEL_MAX,
   MAX_LEDS,
   NO_EFFECT,
@@ -148,15 +149,6 @@ export function effectiveBlend(draft: Pick<SegmentDraft, "blend" | "layer1">): B
   return blendEnabled(draft.layer1) ? draft.blend : BLEND.OVER;
 }
 
-function isKnownType(type: number): boolean {
-  return (
-    type === SEGMENT_TYPE.STATIC ||
-    type === SEGMENT_TYPE.BREATHING ||
-    type === SEGMENT_TYPE.RAINBOW ||
-    type === SEGMENT_TYPE.COMET
-  );
-}
-
 function isByte(value: number): boolean {
   return Number.isInteger(value) && value >= 0 && value <= 0xff;
 }
@@ -178,7 +170,7 @@ function validateLayer(layer: EffectLayer, layerIndex: 0 | 1, layerLabel: string
     issues.push({ code, layer: layerIndex, message });
   };
 
-  if (!isKnownType(layer.type)) {
+  if (!isKnownEffectType(layer.type)) {
     push("layer-type", `${layerLabel}的灯效类型未知（0x${layer.type.toString(16)}）`);
     return issues;
   }

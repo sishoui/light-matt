@@ -36,6 +36,7 @@
 import {
   ANIMATION_MIN_PERIOD_MS,
   BREATHING_MIN_PERIOD_MS,
+  BLEND,
   HEARTBEAT_MAX_PERIOD_MS,
   HEARTBEAT_MIN_PERIOD_MS,
   SEGMENT_TYPE,
@@ -44,7 +45,8 @@ import {
   WAVEFORM_NAMES,
 } from "../protocol/constants";
 import { breathingFlags, breathingWaveform, directionFlags } from "../protocol/commands";
-import type { EffectLayer, SegmentSpec } from "../protocol/types";
+import { emptyLayer } from "../protocol/segment-shapes";
+import type { BlendMode, EffectLayer, SegmentSpec } from "../protocol/types";
 import { rgbToHex, segmentHueSatToRgb } from "../color/hsv";
 import { buildZoneSpec } from "./zone-model";
 import { WAVEFORM_OPTIONS } from "./effect-view";
@@ -83,6 +85,118 @@ export const PANEL_TYPE_OPTIONS: ReadonlyArray<{ type: PanelType; name: string }
  */
 export const PANEL_OVERLAY_TYPE_OPTIONS: ReadonlyArray<{ type: PanelType; name: string }> =
   PANEL_TYPE_OPTIONS.filter((option) => option.type !== "off");
+
+/* ---------------- 叠加层（#71 US49/US50） ---------------- */
+
+/**
+ * 叠加层的开关选项：「关闭」+ 可选的六种类型。
+ *
+ * 「关闭」不是 `PanelType`——它表示 `layer1` 是空层（`type = 0xFF`），
+ * 与「点亮灭」是两件事：熄灭是一条真实存在、参数全零的层。
+ */
+export type OverlayChoice = PanelType | "none";
+
+export const OVERLAY_CHOICE_OPTIONS: ReadonlyArray<{ value: OverlayChoice; name: string }> = [
+  { value: "none", name: "关闭" },
+  ...PANEL_OVERLAY_TYPE_OPTIONS.map((option) => ({ value: option.type, name: option.name })),
+];
+
+/**
+ * 叠加层的叠加方式（覆盖 / 相乘 / 相加）。
+ *
+ * 与 `effect-view.BLEND_OPTIONS` 同一组语义；这里重列是为了让「叠加层」这一
+ * 整块（选项 / 草稿 / 装配）留在同一个模块里，页面只认一个来源。
+ */
+export const OVERLAY_BLEND_OPTIONS: ReadonlyArray<{
+  value: BlendMode;
+  name: string;
+  hint: string;
+}> = [
+  { value: BLEND.OVER, name: "覆盖", hint: "叠加效果直接替换主效果" },
+  { value: BLEND.MULTIPLY, name: "相乘", hint: "两者相乘：明暗叠加、颜色不变形" },
+  { value: BLEND.ADD, name: "相加", hint: "两者相加，更亮（可能过曝到白）" },
+];
+
+/** 一个光区的叠加层草稿：没有叠加层时 `type = "none"`。 */
+export interface OverlayDraft {
+  type: OverlayChoice;
+  /** 叠加层自己的参数，与主效果的草稿互相独立。 */
+  params: EffectParams;
+  blend: BlendMode;
+}
+
+/** 没有叠加层时的草稿（关闭 + 覆盖）。 */
+export function emptyOverlayDraft(): OverlayDraft {
+  return { type: "none", params: defaultParams("static"), blend: BLEND.OVER };
+}
+
+/**
+ * 从设备读回的光区还原叠加层草稿。空层 → 「关闭」。
+ *
+ * 设备上若是「熄灭」叠加层（旧数据 / 别的客户端写的），这里如实还原成
+ * 「关闭」并把叠加方式归一为覆盖——界面不提供这个选项，也不该假装它存在。
+ */
+export function overlayDraftOf(
+  layer1: EffectLayer | null | undefined,
+  blend: BlendMode,
+): OverlayDraft {
+  if (layer1 === null || layer1 === undefined || layer1.type === SEGMENT_TYPE.EMPTY) {
+    return emptyOverlayDraft();
+  }
+  const type = panelTypeOf(layer1.type);
+  if (type === "off") {
+    return emptyOverlayDraft();
+  }
+  return { type, params: paramsFromLayer(type, layer1), blend };
+}
+
+/** 叠加层是否真的启用。 */
+export function overlayEnabled(draft: OverlayDraft): boolean {
+  return draft.type !== "none";
+}
+
+/**
+ * 叠加层草稿 → `layer1`（未启用时给空层）。
+ *
+ * 「熄灭」不在可选类型里，但草稿可能来自旧数据：这里再挡一次。叠加熄灭等于
+ * 把下面那层乘成黑，用户真正想要的是「不加东西」，应该选「关闭」。
+ */
+export function overlayLayer(draft: OverlayDraft): EffectLayer {
+  if (draft.type === "none" || draft.type === "off") {
+    return emptyLayer();
+  }
+  return panelLayer(draft.type, draft.params);
+}
+
+/**
+ * 切换叠加层类型。
+ *
+ * 关闭时**保留原参数**：用户可能是误关，切回来还要接着调。
+ * 从关闭切回来沿用上次参数；两种类型之间切换按新类型语义重置（与主效果一致）。
+ */
+export function switchOverlayType(draft: OverlayDraft, next: OverlayChoice): OverlayDraft {
+  if (next === draft.type) {
+    return draft;
+  }
+  if (next === "none") {
+    return { ...draft, type: "none" };
+  }
+  const params =
+    draft.type === "none" ? draft.params : switchPanelType(draft.params, draft.type, next);
+  return { type: next, params, blend: draft.blend };
+}
+
+/** 叠加层的摘要（「关闭」时给空串，调用方据此不显示这一行）。 */
+export function overlaySummary(draft: OverlayDraft): string {
+  if (!overlayEnabled(draft)) {
+    return "";
+  }
+  /* `overlayEnabled` 已排除 "none"，这里只剩真实类型。 */
+  const type = draft.type as PanelType;
+  const name = PANEL_TYPE_OPTIONS.find((option) => option.type === type)?.name ?? "";
+  return `${name} · ${panelSummary(type, draft.params)}`;
+}
+
 
 /** 类型 → 协议枚举值。 */
 const TYPE_VALUE: Record<PanelType, number> = {
@@ -1136,16 +1250,20 @@ export function layersCheck(layers: readonly EffectLayer[]): PanelCheckResult {
 }
 
 /**
- * 把一个光区的 `layer0` 换成面板的效果（其余字段一字不动）。
+ * 把一个光区的主效果（必要时连叠加层一起）换掉，其余字段一字不动。
  *
  * 装配走 `buildZoneSpec`：叠加层为空时叠加方式归一为覆盖、两层定宽、深拷贝——
  * 「面板只改颜色 / 效果，不该顺手把叠加层弄丢」。
+ *
+ * `overlay` 省略时**保留设备 / 草稿里原有的叠加层**（只改主效果的老行为）；
+ * 传进来则连同叠加方式一起替换（#71 的叠加层编辑器走这条路）。
  */
 export function applyPanelToZone(
   zones: readonly SegmentSpec[],
   segId: number,
   type: PanelType,
   params: EffectParams,
+  overlay?: OverlayDraft,
 ): SegmentSpec[] {
   return zones.map((zone) =>
     zone.segId === segId
@@ -1154,9 +1272,9 @@ export function applyPanelToZone(
           segId: zone.segId,
           start: zone.start,
           end: zone.end,
-          blend: zone.blend,
+          blend: overlay === undefined ? zone.blend : overlay.blend,
           layer0: panelLayer(type, params),
-          layer1: zone.layer1,
+          layer1: overlay === undefined ? zone.layer1 : overlayLayer(overlay),
         })
       : zone,
   );
