@@ -53,7 +53,7 @@ size_t lumen_state_blob_encode(const lumen_persist_t *state,
                                uint8_t out[LUMEN_STATE_BLOB_SIZE]);
 
 /*
- * 解码并校验：长度、magic、version、power ∈ {0,1}、led_count ∈ [1,64]、
+ * 解码并校验：长度、magic、version、power ∈ {0,1}、led_count ∈ [1,100]、
  * strip_count ∈ [1,8]、pmask 保留位、每段形状（层类型 / 层亮度 / blend / 保留位）、
  * 区间落在**该灯带自己**的灯珠数内且同灯带内不重叠。
  * 任一失败返回 false 且不写 out（调用方保留默认值）。

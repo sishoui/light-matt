@@ -138,6 +138,23 @@
       "result_code": 0
     },
     {
+      "name": "set_led_count_strip0_100",
+      "direction": "app_to_device",
+      "command": 6,
+      "command_name": "SetLedCount",
+      "seq": 61,
+      "payload_hex": "006400",
+      "payload_len": 3,
+      "frame_hex": "A604063D03000064000FBC",
+      "frame_len": 11,
+      "chunks_hex": [
+        "C0A604063D03000064000FBC"
+      ],
+      "frame_valid": true,
+      "result_code": 0,
+      "note": "#72：上限抬到 100，线上仍是 3 字节载荷（strip_id + u16 LE）"
+    },
+    {
       "name": "set_led_count_strip7_1",
       "direction": "app_to_device",
       "command": 6,
@@ -659,6 +676,176 @@
       "note": "清槽旁路：两层都空但 layer0.level = 30 → InvalidParam（不是清槽）"
     },
     {
+      "name": "set_segment_single_strobe",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 65,
+      "payload_hex": "0005000900040000FF64005A0064FF0000000000000000",
+      "payload_len": 23,
+      "frame_hex": "A604104117000005000900040000FF64005A0064FF0000000000000000FB3A",
+      "frame_len": 31,
+      "chunks_hex": [
+        "C0A604104117000005000900040000FF64005A0064FF0000000000000000FB3A"
+      ],
+      "frame_valid": true,
+      "result_code": 0,
+      "note": "爆闪：period=100ms（10Hz 下限）、duty=90（中档）、flags=0"
+    },
+    {
+      "name": "set_segment_single_heartbeat",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 66,
+      "payload_hex": "0100001D00050000FFE8033C0164FF0000000000000000",
+      "payload_len": 23,
+      "frame_hex": "A604104217000100001D00050000FFE8033C0164FF0000000000000000C7D2",
+      "frame_len": 31,
+      "chunks_hex": [
+        "C0A604104217000100001D00050000FFE8033C0164FF0000000000000000C7D2"
+      ],
+      "frame_valid": true,
+      "result_code": 0,
+      "note": "心跳：period=1000ms（60 BPM）、pulse=60、双脉冲开"
+    },
+    {
+      "name": "set_segment_single_off",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 67,
+      "payload_hex": "0200000F00060000000000000064FF0000000000000000",
+      "payload_len": 23,
+      "frame_hex": "A604104317000200000F00060000000000000064FF0000000000000000AE71",
+      "frame_len": 31,
+      "chunks_hex": [
+        "C0A604104317000200000F00060000000000000064FF0000000000000000AE71"
+      ],
+      "frame_valid": true,
+      "result_code": 0,
+      "note": "熄灭：参数全 0，永不发光"
+    },
+    {
+      "name": "set_segment_strobe_plus_heartbeat",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 68,
+      "payload_hex": "0006000F01040000FFC800800064050000FFDC053C0164",
+      "payload_len": 23,
+      "frame_hex": "A604104417000006000F01040000FFC800800064050000FFDC053C01641853",
+      "frame_len": 31,
+      "chunks_hex": [
+        "C0A604104417000006000F01040000FFC800800064050000FFDC053C01641853"
+      ],
+      "frame_valid": true,
+      "result_code": 0,
+      "note": "#74 叠加：爆闪打底 + 心跳相乘（新类型可作 layer1）"
+    },
+    {
+      "name": "set_segment_bad_strobe_period",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 69,
+      "payload_hex": "0000000900040000FF63005A0064FF0000000000000000",
+      "payload_len": 23,
+      "frame_hex": "A604104517000000000900040000FF63005A0064FF0000000000000000A211",
+      "frame_len": 31,
+      "chunks_hex": [
+        "C0A604104517000000000900040000FF63005A0064FF0000000000000000A211"
+      ],
+      "frame_valid": false,
+      "result_code": 1,
+      "note": "爆闪周期 99ms < 100ms 下限"
+    },
+    {
+      "name": "set_segment_bad_strobe_flags",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 70,
+      "payload_hex": "0000000900040000FF64005A0164FF0000000000000000",
+      "payload_len": 23,
+      "frame_hex": "A604104617000000000900040000FF64005A0164FF00000000000000006F5D",
+      "frame_len": 31,
+      "chunks_hex": [
+        "C0A604104617000000000900040000FF64005A0164FF00000000000000006F5D"
+      ],
+      "frame_valid": false,
+      "result_code": 1,
+      "note": "爆闪 flags 必须为 0（没有方向 / 波形位）"
+    },
+    {
+      "name": "set_segment_bad_heartbeat_period_low",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 71,
+      "payload_hex": "0000000900050000FFF3013C0164FF0000000000000000",
+      "payload_len": 23,
+      "frame_hex": "A604104717000000000900050000FFF3013C0164FF00000000000000000D1D",
+      "frame_len": 31,
+      "chunks_hex": [
+        "C0A604104717000000000900050000FFF3013C0164FF00000000000000000D1D"
+      ],
+      "frame_valid": false,
+      "result_code": 1,
+      "note": "心跳周期 499ms < 500ms 下限（40 BPM）"
+    },
+    {
+      "name": "set_segment_bad_heartbeat_period_high",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 72,
+      "payload_hex": "0000000900050000FFDD053C0164FF0000000000000000",
+      "payload_len": 23,
+      "frame_hex": "A604104817000000000900050000FFDD053C0164FF00000000000000008A23",
+      "frame_len": 31,
+      "chunks_hex": [
+        "C0A604104817000000000900050000FFDD053C0164FF00000000000000008A23"
+      ],
+      "frame_valid": false,
+      "result_code": 1,
+      "note": "心跳周期 1501ms > 1500ms 上限（120 BPM）"
+    },
+    {
+      "name": "set_segment_bad_heartbeat_flags",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 73,
+      "payload_hex": "0000000900050000FFE8033C0264FF0000000000000000",
+      "payload_len": 23,
+      "frame_hex": "A604104917000000000900050000FFE8033C0264FF000000000000000086A5",
+      "frame_len": 31,
+      "chunks_hex": [
+        "C0A604104917000000000900050000FFE8033C0264FF000000000000000086A5"
+      ],
+      "frame_valid": false,
+      "result_code": 1,
+      "note": "心跳 flags bit1-7 保留位必须为 0（bit0 才是双脉冲）"
+    },
+    {
+      "name": "set_segment_bad_off_params",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 74,
+      "payload_hex": "000000090006E803000000000064FF0000000000000000",
+      "payload_len": 23,
+      "frame_hex": "A604104A1700000000090006E803000000000064FF00000000000000008D42",
+      "frame_len": 31,
+      "chunks_hex": [
+        "C0A604104A1700000000090006E803000000000064FF00000000000000008D42"
+      ],
+      "frame_valid": false,
+      "result_code": 1,
+      "note": "熄灭层的 hue 必须为 0（参数全零）"
+    },
+    {
       "name": "clear_segment",
       "direction": "app_to_device",
       "command": 17,
@@ -919,6 +1106,57 @@
       "result_code": 0
     },
     {
+      "name": "clear_script",
+      "direction": "app_to_device",
+      "command": 30,
+      "command_name": "ClearScript",
+      "seq": 62,
+      "payload_hex": "00",
+      "payload_len": 1,
+      "frame_hex": "A6041E3E01000034E1",
+      "frame_len": 9,
+      "chunks_hex": [
+        "C0A6041E3E01000034E1"
+      ],
+      "frame_valid": true,
+      "result_code": 0,
+      "note": "清空 0 号剧本：未提交即成功（幂等）；清的是激活剧本则停播并退回无激活"
+    },
+    {
+      "name": "clear_script_last_slot",
+      "direction": "app_to_device",
+      "command": 30,
+      "command_name": "ClearScript",
+      "seq": 63,
+      "payload_hex": "03",
+      "payload_len": 1,
+      "frame_hex": "A6041E3F010003E3A7",
+      "frame_len": 9,
+      "chunks_hex": [
+        "C0A6041E3F010003E3A7"
+      ],
+      "frame_valid": true,
+      "result_code": 0,
+      "note": "边界：最后一个合法 script_id（MAX_SCRIPTS-1 = 3）"
+    },
+    {
+      "name": "clear_script_bad_id",
+      "direction": "app_to_device",
+      "command": 30,
+      "command_name": "ClearScript",
+      "seq": 64,
+      "payload_hex": "04",
+      "payload_len": 1,
+      "frame_hex": "A6041E400100049F41",
+      "frame_len": 9,
+      "chunks_hex": [
+        "C0A6041E400100049F41"
+      ],
+      "frame_valid": false,
+      "result_code": 1,
+      "note": "script_id = MAX_SCRIPTS → InvalidParam（越界不对应任何槽位）"
+    },
+    {
       "name": "bad_magic",
       "direction": "app_to_device",
       "command": 1,
@@ -1086,12 +1324,12 @@
       "command": 136,
       "command_name": "DeviceInfoReport",
       "seq": 54,
-      "payload_hex": "0400AABBCCDDEEFF40080808040100",
+      "payload_hex": "0400AABBCCDDEEFF64080808040100",
       "payload_len": 15,
-      "frame_hex": "A60488360F000400AABBCCDDEEFF400808080401001235",
+      "frame_hex": "A60488360F000400AABBCCDDEEFF64080808040100229A",
       "frame_len": 23,
       "chunks_hex": [
-        "C0A60488360F000400AABBCCDDEEFF400808080401001235"
+        "C0A60488360F000400AABBCCDDEEFF64080808040100229A"
       ],
       "frame_valid": true,
       "result_code": 0,

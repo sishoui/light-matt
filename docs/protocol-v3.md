@@ -32,7 +32,7 @@
 
 | 常量 | 值 | 说明 |
 |---|---|---|
-| `MAX_LEDS` | 64 | 单条灯带的灯珠上限 |
+| `MAX_LEDS` | 64 | 单条灯带的灯珠上限（v3 固件冻结在 64；v4 #72 抬到 100，见 `docs/protocol-v4.md`） |
 | `MAX_STRIPS` | 8 | 灯带数（8 个引脚，TDM 轮询） |
 | `MAX_SEGMENTS` | 8 | **每条灯带**的段数 |
 | `MAX_STAGES` | 8 | **每套剧本**的阶段数 |
@@ -222,9 +222,14 @@ export function crc16(bytes: Uint8Array): number {
 | `0x1B` | **SetStripPower** | `strip_id, on` | 2 |
 | `0x1C` | **QueryStripConfig** | — | 0 |
 | `0x1D` | **QueryDeviceInfo** | — | 0 |
+| `0x1E` | **ClearScript**（v4 新增，v3 固件回 `0x02`） | `script_id` | 1 |
 
-- `0x08-0x0F`、`0x1E-0x7F` 保留；设备收到回 `0x02`。
+- `0x08-0x0F`、`0x1F-0x7F` 保留；设备收到回 `0x02`。
 - 小程序写入 `0x80-0xFF`（设备→小程序方向）→ `0x02`。
+- `0x1E ClearScript` 是 **v4 原地新增**的命令（v4 文档 §6.1）。v3 固件的命令表里
+  没有它，按 §5 的固定顺序在「命令已知」这一步回 `0x02 UnknownCommand`，
+  **不误改任何配置并继续正常服务后续帧**。向量 `clear_script_unsupported_v3`
+  锁住这条行为。协议版本号因此没有变化（新增命令不影响旧固件的安全拒绝）。
 
 ---
 
@@ -287,6 +292,15 @@ export function crc16(bytes: Uint8Array): number {
 
 1. 两层都允许 `period_ms = 0` 表示静止。
 2. 未知 type → `InvalidParam`（不静默降级，沿用 effects-spec D7）。
+
+> **v3 的类型表冻结在四种。** 爆闪 `0x04` / 心跳 `0x05` / 熄灭 `0x06` 是 **v4 原地新增**的
+> （#74，见 `docs/protocol-v4.md` §7.1 / §9.3.4）。**v3 固件不认识它们**，会走第 2 步的
+> 「未知类型」路径回 `InvalidParam`——这正是 #74 验收里的「旧固件收到新类型按未知类型拒绝，
+> 不静默降级成别的效果」。v3 向量因此只加**拒绝**用例（`set_segment_bad_strobe_type_unsupported`
+> 一类），不加编码用例。
+>
+> 三种新类型复用现有 7 字节参数块，所以 v4 的层宽（9）、段载荷（23 / 25）、State（37）、
+> blob（1440）与**协议版本号**都没有因为 #74 变化。
 
 ### 7.2 blend（层 1 叠加到层 0）
 
@@ -435,6 +449,9 @@ ActivateScript(script_id, loop)                       → ACK 0x00
 - `fade_ms` 当前**恒为 0**；非 0 值先**接受并存储**，但播放行为仍是硬切（格式预留，
   见 `docs/spec-v3.md` 的取舍记录）。
 - 失败回滚：`ScriptCommit` 失败只丢暂存区，已提交的那一套不动。
+- **删除一套方案**：v3 没有这个能力（`ScriptBegin` 要求 `stage_count ∈ 1..8`，
+  下发不了「空剧本」）。v4 新增 `0x1E ClearScript`（§6 / v4 文档 §6.1）；
+  v3 固件收到它回 `0x02`，配置不变——这也是「新增命令不必升协议版本」的依据。
 
 ### 9.7 自检
 
@@ -567,6 +584,10 @@ App 侧必须用同一公式在**下发前**预估，超限直接提示，不要
 必须覆盖：每个命令的合法帧、每个命令的边界值、两层各种组合（空层 / 静态+静态 /
 静态+动画 / 动画+动画）、三种 blend、非法 blend 与空 layer0、ScriptTooLarge、
 分片重组（2 分片 / 3 分片 / 乱序 FIRST / 超长 / 超时）、CRC 错误、bad magic、坏长度。
+
+**#74 的降级用例**：v3 固件不认识 v4 新增的爆闪 `0x04` / 心跳 `0x05` / 熄灭 `0x06`，
+所以 v3 向量只加**拒绝**用例（`set_segment_bad_strobe_type_unsupported` 等），期望
+`0x01 InvalidParam`——这正是「旧固件按未知类型拒绝，不静默降级」的证据。
 
 ---
 

@@ -61,32 +61,160 @@
   color: var(--text-2);
 }
 
-/* 方案槽位按钮：点一下轮换 ①→②→③→④→①，空槽位写「空白」。 */
-.plan-slot {
+/* ---------------- 灯珠数滑块（#79） ---------------- */
+
+.led-count-bar {
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
   gap: 4rpx;
-  padding: 14rpx 22rpx;
+  margin-top: 12rpx;
+  padding: 14rpx 20rpx 10rpx;
   border-radius: var(--radius-md);
-  background: var(--card);
+  background: var(--card-2);
   box-shadow: inset 0 0 0 1rpx var(--border);
-  flex-shrink: 0;
 }
 
-.plan-slot-hover {
-  background: var(--card-press);
+.led-count-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12rpx;
 }
 
-.plan-slot-label {
+.led-count-label {
+  font-size: 23rpx;
+  color: var(--text-2);
+}
+
+.led-count-value {
   font-size: 25rpx;
   font-weight: 600;
   color: var(--text);
 }
 
-.plan-slot-sub {
+.led-count-slider {
+  width: 100%;
+  margin: 0;
+}
+
+.led-count-hint {
+  font-size: 21rpx;
+  color: var(--text-2);
+  line-height: 1.4;
+}
+
+/* ---------------- 方案 tab 行（#83） ----------------
+ * 按需增长：每套一个 tab，显示自己的圈码与「空白 / n 步」。
+ * 选中态用主题色描边 + 淡底（不换文字颜色，深色主题下也可读）；
+ * 正在播放的那套右上角一个小圆点。
+ */
+
+.plan-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 10rpx;
+  margin-top: 12rpx;
+}
+
+.plan-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 8rpx;
+}
+
+.plan-tab {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4rpx;
+  padding: 12rpx 8rpx;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+  transition: background 160ms ease, box-shadow 160ms ease;
+}
+
+.plan-tab.on {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 2rpx var(--accent);
+}
+
+.plan-tab-hover {
+  background: var(--card-press);
+}
+
+.plan-tab-label {
+  font-size: 25rpx;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.plan-tab-sub {
   font-size: 20rpx;
   color: var(--text-3);
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.plan-tab.on .plan-tab-sub {
+  color: var(--text-2);
+}
+
+/* 正在播放：一个小圆点，不抢文字的位置（绝对定位在右上角）。 */
+.plan-tab-dot {
+  position: absolute;
+  top: 8rpx;
+  right: 8rpx;
+  width: 10rpx;
+  height: 10rpx;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.plan-actions {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+}
+
+.plan-action {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12rpx 8rpx;
+  border-radius: var(--radius-md);
+  font-size: 23rpx;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+.plan-action.danger {
+  color: var(--danger);
+  background: var(--danger-soft);
+  box-shadow: none;
+}
+
+.plan-action-hover {
+  background: var(--card-press);
+}
+
+.plan-action.disabled {
+  color: var(--text-3);
+  opacity: 0.55;
+}
+
+.plan-hint {
+  font-size: 21rpx;
+  color: var(--danger);
+  line-height: 1.4;
 }
 
 /* ---------------- 简单 / 进阶 分段控件 ---------------- */
@@ -131,12 +259,18 @@
   color: var(--text-3);
 }
 
-/* ---------------- 六张成品效果卡 ---------------- */
+/* ---------------- 九张成品效果卡（三列，#81） ---------------- */
 
+/*
+ * 三列网格：每行 3 张，九张正好三行（卡片数与列数的整除关系由
+ * `tests/quick-effects.test.ts` 锁住，改列数必须一起改常量）。
+ * 卡片变窄后改成竖排（色块在上、文字在下），名称与提示各占一行，
+ * 超出用省略号截断而不是换行——换行会让同一行的卡片高度参差不齐。
+ */
 .quick-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16rpx;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12rpx;
 }
 
 .quick-grid.disabled {
@@ -147,9 +281,11 @@
 .quick-card {
   position: relative;
   display: flex;
-  align-items: center;
-  gap: 16rpx;
-  padding: 20rpx;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8rpx;
+  min-width: 0;
+  padding: 16rpx 14rpx;
   border-radius: var(--radius-md);
   background: var(--card-2);
   box-shadow: inset 0 0 0 1rpx var(--border);
@@ -167,8 +303,8 @@
 }
 
 .quick-swatch {
-  width: 56rpx;
-  height: 56rpx;
+  width: 44rpx;
+  height: 44rpx;
   border-radius: 50%;
   flex-shrink: 0;
   box-shadow: inset 0 0 0 1rpx var(--border);
@@ -177,30 +313,44 @@
 .quick-body {
   display: flex;
   flex-direction: column;
-  gap: 4rpx;
+  gap: 2rpx;
+  width: 100%;
   min-width: 0;
-  flex: 1;
 }
 
 .quick-name {
-  font-size: 26rpx;
+  display: block;
+  width: 100%;
+  font-size: 24rpx;
   font-weight: 600;
   color: var(--text);
+  /* 三列宽度：一行 + 省略号，绝不换行（换行会让同排卡片不等高）。 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .quick-hint {
-  font-size: 20rpx;
+  display: block;
+  width: 100%;
+  font-size: 19rpx;
   color: var(--text-2);
   line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
+/* 选中对勾移到右上角：竖排布局里它不再占一行宽度。 */
 .quick-check {
-  width: 26rpx;
-  height: 14rpx;
-  border-left: 4rpx solid var(--accent);
-  border-bottom: 4rpx solid var(--accent);
-  transform: rotate(-45deg) translateY(-4rpx);
-  flex-shrink: 0;
+  position: absolute;
+  top: 16rpx;
+  right: 14rpx;
+  width: 22rpx;
+  height: 12rpx;
+  border-left: 3rpx solid var(--accent);
+  border-bottom: 3rpx solid var(--accent);
+  transform: rotate(-45deg) translateY(-2rpx);
 }
 
 /* ---------------- 参数区：色相 / 饱和度 / 亮度 ---------------- */
@@ -257,30 +407,25 @@
 }
 
 /*
- * 时间轴容器。八段时 8×40px 保底 + 7 个间隙 = 376px，比多数手机可用宽度更宽，
- * 此时允许横向滚动（见 timeline.ts 的 timelineRowWidth），而不是把块压到点不到。
- */
-.timeline-scroll {
-  width: 100%;
-  /* scroll-view 自己不给高度，显式定高，否则块会被压扁。 */
-  height: 108rpx;
-  white-space: nowrap;
-}
-
-.timeline-scroll.scrollable {
-  /* 可滚动时留一条细边，提示「右边还有」。 */
-  padding-bottom: 2rpx;
-}
-
-/*
  * 每个步骤一个块。宽度由 flex-grow 决定（页面算好像素后写进 style），
- * 行本身不换行：块再多也是横向排开。
+ * 行宽恒等于容器宽（页面把块宽之和 + 间隙算到正好填满），不换行也不滚动。
  */
 .timeline-row {
   display: flex;
   align-items: stretch;
   gap: 8px;
+  width: 100%;
   height: 108rpx;
+  /*
+   * 拖动时被抬起的块（z-index）要盖住邻块。行自己成为堆叠上下文，块之间的
+   * 层级才稳定；也避免抬起的块跑到卡片外的其它元素上面。
+   */
+  isolation: isolate;
+}
+
+/* 窄容器（最小宽度 + 8px 间隙放不下）：页面把间隙降到 4px。 */
+.timeline-row.compact {
+  gap: 4px;
 }
 
 .timeline-block {
@@ -288,14 +433,24 @@
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  min-width: 40px;
+  /*
+   * 不写 min-width：块宽由页面以像素内联（`flex: <px> 0 0%`），「算出来的宽度」
+   * 和「显示宽度」必须是同一份真相。未测量时的首帧由页面内联的
+   * `min-width: 24px` 兜底（见 timeline.ts 的 flexStyle）。
+   */
   box-sizing: border-box;
   padding: 10rpx 8rpx;
   border-radius: var(--radius-sm);
   background: var(--card-2);
   box-shadow: inset 0 0 0 1rpx var(--border);
   overflow: hidden;
-  transition: box-shadow 140ms ease;
+  /*
+   * 位移与阴影都只走 transform / box-shadow（#82）：小程序里改 flex 等布局
+   * 属性做动画会重排、抖动且不一定生效，所以位移一律内联 `transform`。
+   * 150ms 是票面的让位时长；松手时内联 transform 被清空，同一条过渡把它弹回去。
+   */
+  transition: transform 150ms ease, box-shadow 150ms ease;
+  transform-origin: center center;
 }
 
 /*
@@ -306,14 +461,38 @@
   box-shadow: 0 0 0 2px var(--accent);
 }
 
-/* 拖动中：被拖的块浮起来，落点块用虚线示意会排到这里。 */
+/*
+ * 拖动中被拖的块：抬起一层。
+ *
+ * 放大（1.06）由页面写进**内联** transform——它必须和 `translateX` 同一条
+ * 变换，否则内联会覆盖这里的 scale。这里只负责层级与投影：`z-index` 要在
+ * 同一个堆叠上下文里才有效，所以行有 `isolation: isolate`。
+ */
 .timeline-block.dragging {
-  opacity: 0.7;
-  z-index: 2;
+  z-index: 3;
+  box-shadow: 0 10rpx 28rpx rgba(0, 0, 0, 0.22);
+  opacity: 1;
+  /*
+   * 跟手必须是**即时**的：transform 不过渡（否则块会慢半拍拖在手指后面）。
+   * 只让阴影平滑淡入，抬起的一瞬间看起来仍是「抬起来」。
+   */
+  transition: box-shadow 150ms ease;
 }
 
+/* 落点块高亮描边：`.drop-target` 排在 `.selected` 之后，拖动时以它为准。 */
 .timeline-block.drop-target {
-  box-shadow: 0 0 0 2px var(--blue);
+  box-shadow: 0 0 0 2px var(--blue), 0 0 0 5px var(--blue-soft);
+}
+
+/*
+ * 提交重排的那一帧不要过渡（#82）。
+ *
+ * 块的 key 是下标，重排后同一个节点换了内容；若让 transform 从「跟手位置」
+ * 平滑跑回原位，看到的是一块已经换过内容的块飞回去。提交帧直接落位，下一帧
+ * （`timelineSettling` 恢复 false）再把过渡还回来。
+ */
+.timeline-row.settling .timeline-block {
+  transition: none;
 }
 
 /* 缩略色带：贴块底，按该步骤光区的灯珠比例分成若干条。 */
@@ -465,7 +644,11 @@
   border-radius: var(--radius-sm);
   background: var(--card-2);
   box-shadow: inset 0 0 0 1rpx var(--border);
-  overflow: hidden;
+  /*
+   * 不能 overflow:hidden：起止手柄比条带高，会被裁掉一半（#77）。
+   * 条带自身的圆角由 .zone-fill 的 border-radius 负责。
+   */
+  overflow: visible;
 }
 
 .zone-block {
@@ -477,7 +660,8 @@
   justify-content: center;
   min-width: 4rpx;
   border-radius: var(--radius-sm);
-  overflow: hidden;
+  /* 手柄挂在块外沿，必须放行，否则选中后两端圆点被切掉。 */
+  overflow: visible;
 }
 
 /* 光区本体：颜色只铺在块里，块的选中态另加描边（不换色）。 */
@@ -504,6 +688,71 @@
 .zone-gap {
   background: var(--border);
   pointer-events: none;
+}
+
+/*
+ * 起止手柄（#77）：选中光区的两端各一个实心圆，比条带更高，一眼看出
+ * 「起点在这一端、终点在这一端」。
+ *
+ * 三个必须：
+ *  1. 绝对定位 + 块内 left 0% / 100%，**不参与块宽计算**——选中不让块变宽；
+ *  2. 圆形用 border-radius:50%，不是图片，主题换了颜色自动跟；
+ *  3. 位置用 translateX(-50%) 圆心中在块边上，起点才真的指在「第一颗的左边」。
+ */
+.zone-handle {
+  position: absolute;
+  /* 圆心落在条带上沿：一半在条带上方，所以「高于条带」但不压住块内文字。 */
+  top: -13rpx;
+  width: 26rpx;
+  height: 26rpx;
+  border-radius: 50%;
+  box-sizing: border-box;
+  background: var(--accent);
+  border: 3rpx solid var(--card);
+  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.28);
+  transform: translateX(-50%);
+  z-index: 3;
+  /* 手柄只是指示器：点它等于点块，不能挡住块的点击。 */
+  pointer-events: none;
+}
+
+/*
+ * 两端挨得太近（单颗光区 / 灯珠很密）：缩小手柄并各自**向外**错开，
+ * 让两个圆仍然分得清哪边是起点、哪边是终点，而不是叠成一团。
+ */
+.zone-handle.crowded {
+  width: 18rpx;
+  height: 18rpx;
+  top: -8rpx;
+}
+
+.zone-handle.crowded.handle-start {
+  transform: translateX(-100%);
+}
+
+.zone-handle.crowded.handle-end {
+  transform: translateX(0);
+}
+
+/* 零光区的引导：轴下面给出下一步，而不是只有一根灰条。 */
+.zone-guide {
+  display: flex;
+  justify-content: center;
+  padding: 2rpx 0;
+}
+
+.zone-guide-text {
+  font-size: 23rpx;
+  color: var(--text-3);
+  text-align: center;
+}
+
+/* 选中区间的数字核对（与设备上的区间同一口径）。 */
+.zone-range-detail {
+  font-size: 23rpx;
+  font-weight: 600;
+  color: var(--text-2);
+  letter-spacing: 0.5rpx;
 }
 
 .zone-label {
@@ -563,10 +812,13 @@
   min-width: 0;
 }
 
-/* 类型行：四个等宽按钮。选中态用底色 + 描边，不靠字号变化（会挤动布局）。 */
+/*
+ * 类型行：七个等宽按钮（#80）。七个两字标签挤在一行，所以间隙与字号比四按钮
+ * 时代略收；选中态仍用底色 + 描边，不靠字号变化（会挤动布局）。
+ */
 .panel-types {
   display: flex;
-  gap: 8rpx;
+  gap: 6rpx;
   padding: 8rpx;
   border-radius: var(--radius-md);
   background: var(--card-2);
@@ -575,12 +827,14 @@
 
 .panel-type {
   flex: 1 1 0;
+  min-width: 0;
   text-align: center;
-  padding: 16rpx 0;
+  padding: 14rpx 0;
   border-radius: var(--radius-sm);
-  font-size: 25rpx;
+  font-size: 22rpx;
   font-weight: 600;
   color: var(--text-2);
+  white-space: nowrap;
   transition: background 160ms ease;
 }
 
@@ -598,6 +852,23 @@
 .panel-type.disabled {
   opacity: 0.45;
   pointer-events: none;
+}
+
+/*
+ * 「熄灭」的说明（#80）：它没有任何旋钮，参数区里只有这一段文字。
+ * 用卡片底而不是留白——留白会让人以为界面没渲染出来。
+ */
+.panel-notice {
+  padding: 22rpx 24rpx;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+.panel-notice-text {
+  font-size: 23rpx;
+  line-height: 1.6;
+  color: var(--text-2);
 }
 
 /*
@@ -740,10 +1011,16 @@
   color: var(--text-2);
 }
 
-/* 12 列网格：列数由页面写进 style，这里只管间距与格子。 */
+/* 12 列网格：列数由页面写进 style，这里只管间距与格子。
+   100 颗时是 9 行，加上底部两个滚轮会超过 86vh 的弹窗高度——网格自己滚，
+   标题、区间文字、滚轮与按钮都留在视野里（滚轮不能跟着一起滚走）。 */
 .picker-grid {
   display: grid;
   gap: 8rpx;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2rpx;
 }
 
 /*
@@ -783,16 +1060,63 @@
   pointer-events: none;
 }
 
-/* 选中的灯珠：描边 + 提亮（选中不是颜色变化，与光区轴同一套语义）。 */
+/* 选中的灯珠：半透明主题底色（区间整体一眼可见，不盖住格子上的数字）。 */
 .picker-cell.selected {
-  box-shadow: 0 0 0 2px var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1rpx var(--accent);
 }
 
 .picker-cell.selected .picker-cell-no {
   color: var(--text);
 }
 
-/* 锚点（第一次点的那一颗）：实心小点，告诉用户「起点在这里」。 */
+/*
+ * 起点 / 终点（#78）：区间两端各画一个圆，靠「实心 / 空心」而不是颜色区分。
+ *  - 起点：实心圆点 + 加粗数字（数字压在圆点上，颜色用 accent-ink 保证对比）；
+ *  - 终点：空心圆环（只有描边，格子底色透出来）。
+ *
+ * 两条规则各写一份几何属性：多选择器共用块会让「起点实心 / 终点空心」这两条
+ * 差异被藏在第二个块里，渲染层测试也就只能读到空声明（见 led-picker.test.ts）。
+ */
+.picker-cell.start::before {
+  content: "";
+  position: absolute;
+  width: 26rpx;
+  height: 26rpx;
+  border-radius: 50%;
+  box-sizing: border-box;
+  background: var(--accent);
+}
+
+.picker-cell.end::before {
+  content: "";
+  position: absolute;
+  width: 26rpx;
+  height: 26rpx;
+  border-radius: 50%;
+  box-sizing: border-box;
+  border: 3rpx solid var(--accent);
+  background: transparent;
+}
+
+.picker-cell.start .picker-cell-no,
+.picker-cell.end .picker-cell-no {
+  position: relative;
+  z-index: 1;
+}
+
+.picker-cell.start .picker-cell-no {
+  font-weight: 700;
+  color: var(--accent-ink);
+}
+
+.picker-cell.end .picker-cell-no {
+  font-weight: 700;
+  color: var(--accent);
+}
+
+/* 锚点（第一次点、还没定区间的那一颗）：实心小点，告诉用户「起点在这里」。
+   一旦有了区间就由 start / end 表达两端，不再叠一个点（会盖住数字）。 */
 .picker-cell.anchor::after {
   content: "";
   position: absolute;
@@ -802,8 +1126,65 @@
   background: var(--accent-ink);
 }
 
+.picker-cell.anchor.start::after,
+.picker-cell.anchor.end::after {
+  display: none;
+}
+
 .picker-cell.conflict {
   box-shadow: 0 0 0 2px var(--danger);
+}
+
+/* 起点 / 终点两个数字滚轮（#78）。 */
+.picker-wheels {
+  display: flex;
+  flex-shrink: 0;
+  gap: 12rpx;
+}
+
+.picker-wheel {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6rpx;
+  padding: 12rpx 16rpx;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+.picker-wheel-tag {
+  font-size: 20rpx;
+  color: var(--text-3);
+}
+
+.picker-wheel-value {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8rpx;
+}
+
+.picker-wheel-text {
+  font-size: 26rpx;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.picker-wheel-arrow {
+  font-size: 20rpx;
+  color: var(--text-3);
+}
+
+.picker-wheel-empty {
+  font-size: 22rpx;
+  color: var(--text-3);
+}
+
+/* 终点滚轮在锚点未定 / 没有空闲灯珠时不可用：整块降透明度。 */
+.picker-wheel.disabled {
+  opacity: 0.5;
 }
 
 .picker-error {
@@ -814,6 +1195,7 @@
 
 .picker-foot {
   display: flex;
+  flex-shrink: 0;
   gap: 12rpx;
 }
 
@@ -842,4 +1224,56 @@
   font-size: 22rpx;
   color: var(--danger);
   line-height: 1.5;
+}
+
+/* ---------------- 叠加层（#71 US49）：主效果之上再加一层 ---------------- */
+
+.overlay-block {
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+  margin-top: 8rpx;
+  padding-top: 16rpx;
+  border-top: 1rpx solid var(--divider);
+}
+
+.overlay-head {
+  margin-bottom: 0;
+}
+
+/* 七个选项（关闭 + 六种效果）排一行会挤：允许换行，两个一行更易点。 */
+.overlay-types {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8rpx;
+}
+
+.overlay-type {
+  flex: 1 1 calc(25% - 8rpx);
+  min-width: 0;
+  text-align: center;
+  padding: 12rpx 0;
+  border-radius: var(--radius-sm);
+  font-size: 22rpx;
+  color: var(--text-2);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+  transition: background 160ms ease;
+}
+
+.overlay-type.on {
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: none;
+}
+
+/* 「关闭」选中时不要用强调色：它表示「没有叠加」，不该看起来像一种效果。 */
+.overlay-type.on[data-value="none"] {
+  background: var(--card-press);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+.overlay-blend {
+  margin-top: 4rpx;
 }

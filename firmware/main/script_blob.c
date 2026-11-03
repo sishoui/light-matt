@@ -132,11 +132,17 @@ static bool decode_layer(reader_t *r, lumen_effect_layer_t *layer)
     return true;
 }
 
-size_t lumen_script_blob_encode_with_override(const lumen_script_store_t *store,
-                                              uint8_t override_slot,
-                                              const lumen_script_t *override_script,
-                                              uint8_t active_script_id, bool loop, uint8_t *out,
-                                              size_t out_cap)
+/*
+ * 编码实现（两个公开入口共用）。
+ *
+ * clear_slot 为 true 时把 override_slot 这个槽位**当成未提交**来写，即使
+ * store 里它此刻还有内容。ClearScript 0x1E（#73）用它做落盘前的容量预检：
+ * 先确认「清空后的快照」编得出来，才真的改 RAM 并排队写 NVS。这样「存不下」
+ * 就不会留下一份 RAM 已清、flash 还有的撕裂状态。
+ */
+static size_t encode_impl(const lumen_script_store_t *store, uint8_t override_slot,
+                          const lumen_script_t *override_script, bool clear_slot,
+                          uint8_t active_script_id, bool loop, uint8_t *out, size_t out_cap)
 {
     if (store == NULL || out == NULL || out_cap < 8) {
         return 0;
@@ -155,10 +161,14 @@ size_t lumen_script_blob_encode_with_override(const lumen_script_store_t *store,
          * 覆盖视图：`override_script` 非空且 id 命中时，把这个槽位当成它。
          * 用于 ScriptCommit 的尺寸预检——候选剧本还在 staging 里，不能为了
          * 试编码把 12.6KB 的结构体往栈上拷（NimBLE host 栈只有 4KB）。
+         * `clear_slot` 命中时把该槽位当成未提交（ClearScript 的预检）。
          */
-        const lumen_script_t *script =
-            (override_script != NULL && id == override_slot) ? override_script
-                                                             : lumen_script_get(store, id);
+        const lumen_script_t *script = NULL;
+        if (!(clear_slot && id == override_slot)) {
+            script = (override_script != NULL && id == override_slot)
+                         ? override_script
+                         : lumen_script_get(store, id);
+        }
         if (script == NULL) {
             /* 未提交的槽位用 committed = 0 占位，保持 4 个槽位的顺序。 */
             if (pos + 1 > out_cap) {
@@ -211,6 +221,26 @@ size_t lumen_script_blob_encode_with_override(const lumen_script_store_t *store,
         }
     }
     return pos;
+}
+
+size_t lumen_script_blob_encode_with_override(const lumen_script_store_t *store,
+                                              uint8_t override_slot,
+                                              const lumen_script_t *override_script,
+                                              uint8_t active_script_id, bool loop, uint8_t *out,
+                                              size_t out_cap)
+{
+    return encode_impl(store, override_slot, override_script, false, active_script_id, loop, out,
+                       out_cap);
+}
+
+size_t lumen_script_blob_encode_with_cleared(const lumen_script_store_t *store,
+                                             uint8_t cleared_slot, uint8_t active_script_id,
+                                             bool loop, uint8_t *out, size_t out_cap)
+{
+    if (cleared_slot >= LUMEN_MAX_SCRIPTS) {
+        return 0;
+    }
+    return encode_impl(store, cleared_slot, NULL, true, active_script_id, loop, out, out_cap);
 }
 
 bool lumen_script_blob_decode(const uint8_t *blob, size_t len,

@@ -24,6 +24,8 @@ import {
   BLEND,
   BREATHING_MIN_PERIOD_MS,
   DEVICE_INFO_BYTES,
+  HEARTBEAT_MAX_PERIOD_MS,
+  HEARTBEAT_MIN_PERIOD_MS,
   LAYER_BYTES,
   LAYER_LEVEL_MAX,
   MAX_LEDS,
@@ -40,6 +42,7 @@ import {
   SEGMENT_HEADER_BYTES,
   SEGMENT_TYPE,
   STATE_BYTES,
+  STROBE_MIN_PERIOD_MS,
   STRIP_CONFIG_BYTES,
   STRIP_CONFIG_RECORD_BYTES,
   WAVEFORM,
@@ -86,7 +89,7 @@ export function cmdQueryState(): CommandRequest {
 }
 
 /**
- * 灯珠数量：载荷 `strip_id, count_lo, count_hi`，数量 1-64。
+ * 灯珠数量：载荷 `strip_id, count_lo, count_hi`，数量 1-100（#72）。
  *
  * strip_id 必须先确认（0-7），数量再校验；非整数或越界直接抛错，不发帧。
  */
@@ -113,7 +116,7 @@ function assertHue(value: number): number {
   return value;
 }
 
-/** 灯珠下标（0-63 协议上限内，且必须 ≤ 255 才能进 1 字节字段）。 */
+/** 灯珠下标（0-99 协议上限内，#72；且必须 ≤ 255 才能进 1 字节字段）。 */
 function assertLedIndex(value: number, field: string): number {
   if (!Number.isInteger(value) || value < 0 || value > MAX_LEDS - 1) {
     throw new RangeError(`${field} 必须是 0-${MAX_LEDS - 1} 的整数，收到 ${value}`);
@@ -148,25 +151,24 @@ function isKnownLayerType(type: number): boolean {
     type === SEGMENT_TYPE.STATIC ||
     type === SEGMENT_TYPE.BREATHING ||
     type === SEGMENT_TYPE.RAINBOW ||
-    type === SEGMENT_TYPE.COMET
+    type === SEGMENT_TYPE.COMET ||
+    type === SEGMENT_TYPE.STROBE ||
+    type === SEGMENT_TYPE.HEARTBEAT ||
+    type === SEGMENT_TYPE.OFF
   );
 }
 
 /**
- * 层类型的有效参数长度（effects-spec §2.5）：静态 3、动画 7、空层/未知 0。
+ * 层类型的有效参数长度（effects-spec §2.8）：静态 3；其余六种 7；空层/未知 0。
  *
  * 层在线上是定宽 9 字节（type + 7 字节参数 + level），这里给的是**有效字节数**，
- * 只用于校验与日志，不决定编码宽度。
+ * 只用于校验与日志，不决定编码宽度。#74 的爆闪 / 心跳 / 熄灭复用同一个 7 字节块。
  */
 export function layerParamLength(type: number): number {
   if (type === SEGMENT_TYPE.STATIC) {
     return 3;
   }
-  if (
-    type === SEGMENT_TYPE.BREATHING ||
-    type === SEGMENT_TYPE.RAINBOW ||
-    type === SEGMENT_TYPE.COMET
-  ) {
+  if (isKnownLayerType(type)) {
     return 7;
   }
   return 0;
@@ -198,7 +200,10 @@ function assertLevel(value: number, field: string): number {
  *  - 空层（0xFF）的 8 字节参数与 level 必须全 0；
  *  - 静态层的 param[3..6] 必须全 0（防止将来语义漂移时旧固件静默接受）；
  *  - 呼吸周期 0 或 ≥ 334；**呼吸 p5 是相对百分比 0-100**（v4）；flags bit3-7 = 0；
- *  - 彩虹 / 流光周期 0 或 ≥ 200；p5 保持 0-255；flags bit1-7 = 0。
+ *  - 彩虹 / 流光周期 0 或 ≥ 200；p5 保持 0-255；flags bit1-7 = 0；
+ *  - **#74 爆闪**：flags == 0、周期 0 或 ≥ 100（10Hz 上界）；
+ *  - **#74 心跳**：flags bit1-7 = 0（bit0 = 双脉冲）、周期 0 或 500-1500（40-120 BPM）；
+ *  - **#74 熄灭**：hue / sat / period / p5 / flags 全 0。
  */
 function writeLayer(out: Uint8Array, offset: number, layer: EffectLayer, field: string): void {
   const type = layer.type;
@@ -236,6 +241,40 @@ function writeLayer(out: Uint8Array, offset: number, layer: EffectLayer, field: 
     }
     if ((flags & 0xf8) !== 0) {
       throw new RangeError(`${field} 的 flags 保留位 bit3-7 必须为 0，收到 0x${flags.toString(16)}`);
+    }
+  } else if (type === SEGMENT_TYPE.STROBE) {
+    /* #74 爆闪（effects-spec §2.5）：没有 flags 位；周期 0 或 ≥ 100ms。 */
+    if (flags !== 0) {
+      throw new RangeError(`${field} 是爆闪层，flags 必须为 0，收到 0x${flags.toString(16)}`);
+    }
+    if (period !== 0 && period < STROBE_MIN_PERIOD_MS) {
+      throw new RangeError(
+        `爆闪周期不能短于 ${STROBE_MIN_PERIOD_MS}ms（10Hz 上界），收到 ${period}`,
+      );
+    }
+  } else if (type === SEGMENT_TYPE.HEARTBEAT) {
+    /* #74 心跳（effects-spec §2.6）：bit0 双脉冲、bit1-7 保留；周期 500-1500ms。 */
+    if ((flags & 0xfe) !== 0) {
+      throw new RangeError(
+        `${field} 的 flags 保留位 bit1-7 必须为 0，收到 0x${flags.toString(16)}`,
+      );
+    }
+    if (
+      period !== 0 &&
+      (period < HEARTBEAT_MIN_PERIOD_MS || period > HEARTBEAT_MAX_PERIOD_MS)
+    ) {
+      throw new RangeError(
+        `心跳周期必须是 ${HEARTBEAT_MIN_PERIOD_MS}-${HEARTBEAT_MAX_PERIOD_MS}ms` +
+          `（40-120 BPM），收到 ${period}`,
+      );
+    }
+  } else if (type === SEGMENT_TYPE.OFF) {
+    /*
+     * #74 熄灭（effects-spec §2.7）：参数全 0。注意 level 不受这条约束——
+     * 熄灭本来就是黑的，亮度对它没有意义（固件同样只校验 param）。
+     */
+    if (hue !== 0 || sat !== 0 || period !== 0 || p5 !== 0 || flags !== 0) {
+      throw new RangeError(`${field} 是熄灭层，hue / sat / period / p5 / flags 必须全为 0`);
     }
   } else {
     if (period !== 0 && period < ANIMATION_MIN_PERIOD_MS) {
@@ -654,6 +693,17 @@ export function cmdQueryScript(scriptId: number): CommandRequest {
   return { command: 0x1a, payload: new Uint8Array([assertScriptId(scriptId)]) };
 }
 
+/**
+ * ClearScript 0x1E（#73）：载荷 `script_id`，真正从设备上删掉这套已提交剧本。
+ *
+ * 未提交即成功（幂等）；清掉的正是激活剧本时设备停播并退回「无激活剧本」。
+ * 设备回 `0x00` 成功 / `0x01` id 越界 / `0x06` 存储失败（此时原剧本仍可用）/
+ * `0x02` 旧固件不认识。**协议版本号不变**，旧固件按未知命令安全拒绝。
+ */
+export function cmdClearScript(scriptId: number): CommandRequest {
+  return { command: 0x1e, payload: new Uint8Array([assertScriptId(scriptId)]) };
+}
+
 /** 一条 ScriptSummary 0x85（QueryScript 的响应）。 */
 export interface ScriptSummary {
   scriptId: number;
@@ -762,6 +812,40 @@ export function parseLayer(bytes: Uint8Array, offset = 0): EffectLayer {
     throw new RangeError(
       `呼吸层的 p5（最低亮）必须是百分比 0-100，收到 ${layer.p5}`,
     );
+  }
+  /*
+   * #74：新类型在解析侧也要按契约校验——否则读回一条设备已接受的坏配置时
+   * App 会静默显示它，两端对同一串字节给出不同结论。
+   */
+  if (type === SEGMENT_TYPE.STROBE) {
+    if (layer.flags !== 0) {
+      throw new RangeError(`爆闪层的 flags 必须为 0，收到 0x${layer.flags.toString(16)}`);
+    }
+    if (layer.periodMs !== 0 && layer.periodMs < STROBE_MIN_PERIOD_MS) {
+      throw new RangeError(
+        `爆闪周期不能短于 ${STROBE_MIN_PERIOD_MS}ms（10Hz 上界），收到 ${layer.periodMs}`,
+      );
+    }
+  } else if (type === SEGMENT_TYPE.HEARTBEAT) {
+    if ((layer.flags & 0xfe) !== 0) {
+      throw new RangeError(
+        `心跳层的 flags 保留位 bit1-7 必须为 0，收到 0x${layer.flags.toString(16)}`,
+      );
+    }
+    if (
+      layer.periodMs !== 0 &&
+      (layer.periodMs < HEARTBEAT_MIN_PERIOD_MS || layer.periodMs > HEARTBEAT_MAX_PERIOD_MS)
+    ) {
+      throw new RangeError(
+        `心跳周期必须是 ${HEARTBEAT_MIN_PERIOD_MS}-${HEARTBEAT_MAX_PERIOD_MS}ms，` +
+          `收到 ${layer.periodMs}`,
+      );
+    }
+  } else if (type === SEGMENT_TYPE.OFF) {
+    if (layer.hue !== 0 || layer.sat !== 0 || layer.periodMs !== 0 || layer.p5 !== 0 ||
+        layer.flags !== 0) {
+      throw new RangeError("熄灭层的参数必须全为 0");
+    }
   }
   return layer;
 }

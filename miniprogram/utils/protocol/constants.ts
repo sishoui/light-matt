@@ -36,8 +36,9 @@ export const CHUNK_INDEX_MASK = 0x3f;
 /** 重组超时（自上一個分片起算，§3.2）。 */
 export const ASSEMBLY_TIMEOUT_MS = 1000;
 
-/** 协议常量，两端硬编码（不进 State）。 */
-export const MAX_LEDS = 64;
+/** 协议常量，两端硬编码（不进 State）。
+ * 单条灯带的灯珠上限：#72 从 64 抬到 100，线上布局不变。 */
+export const MAX_LEDS = 100;
 export const MIN_LEDS = 1;
 export const MAX_STRIPS = 8;
 export const MAX_SEGMENTS = 8; // 每条灯带
@@ -79,7 +80,8 @@ export const PLAYBACK = {
  * 小程序 → 设备命令字，docs/protocol-v3.md §6。
  *
  * v2 退役了 v1 的 0x03 SetColor / 0x04 SetAll：0x03 / 0x04 两个值不再出现在
- * 本表里（设备收到回 0x02 未知命令）。v3 新增 0x1B/0x1C/0x1D。
+ * 本表里（设备收到回 0x02 未知命令）。v3 新增 0x1B/0x1C/0x1D；
+ * v4 原地新增 0x1E ClearScript（#73，协议版本号不变）。
  */
 export const CMD = {
   SET_POWER: 0x01,
@@ -99,6 +101,7 @@ export const CMD = {
   SCRIPT_ABORT: 0x18,
   ACTIVATE_SCRIPT: 0x19,
   QUERY_SCRIPT: 0x1a,
+  CLEAR_SCRIPT: 0x1e,
 
   SET_STRIP_POWER: 0x1b,
   QUERY_STRIP_CONFIG: 0x1c,
@@ -145,6 +148,12 @@ export const SEGMENT_TYPE = {
   BREATHING: 0x01,
   RAINBOW: 0x02,
   COMET: 0x03,
+  /** #74 爆闪：方波 + 两端斜坡；p5 是占空比，周期下限 100ms。 */
+  STROBE: 0x04,
+  /** #74 心跳：一个节拍内一大一小两次脉冲；flags bit0 = 双脉冲，周期 500-1500ms。 */
+  HEARTBEAT: 0x05,
+  /** #74 熄灭：参数全 0，永不发光（显式的「这里就是黑的」）。 */
+  OFF: 0x06,
   /** 空层（只有 type 合法）。 */
   EMPTY: 0xff,
 } as const;
@@ -155,6 +164,42 @@ export const BLEND = {
   MULTIPLY: 0x01,
   ADD: 0x02,
 } as const;
+
+/**
+ * 哪些类型值是**真实灯效**（不含空层 `0xFF`）。
+ *
+ * 单一真相：任何「这个 type 认不认识」的判断都从这里出发。曾经
+ * `segment-editor.isKnownType` 与 `script-view.typeName` 各写一份四类型清单，
+ * #74 加了爆闪 / 心跳 / 熄灭之后它们没跟上——校验会把新灯效判成非法、摘要会
+ * 显示成 `0x04`。这类「枚举扩了、判断没扩」的漏洞只靠单测很难发现，所以把
+ * 清单放在枚举旁边，由 `isKnownEffectType` 统一回答。
+ */
+export const KNOWN_EFFECT_TYPES: readonly number[] = [
+  SEGMENT_TYPE.STATIC,
+  SEGMENT_TYPE.BREATHING,
+  SEGMENT_TYPE.RAINBOW,
+  SEGMENT_TYPE.COMET,
+  SEGMENT_TYPE.STROBE,
+  SEGMENT_TYPE.HEARTBEAT,
+  SEGMENT_TYPE.OFF,
+];
+
+/** `type` 是否是真实灯效类型（空层 `0xFF` 不算）。 */
+export function isKnownEffectType(type: number): boolean {
+  return KNOWN_EFFECT_TYPES.includes(type);
+}
+
+/** 灯效类型的中文名（UI 与日志用；空层给「无」，未知给 hex）。 */
+export const EFFECT_TYPE_NAMES: Record<number, string> = {
+  [SEGMENT_TYPE.STATIC]: "静态",
+  [SEGMENT_TYPE.BREATHING]: "呼吸",
+  [SEGMENT_TYPE.RAINBOW]: "彩虹",
+  [SEGMENT_TYPE.COMET]: "流光",
+  [SEGMENT_TYPE.STROBE]: "爆闪",
+  [SEGMENT_TYPE.HEARTBEAT]: "心跳",
+  [SEGMENT_TYPE.OFF]: "熄灭",
+  [SEGMENT_TYPE.EMPTY]: "无",
+};
 
 /**
  * 呼吸波形（flags bit1-2，effects-spec §2.2）。
@@ -187,6 +232,21 @@ export const BREATHING_MIN_PERIOD_MS = 334;
  */
 export const ANIMATION_MIN_PERIOD_MS = 200;
 
+/**
+ * 爆闪周期下限（effects-spec §2.5）：100ms = 10Hz。
+ *
+ * 这是**固件能表现的上界**（默认 20fps，每帧 50ms），不是安全线；#74 不提高帧率。
+ * period_ms == 0 是「静止不出光」，不受此限。
+ */
+export const STROBE_MIN_PERIOD_MS = 100;
+
+/**
+ * 心跳周期区间（effects-spec §2.6）：500-1500ms = 40-120 BPM。
+ * period_ms == 0 同样是「静止」。
+ */
+export const HEARTBEAT_MIN_PERIOD_MS = 500;
+export const HEARTBEAT_MAX_PERIOD_MS = 1500;
+
 /** 周期字段是 2 字节小端（D3）。 */
 export const MAX_PERIOD_MS = 0xffff;
 
@@ -211,6 +271,7 @@ export const COMMAND_NAMES: Record<number, string> = {
   [CMD.SCRIPT_ABORT]: "ScriptAbort",
   [CMD.ACTIVATE_SCRIPT]: "ActivateScript",
   [CMD.QUERY_SCRIPT]: "QueryScript",
+  [CMD.CLEAR_SCRIPT]: "ClearScript",
   [CMD.SET_STRIP_POWER]: "SetStripPower",
   [CMD.QUERY_STRIP_CONFIG]: "QueryStripConfig",
   [CMD.QUERY_DEVICE_INFO]: "QueryDeviceInfo",

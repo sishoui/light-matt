@@ -22,7 +22,14 @@
 #define LUMEN_MAX_PAYLOAD 232
 #define LUMEN_HEADER_LEN 6
 #define LUMEN_FRAME_OVERHEAD 8 /* header 6 + crc16 2 */
-#define LUMEN_MAX_LEDS 64
+/*
+ * 单条灯带的灯珠上限（docs/protocol-v4.md §1.1）。
+ *
+ * #72 从 64 抬到 100：`start` / `end` 本来就是 1 字节（100 < 255），
+ * SetLedCount 仍是 3 字节载荷，state blob 尺寸与灯珠数无关——**线上布局不变**。
+ * 涨的只有固件侧的缓冲（TDM 帧 8 × 300 字节）与这个校验常量。
+ */
+#define LUMEN_MAX_LEDS 100
 
 /* v4 协议常量（docs/protocol-v4.md §1.1）。 */
 #define LUMEN_MAX_STRIPS 8
@@ -71,6 +78,12 @@ typedef enum {
     LUMEN_CMD_SET_STRIP_POWER = 0x1B,
     LUMEN_CMD_QUERY_STRIP_CONFIG = 0x1C,
     LUMEN_CMD_QUERY_DEVICE_INFO = 0x1D,
+    /*
+     * #73：原保留区 0x1E-0x7F 的最低一位，用来真正删掉一套已提交剧本
+     * （docs/protocol-v4.md §6 / §9.6）。**协议版本号不变**：旧固件收到 0x1E
+     * 按未知命令回 0x02，不会误改任何东西，因此不需要升版本。
+     */
+    LUMEN_CMD_CLEAR_SCRIPT = 0x1E,
 
     LUMEN_CMD_ACK = 0x80,
     LUMEN_CMD_EVENT = 0x81,

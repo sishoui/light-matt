@@ -1,26 +1,28 @@
 /**
  * 灯组页简单档的纯派生（#64）。
  *
- * 三类断言：
- *  1. 方案槽位按钮的文案与轮换（空槽位必须明说「空白」）；
- *  2. HSV 滑块 ↔ 协议值的换算（色相 0-360 ↔ 0-65535、饱和度 % ↔ 0-255），
+ * 断言：
+ *  1. HSV 滑块 ↔ 协议值的换算（色相 0-360 ↔ 0-65535、饱和度 % ↔ 0-255），
  *     以及亮度滑块**真实下发**（v4 的逐光区 level）；
- *  3. 设备读回值只有在「整组一个光区 + 无叠加层」时才敢回填成某张卡。
+ *  2. 设备读回值只有在「整组一个光区 + 无叠加层」时才敢回填成某张卡。
+ *
+ * 方案槽位的文案与轮换已迁到 `plan-slots.ts`（#83 起方案按需增长），
+ * 那里有自己的测试文件。
  */
 
 import { describe, expect, it } from "vitest";
 import {
   buildSimpleParams,
   clampLevel,
-  cyclePlanSlot,
   hueDegreesOf,
   hueFromDegrees,
   inferSimpleState,
   LEVEL_DEFAULT,
   LEVEL_MAX,
   LEVEL_MIN,
-  planSlotLabel,
-  planSlotSub,
+  OFF_CARD_NOTICE,
+  levelAfterCardTap,
+  levelDraftFromDevice,
   satFromPercent,
   satPercentOf,
 } from "../utils/control/strip-simple";
@@ -54,41 +56,6 @@ function report(overrides: Partial<SegmentReport> = {}): SegmentReport {
     ...overrides,
   };
 }
-
-describe("方案槽位按钮", () => {
-  it("四个槽位各有自己的圈码，文案是「方案 ①」", () => {
-    expect(planSlotLabel(0)).toBe("方案 ①");
-    expect(planSlotLabel(1)).toBe("方案 ②");
-    expect(planSlotLabel(2)).toBe("方案 ③");
-    expect(planSlotLabel(3)).toBe("方案 ④");
-  });
-
-  it("越界 / 非法槽位号不会崩（按 4 取模）", () => {
-    expect(planSlotLabel(4)).toBe("方案 ①");
-    expect(planSlotLabel(-1)).toBe("方案 ④");
-    expect(planSlotLabel(Number.NaN)).toBe("方案 ①");
-    expect(planSlotLabel(2.7)).toBe("方案 ③");
-  });
-
-  it("空槽位标「空白」，有内容显示步骤数", () => {
-    expect(planSlotSub(0)).toBe("空白");
-    expect(planSlotSub(3)).toBe("3 个步骤");
-    expect(planSlotSub(-2)).toBe("空白");
-    expect(planSlotSub(Number.NaN)).toBe("空白");
-  });
-
-  it("点一下在 0→1→2→3→0 之间轮换", () => {
-    expect(cyclePlanSlot(0)).toBe(1);
-    expect(cyclePlanSlot(1)).toBe(2);
-    expect(cyclePlanSlot(2)).toBe(3);
-    expect(cyclePlanSlot(3)).toBe(0);
-  });
-
-  it("槽位数可配（测试用 2 槽位也不会越界）", () => {
-    expect(cyclePlanSlot(1, 2)).toBe(0);
-    expect(cyclePlanSlot(0, 0)).toBe(1);
-  });
-});
 
 describe("HSV 换算", () => {
   it("协议色相 0-65535 ↔ 滑块 0-360 度", () => {
@@ -246,5 +213,78 @@ describe("设备读回 → 当前卡片", () => {
 
   it("没有任何光区时返回 null", () => {
     expect(inferSimpleState([], 30)).toBeNull();
+  });
+});
+
+describe("九张卡里的新三张（#81）", () => {
+  it("熄灭卡不给亮度滑块（拖了也不起作用），改给一句说明", () => {
+    const view = buildSimpleParams("off")!;
+    expect(view.cardId).toBe("off");
+    expect(view.sliders).toEqual([]);
+    expect(view.title).toBe("熄灭黑");
+    expect(view.notice).toBe(OFF_CARD_NOTICE);
+    /* 说明必须点明「灯组仍开着」，否则用户会以为这是关灯。 */
+    expect(view.notice).toContain("仍然开着");
+    expect(view.notice).not.toMatch(/毫秒|段|阶段|剧本|下发|激活|层/);
+    /* 预览色是黑，不是按 0/0 色算出的白。 */
+    expect(view.colorHex).toBe("#000000");
+  });
+
+  it("爆闪 / 心跳仍然有亮度滑块（它们在发光，亮度有意义）", () => {
+    for (const id of ["strobe", "heartbeat"]) {
+      const view = buildSimpleParams(id, {}, 60)!;
+      expect(view.sliders.map((slider) => slider.key), id).toEqual(["level"]);
+      expect(view.sliders[0].value, id).toBe(60);
+      expect(view.notice, id).toBe("");
+      expect(view.title, id).toBe(`${view.cardName}的参数`);
+    }
+  });
+
+  it("熄灭卡读回：整组一个光区、主效果熄灭、无叠加层 → 反推出 off", () => {
+    const offLayer = { type: SEGMENT_TYPE.OFF, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 };
+    const state = inferSimpleState([report({ layer0: offLayer })], 30);
+    expect(state).not.toBeNull();
+    expect(state!.cardId).toBe("off");
+    expect(state!.colorHex).toBe("#000000");
+  });
+
+  it("熄灭卡读回时不能把它当成静态暖白（否则界面会亮起一张错误的卡）", () => {
+    /* STATIC 与 OFF 的差别只在类型字节上：写错就变成「点了熄灭却高亮暖白」。 */
+    const offLayer = { type: SEGMENT_TYPE.OFF, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 };
+    expect(inferSimpleState([report({ layer0: offLayer })], 30)!.cardId).not.toBe("warm");
+  });
+
+  it("有多个光区时熄灭卡也认不出（只认整组一张卡）", () => {
+    const offLayer = { type: SEGMENT_TYPE.OFF, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 };
+    expect(
+      inferSimpleState(
+        [report({ layer0: offLayer }), report({ segId: 1, start: 15, end: 29 })],
+        30,
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("熄灭卡读回的 level = 0 不能传染给下一张卡", () => {
+  it("设备上的 0（熄灭）在换卡时回到默认满亮", () => {
+    expect(levelAfterCardTap(0)).toBe(LEVEL_DEFAULT);
+    expect(levelAfterCardTap(-1)).toBe(LEVEL_DEFAULT);
+    expect(levelAfterCardTap(Number.NaN)).toBe(LEVEL_DEFAULT);
+  });
+
+  it("用户自己调的亮度换卡后保留（不被重置成 100%）", () => {
+    expect(levelAfterCardTap(60)).toBe(60);
+    expect(levelAfterCardTap(5)).toBe(5);
+    expect(levelAfterCardTap(999)).toBe(LEVEL_MAX);
+  });
+
+  it("读回熄灭卡时草稿保留上一次的亮度（不把协议的 0 当成用户选择）", () => {
+    expect(levelDraftFromDevice("off", 0, 60)).toBe(60);
+    expect(levelDraftFromDevice("off", 0, 0)).toBe(LEVEL_DEFAULT);
+  });
+
+  it("读回会发光的卡时以设备值为准（含合法的 0）", () => {
+    expect(levelDraftFromDevice("warm", 40, 90)).toBe(40);
+    expect(levelDraftFromDevice("warm", 0, 90)).toBe(0);
   });
 });

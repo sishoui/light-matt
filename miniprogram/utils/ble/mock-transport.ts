@@ -28,6 +28,8 @@ import { parseSegmentPayload } from "../protocol/commands";
 import { toFlat } from "../protocol/segment-shapes";
 import {
   BLEND,
+  MAX_LEDS,
+  MAX_SCRIPTS,
   NO_EFFECT,
   NO_SCRIPT,
   SEGMENT_TYPE,
@@ -66,7 +68,7 @@ const EMPTY_INFO: Omit<DeviceInfo, "hwId"> = {
   firmwareVersion: 0x0300,
   firmwareMajor: 3,
   firmwareMinor: 0,
-  maxLeds: 64,
+  maxLeds: MAX_LEDS,
   maxStrips: 8,
   maxSegments: 8,
   maxStages: 8,
@@ -478,7 +480,7 @@ export class MockTransport {
       case 0x06: {
         const stripId = payload[0];
         const count = payload[1] | (payload[2] << 8);
-        if (stripId >= 8 || count < 1 || count > 64) {
+        if (stripId >= 8 || count < 1 || count > MAX_LEDS) {
           return 0x01;
         }
         runtime.ledCounts[stripId] = count;
@@ -537,7 +539,7 @@ export class MockTransport {
       case 0x14: {
         const scriptId = payload[0];
         const stageCount = payload[1];
-        if (scriptId >= 4 || stageCount < 1 || stageCount > 8) {
+        if (scriptId >= MAX_SCRIPTS || stageCount < 1 || stageCount > 8) {
           return 0x01;
         }
         runtime.staging = { scriptId, stages: new Map() };
@@ -615,6 +617,20 @@ export class MockTransport {
         /* 查询类由各自的 async 方法处理；走到这里说明调用方用错了通道。 */
         return 0x00;
       }
+      case 0x1e: {
+        /* ClearScript（#73 / #83）：未提交的编号也视为成功（协议幂等）；
+         * 清掉的正是激活方案时退回「无激活剧本」并停播。 */
+        const scriptId = payload[0];
+        if (!Number.isInteger(scriptId) || scriptId >= MAX_SCRIPTS) {
+          return 0x01;
+        }
+        runtime.scripts.delete(scriptId);
+        if (runtime.activeScript === scriptId) {
+          runtime.activeScript = NO_SCRIPT;
+          runtime.playback = 0;
+        }
+        return 0x00;
+      }
       default:
         return 0x02;
     }
@@ -673,6 +689,7 @@ function commandLabel(command: number): string {
     0x1b: "SetStripPower",
     0x1c: "QueryStripConfig",
     0x1d: "QueryDeviceInfo",
+    0x1e: "ClearScript",
   };
   return labels[command] ?? `cmd 0x${command.toString(16)}`;
 }

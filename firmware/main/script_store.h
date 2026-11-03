@@ -141,6 +141,47 @@ lumen_script_commit_result_t lumen_script_commit(lumen_script_store_t *store, ui
 /* ScriptAbort：丢弃该 script_id 的暂存。已提交剧本不受影响。 */
 void lumen_script_abort(lumen_script_store_t *store, uint8_t script_id);
 
+/*
+ * ClearScript 0x1E（#73）：清空一个已提交剧本（阶段数归零、所有段置空）。
+ *
+ * **未提交即成功**：对一个本来就没内容的 id 调用也返回 true，不报错
+ * （命令是绝对值语义，与 ClearSegment 一致）。
+ *
+ * 若该 id 正好在暂存区（staging_active && staging_script_id == id），暂存也
+ * 一并丢弃——否则用户「清空 → Abort」会看到一个不可预期的中间态。
+ *
+ * id 越界（>= LUMEN_MAX_SCRIPTS）或 store 为 NULL 返回 false，内容不变。
+ * NVS 失败不在这里处理（调用方在落盘前做容量预检，见 script_blob.h）。
+ */
+bool lumen_script_store_clear(lumen_script_store_t *store, uint8_t script_id);
+
+/*
+ * 「清空了 cleared_script_id 之后，是否必须退回无激活剧本」——纯判定。
+ *
+ * 抽出来是为了让 host 能测这个决策：`active == cleared` 才需要停播并清空
+ * 激活 id；没有激活剧本（LUMEN_NO_SCRIPT）或 id 越界时都不命中。
+ * 越界的 cleared id 永远不算命中，避免把非法输入当成「正好删掉了正在播的那套」。
+ */
+bool lumen_script_should_deactivate(uint8_t active_script_id, uint8_t cleared_script_id);
+
+/*
+ * SetLedCount 之后的剧本裁剪（#72 漏项）：灯珠数变小后，任何 `end >= new_count`
+ * 的活动段都必须失效——否则它会被写进 NVS，下次上电 `script_blob_decode`
+ * 整份拒收，`led_engine` 回落到 `lumen_script_store_init`，**四套方案全部
+ * 静默丢失**。
+ *
+ * 语义严格对齐 `lumen_segment_store_prune`：只清段槽位（memset 成 0，active
+ * 归 false），**不自动缩短区间**；只看 `strip_id` 这一条灯带，其余灯带与
+ * 其它槽位原样保留。
+ *
+ * 覆盖全部已提交槽位 + 暂存区（staging_active 时）。返回被丢弃的段数
+ * （所有阶段相加）。
+ *
+ * strip_id 越界（>= LUMEN_MAX_STRIPS）或 store 为 NULL 返回 0，内容不变。
+ */
+uint16_t lumen_script_store_prune_strip(lumen_script_store_t *store, uint8_t strip_id,
+                                        uint16_t new_count);
+
 /* 取已提交剧本；不存在返回 NULL。 */
 const lumen_script_t *lumen_script_get(const lumen_script_store_t *store, uint8_t script_id);
 

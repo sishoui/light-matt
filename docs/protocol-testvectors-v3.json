@@ -817,6 +817,74 @@
       "result_code": 0
     },
     {
+      "name": "set_segment_bad_strobe_type_unsupported",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 65,
+      "payload_hex": "0000000900040000FF64005A00FF00000000000000",
+      "payload_len": 21,
+      "frame_hex": "A603104115000000000900040000FF64005A00FF00000000000000D35D",
+      "frame_len": 29,
+      "chunks_hex": [
+        "C0A603104115000000000900040000FF64005A00FF00000000000000D35D"
+      ],
+      "frame_valid": false,
+      "result_code": 1,
+      "note": "爆闪 0x04 是 v4 新增类型 → v3 固件按未知类型拒绝（D7）"
+    },
+    {
+      "name": "set_segment_bad_heartbeat_type_unsupported",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 66,
+      "payload_hex": "0100001D00050000FFE8033C01FF00000000000000",
+      "payload_len": 21,
+      "frame_hex": "A603104215000100001D00050000FFE8033C01FF00000000000000F06C",
+      "frame_len": 29,
+      "chunks_hex": [
+        "C0A603104215000100001D00050000FFE8033C01FF00000000000000F06C"
+      ],
+      "frame_valid": false,
+      "result_code": 1,
+      "note": "心跳 0x05 是 v4 新增类型 → v3 固件按未知类型拒绝（D7）"
+    },
+    {
+      "name": "set_segment_bad_off_type_unsupported",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 67,
+      "payload_hex": "0200000F000600000000000000FF00000000000000",
+      "payload_len": 21,
+      "frame_hex": "A603104315000200000F000600000000000000FF000000000000001211",
+      "frame_len": 29,
+      "chunks_hex": [
+        "C0A603104315000200000F000600000000000000FF000000000000001211"
+      ],
+      "frame_valid": false,
+      "result_code": 1,
+      "note": "熄灭 0x06 是 v4 新增类型 → v3 固件按未知类型拒绝（D7）"
+    },
+    {
+      "name": "clear_script_unsupported_v3",
+      "direction": "app_to_device",
+      "command": 30,
+      "command_name": "ClearScript",
+      "seq": 62,
+      "payload_hex": "00",
+      "payload_len": 1,
+      "frame_hex": "A6031E3E0100007529",
+      "frame_len": 9,
+      "chunks_hex": [
+        "C0A6031E3E0100007529"
+      ],
+      "frame_valid": false,
+      "result_code": 2,
+      "note": "v3 未实现 ClearScript → UnknownCommand，配置不变（#73）"
+    },
+    {
       "name": "bad_magic",
       "direction": "app_to_device",
       "command": 1,

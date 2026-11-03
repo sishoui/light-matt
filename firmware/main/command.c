@@ -11,6 +11,7 @@ bool lumen_command_is_known(uint8_t command)
      * 只包含「已实现」的命令（docs/protocol-v4.md §6）。0x03 / 0x04 在 v2 退役，
      * 落到 default → 0x02 未知命令，小程序能明确看到「该命令需要升级固件」。
      * v3 加入 0x1B SetStripPower / 0x1C QueryStripConfig / 0x1D QueryDeviceInfo。
+     * v4 原地加入 0x1E ClearScript（#73）；协议版本号不变，旧固件回 0x02。
      *
      * 0x1B 在 #36 只做取值校验与意图登记（真正的掩码写入与 TDM 跳带是 #38）；
      * 已实现的是「认识这条命令并按 §5 的顺序校验」，不是完整行为。
@@ -35,6 +36,7 @@ bool lumen_command_is_known(uint8_t command)
     case LUMEN_CMD_SET_STRIP_POWER:
     case LUMEN_CMD_QUERY_STRIP_CONFIG:
     case LUMEN_CMD_QUERY_DEVICE_INFO:
+    case LUMEN_CMD_CLEAR_SCRIPT:
         return true;
     default:
         return false;
@@ -77,6 +79,7 @@ uint8_t lumen_command_payload_len(uint8_t command)
     case LUMEN_CMD_SCRIPT_COMMIT:
     case LUMEN_CMD_SCRIPT_ABORT:
     case LUMEN_CMD_QUERY_SCRIPT:
+    case LUMEN_CMD_CLEAR_SCRIPT:
         /* script_id。 */
         return 1;
     case LUMEN_CMD_ACTIVATE_SCRIPT:
@@ -167,6 +170,7 @@ bool lumen_command_changes_state(uint8_t command)
     case LUMEN_CMD_SCRIPT_ABORT:
     case LUMEN_CMD_ACTIVATE_SCRIPT:
     case LUMEN_CMD_SET_STRIP_POWER:
+    case LUMEN_CMD_CLEAR_SCRIPT:
         return true;
     default:
         return false;
@@ -174,7 +178,7 @@ bool lumen_command_changes_state(uint8_t command)
 }
 
 /*
- * SetLedCount 0x06：v2 载荷 3 字节 strip_id, count_lo, count_hi，合法数量 1-64（§6）。
+ * SetLedCount 0x06：载荷 3 字节 strip_id, count_lo, count_hi，合法数量 1-100（§6，#72）。
  *
  * 关键语义（§11.3）：
  *  - 这里只校验并标记「需要重建」。数量必须在渲染任务重建 led_strip 成功后
@@ -183,7 +187,7 @@ bool lumen_command_changes_state(uint8_t command)
  *  - strip_id 必须先落在 0 ≤ strip_id < strip_count 内（#29 之后多条灯带各自
  *    独立设置灯珠数）。先校验 strip_id 再校验数量，保证「这条命令到底改
  *    哪条灯带」先被确认。
- *  - 越界（0、>64、小端读出的 65535 等）→ 0x01，不请求重建、不改状态。
+ *  - 越界（0、>100、小端读出的 65535 等）→ 0x01，不请求重建、不改状态。
  */
 static void dispatch_set_led_count(const lumen_frame_t *frame, const lumen_state_t *current,
                                    lumen_command_outcome_t *outcome)
@@ -465,6 +469,25 @@ static void dispatch_script_single_id(const lumen_frame_t *frame, uint8_t op,
     outcome->script_id = script_id;
 }
 
+/*
+ * ClearScript 0x1E（#73，docs/protocol-v4.md §6 / §9.6）：载荷 1 字节 script_id。
+ *
+ * 只判 id 范围。**「未提交即成功」是设备侧语义**：命令层看不到剧本表，
+ * 也不应该为它引入一次状态快照——led_engine 在锁内清空并返回 OK。
+ * 越界一律 InvalidParam（与 ScriptCommit / ScriptAbort 同一条边界）。
+ */
+static void dispatch_clear_script(const lumen_frame_t *frame, lumen_command_outcome_t *outcome)
+{
+    uint8_t script_id = frame->payload[0];
+    if (script_id >= LUMEN_MAX_SCRIPTS) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    outcome->result_code = LUMEN_RESULT_OK;
+    outcome->clear_script = true;
+    outcome->clear_script_id = script_id;
+}
+
 /* ActivateScript 0x19：script_id, loop。 */
 static void dispatch_activate_script(const lumen_frame_t *frame,
                                      lumen_command_outcome_t *outcome)
@@ -654,6 +677,8 @@ void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *cur
     outcome->script_seg = 0;
     outcome->script_segment.active = false;
     outcome->script_loop = false;
+    outcome->clear_script = false;
+    outcome->clear_script_id = 0;
     outcome->next = *current;
 
     /*
@@ -729,6 +754,11 @@ void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *cur
 
     case LUMEN_CMD_QUERY_SCRIPT:
         dispatch_script_single_id(frame, LUMEN_SCRIPT_OP_QUERY, outcome);
+        break;
+
+    case LUMEN_CMD_CLEAR_SCRIPT:
+        /* #73：真正删掉一套已提交剧本（不是只删本机草稿）。 */
+        dispatch_clear_script(frame, outcome);
         break;
 
     case LUMEN_CMD_QUERY_STATE:

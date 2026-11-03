@@ -21,6 +21,7 @@ import {
   ANIMATION_MIN_PERIOD_MS,
   BLEND,
   BREATHING_MIN_PERIOD_MS,
+  isKnownEffectType,
   LAYER_LEVEL_MAX,
   MAX_LEDS,
   NO_EFFECT,
@@ -148,15 +149,6 @@ export function effectiveBlend(draft: Pick<SegmentDraft, "blend" | "layer1">): B
   return blendEnabled(draft.layer1) ? draft.blend : BLEND.OVER;
 }
 
-function isKnownType(type: number): boolean {
-  return (
-    type === SEGMENT_TYPE.STATIC ||
-    type === SEGMENT_TYPE.BREATHING ||
-    type === SEGMENT_TYPE.RAINBOW ||
-    type === SEGMENT_TYPE.COMET
-  );
-}
-
 function isByte(value: number): boolean {
   return Number.isInteger(value) && value >= 0 && value <= 0xff;
 }
@@ -178,7 +170,7 @@ function validateLayer(layer: EffectLayer, layerIndex: 0 | 1, layerLabel: string
     issues.push({ code, layer: layerIndex, message });
   };
 
-  if (!isKnownType(layer.type)) {
+  if (!isKnownEffectType(layer.type)) {
     push("layer-type", `${layerLabel}的灯效类型未知（0x${layer.type.toString(16)}）`);
     return issues;
   }
@@ -429,7 +421,7 @@ function layerEqualsEmptyAware(a: EffectLayer, b: EffectLayer): boolean {
 
 /** 可视化条上的一格（一颗灯珠）。 */
 export interface LedCell {
-  /** 灯珠下标 0-63。 */
+  /** 灯珠下标 0-99（#72 协议上限）。 */
   index: number;
   /** 是否落在草稿区间内（高亮）。 */
   covered: boolean;
@@ -464,8 +456,8 @@ export interface LedCellInput {
 /**
  * 生成逐灯珠可视化。
  *
- * 为什么一格一颗灯珠：64 颗的上限让「每格 1 颗」在 750rpx 宽度里仍然可读，
- * 而且用户数格子的成本最低。超出 64 的部分不存在（协议上限）。
+ * 为什么一格一颗灯珠：100 颗的上限（#72）下「每格 1 颗」在 750rpx 宽度里仍然可读，
+ * 而且用户数格子的成本最低。超出 100 的部分不存在（协议上限）。
  *
  * 归属扫描委托给 `effect-layout.scanLedOwnership`——逐灯珠逻辑只有一份。
  * 本函数额外做的事只有两件：按 `stripId` 过滤（防别的带的段混进来），

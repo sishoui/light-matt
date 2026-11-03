@@ -6,6 +6,9 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   addStep,
   allocateWidths,
@@ -13,10 +16,19 @@ import {
   blockIndexAtRects,
   BLOCK_GAP_PX,
   canAddStep,
+  chooseGap,
   clampDuration,
   clampSelected,
+  COMPACT_BLOCK_GAP_PX,
   createTimeline,
   DEFAULT_STEP_MS,
+  DRAG_LIFT_SCALE,
+  DRAG_TAP_SUPPRESS_MS,
+  dragFollowOffset,
+  dragOffsetFor,
+  dragStyleOf,
+  dragTapSuppressUntil,
+  dragTargetAtRects,
   durationFromRatio,
   durationPercent,
   durationSeconds,
@@ -28,13 +40,13 @@ import {
   layoutBlocks,
   LONG_PRESS_MS,
   MAX_DURATION_MS,
-  MAX_ROW_SCALE,
   MAX_STEPS,
   MIN_BLOCK_PX,
   MIN_DURATION_MS,
   moveBlock,  removeStep,
   selectionAfterMove,
   setStepDuration,
+  tapSuppressedAt,
   thumbBands,
   timelineRowWidth,
   type TimelineStep,
@@ -135,23 +147,21 @@ describe("宽度分配：比例", () => {
 });
 
 describe("宽度分配：最小宽度保底", () => {
-  it("单个极短块被抬到 40px，其余块之间仍严格成比例", () => {
-    /* 0.5 + 5 + 10 = 15.5 秒，行宽 = 15.5×100 = 1550px。
-     * 无保底时 0.5 秒只有 50px——还够；把行宽缩到 1000 让 0.5 秒的理想宽度
-     * 变成 32.3px（< 40）触发保底。 */
-    const widths = allocateWidths([500, 5000, 10000], 1000, MIN_BLOCK_PX);
+  it("单个极短块被抬到下限，其余块之间仍严格成比例", () => {
+    /* 0.5 + 5 + 10 = 15.5 秒。可用 600px 时 0.5 秒的理想宽度只有 19.4px
+     * （< 24）触发保底；剩余 576px 按 1:2 分给 5 秒 / 10 秒两块。 */
+    const widths = allocateWidths([500, 5000, 10000], 600, MIN_BLOCK_PX);
     expect(near(widths[0], MIN_BLOCK_PX)).toBe(true);
-    /* 剩余 960px 按 1:2 分给 5 秒 / 10 秒两块。 */
-    expect(near(widths[1], 320)).toBe(true);
-    expect(near(widths[2], 640)).toBe(true);
-    expect(near(widths.reduce((a, b) => a + b, 0), 1000)).toBe(true);
+    expect(near(widths[1], 192)).toBe(true);
+    expect(near(widths[2], 384)).toBe(true);
+    expect(near(widths.reduce((a, b) => a + b, 0), 600)).toBe(true);
     /* 关键：被抬起的块之外的块，比例仍然是 2:1。 */
     expect(near(widths[2] / widths[1], 2)).toBe(true);
   });
 
-  it("八个步骤里只有一个长块：七个 0.5 秒的块正好 40px，长块吃掉剩下的", () => {
-    /* 7×0.5 + 30 = 33.5 秒。行宽 640、7 个间隙 8px → 可用 584px。
-     * 七个短块的理想宽度只有 8.7px → 全部钉在 40（280px），30 秒块拿 304px。 */
+  it("八个步骤里只有一个长块：七个 0.5 秒的块正好钉在下限", () => {
+    /* 7×0.5 + 30 = 33.5 秒。可用 584px，七个短块的理想宽度只有 8.7px
+     * → 全部钉在下限，30 秒块吃掉剩下的。 */
     const widths = allocateWidths([500, 500, 500, 500, 500, 500, 500, 30000], 584, MIN_BLOCK_PX);
     for (let index = 0; index < 7; index += 1) {
       expect(near(widths[index], MIN_BLOCK_PX)).toBe(true);
@@ -160,24 +170,23 @@ describe("宽度分配：最小宽度保底", () => {
     expect(near(widths.reduce((a, b) => a + b, 0), 584)).toBe(true);
   });
 
-  it("长块反而被保底抬起（短块多到把长块也压扁时）", () => {
-    /* 七个 30 秒 + 一个 0.5 秒，行宽只有 584：30 秒块的理想宽度 = 584×30/210.5
-     * ≈ 83px，仍大于 40，所以只有 0.5 秒块被抬起。反向的极端（长块也被抬起）
-     * 用 30 秒 vs 三十个 0.5 秒构造——上限是 8 块，这里用 8 个 0.5 秒验证均分。 */
+  it("长块在短块多时仍是最宽的（短块只拿到下限）", () => {
+    /* 一个 30 秒 + 七个 0.5 秒，可用 584：短块全部钉在下限，长块拿走剩下的。 */
     const widths = allocateWidths([30000, 500, 500, 500, 500, 500, 500, 500], 584, MIN_BLOCK_PX);
-    expect(near(widths[0], 304)).toBe(true);
+    expect(near(widths[0], 584 - 7 * MIN_BLOCK_PX)).toBe(true);
     for (let index = 1; index < 8; index += 1) {
       expect(near(widths[index], MIN_BLOCK_PX)).toBe(true);
     }
+    expect(widths[0]).toBeGreaterThan(widths[1]);
   });
 
   it("保底总和放不下时退化为均分（每个块都还有点得动的宽度）", () => {
-    /* 8 个块 × 40px = 320px > 只有 200px 的可用宽度：水位法无解。 */
-    const widths = allocateWidths([500, 500, 500, 500, 500, 500, 500, 30000], 200, MIN_BLOCK_PX);
+    /* 8 个块 × 24px = 192px > 只有 160px 的可用宽度：水位法无解。 */
+    const widths = allocateWidths([500, 500, 500, 500, 500, 500, 500, 30000], 160, MIN_BLOCK_PX);
     for (const width of widths) {
-      expect(near(width, 25)).toBe(true);
+      expect(near(width, 20)).toBe(true);
     }
-    expect(near(widths.reduce((a, b) => a + b, 0), 200)).toBe(true);
+    expect(near(widths.reduce((a, b) => a + b, 0), 160)).toBe(true);
   });
 
   it("自己给的保底值也生效（边界可配）", () => {
@@ -570,63 +579,514 @@ describe("缩略色带", () => {
 });
 
 describe("长按阈值", () => {
-  it("约 380 毫秒：太短会与点选抢事件，太长会觉得拖不动", () => {
-    expect(LONG_PRESS_MS).toBe(380);
+  it("300 毫秒（#82 从 380 收紧）：短到按住就有反应，又长于一次普通点击", () => {
+    expect(LONG_PRESS_MS).toBe(300);
   });
 });
 
-describe("行宽：保底与比例都放不下时靠横向滚动", () => {
-  const equal = (seconds: number) => new Array(8).fill(seconds * 1000);
+describe("拖动让位的位移映射（#82）", () => {
+  /* 三块等宽 100、间隙 8：移动一格 = 108px。 */
+  const widths = [100, 100, 100];
+  const oneSlot = 100 + BLOCK_GAP_PX;
 
-  it("块少时行宽 = 容器宽（不会出现无意义的滚动）", () => {
+  it("向右拖：中间的块左移一格让出插槽，被拖块自己不动", () => {
+    expect(dragOffsetFor(0, 2, widths)).toEqual([0, -oneSlot, -oneSlot]);
+    expect(dragOffsetFor(1, 2, widths)).toEqual([0, 0, -oneSlot]);
+  });
+
+  it("向左拖：中间的块右移一格让出插槽", () => {
+    expect(dragOffsetFor(2, 0, widths)).toEqual([oneSlot, oneSlot, 0]);
+    expect(dragOffsetFor(2, 1, widths)).toEqual([0, oneSlot, 0]);
+  });
+
+  it("原地（同一个下标）没有任何位移", () => {
+    expect(dragOffsetFor(1, 1, widths)).toEqual([0, 0, 0]);
+  });
+
+  it("越界 / 非整数下标一律无位移（块原地回弹）", () => {
+    expect(dragOffsetFor(-1, 1, widths)).toEqual([0, 0, 0]);
+    expect(dragOffsetFor(0, 3, widths)).toEqual([0, 0, 0]);
+    expect(dragOffsetFor(1.5, 0, widths)).toEqual([0, 0, 0]);
+    expect(dragOffsetFor(0, Number.NaN, widths)).toEqual([0, 0, 0]);
+    expect(dragOffsetFor(0, 1, [])).toEqual([]);
+  });
+
+  it("让位距离是**被拖块**的宽度 + 间隙（不是目标块的）", () => {
+    /* 被拖块 40 宽，目标块 200 宽：插槽按 40 + 8 = 48 算。 */
+    expect(dragOffsetFor(1, 2, [200, 40, 200])).toEqual([0, 0, -48]);
+    /* 反过来拖 200 宽的那块到最前：让位距离是 200 + 8 = 208。 */
+    expect(dragOffsetFor(2, 0, [200, 40, 200])).toEqual([208, 208, 0]);
+  });
+
+  it("自定义间隙（紧凑档 4px）时按传入的间隙算", () => {
+    expect(dragOffsetFor(0, 1, [100, 100], COMPACT_BLOCK_GAP_PX)).toEqual([0, -104]);
+  });
+
+  it("八块一次跨到对面：中间的块全部让位、两端之外的不动", () => {
+    const eight = new Array(8).fill(24);
+    const offsets = dragOffsetFor(0, 7, eight);
+    expect(offsets[0]).toBe(0);
+    for (let index = 1; index <= 7; index += 1) {
+      expect(offsets[index]).toBe(-(24 + BLOCK_GAP_PX));
+    }
+  });
+});
+
+describe("拖动位移直接进视图（页面不做算术）", () => {
+  const steps = [step(1000), step(1000), step(1000)];
+  const measured = { widthPx: 3 * 100 + 2 * BLOCK_GAP_PX };
+
+  it("让位的块拿到内联 translateX，被拖的块只有放大", () => {
+    const views = layoutBlocks(steps, { ...measured, dragIndex: 0, dropIndex: 2 });
+    expect(views.map((view) => view.dragOffsetPx)).toEqual([0, -108, -108]);
+    expect(views[1].dragStyle).toBe("transform: translateX(-108px);");
+    expect(views[0].dragStyle).toBe(`transform: translateX(0px) scale(${DRAG_LIFT_SCALE});`);
+    expect(views[0].dragging).toBe(true);
+  });
+
+  it("没在拖动时位移与位移串都是空（交给 CSS 回弹）", () => {
+    const views = layoutBlocks(steps, measured);
+    expect(views.every((view) => view.dragOffsetPx === 0)).toBe(true);
+    expect(views.every((view) => view.dragStyle === "")).toBe(true);
+  });
+
+  it("原地拖动不产生位移（from === to）", () => {
+    const views = layoutBlocks(steps, { ...measured, dragIndex: 1, dropIndex: 1 });
+    expect(views.every((view) => view.dragOffsetPx === 0)).toBe(true);
+    expect(views[1].dragStyle).toBe(`transform: translateX(0px) scale(${DRAG_LIFT_SCALE});`);
+    /* 原地拖动没有落点高亮（被拖块自己不标落点）。 */
+    expect(views.some((view) => view.dropTarget)).toBe(false);
+  });
+
+  it("落点高亮只给被挤开的那一块，被拖块不标落点", () => {
+    const views = layoutBlocks(steps, { ...measured, dragIndex: 0, dropIndex: 2 });
+    expect(views.map((view) => view.dropTarget)).toEqual([false, false, true]);
+  });
+
+  it("未测量时没有位移（像素宽度未知），抬起的块仍会放大", () => {
+    const views = layoutBlocks(steps, { widthPx: 0, dragIndex: 0, dropIndex: 2 });
+    expect(views.every((view) => view.dragOffsetPx === 0)).toBe(true);
+    /* 让位要像素宽度，没测量就没有；被拖块自己只放大，不位移。 */
+    expect(views[1].dragStyle).toBe("");
+    expect(views[2].dragStyle).toBe("");
+    expect(views[0].dragStyle).toBe(`transform: translateX(0px) scale(${DRAG_LIFT_SCALE});`);
+  });
+
+  it("跟手位移写进被拖块的 transform，和放大是同一条变换", () => {
+    const views = layoutBlocks(steps, {
+      ...measured,
+      dragIndex: 1,
+      dropIndex: 1,
+      followPx: -37.44,
+    });
+    expect(views[1].dragStyle).toBe(
+      `transform: translateX(-37.4px) scale(${DRAG_LIFT_SCALE});`,
+    );
+  });
+});
+
+describe("被拖块跟手与边界（#82）", () => {
+  /* 三块屏幕位置：0-100 / 108-200 / 208-400。 */
+  const rects = [
+    { left: 0, right: 100 },
+    { left: 108, right: 200 },
+    { left: 208, right: 400 },
+  ];
+
+  it("跟手 = 指尖位移，0.1px 对齐", () => {
+    expect(dragFollowOffset(150, 190, rects, 1)).toBe(40);
+    expect(dragFollowOffset(150, 110, rects, 1)).toBe(-40);
+    expect(dragFollowOffset(150, 150, rects, 1)).toBe(0);
+  });
+
+  it("块被钳在行内：左不过行首、右不过行尾", () => {
+    /* 第 1 块（108-200）最左只能到 108-108 = 0，最右到 400-200 = 200。 */
+    expect(dragFollowOffset(150, -500, rects, 1)).toBe(-108);
+    expect(dragFollowOffset(150, 5000, rects, 1)).toBe(200);
+  });
+
+  it("没有矩形 / 非法坐标时不位移（宁可不动也不猜）", () => {
+    expect(dragFollowOffset(0, 50, [], 0)).toBe(0);
+    expect(dragFollowOffset(0, 50, rects, 9)).toBe(0);
+    expect(dragFollowOffset(Number.NaN, 50, rects, 0)).toBe(0);
+    expect(dragFollowOffset(0, Number.NaN, rects, 0)).toBe(0);
+  });
+
+  it("命中：行内按最近块，行外标记 outside", () => {
+    expect(dragTargetAtRects(rects, 50)).toEqual({ index: 0, outside: false });
+    expect(dragTargetAtRects(rects, 150)).toEqual({ index: 1, outside: false });
+    expect(dragTargetAtRects(rects, 399)).toEqual({ index: 2, outside: false });
+    /* 两侧之外：预览仍钳到首 / 末块，但松手算取消。 */
+    expect(dragTargetAtRects(rects, -1)).toEqual({ index: 0, outside: true });
+    expect(dragTargetAtRects(rects, 401)).toEqual({ index: 2, outside: true });
+  });
+
+  it("没有矩形 / 非法坐标：没有落点且算行外", () => {
+    expect(dragTargetAtRects([], 10)).toEqual({ index: -1, outside: true });
+    expect(dragTargetAtRects(rects, Number.NaN)).toEqual({ index: -1, outside: true });
+  });
+});
+
+describe("拖动后的点击抑制（#82）", () => {
+  it("抑制窗口是松手后 300ms", () => {
+    expect(DRAG_TAP_SUPPRESS_MS).toBe(300);
+    expect(dragTapSuppressUntil(1000)).toBe(1300);
+  });
+
+  it("窗口内的点击被吞，窗口外恢复正常", () => {
+    const until = dragTapSuppressUntil(1000);
+    expect(tapSuppressedAt(1000, until)).toBe(true);
+    expect(tapSuppressedAt(1299, until)).toBe(true);
+    expect(tapSuppressedAt(1300, until)).toBe(false);
+    expect(tapSuppressedAt(5000, until)).toBe(false);
+  });
+
+  it("从没拖过（抑制点 0）时永远不吞点击（时间戳自愈）", () => {
+    expect(tapSuppressedAt(Date.now(), 0)).toBe(false);
+    expect(tapSuppressedAt(Number.NaN, 9999)).toBe(false);
+  });
+});
+
+describe("位移串与抬起倍数", () => {
+  it("抬起倍数 1.06，位移对齐到 0.1px", () => {
+    expect(DRAG_LIFT_SCALE).toBe(1.06);
+    expect(dragStyleOf(12.345, false)).toBe("transform: translateX(12.3px);");
+    expect(dragStyleOf(-108, false)).toBe("transform: translateX(-108px);");
+    expect(dragStyleOf(0, true)).toBe(`transform: translateX(0px) scale(${DRAG_LIFT_SCALE});`);
+  });
+
+  it("非法位移按 0 处理（不会写出 translateX(NaN)）", () => {
+    expect(dragStyleOf(Number.NaN, false)).toBe("transform: translateX(0px);");
+  });
+});
+
+describe("选中项跟随拖动的块（#82）", () => {
+  const steps = [step(1000), step(1000), step(1000)];
+
+  it("被拖的就是选中块 → 选中下标跟着它走", () => {
+    /* 把第 0 块拖到第 2 位，选中项应该变成 2。 */
+    const selected = selectionAfterMove(0, 0, 2);
+    expect(selected).toBe(2);
+    const after = moveBlock(steps, 0, 2);
+    expect(after[selected]).toBe(steps[0]);
+  });
+
+  it("拖动跨过选中块 → 选中块让一位，仍指向原来那一步", () => {
+    /* 选中 1，把 0 拖到 2：原来的第 1 步现在是第 0 位。 */
+    const selected = selectionAfterMove(1, 0, 2);
+    expect(selected).toBe(0);
+    const after = moveBlock(steps, 0, 2);
+    expect(after[selected]).toBe(steps[1]);
+  });
+
+  it("拖动没跨过选中块 → 选中不动，仍指向原来那一步", () => {
+    const selected = selectionAfterMove(0, 1, 2);
+    expect(selected).toBe(0);
+    expect(moveBlock(steps, 1, 2)[selected]).toBe(steps[0]);
+  });
+});
+
+describe("行宽：恒等于容器宽（永不横向滚动）", () => {
+  const equal = (count: number, ms: number) => new Array(count).fill(ms);
+
+  it("块少时行宽 = 容器宽", () => {
     expect(timelineRowWidth([1000, 1000], 360)).toBe(360);
     expect(timelineRowWidth([], 360)).toBe(360);
   });
 
-  it("八个步骤等长时行宽撑到 8×40 + 7×8 = 376px", () => {
-    expect(timelineRowWidth(equal(1), 320)).toBe(8 * MIN_BLOCK_PX + 7 * BLOCK_GAP_PX);
-    expect(timelineRowWidth(equal(1), 320)).toBe(376);
-    expect(timelineRowWidth(equal(1), 500)).toBe(500);
+  it("八个步骤也**不**撑出容器：行宽仍是容器宽", () => {
+    expect(timelineRowWidth(equal(8, 1000), 320)).toBe(320);
+    expect(timelineRowWidth(equal(8, 1000), 345)).toBe(345);
   });
 
-  it("宽度未知（0）时不会把行压成 0", () => {
-    expect(timelineRowWidth(equal(1), 0)).toBe(376);
-    expect(timelineRowWidth([1000, 1000], Number.NaN)).toBe(
-      2 * MIN_BLOCK_PX + BLOCK_GAP_PX,
-    );
+  it("极端时长分布也不会把行撑宽", () => {
+    const weights = [30000, ...equal(7, 500)];
+    expect(timelineRowWidth(weights, 330)).toBe(330);
   });
 
-  it("极端分布（30 秒 + 七个 0.5 秒）会撑宽，让比例真的看得出来", () => {
-    const weights = [30000, ...new Array(7).fill(500)];
-    const row = timelineRowWidth(weights, 330);
-    /* 保底 376 不够看：比例下限 = 40×33.5/0.5 + 56 = 2736px，封顶在 2.5 倍容器宽。 */
-    expect(row).toBeCloseTo(330 * MAX_ROW_SCALE, 6);
+  it("宽度未知（0）时退回一个下限（块数 × 最小宽 + 间隙），不会把行压成 0", () => {
+    expect(timelineRowWidth(equal(8, 1000), 0)).toBe(8 * MIN_BLOCK_PX + 7 * BLOCK_GAP_PX);
+    expect(timelineRowWidth([1000, 1000], Number.NaN)).toBe(2 * MIN_BLOCK_PX + BLOCK_GAP_PX);
+    /* 单块没有间隙，也至少要一个最小宽。 */
+    expect(timelineRowWidth([1000], 0)).toBe(MIN_BLOCK_PX);
+  });
+
+  it("八个步骤并列时每块都还有宽度、都点得中（下限 24px）", () => {
+    const weights = equal(8, 500);
+    const row = timelineRowWidth(weights, 345);
+    const gap = chooseGap(8, row, MIN_BLOCK_PX);
     const views = layoutBlocks(
       weights.map((weight) => step(weight)),
-      { widthPx: row },
-    );
-    /* 七个短块正好 40px，长块拿走剩下的——比例语义仍在。 */
-    for (let index = 1; index < 8; index += 1) {
-      expect(views[index].widthPx).toBeCloseTo(MIN_BLOCK_PX, 6);
-      expect(views[index].floored).toBe(true);
-    }
-    expect(views[0].widthPx).toBeGreaterThan(views[1].widthPx * 5);
-    expect(views[0].floored).toBe(false);
-  });
-
-  it("八个步骤并列时每个块都至少有 40px（0.5 秒的也点得到）", () => {
-    const weights = [500, ...new Array(7).fill(30000)];
-    const row = timelineRowWidth(weights, 320);
-    const views = layoutBlocks(
-      weights.map((weight) => step(weight)),
-      { widthPx: row },
+      { widthPx: row, gapPx: gap },
     );
     for (const view of views) {
       expect(view.widthPx).toBeGreaterThanOrEqual(MIN_BLOCK_PX - 1e-6);
     }
-    /* 七个 30 秒块互相仍然等宽（比例语义没被保底破坏）。 */
-    const longs = views.slice(1).map((view) => Math.round(view.widthPx));
-    expect(new Set(longs).size).toBe(1);
+    /* 总和 + 间隙正好填满容器：不溢出也没有空隙。 */
+    const total = views.reduce((sum, view) => sum + view.widthPx, 0) + gap * 7;
+    expect(near(total, row)).toBe(true);
+  });
+
+  it("30 秒 + 七个 0.5 秒：短块钉在下限，长块最宽，总和 = 容器宽", () => {
+    const weights = [30000, ...equal(7, 500)];
+    const row = timelineRowWidth(weights, 345);
+    const gap = chooseGap(weights.length, row, MIN_BLOCK_PX);
+    const views = layoutBlocks(
+      weights.map((weight) => step(weight)),
+      { widthPx: row, gapPx: gap },
+    );
+    for (let index = 1; index < 8; index += 1) {
+      expect(near(views[index].widthPx, MIN_BLOCK_PX)).toBe(true);
+      expect(views[index].floored).toBe(true);
+    }
+    expect(views[0].widthPx).toBeGreaterThan(views[1].widthPx);
+    expect(views[0].floored).toBe(false);
+    const total = views.reduce((sum, view) => sum + view.widthPx, 0) + gap * 7;
+    expect(near(total, row)).toBe(true);
+  });
+
+  it("极窄容器（200px）下八块：均分兜底，总和仍 = 容器宽", () => {
+    const weights = [30000, ...equal(7, 500)];
+    const row = timelineRowWidth(weights, 200);
+    const gap = chooseGap(weights.length, row, MIN_BLOCK_PX);
+    /* 8×24 + 7×8 = 248 > 200，8×24 + 7×4 = 220 > 200 → 间隙取 4。 */
+    expect(gap).toBe(COMPACT_BLOCK_GAP_PX);
+    const views = layoutBlocks(
+      weights.map((weight) => step(weight)),
+      { widthPx: row, gapPx: gap },
+    );
+    for (const view of views) {
+      expect(view.widthPx).toBeGreaterThan(0);
+      expect(near(view.widthPx, (200 - 7 * gap) / 8)).toBe(true);
+    }
+    const total = views.reduce((sum, view) => sum + view.widthPx, 0) + gap * 7;
+    expect(near(total, 200)).toBe(true);
+  });
+
+  it("步骤数从一变到八：每一步都不出容器", () => {
+    for (let count = 1; count <= MAX_STEPS; count += 1) {
+      const weights = new Array(count).fill(1000);
+      const row = timelineRowWidth(weights, 320);
+      const gap = chooseGap(count, row, MIN_BLOCK_PX);
+      const views = layoutBlocks(
+        weights.map((weight) => step(weight)),
+        { widthPx: row, gapPx: gap },
+      );
+      const total = views.reduce((sum, view) => sum + view.widthPx, 0) + gap * (count - 1);
+      expect(near(total, 320)).toBe(true);
+      expect(views.every((view) => view.widthPx >= MIN_BLOCK_PX - 1e-6)).toBe(true);
+    }
+  });
+});
+
+describe("间隙降级", () => {
+  it("宽容器用 8px", () => {
+    expect(chooseGap(2, 345, MIN_BLOCK_PX)).toBe(BLOCK_GAP_PX);
+    expect(chooseGap(8, 345, MIN_BLOCK_PX)).toBe(BLOCK_GAP_PX);
+    expect(BLOCK_GAP_PX).toBe(8);
+  });
+
+  it("8px 放不下时降到 4px", () => {
+    /* 8×24 + 7×8 = 248 > 240；8×24 + 7×4 = 220 ≤ 240 → 4。 */
+    expect(chooseGap(8, 240, MIN_BLOCK_PX)).toBe(COMPACT_BLOCK_GAP_PX);
+    /* 边界：248 正好放下 → 8。 */
+    expect(chooseGap(8, 248, MIN_BLOCK_PX)).toBe(BLOCK_GAP_PX);
+    expect(chooseGap(8, 247, MIN_BLOCK_PX)).toBe(COMPACT_BLOCK_GAP_PX);
+  });
+
+  it("4px 也放不下时仍返回 4（剩下靠均分兜底）", () => {
+    expect(chooseGap(8, 200, MIN_BLOCK_PX)).toBe(COMPACT_BLOCK_GAP_PX);
+    expect(chooseGap(8, 0, MIN_BLOCK_PX)).toBe(COMPACT_BLOCK_GAP_PX);
+  });
+
+  it("单块没有间隙：永远是宽间隙", () => {
+    expect(chooseGap(1, 100, MIN_BLOCK_PX)).toBe(BLOCK_GAP_PX);
+    expect(chooseGap(0, 100, MIN_BLOCK_PX)).toBe(BLOCK_GAP_PX);
+  });
+
+  it("非有限容器宽不崩", () => {
+    expect(chooseGap(8, Number.NaN, MIN_BLOCK_PX)).toBe(COMPACT_BLOCK_GAP_PX);
+    expect(chooseGap(8, Number.POSITIVE_INFINITY, MIN_BLOCK_PX)).toBe(BLOCK_GAP_PX);
+  });
+});
+
+describe("最小块宽与标签阈值", () => {
+  it("最小块宽 24px，标签阈值 48px（不跟着降）", () => {
+    expect(MIN_BLOCK_PX).toBe(24);
+    expect(LABEL_MIN_PX).toBe(48);
+  });
+
+  it("宽度 47 不显示时长文字，48 显示", () => {
+    const views47 = layoutBlocks([step(500), step(500)], { widthPx: 47 * 2 + BLOCK_GAP_PX });
+    expect(views47[0].widthPx).toBe(47);
+    expect(views47[0].showLabel).toBe(false);
+    const views48 = layoutBlocks([step(500), step(500)], { widthPx: 48 * 2 + BLOCK_GAP_PX });
+    expect(views48[0].widthPx).toBe(48);
+    expect(views48[0].showLabel).toBe(true);
+  });
+});
+
+describe("渲染层：时间轴永不横向滚动（#76）", () => {
+  const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const wxml = readFileSync(join(ROOT, "pages/strip/strip.wxml"), "utf8");
+  /* 去掉注释再断言：说明文字里出现同名 token 不该让规则变假 / 变假绿。 */
+  const wxss = readFileSync(join(ROOT, "pages/strip/strip.wxss"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+
+  /** 取一个选择器的声明块（第一个匹配）。 */
+  function rule(selector: string): string {
+    const index = wxss.indexOf(selector);
+    expect(index, `wxss 里找不到 ${selector}`).toBeGreaterThanOrEqual(0);
+    const open = wxss.indexOf("{", index);
+    const close = wxss.indexOf("}", open);
+    return wxss.slice(open + 1, close);
+  }
+
+  it("时间轴不再套 scroll-view，也没有 scroll-x 绑定", () => {
+    expect(wxml).not.toContain("timeline-scroll");
+    expect(wxml).not.toContain("scroll-x");
+  });
+
+  it("行宽不内联成像素：块宽由 flex 像素决定，行恒为 100%", () => {
+    expect(wxml).not.toContain("timelineRowStyle");
+    expect(wxml).not.toContain("timelineScrollable");
+    expect(wxml).toContain('class="timeline-row {{timelineCompact');
+    expect(rule(".timeline-row")).toMatch(/width:\s*100%/);
+  });
+
+  it("wxss 的间隙与时间轴的 8px / 4px 降级一致", () => {
+    expect(rule(".timeline-row")).toMatch(/gap:\s*8px/);
+    expect(rule(".timeline-row.compact")).toMatch(/gap:\s*4px/);
+    expect(BLOCK_GAP_PX).toBe(8);
+    expect(COMPACT_BLOCK_GAP_PX).toBe(4);
+  });
+
+  it("块本身不写 min-width：宽度以页面算出的像素为唯一真相", () => {
+    expect(rule(".timeline-block")).not.toMatch(/min-width/);
+  });
+});
+
+describe("渲染层：拖动有位移样式、松手后顺序真的变（#82）", () => {
+  const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const wxml = readFileSync(join(ROOT, "pages/strip/strip.wxml"), "utf8");
+  const wxss = readFileSync(join(ROOT, "pages/strip/strip.wxss"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+
+  /** 取一个选择器的声明块（第一个匹配）。 */
+  function rule(selector: string): string {
+    const index = wxss.indexOf(selector);
+    expect(index, `wxss 里找不到 ${selector}`).toBeGreaterThanOrEqual(0);
+    const open = wxss.indexOf("{", index);
+    const close = wxss.indexOf("}", open);
+    return wxss.slice(open + 1, close);
+  }
+
+  /** 顶格方法体（两空格缩进的方法定义到下一个方法）。 */
+  function handlerBody(src: string, name: string): string {
+    const start = new RegExp(`\\n {2}(?:async\\s+)?${name}\\s*\\(`).exec(src);
+    if (start === null) {
+      return "";
+    }
+    const from = start.index + 1;
+    const next = /\n {2}(?:async\s+)?[A-Za-z_$][\w$]*\s*\(/g;
+    next.lastIndex = from + 1;
+    const match = next.exec(src);
+    return src.slice(from, match === null ? src.length : match.index);
+  }
+
+  const ts = readFileSync(join(ROOT, "pages/strip/strip.ts"), "utf8");
+
+  it("块内联了拖动位移串（item.dragStyle）", () => {
+    expect(wxml).toContain("style=\"{{item.style}}{{item.dragStyle}}\"");
+  });
+
+  it("被拖的块抬高：z-index / 投影 / 同一条 transform 里的放大", () => {
+    const dragging = rule(".timeline-block.dragging");
+    expect(dragging).toMatch(/z-index:\s*[1-9]/);
+    expect(dragging).toMatch(/box-shadow/);
+    /* 放大由页面写进内联 transform（内联会覆盖 CSS 的 transform）。 */
+    const views = layoutBlocks([step(1000), step(1000)], {
+      widthPx: 2 * 100 + BLOCK_GAP_PX,
+      dragIndex: 0,
+      dropIndex: 0,
+    });
+    expect(views[0].dragStyle).toContain("scale(1.06)");
+  });
+
+  it("让位只走 transform，不改布局属性（小程序里 flex 重排动画不稳）", () => {
+    /* transition 只覆盖 transform / box-shadow：出现 width / flex / margin 就是布局动画。 */
+    const transitioned = rule(".timeline-block").match(/transition:\s*([^;]+);/);
+    expect(transitioned).not.toBeNull();
+    expect(transitioned![1]).toMatch(/transform/);
+    expect(transitioned![1]).not.toMatch(/\b(width|flex|margin|padding|left|top)\b/);
+  });
+
+  it("落点块高亮描边", () => {
+    expect(rule(".timeline-block.drop-target")).toMatch(/box-shadow/);
+    expect(wxml).toContain("item.dropTarget ? 'drop-target'");
+  });
+
+  it("页面不做位移算术：跟手与落点都来自纯函数", () => {
+    const move = handlerBody(ts, "onStepTouchMove");
+    expect(move).toContain("dragFollowOffset(");
+    expect(move).toContain("dragTargetAtRects(");
+    /* 位移不许在页面里自己加减（出现 translateX 拼串就是两套真相）。 */
+    expect(move).not.toContain("translateX");
+    expect(move).not.toContain("clientX -");
+  });
+
+  it("松手提交顺序：moveStepStage + selectionAfterMove", () => {
+    const end = handlerBody(ts, "onStepTouchEnd");
+    expect(end).toContain("moveStepStage(");
+    expect(end).toContain("selectionAfterMove(");
+    expect(end).toContain("this.setDraft(moved)");
+  });
+
+  it("原地 / 拖出时间轴都不改顺序", () => {
+    const end = handlerBody(ts, "onStepTouchEnd");
+    expect(end).toContain("from === to || outside");
+    /* 清状态走 resetDragState（漏字段会让块停在半路）。 */
+    expect(end).toContain("this.resetDragState()");
+    /* 取消分支渲染提示并 return，不落到提交顺序的代码。 */
+    const cancel = end.slice(end.indexOf("from === to || outside"), end.indexOf("moveStepStage("));
+    expect(cancel).toContain("return;");
+  });
+
+  it("拖动结束后抑制紧跟的 tap（handleTap 检查抑制窗口）", () => {
+    const tap = handlerBody(ts, "onStepTap");
+    expect(tap).toContain("tapSuppressedAt(");
+    const end = handlerBody(ts, "onStepTouchEnd");
+    expect(end).toContain("dragTapSuppressUntil(");
+  });
+
+  it("长按阈值 300ms（不再等 380ms）", () => {
+    const start = handlerBody(ts, "onStepTouchStart");
+    expect(start).toContain("LONG_PRESS_MS");
+    expect(LONG_PRESS_MS).toBe(300);
+  });
+
+  it("提交那一帧关过渡，避免「换过内容的块」飞回去", () => {
+    const end = handlerBody(ts, "onStepTouchEnd");
+    expect(end).toContain("timelineSettling: true");
+    expect(end).toContain("timelineSettling: false");
+    expect(wxml).toContain("timelineSettling ? 'settling'");
+    expect(rule(".timeline-row.settling .timeline-block")).toMatch(/transition:\s*none/);
+  });
+
+  it("拖动中只重画块，不重算光区轴与面板（`touchmove` 每秒几十次）", () => {
+    const move = handlerBody(ts, "onStepTouchMove");
+    expect(move).toContain("this.renderDragBlocks()");
+    expect(move).not.toContain("this.renderTimeline(");
+  });
+
+  it("拖动状态在页面隐藏 / 卸载时清掉（回来时不该有块浮在半空）", () => {
+    for (const name of ["onHide", "onUnload"]) {
+      expect(handlerBody(ts, name)).toContain("this.resetDragState()");
+    }
   });
 });
 

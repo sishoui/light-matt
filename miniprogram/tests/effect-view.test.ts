@@ -18,6 +18,7 @@ import {
   blendName,
   buildLayerPanel,
   defaultCollapsed,
+  layerModeNameOf,
   layerModeOf,
   layerView,
   presetSelectedFlags,
@@ -86,6 +87,45 @@ describe("layerModeOf", () => {
 
   it("未知类型按静态显示（不让界面空掉）", () => {
     expect(layerModeOf(0x42)).toBe("static");
+  });
+
+  /*
+   * 爆闪 / 心跳 / 熄灭必须有自己的档位，否则设备页会把它们显示成「静态」：
+   * 一条正在爆闪的灯组在卡片上写「静态」、一条被设成熄灭的灯组也写「静态」，
+   * 用户会以为设置没生效。
+   */
+  it("爆闪（0x04）/ 心跳（0x05）/ 熄灭（0x06）各有独立档位", () => {
+    expect(layerModeOf(SEGMENT_TYPE.STROBE)).toBe("strobe");
+    expect(layerModeOf(SEGMENT_TYPE.HEARTBEAT)).toBe("heartbeat");
+    expect(layerModeOf(SEGMENT_TYPE.OFF)).toBe("dark");
+  });
+
+  it("熄灭（0x06）与空层（0xFF）不是同一个档位", () => {
+    /* 空层 = 「这里没设效果」；熄灭 = 「显式设为全黑」。合并会让设备页说谎。 */
+    expect(layerModeOf(SEGMENT_TYPE.OFF)).not.toBe(layerModeOf(NO_EFFECT));
+  });
+});
+
+describe("layerModeNameOf（设备页卡片摘要）", () => {
+  it("七种灯效 + 空层各有中文名", () => {
+    expect(layerModeNameOf(SEGMENT_TYPE.STATIC)).toBe("静态");
+    expect(layerModeNameOf(SEGMENT_TYPE.BREATHING)).toBe("呼吸");
+    expect(layerModeNameOf(SEGMENT_TYPE.RAINBOW)).toBe("彩虹");
+    expect(layerModeNameOf(SEGMENT_TYPE.COMET)).toBe("流光");
+    expect(layerModeNameOf(SEGMENT_TYPE.STROBE)).toBe("爆闪");
+    expect(layerModeNameOf(SEGMENT_TYPE.HEARTBEAT)).toBe("心跳");
+    expect(layerModeNameOf(SEGMENT_TYPE.OFF)).toBe("熄灭");
+    expect(layerModeNameOf(NO_EFFECT)).toBe("关闭");
+  });
+
+  it("0x04 / 0x05 / 0x06 不再是「静态」（#72 回归）", () => {
+    for (const type of [SEGMENT_TYPE.STROBE, SEGMENT_TYPE.HEARTBEAT, SEGMENT_TYPE.OFF]) {
+      expect(layerModeNameOf(type), String(type)).not.toBe("静态");
+    }
+  });
+
+  it("未知类型按「静态」兜底", () => {
+    expect(layerModeNameOf(0x42)).toBe("静态");
   });
 });
 

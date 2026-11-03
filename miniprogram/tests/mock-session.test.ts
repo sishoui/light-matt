@@ -23,6 +23,7 @@ import {
   quickPresetFlags,
 } from "../utils/control/quick-effects";
 import { PRESETS, rgbToSegmentParams } from "../utils/color/hsv";
+import { inferSimpleState } from "../utils/control/strip-simple";
 
 const A = MOCK_DEVICES[0];
 const B = MOCK_DEVICES[1];
@@ -244,6 +245,69 @@ describe("演示模式：快捷档写入", () => {
     expect(direct.ok).toBe(false);
   });
 
+  it("三张新卡（#81）写下去后设备真的变了：爆闪 / 心跳 / 熄灭", async () => {
+    const { session } = makeSession();
+    await session.connect(A.deviceId, A.broadcastName);
+    const ledCount = session.stripLedCount(0);
+    await session.queryStrip(0);
+    for (const report of session.segmentsOf(0)) {
+      await session.clearSegment(0, report.segId);
+    }
+
+    const expected = {
+      strobe: SEGMENT_TYPE.STROBE,
+      heartbeat: SEGMENT_TYPE.HEARTBEAT,
+      off: SEGMENT_TYPE.OFF,
+    };
+    for (const [id, type] of Object.entries(expected)) {
+      const ack = await session.setSegment(buildQuickSpec(quickCardOf(id)!, {}, 0, ledCount));
+      expect(ack.ok, id).toBe(true);
+      const readBack = await session.queryStrip(0);
+      expect(readBack.kind, id).toBe("ok");
+      if (readBack.kind !== "ok") return;
+      const sameStrip = readBack.reports.filter((report) => report.stripId === 0);
+      expect(sameStrip, id).toHaveLength(1);
+      expect(sameStrip[0].start, id).toBe(0);
+      expect(sameStrip[0].end, id).toBe(ledCount - 1);
+      expect(sameStrip[0].layer0.type, id).toBe(type);
+      expect(sameStrip[0].layer1.type, id).toBe(0xff);
+    }
+  });
+
+  it("点熄灭黑之后这条灯组仍然开着（不是关掉灯组）", async () => {
+    const { session } = makeSession();
+    await session.connect(A.deviceId, A.broadcastName);
+    expect(session.stripPower(0)).toBe(true);
+    const ledCount = session.stripLedCount(0);
+    await session.queryStrip(0);
+    for (const report of session.segmentsOf(0)) {
+      await session.clearSegment(0, report.segId);
+    }
+    await session.setSegment(buildQuickSpec(quickCardOf("off")!, {}, 0, ledCount));
+    /* 熄灭是「光区全黑」，开关位不该被动过。 */
+    expect(session.stripPower(0)).toBe(true);
+    expect(session.deviceState?.power).toBe(A.power);
+  });
+
+  it("熄灭卡读回后能反推出 off（界面的高亮不会错到暖白）", async () => {
+    const { session } = makeSession();
+    await session.connect(A.deviceId, A.broadcastName);
+    const ledCount = session.stripLedCount(0);
+    await session.queryStrip(0);
+    for (const report of session.segmentsOf(0)) {
+      await session.clearSegment(0, report.segId);
+    }
+    await session.setSegment(buildQuickSpec(quickCardOf("off")!, {}, 0, ledCount));
+    const readBack = await session.queryStrip(0);
+    expect(readBack.kind).toBe("ok");
+    if (readBack.kind !== "ok") return;
+    const state = inferSimpleState(
+      readBack.reports.filter((report) => report.stripId === 0),
+      ledCount,
+    );
+    expect(state?.cardId).toBe("off");
+  });
+
   it("方案播放中写实时光区前先停止播放（否则设备不出光）", async () => {
     const { session } = makeSession();
     await session.connect(A.deviceId, A.broadcastName);
@@ -305,6 +369,91 @@ describe("快捷档：视图派生", () => {
     expect(flags.some((hit) => hit)).toBe(true);
     /* 一个不可能等于任何预设的组合不应误命中。 */
     expect(quickPresetFlags({ hue: 12345, sat: 3 }).some((hit) => hit)).toBe(false);
+  });
+});
+
+/**
+ * 清空方案（#83）：删除必须真的从设备上清掉，且删掉的正是激活方案时停播。
+ *
+ * 这条锁的是「删除不是半成品」：只删本机草稿会让用户以为删了，实际上设备上
+ * 那套方案还在，下次进入页面又会冒出来。
+ */
+describe("演示模式：清空方案（ClearScript）", () => {
+  /** 一套单步单光区的最小方案。 */
+  function minimalScript(scriptId: number, ledCount: number): {
+    scriptId: number;
+    stripCount: number;
+    stages: Array<{ durationMs: number; segments: Array<Record<string, unknown>> }>;
+  } {
+    return {
+      scriptId,
+      stripCount: 1,
+      stages: [
+        {
+          durationMs: 1000,
+          segments: [
+            {
+              stripId: 0,
+              segId: 0,
+              start: 0,
+              end: Math.max(0, ledCount - 1),
+              blend: 0,
+              layer0: {
+                type: SEGMENT_TYPE.STATIC,
+                hue: 0,
+                sat: 0,
+                periodMs: 0,
+                p5: 0,
+                flags: 0,
+                level: 100,
+              },
+              layer1: { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 },
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  it("清空后该方案摘要变空白，其它方案不受影响", async () => {
+    const { session } = makeSession();
+    await session.connect(A.deviceId, A.broadcastName);
+    const ledCount = session.stripLedCount(0);
+    /* 下发两套，1 号是激活方案。 */
+    expect((await session.downloadScript(minimalScript(0, ledCount) as never, { activate: false })).kind).toBe("ok");
+    expect((await session.downloadScript(minimalScript(1, ledCount) as never, { activate: true })).kind).toBe("ok");
+
+    const cleared = await session.clearScript(1);
+    expect(cleared.kind).toBe("ok");
+    /* 摘要读回：1 号 0 步（空白），0 号原样。 */
+    const summaries = await session.queryScriptSummaries();
+    expect(summaries.kind).toBe("ok");
+    if (summaries.kind === "ok") {
+      const byId = new Map(summaries.summaries.map((item) => [item.scriptId, item]));
+      expect(byId.get(1)?.stageCount).toBe(0);
+      expect(byId.get(0)?.stageCount).toBe(1);
+    }
+  });
+
+  it("清空的正是激活方案时设备停播并退回「无激活剧本」", async () => {
+    const { session } = makeSession();
+    await session.connect(A.deviceId, A.broadcastName);
+    const ledCount = session.stripLedCount(0);
+    await session.downloadScript(minimalScript(2, ledCount) as never, { activate: true });
+    await session.setPlayback(1, true);
+    expect(session.deviceState?.playbackState).toBe(1);
+    expect(session.deviceState?.scriptId).toBe(2);
+
+    const cleared = await session.clearScript(2);
+    expect(cleared.kind).toBe("ok");
+    expect(session.deviceState?.playbackState).toBe(0);
+    expect(session.deviceState?.scriptId).not.toBe(2);
+  });
+
+  it("未提交的编号也能清（协议幂等），不会报错", async () => {
+    const { session } = makeSession();
+    await session.connect(A.deviceId, A.broadcastName);
+    expect((await session.clearScript(3)).kind).toBe("ok");
   });
 });
 

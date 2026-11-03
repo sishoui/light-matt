@@ -13,11 +13,11 @@
  */
 
 import {
+  EFFECT_TYPE_NAMES,
   MAX_SCRIPTS,
   MAX_STAGES,
   MAX_STAGE_MS,
   PLAYBACK,
-  SEGMENT_TYPE,
 } from "../protocol/constants";
 import type { ScriptConfig, ScriptSegment, ScriptStageConfig } from "./script-plan";
 import { estimateScriptsTotalBytes } from "./script-plan";
@@ -131,20 +131,14 @@ export function parseStageDuration(text: string): { ok: boolean; value: number }
   return { ok: true, value };
 }
 
-/** 段类型的中文名（UI 用；未知类型原样给 hex）。 */
+/**
+ * 段类型的中文名（UI 用；未知类型原样给 hex）。
+ *
+ * 名字表来自 `protocol/constants.EFFECT_TYPE_NAMES`——曾经这里自己 switch 四种
+ * 类型，#74 加爆闪 / 心跳 / 熄灭后没跟上，摘要会把新灯效显示成 `0x04`。
+ */
 export function typeName(type: number): string {
-  switch (type) {
-    case SEGMENT_TYPE.STATIC:
-      return "静态";
-    case SEGMENT_TYPE.BREATHING:
-      return "呼吸";
-    case SEGMENT_TYPE.RAINBOW:
-      return "彩虹";
-    case SEGMENT_TYPE.COMET:
-      return "流光";
-    default:
-      return `0x${type.toString(16).padStart(2, "0")}`;
-  }
+  return EFFECT_TYPE_NAMES[type] ?? `0x${type.toString(16).padStart(2, "0")}`;
 }
 
 /** 一个段的单行摘要：「2 段 · 静态 [0-9]、呼吸 [10-29]」。 */

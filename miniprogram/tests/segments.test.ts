@@ -257,9 +257,9 @@ describe("SetSegment 构造器与 v3 向量一致（21 字节定宽）", () => {
         ...singleLayer(0, 0, 0, 5, { ...STATIC_RED, type: 0x09 }),
       }),
     ).toThrow(RangeError);
-    /* start > end / 越界 / 槽位 / 灯带号。 */
+    /* start > end / 越界（#72 上限 100 → end 最大 99）/ 槽位 / 灯带号。 */
     expect(() => cmdSetSegment(singleLayer(0, 0, 10, 5, STATIC_RED))).toThrow(RangeError);
-    expect(() => cmdSetSegment(singleLayer(0, 0, 0, 64, STATIC_RED))).toThrow(RangeError);
+    expect(() => cmdSetSegment(singleLayer(0, 0, 0, 100, STATIC_RED))).toThrow(RangeError);
     expect(() => cmdSetSegment(singleLayer(0, 8, 0, 5, STATIC_RED))).toThrow(RangeError);
     expect(() => cmdSetSegment(singleLayer(8, 0, 0, 5, STATIC_RED))).toThrow(RangeError);
   });

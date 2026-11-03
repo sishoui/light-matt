@@ -25,6 +25,9 @@ bool lumen_effect_type_known(uint8_t type)
     case LUMEN_EFFECT_BREATHING:
     case LUMEN_EFFECT_RAINBOW:
     case LUMEN_EFFECT_COMET:
+    case LUMEN_EFFECT_STROBE:
+    case LUMEN_EFFECT_HEARTBEAT:
+    case LUMEN_EFFECT_OFF:
         return true;
     default:
         return false;
@@ -33,11 +36,18 @@ bool lumen_effect_type_known(uint8_t type)
 
 bool lumen_effect_type_implemented(uint8_t type)
 {
-    /* 四种类型全部有像素实现（#25 静态 / #30 呼吸 / #31 彩虹+流光）。
-     * 未知类型仍由 lumen_effect_type_known 在命令层拒绝（InvalidParam），
-     * 这里不负责区分「已知但未实现」——那个中间态已经不存在了。 */
+    /*
+     * 七种类型全部有像素实现（#25 静态 / #30 呼吸 / #31 彩虹+流光 / #74 爆闪+
+     * 心跳+熄灭）。未知类型仍由 lumen_effect_type_known 在命令层拒绝
+     * （InvalidParam），这里不负责区分「已知但未实现」——那个中间态已经不存在。
+     *
+     * **熄灭必须同时出现在 known 与 implemented 里**：作为 layer0 时 §7.1
+     * 第 2 步只认同一个都成立的类型，漏掉任一边都会把显式「熄灭」判成非法。
+     */
     return type == LUMEN_EFFECT_STATIC || type == LUMEN_EFFECT_BREATHING ||
-           type == LUMEN_EFFECT_RAINBOW || type == LUMEN_EFFECT_COMET;
+           type == LUMEN_EFFECT_RAINBOW || type == LUMEN_EFFECT_COMET ||
+           type == LUMEN_EFFECT_STROBE || type == LUMEN_EFFECT_HEARTBEAT ||
+           type == LUMEN_EFFECT_OFF;
 }
 
 uint8_t lumen_effect_param_len(uint8_t type)
@@ -49,7 +59,16 @@ uint8_t lumen_effect_param_len(uint8_t type)
     case LUMEN_EFFECT_BREATHING:
     case LUMEN_EFFECT_RAINBOW:
     case LUMEN_EFFECT_COMET:
-        /* §2.2-§2.4：hue(2) + sat(1) + period(2) + p5(1) + flags(1)。 */
+    case LUMEN_EFFECT_STROBE:
+    case LUMEN_EFFECT_HEARTBEAT:
+    case LUMEN_EFFECT_OFF:
+        /*
+         * §2.2-§2.7：hue(2) + sat(1) + period(2) + p5(1) + flags(1) = 7。
+         * #74 的三种新类型**复用同一个 7 字节块**，所以层编码宽度、帧长、
+         * 状态 blob 尺寸与协议版本号全都不变。熄灭虽然要求 7 个参数全部为 0
+         * （它一个字节都不解释），但长度仍按 7 报，让两端只有一张长度表——
+         * 剧本 blob 的记录宽度也因此保持 5/9/13/21 不变。
+         */
         return 7;
     default:
         /* 未知类型与空层（0xFF）：没有参数块。 */
@@ -59,11 +78,26 @@ uint8_t lumen_effect_param_len(uint8_t type)
 
 bool lumen_effect_is_animated(uint8_t type)
 {
-    /* 空层（0xFF）不是动画；未知类型按「非静态」保守处理。 */
-    if (type == LUMEN_LAYER_EMPTY) {
+    /*
+     * **显式枚举，不能写成 `type != STATIC`**：熄灭（0x06）的输出恒为黑，
+     * 把它算成动画会让「一整组只有熄灭」的配置也按帧重绘，白烧 CPU / RMT。
+     * 空层（0xFF）同样不是动画。
+     */
+    switch (type) {
+    case LUMEN_EFFECT_STATIC:
+    case LUMEN_EFFECT_OFF:
+    case LUMEN_LAYER_EMPTY:
         return false;
+    case LUMEN_EFFECT_BREATHING:
+    case LUMEN_EFFECT_RAINBOW:
+    case LUMEN_EFFECT_COMET:
+    case LUMEN_EFFECT_STROBE:
+    case LUMEN_EFFECT_HEARTBEAT:
+        return true;
+    default:
+        /* 未知类型：保守按「非静态」处理（与改动前一致，不影响任何合法配置）。 */
+        return true;
     }
-    return type != LUMEN_EFFECT_STATIC;
 }
 
 /* ---------------- 层编解码（§7.1 的 9 字节定宽） ---------------- */
@@ -526,6 +560,73 @@ uint32_t lumen_effect_breathing_gain_pct_q16(uint16_t period_ms, uint8_t min_pct
     return gain;
 }
 
+/* ---------------- #74 爆闪 / 心跳 ---------------- */
+
+uint32_t lumen_effect_strobe_gain_q16(uint16_t period_ms, uint8_t duty, uint32_t t0_ms,
+                                      uint32_t now_ms)
+{
+    /*
+     * 方波，两端各留 5% 线性斜坡（effects-spec §2.5）。
+     * 相位与呼吸 / 彩虹共用同一个 helper（同一条 §6 的 uint64 公式）。
+     */
+    if (period_ms == 0) {
+        return 0; /* 静止 = 不出光（不是停在亮端） */
+    }
+    if (duty == 0) {
+        return 0; /* 占空比 0 = 恒 GND（不是「一个极窄的脉冲」） */
+    }
+    uint32_t p = lumen_effect_breathing_phase_q16(period_ms, t0_ms, now_ms); /* [0,65536) */
+    uint32_t hi = (uint32_t)duty * 65536u / 255u; /* 高电平结束位置 */
+    const uint32_t ramp = 3277u;                  /* 5% = 65536 / 20 */
+    if (hi < ramp * 2u) {
+        /*
+         * duty 极小但非 0 时把高电平抬到 10%，让斜坡两侧都还有空间：
+         * 否则 hi < ramp 会让「下降沿」的区间算成负数，出现诡异的常亮。
+         */
+        hi = ramp * 2u;
+    }
+    if (p < ramp) {
+        return p * 65535u / ramp; /* 上升沿：0 → 1 */
+    }
+    if (p < hi - ramp) {
+        return 65535u; /* 高电平 */
+    }
+    if (p < hi) {
+        return (hi - p) * 65535u / ramp; /* 下降沿：1 → 0 */
+    }
+    return 0; /* 低电平 */
+}
+
+uint32_t lumen_effect_heartbeat_gain_q16(uint16_t period_ms, uint8_t pulse, bool double_pulse,
+                                         uint32_t t0_ms, uint32_t now_ms)
+{
+    /*
+     * 一个节拍内一大一小两次脉冲（effects-spec §2.6），其余时间在谷底。
+     * 线性三角近似：视觉上就是「咚、咚」两下，形状不必像心电图。
+     */
+    if (period_ms == 0) {
+        return 0; /* 静止在谷底 */
+    }
+    uint32_t p = lumen_effect_breathing_phase_q16(period_ms, t0_ms, now_ms); /* [0,65536) */
+    uint32_t w = (uint32_t)pulse * 65536u / 255u; /* 单次脉冲宽 */
+    if (w < 655u) {
+        w = 655u; /* 至少 1% 周期，免得脉冲窄到看不见（20fps 下可能整帧错过） */
+    }
+    /* 脉冲 1：0..w，峰值 1。 */
+    if (p < w) {
+        return p * 65535u / w;
+    }
+    /* 间歇：w..2w，谷底。 */
+    if (p < w * 2u) {
+        return 0u;
+    }
+    /* 脉冲 2：2w..3w，峰值 0.6（39321 ≈ 0.6 × 65535）。 */
+    if (double_pulse && p < w * 3u) {
+        return (p - w * 2u) * 39321u / w;
+    }
+    return 0;
+}
+
 uint8_t lumen_effect_apply_gain_q16(uint8_t value, uint32_t gain_q16)
 {
     if (gain_q16 >= 65535u) {
@@ -580,15 +681,17 @@ uint16_t lumen_layer_rainbow_hue(const lumen_effect_layer_t *layer, uint16_t n, 
      *
      * **这一步就是 ticket 点名的溢出点。** 把两个比例都写成 Q16 再相乘是
      * 最自然的写法：
-     *   pos_q16  = (i << 16) / N        → i = N-1 时 64512（N = 64）
+     *   pos_q16  = (i << 16) / N        → i = N-1 时 64880（N = 100，#72 上限）
      *   span_q16 = span × 65536 / 255   → span = 255 时正好 65536
-     * 两者的 32 位乘积是 64512 × 65536 = 4,227,858,432，虽然还没越界，
-     * 但距 2^32 只剩约 1.6%，**再加 hue 与相位就翻车**；而且任何一步多乘
-     * 一个 65536（把已经是 Q16 的相位再换算一次）、或改了先乘后除的顺序，
-     * 都会静默回绕成错色。
+     * 两者的 32 位乘积是 64880 × 65536 = 4,251,975,680，虽然还没越界，
+     * 但距 2^32 = 4,294,967,296 只剩约 1.0%，**再加 hue 与相位就翻车**；
+     * 而且任何一步多乘一个 65536（把已经是 Q16 的相位再换算一次）、或改了
+     * 先乘后除的顺序，都会静默回绕成错色。上限从 64 抬到 100 只会让这点余量
+     * 更紧（64 时是 1.6%），结论不变：**不能走 32 位两段式**。
      *
-     * 这里改成一次性 uint64 乘除：i ≤ 63、span ≤ 255、65536 → 上界 1.05e9，
-     * 在 64 位下留出 4 个数量级的余量，且只做一次除法、取整误差最小。
+     * 这里改成一次性 uint64 乘除：i ≤ 99、span ≤ 255、65536
+     * → 上界 1.65e9，在 64 位下留出 10 个数量级的余量，且只做一次除法、
+     * 取整误差最小。
      */
     uint64_t spatial_q16 = ((uint64_t)i * (uint64_t)span * 65536u) / ((uint64_t)n * 255u);
 
@@ -663,15 +766,16 @@ uint32_t lumen_layer_comet_gain_q16(const lumen_effect_layer_t *layer, uint16_t 
      * tail_n = 1 + (tail/255) × (N-1)，用 Q16 表示（65536 = 1 颗灯）：
      *   tail = 0   → tail_n_q16 = 65536          → 只有头部一颗灯
      *   tail = 255 → tail_n_q16 = N × 65536      → 整条都是尾巴
-     * (tail/255)×(N-1) 的最大值 63×65536 = 4.13e6，uint32 够，但乘 tail
-     * 时先到 255×63×65536 ≈ 1.05e9，仍安全；保险起见用 uint64 相乘。
+     * (tail/255)×(N-1) 的最大值 99×65536 = 6.49e6，uint32 够，但乘 tail
+     * 时先到 255×99×65536 ≈ 1.65e9，仍安全（2^32 ≈ 4.29e9）；保险起见
+     * 用 uint64 相乘。
      */
     uint32_t tail_n_q16 =
         65536u + (uint32_t)(((uint64_t)tail * (uint64_t)(n - 1u) * 65536u) / 255u);
 
     /*
      * 尾部判定 p_i < tail_n/N ⇔ p_i × N < tail_n（两边同乘 N 消掉除法）。
-     * p_i 与 tail_n/N 都是 Q16，乘法后 p ≤ 65535、N ≤ 64 → 4.19e6，uint64 下
+     * p_i 与 tail_n/N 都是 Q16，乘法后 p ≤ 65535、N ≤ 100 → 6.55e6，uint64 下
      * 更不会溢出，且保持严格小于（p == tail_n/N 的灯不亮，硬边界）。
      */
     if ((uint64_t)p_q16 * (uint64_t)n >= (uint64_t)tail_n_q16) {
@@ -680,8 +784,10 @@ uint32_t lumen_layer_comet_gain_q16(const lumen_effect_layer_t *layer, uint16_t 
 
     /*
      * r = p_i / (tail_n/N) = p_i × N / tail_n ∈ [0,1)，Q16。
-     * 指数参数是 3r，而表以 k/64 为步长（k = 64r），所以 r 的 Q16 值
-     * **直接**就是表的输入（65536 ↔ k=64）——不需要再乘 3 或除 64。
+     * 指数参数是 3r，而表以 k/64 为步长（k = 64r，这里的 64 是**查表步数**，
+     * 与灯珠上限无关），所以 r 的 Q16 值**直接**就是表的输入
+     * （65536 ↔ k=64）——不需要再乘 3 或除 64。
+     * 中间量 p ≤ 65535、N ≤ 100、65536 → 4.29e11，必须走 uint64。
      */
     uint32_t r_q16 = (uint32_t)(((uint64_t)p_q16 * (uint64_t)n * 65536u) / (uint64_t)tail_n_q16);
     return comet_exp_q16(r_q16);
@@ -811,6 +917,45 @@ void lumen_layer_pixel(const lumen_segment_t *seg, uint8_t layer_index,
         scale_pixel(scaled_base, gain, out_rgb);
         return;
     }
+
+    case LUMEN_EFFECT_STROBE: {
+        /*
+         * 爆闪（§2.5）：基色恒定，亮度按方波包络切换。duty（p5）是高电平
+         * 占一个周期的比例；flags 恒为 0（命令层已拒绝非 0）。
+         * 与流光一致：先按本层 level 压暗基色，再乘包络增益。
+         */
+        uint8_t base[3];
+        lumen_effect_static_rgb(hue, sat, base);
+        uint32_t gain = lumen_effect_strobe_gain_q16(lumen_layer_period_ms(layer),
+                                                     lumen_layer_p5(layer), seg->t0_ms, now_ms);
+        uint8_t scaled_base[3];
+        scale_pixel_level(base, level, scaled_base);
+        scale_pixel(scaled_base, gain, out_rgb);
+        return;
+    }
+
+    case LUMEN_EFFECT_HEARTBEAT: {
+        /*
+         * 心跳（§2.6）：同上，包络换成「一大一小两次脉冲」。
+         * p5（pulse）是单次脉冲宽度占比；flags bit0 = 双脉冲开关。
+         */
+        uint8_t base[3];
+        lumen_effect_static_rgb(hue, sat, base);
+        bool double_pulse = (lumen_layer_flags(layer) & 0x01u) != 0u;
+        uint32_t gain = lumen_effect_heartbeat_gain_q16(
+            lumen_layer_period_ms(layer), lumen_layer_p5(layer), double_pulse, seg->t0_ms, now_ms);
+        uint8_t scaled_base[3];
+        scale_pixel_level(base, level, scaled_base);
+        scale_pixel(scaled_base, gain, out_rgb);
+        return;
+    }
+
+    case LUMEN_EFFECT_OFF:
+        /*
+         * 熄灭（§2.7）：永不发光。out_rgb 进来时已清零，**直接返回**——
+         * 不读 hue/sat/period，也不受 level 影响（参数在命令层已要求全 0）。
+         */
+        return;
 
     default:
         /* 未知类型：命令层已按 D7 拒绝（InvalidParam），这里同样只返回黑色。 */

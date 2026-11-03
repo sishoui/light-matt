@@ -66,6 +66,12 @@ export function layerTypeName(type: number): string {
       return "rainbow";
     case SEGMENT_TYPE.COMET:
       return "comet";
+    case SEGMENT_TYPE.STROBE:
+      return "strobe";
+    case SEGMENT_TYPE.HEARTBEAT:
+      return "heartbeat";
+    case SEGMENT_TYPE.OFF:
+      return "off";
     case NO_EFFECT:
       return "empty";
     default:
@@ -93,6 +99,9 @@ export function blendName(blend: number): string {
  *   0x01 呼吸：period / min_level(百分比) / waveform；
  *   0x02 彩虹：period / span / reverse；
  *   0x03 流光：period / tail / reverse；
+ *   0x04 爆闪：period / duty / （无 flags 位）；
+ *   0x05 心跳：period / pulse / double（bit0）；
+ *   0x06 熄灭：`off(level=..)`，参数恒 0；
  *   0xFF 空层：`empty`（空层没有亮度可言，不写 level）。
  */
 export function describeLayer(layer: EffectLayer): string {
@@ -109,6 +118,18 @@ export function describeLayer(layer: EffectLayer): string {
       `${head} period=${layer.periodMs} min_level=${layer.p5} ` +
       `waveform=${waveformName(breathingWaveform(layer.flags))} flags=${hex2(layer.flags)})`
     );
+  }
+  if (layer.type === SEGMENT_TYPE.STROBE) {
+    return `${head} period=${layer.periodMs} duty=${layer.p5})`;
+  }
+  if (layer.type === SEGMENT_TYPE.HEARTBEAT) {
+    return (
+      `${head} period=${layer.periodMs} pulse=${layer.p5} ` +
+      `double=${segmentReverse(layer.flags) ? 1 : 0})`
+    );
+  }
+  if (layer.type === SEGMENT_TYPE.OFF) {
+    return `${head})`;
   }
   const p5Name = layer.type === SEGMENT_TYPE.RAINBOW ? "span" : "tail";
   return (
@@ -196,6 +217,7 @@ export function describeCommand(command: number, payload: Uint8Array): string {
     case CMD.SCRIPT_COMMIT:
     case CMD.SCRIPT_ABORT:
     case CMD.QUERY_SCRIPT:
+    case CMD.CLEAR_SCRIPT:
       return payload.length === 1 ? `${name} script=${payload[0]}` : `${name} ${bytesToHex(payload)}`;
     case CMD.ACTIVATE_SCRIPT:
       return payload.length === 2

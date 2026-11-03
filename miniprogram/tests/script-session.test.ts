@@ -15,7 +15,7 @@ import type { BleTransport } from "../utils/ble/transport";
 import { AckRejectedError } from "../utils/ble/errors";
 import { breathingSegment, staticSegment } from "../utils/protocol/commands";
 import type { AckResult, CommandRequest, DeviceState } from "../utils/protocol/types";
-import { CMD, RESULT, SEGMENT_TYPE } from "../utils/protocol/constants";
+import { CMD, MAX_SCRIPTS, RESULT, SEGMENT_TYPE } from "../utils/protocol/constants";
 import type { ScriptConfig } from "../utils/control/script-plan";
 import { checkScriptCapacity } from "../utils/control/script-plan";
 import type { SegmentSpec } from "../utils/protocol/types";
@@ -264,6 +264,47 @@ describe("#32 session 播放控制与查询", () => {
     transport.linkState = "idle";
     const session = makeSession(transport);
     const result = await session.downloadScript(fourStageScript());
+    expect(result.kind).toBe("error");
+    expect(transport.sent).toHaveLength(0);
+  });
+});
+
+describe("#83 清空方案 ClearScript 0x1E", () => {
+  it("发 0x1E + script_id，成功后读回设备 State（播放/激活态以设备为准）", async () => {
+    const transport = new FakeTransport();
+    const session = makeSession(transport);
+    const result = await session.clearScript(2);
+    expect(result.kind).toBe("ok");
+    expect(transport.sent).toHaveLength(1);
+    expect(transport.sent[0].command).toBe(CMD.CLEAR_SCRIPT);
+    expect(Array.from(transport.sent[0].payload)).toEqual([2]);
+  });
+
+  it("设备拒绝时原样带回结果码（页面据此保留本机草稿）", async () => {
+    const transport = new FakeTransport();
+    transport.rejectAt = 0;
+    transport.rejectCode = RESULT.STORAGE_FAILED;
+    const session = makeSession(transport);
+    const result = await session.clearScript(1);
+    expect(result.kind).toBe("ack-error");
+    if (result.kind === "ack-error") {
+      expect(result.ack.resultCode).toBe(RESULT.STORAGE_FAILED);
+    }
+  });
+
+  it("未连接时一帧都不发", async () => {
+    const transport = new FakeTransport();
+    transport.linkState = "idle";
+    const session = makeSession(transport);
+    const result = await session.clearScript(0);
+    expect(result.kind).toBe("error");
+    expect(transport.sent).toHaveLength(0);
+  });
+
+  it("非法编号在构造器里就拒绝（不发帧）", async () => {
+    const transport = new FakeTransport();
+    const session = makeSession(transport);
+    const result = await session.clearScript(MAX_SCRIPTS);
     expect(result.kind).toBe("error");
     expect(transport.sent).toHaveLength(0);
   });

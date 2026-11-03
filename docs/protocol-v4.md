@@ -2,7 +2,7 @@
 
 **状态**：**已实现（2026-11-03，分支 `feat/68-protocol-v4`）**。本文件取代 `docs/protocol-v3.md`
 （v3 保留为历史参考，不再维护）。
-固件 host 测试 11449 项断言与 `docs/protocol-testvectors-v4.json`（64 条向量）
+固件 host 测试 12098 项断言与 `docs/protocol-testvectors-v4.json`（68 条向量）
 都对着本文件跑。
 **适用范围**：微信小程序 ↔ ESP32-C3 固件之间的 BLE 协议。
 **唯一真相**：本文件定义字节级契约，`docs/protocol-testvectors-v4.json` 是它的可执行副本。
@@ -46,7 +46,7 @@
 
 | 常量 | 值 | 说明 |
 |---|---|---|
-| `MAX_LEDS` | 64 | 单条灯带的灯珠上限 |
+| `MAX_LEDS` | 100 | 单条灯带的灯珠上限（#72 从 64 抬高） |
 | `MAX_STRIPS` | 8 | 灯带数（8 个引脚，TDM 轮询） |
 | `MAX_SEGMENTS` | 8 | **每条灯带**的段数 |
 | `MAX_STAGES` | 8 | **每套剧本**的阶段数 |
@@ -242,9 +242,53 @@ export function crc16(bytes: Uint8Array): number {
 | `0x1B` | SetStripPower | `strip_id, on` | 2 |
 | `0x1C` | QueryStripConfig | — | 0 |
 | `0x1D` | QueryDeviceInfo | — | 0 |
+| `0x1E` | ClearScript | `script_id` | 1 |
 
-- `0x08-0x0F`、`0x1E-0x7F` 保留；设备收到回 `0x02`。
+- `0x08-0x0F`、`0x1F-0x7F` 保留；设备收到回 `0x02`。
 - 小程序写入 `0x80-0xFF`（设备→小程序方向）→ `0x02`。
+
+### 6.1 ClearScript（`0x1E`，v4 原地新增）
+
+真正从设备上**删掉**一套已提交剧本，而不是只删小程序本机的草稿。
+
+| 结果码 | 触发条件 |
+|---|---|
+| `0x00` OK | 已清空；**该 id 本来就没有已提交剧本也算成功**（幂等） |
+| `0x01` InvalidParam | `script_id >= 4`（`LUMEN_MAX_SCRIPTS`） |
+| `0x04` BadLength | 载荷长度 ≠ 1 |
+| `0x02` UnknownCommand | 旧固件（不认识 `0x1E`）；**它不会误改任何东西** |
+| `0x06` StorageFailed | 落盘预检失败；RAM 里的剧本**原样保留**，仍可用 |
+
+语义：
+
+- 清空后该 id 的 `stage_count` 回 **0**，`QueryScript` 的 `ScriptSummary` 给出
+  `stage_count = 0 / flags = 0 / active = 0`（与查询一个从未提交的 id 完全一致），
+  State 里若它是激活剧本则 `script_id = 0xFF`、`stage_index = 0`、`playback_state = 0`、
+  `flags.bit1 = 0`。
+- **清空正在播放（或暂停 / 播完停住）的那套**：播放停止、设备退回「无激活剧本」，
+  画面交回静态段配置。判定是「当前激活 id == 被清 id」，越界 id 永远不算命中。
+- **未提交即成功**：对一个从未提交过的 id 发清空也回 `0x00`。理由与 `ClearSegment`
+  相同——它是绝对值语义（「让这个槽位为空」），让用户处理「本来就没有」这种无害情况
+  只会制造需要重试的错误。
+- **不影响其它 id**：只有目标槽位被抹掉，其它剧本、段配置与播放状态原样。
+- 若该 id 正在暂存（`ScriptBegin` 之后还没 `Commit`），暂存也一并丢弃——否则
+  「清空 → Abort」会留下不可预期的中间态。
+- 失败时**什么都不改**：先按「清空后」的状态编码一遍持久化快照，编得出来才改 RAM。
+  因此 `StorageFailed` 之后原剧本仍可正常播。
+- **落盘的异步失败**（NVS 在 500ms debounce 后真正写入时失败）无法再改 ACK——ACK
+  已经发出。这条路径与 `ScriptCommit` 共用，按 §10.3 的异步语义上报 `Event 0x81`
+  （`event_code = 0x01 StorageFailed`），App 应在收到后重试或提示。也就是说 `0x06`
+  只覆盖「预检时就知道存不下」的同步失败。
+
+**为什么不是 `script_id` 换成 `ScriptBegin(0 阶段)` 或 `ScriptCommit` 一个空剧本**：
+两条路径都要求 `stage_count ∈ 1..8`（§9.6），表达不了「这套方案不存在」。
+用一条显式命令，语义与失败语义都能单独定义。
+
+**为什么协议版本号不变**：`0x1E` 原来落在保留区，旧固件的命令表里没有它，
+按 §5 的固定顺序在「命令已知」这一步就回 `0x02 UnknownCommand` 并**继续正常服务
+后续帧**（不会把连接搞坏，也不会误改配置）。新增一条命令因此不需要两端同时升级，
+也就不需要升 `0x04` ——升版本会让所有旧固件对全部帧回 `0x07`，代价远大于收益。
+这条取舍只对「新增命令」成立：**任何已存在命令的载荷或语义变化仍然必须升版本**。
 
 ---
 
@@ -276,7 +320,8 @@ export function crc16(bytes: Uint8Array): number {
 
 ```
 偏移  宽  字段
-0     1   type        0x00 静态 / 0x01 呼吸 / 0x02 彩虹 / 0x03 流光 / 0xFF 空层
+0     1   type        0x00 静态 / 0x01 呼吸 / 0x02 彩虹 / 0x03 流光 /
+                      0x04 爆闪 / 0x05 心跳 / 0x06 熄灭 / 0xFF 空层
 1..7  7   param       参数块右对齐填满 7 字节，未用字节必须为 0
 8     1   level       v4 新增：本层亮度档位 0-100（100 满亮，0 不出光）
 ```
@@ -290,7 +335,14 @@ v4 下呼吸的 `p5` 是**相对百分比 0-100**（见下方 `level` 语义与 
 | `0x01` 呼吸 | 7 | `hue(2 LE), sat(1), period_ms(2 LE), p5(minLevel **%), flags(波形)` |
 | `0x02` 彩虹 | 7 | `hue(2 LE), sat(1), period_ms(2 LE), p5(span), flags(bit0 reverse)` |
 | `0x03` 流光 | 7 | `hue(2 LE), sat(1), period_ms(2 LE), p5(tail), flags(bit0 reverse)` |
+| `0x04` 爆闪 | 7 | `hue(2 LE), sat(1), period_ms(2 LE), p5(duty), flags(必须 0)` |
+| `0x05` 心跳 | 7 | `hue(2 LE), sat(1), period_ms(2 LE), p5(pulse), flags(bit0 双脉冲)` |
+| `0x06` 熄灭 | 7 | 全部 0（`hue/sat/p5/period/flags` 任一非 0 → `InvalidParam`） |
 | `0xFF` 空层 | 0 | 其余 8 字节（param 7 + level 1）全为 0 |
+
+> **#74 的三种新类型复用同一个 7 字节参数块**，所以层编码仍是 9 字节、
+> 段载荷仍是 23 / 25、报告仍是 23、状态 blob 仍是 1440、**协议版本号仍是 4**。
+> 它们没有吃掉 effects-spec §2.8 记录的「动画类只剩 2 字节余量」——余量原封不动。
 
 **`level` 的语义**：
 
@@ -312,7 +364,24 @@ v4 下呼吸的 `p5` 是**相对百分比 0-100**（见下方 `level` 语义与 
 5. `layer1.type == 0xFF` 时 `blend` 必须为 0。
 6. `blend ≤ 0x02`。
 7. 静态层的 `param[3..6]` 必须全为 0（保留位，对两层都生效）。
-8. 各层按 type 做参数校验（周期下限、flags 保留位、**呼吸 `p5 ≤ 100`**，见 §11.3）。
+8. 各层按 type 做参数校验（周期下限、flags 保留位、**呼吸 `p5 ≤ 100`**，见 §11.3）：
+   - `0x00` 静态：`flags == 0`；
+   - `0x01` 呼吸：`flags & 0xF8 == 0`，`p5 ≤ 100`，`period == 0` 或 `≥ 334`；
+   - `0x02` 彩虹 / `0x03` 流光：`flags & 0xFE == 0`，`period == 0` 或 `≥ 200`；
+   - **`0x04` 爆闪（#74）**：`flags == 0`，`period == 0` 或 `≥ 100`（10Hz 上界）；
+   - **`0x05` 心跳（#74）**：`flags & 0xFE == 0`（bit0 = 双脉冲），`period == 0` 或 `500-1500`（40-120 BPM）；
+   - **`0x06` 熄灭（#74）**：`hue / sat / p5 / flags / period_ms` 全部为 0。
+9. 熄灭层的 `level` **不参与**上述参数校验（熄灭本来就是黑的），但 `level ≤ 100` 仍由第 4 步统一约束。
+
+> **熄灭必须同时出现在 `lumen_effect_type_known` 与 `lumen_effect_type_implemented` 里**，
+> 否则第 2 步（只认「已知且已实现」）会把它作为 layer0 拒绝。
+>
+> **熄灭不算动画类型**（`lumen_effect_is_animated` 显式枚举：静态与熄灭为 false）。
+> 这不影响协议字节，只影响渲染层是否为「一整组只有熄灭」的配置启动帧循环。
+>
+> **熄灭作为 layer1（叠加层）**：协议层不额外拒绝——语义就是「黑色叠加」
+> （覆盖 / 相乘都会把整段变黑）。界面层不提供这个选项（#80 / #81），
+> 协议层不必为它写特例：语义明确，且 `blend` 的既有规则已经覆盖。
 
 **ScriptSegment 的清槽旁路**：两层都 `0xFF` 表示「清空该槽位」（§9.6）。这条路径
 **绕过**上面的形状校验（它会把 layer0 = 0xFF 判成非法），所以必须**单独**要求两层的
@@ -496,6 +565,25 @@ gain  = floor + (level - floor) × e // e = 波形包络 0-1
 - `level = 50, p5 = 0` → 0..50%（峰值半亮）。
 - `level = 50, p5 = 100` → 恒 50%（完全不呼吸）。
 
+#### 9.3.4 爆闪 / 心跳 / 熄灭的合成（#74）
+
+三种新类型与呼吸一样是**整段同色同步**（包络只与时间有关，与段内位置无关），
+所以每颗灯的求值都是 `static_rgb(hue, sat) × level/100 × envelope(t)`：
+
+| 类型 | 包络（0-1） | 说明 |
+|---|---|---|
+| `0x04` 爆闪 | 方波 + 两端 5% 线性斜坡，高电平占比 `p5(duty)/255` | `period == 0` → 0（不出光） |
+| `0x05` 心跳 | 0..w 升到 1；2w..3w 升到 0.6；其余 0（`w = max(pulse/255, 1%)`） | `flags` bit0 = 双脉冲；`period == 0` → 0 |
+| `0x06` 熄灭 | 恒 0（直接返回全黑，不读任何参数） | 不受 `level` 影响 |
+
+完整公式与相位推导见 `docs/effects-spec.md` §2.5-§2.7。
+
+> **帧率上界**：默认 20fps（每帧 50ms），所以 10Hz 是爆闪能表现的上界。
+> 本票**不提高帧率**——8 条满 100 颗时提高帧率会掉帧，那种掉帧比低频更糟。
+
+> **熄灭不是动画类型**：`lumen_effect_is_animated` 只对静态与熄灭返回 false。
+> 协议层不影响字节语义，但决定渲染任务是否为「一整组只有熄灭」的配置启动帧循环。
+
 ### 9.4 相位与 t0
 
 - 每个**段**持有 `t0_ms`（两层共享一个时间原点），`SetSegment` / `ScriptSegment` 写入时置为当前时刻。
@@ -520,8 +608,12 @@ ScriptStage(script_id, stage, duration_ms, fade_ms)   × stage_count → ACK
 ScriptSegment(script_id, stage, ...)                  × 每个有内容的段 → ACK
 ScriptCommit(script_id)                               → ACK 0x00 / 0x01 / 0x0A
 ActivateScript(script_id, loop)                       → ACK 0x00
+ClearScript(script_id)                                → ACK 0x00 / 0x01 / 0x06
 ```
 
+- **删掉一套方案用 `ClearScript 0x1E`**（§6.1），不是「下发一套空剧本」：
+  `ScriptBegin` 要求 `stage_count ∈ 1..8`，表达不了「这套不存在」。清空是幂等的，
+  清掉的正是激活剧本时停播并退回无激活。
 - **段的清空**：`ScriptSegment` 的两层都写 `0xFF` 表示「该槽位为空」，效果等同于不下发该段。
   **两层的 `level` 都必须为 0**，否则 `InvalidParam`（这条路径绕过形状校验，必须在命令层
   与剧本层各自显式判一次）。
@@ -671,7 +763,7 @@ level 字节）。对应 `LUMEN_SCRIPT_SEGMENT_MIN = 3`（记录头）与
 
 ## 11. 测试向量
 
-`docs/protocol-testvectors-v4.json` 是本文的可执行副本（64 条用例），字段：
+`docs/protocol-testvectors-v4.json` 是本文的可执行副本（78 条用例），字段：
 
 ```jsonc
 {
@@ -708,10 +800,38 @@ level 字节）。对应 `LUMEN_SCRIPT_SEGMENT_MIN = 3`（记录头）与
 | `set_segment_bad_empty_level` | `0x01`（空层带 level 50） |
 | `script_segment_clear_level_nonzero` | `0x01`（清槽旁路 + level 30） |
 
+**`#74` 三种新灯效的向量**（爆闪 / 心跳 / 熄灭）：
+
+| 用例 | 期望 |
+|---|---|
+| `set_segment_single_strobe` | OK（爆闪，period 100ms、duty 90、level 100） |
+| `set_segment_single_heartbeat` | OK（心跳，period 1000ms、pulse 60、双脉冲） |
+| `set_segment_single_off` | OK（熄灭，参数全 0） |
+| `set_segment_strobe_plus_heartbeat` | OK（爆闪打底 + 心跳相乘，证明两种新类型都能作叠加层） |
+| `set_segment_bad_strobe_period` | `0x01`（period 99ms < 100ms 下限） |
+| `set_segment_bad_strobe_flags` | `0x01`（爆闪 flags 非 0） |
+| `set_segment_bad_heartbeat_period_low` | `0x01`（499ms < 500ms） |
+| `set_segment_bad_heartbeat_period_high` | `0x01`（1501ms > 1500ms） |
+| `set_segment_bad_heartbeat_flags` | `0x01`（心跳 flags bit1 非 0） |
+| `set_segment_bad_off_params` | `0x01`（熄灭带 hue） |
+
+v3 向量里对应加一条 `set_segment_bad_strobe_type_unsupported` / 同类用例：
+v3 固件不认识 `0x04`-`0x06`，按未知类型回 `InvalidParam`（**不静默降级**）。
+
+**`0x1E ClearScript`（#73）的向量**：
+
+| 用例 | 期望 |
+|---|---|
+| `clear_script` | OK（seq 62，`script_id = 0`） |
+| `clear_script_last_slot` | OK（seq 63，`script_id = 3`，最后一个合法槽位） |
+| `clear_script_bad_id` | `0x01` InvalidParam（`script_id = 4`） |
+
 生成器：`scripts/gen-protocol-testvectors-v4.mjs`（层构造器默认 `level = 100`，
 断言 23 / 25 字节）。
 独立校验器：`scripts/check-protocol-testvectors-v4.mjs`（只读 JSON，不信任生成器；
-另外校验「合法帧里每层 level ≤ 100」「空层 level 必须 0」「三档都有向量」）。
+另外校验「合法帧里每层 level ≤ 100」「空层 level 必须 0」「三档都有向量」，
+以及 **#74 的类型规则**：已知七种类型、各类型的 flags 保留位与周期区间、
+熄灭层参数全 0、三种新类型的编码用例与边界拒绝用例）。
 
 ---
 
@@ -736,11 +856,28 @@ level 字节）。对应 `LUMEN_SCRIPT_SEGMENT_MIN = 3`（记录头）与
 | 小程序 | `utils/protocol/*` | 层 9 字节、段 23 / 25、`PROTOCOL_VERSION = 0x04`、逐层 level（票 #69） |
 | 后端 | — | **无影响**（`server/` 不持有任何 wire 常量） |
 
+**v4 内的增量改动（#73，ClearScript 0x1E）**——协议版本号**不变**，所以不是迁移项，
+但改动的落点是固定的：
+
+| 端 | 文件 | 改什么 |
+|---|---|---|
+| 固件 | `main/protocol.h` | `LUMEN_CMD_CLEAR_SCRIPT = 0x1E` |
+| 固件 | `main/command.c/h` | `is_known` / `payload_len` / dispatch；outcome 加 `clear_script` + `clear_script_id` |
+| 固件 | `main/script_store.c/h` | `lumen_script_store_clear`、`lumen_script_should_deactivate`（纯逻辑，host 可测） |
+| 固件 | `main/script_blob.c/h` | `lumen_script_blob_encode_with_cleared`（落盘前容量预检） |
+| 固件 | `main/led_engine.c/h` | `lumen_led_engine_clear_script`（锁内清空 + 激活态回退 + 持久化） |
+| 固件 | `main/ble_link.c` | `outcome.clear_script` 分支 |
+| 固件 | `test/test_skeleton.c` | 清空 / 幂等 / 越界 / 激活回退判定 / 预检编码 |
+| 向量 | `scripts/gen-*.mjs` / `check-*.mjs` | v4 三条用例；v3 一条「未知命令」用例 |
+| 小程序 | `utils/protocol/*` | `CMD.CLEAR_SCRIPT = 0x1E` + `cmdClearScript`（调用方是 #83） |
+
 ---
 
 ## 13. 变更规则
 
 - 改任何字节布局 = 本文件 + 测试向量 + 两端实现同一个 commit。
 - **新增命令字必须同时更新对应的报告与 ACK 语义**，不允许「只发不收」。
+  **例外（唯一）**：v4 原地新增的 `0x1E ClearScript` 不需要报告帧——它的结果完全由
+  ACK 承载，而清空后的状态用已有的 `QueryScript` / State 即可读到（§6.1）。
 - 预留位（flags 的保留位、`caps` 的保留位、`fade_ms`）**只能由本文件授权后启用**。
 - `level` 的取值范围（0-100）与空层规则是本契约的一部分，**不要**在实现里放宽成 0-255。

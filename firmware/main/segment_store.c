@@ -88,13 +88,77 @@ uint8_t lumen_segment_store_validate_params(uint8_t type, uint8_t flags, uint16_
      *   这里没有 waveform 位可借；period_ms != 0 时必须 ≥ 200（5Hz）。
      *   这两类是空间移动不是亮度闪烁，所以下限比呼吸宽松（D5）。
      */
-    if ((flags & 0xFEu) != 0) {
-        return LUMEN_RESULT_INVALID_PARAM;
+    if (type == LUMEN_EFFECT_RAINBOW || type == LUMEN_EFFECT_COMET) {
+        if ((flags & 0xFEu) != 0) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        if (period_ms != 0 && period_ms < LUMEN_RAINBOW_MIN_PERIOD_MS) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        return LUMEN_RESULT_OK;
     }
-    if (period_ms != 0 && period_ms < LUMEN_RAINBOW_MIN_PERIOD_MS) {
-        return LUMEN_RESULT_INVALID_PARAM;
+    if (type == LUMEN_EFFECT_STROBE) {
+        /*
+         * 爆闪（effects-spec §2.5）：
+         *   flags **必须为 0**（没有方向 / 波形位可用）；
+         *   period_ms != 0 时必须 ≥ 100（10Hz = 20fps 下能表现的上界）。
+         * duty 是 p5，0-255 全合法（0 = 恒灭），由像素层直接解释。
+         */
+        if (flags != 0) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        if (period_ms != 0 && period_ms < LUMEN_STROBE_MIN_PERIOD_MS) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        return LUMEN_RESULT_OK;
     }
-    return LUMEN_RESULT_OK;
+    if (type == LUMEN_EFFECT_HEARTBEAT) {
+        /*
+         * 心跳（effects-spec §2.6）：
+         *   bit0 = 双脉冲开关（默认 1）、**bit1-7 必须为 0**；
+         *   period_ms != 0 时必须落在 500-1500（40-120 BPM）。
+         */
+        if ((flags & 0xFEu) != 0) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        if (period_ms != 0 && (period_ms < LUMEN_HEARTBEAT_MIN_PERIOD_MS ||
+                               period_ms > LUMEN_HEARTBEAT_MAX_PERIOD_MS)) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        return LUMEN_RESULT_OK;
+    }
+    if (type == LUMEN_EFFECT_OFF) {
+        /*
+         * 熄灭（effects-spec §2.7）：flags / period_ms 必须为 0。
+         * hue / sat / p5 也必须是 0，但本函数签名看不到它们，所以那部分
+         * 放在 lumen_segment_validate_shape 里（避免为一条规则扩公共签名）。
+         */
+        if (flags != 0 || period_ms != 0) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        return LUMEN_RESULT_OK;
+    }
+    /* 类型已由 type_implemented 过滤，走到这里说明类型表与规则表不同步。 */
+    return LUMEN_RESULT_INVALID_PARAM;
+}
+
+/*
+ * 熄灭层的 param[0..6] 是否全 0（effects-spec §2.7）。
+ *
+ * 为什么在这里而不是 lumen_segment_store_validate_params：那个函数只有
+ * `(type, flags, period_ms)` 三个参数，看不到 hue / sat / p5。为一条规则
+ * 扩公共签名会牵动命令层与 blob 解码的所有调用点，而熄灭的「参数全零」
+ * 只依赖层本身——放在形状校验里最省。level 不在约束内：熄灭本来就是黑的，
+ * 亮度对它没有意义。
+ */
+static bool off_params_zero(const lumen_effect_layer_t *layer)
+{
+    for (size_t i = 0; i < sizeof(layer->param); ++i) {
+        if (layer->param[i] != 0) {
+            return false;
+        }
+    }
+    return true;
 }
 
 uint8_t lumen_segment_validate_shape(const lumen_segment_t *seg)
@@ -164,6 +228,17 @@ uint8_t lumen_segment_validate_shape(const lumen_segment_t *seg)
         return LUMEN_RESULT_INVALID_PARAM;
     }
     if (l1->type == LUMEN_EFFECT_BREATHING && lumen_layer_p5(l1) > 100u) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+
+    /*
+     * #74 熄灭：hue / sat / p5 也必须是 0（flags / period 已在上面的
+     * validate_params 里判过）。这里单独查一次是因为共享函数看不到这些字节。
+     */
+    if (l0->type == LUMEN_EFFECT_OFF && !off_params_zero(l0)) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    if (l1->type == LUMEN_EFFECT_OFF && !off_params_zero(l1)) {
         return LUMEN_RESULT_INVALID_PARAM;
     }
     return LUMEN_RESULT_OK;

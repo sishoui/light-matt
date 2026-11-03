@@ -521,6 +521,15 @@ static void handle_frame(const uint8_t *data, size_t len)
     }
 
     /*
+     * ClearScript 0x1E（#73）：真正删掉一套已提交剧本。与段 / 剧本命令一样，
+     * 引擎的返回码是权威（可能因落盘预检失败回 StorageFailed）。清空不是
+     * §9.6 下发流程的一环，所以用独立字段而不是 script_op。
+     */
+    if (outcome.clear_script && outcome.result_code == LUMEN_RESULT_OK) {
+        outcome.result_code = lumen_led_engine_clear_script(outcome.clear_script_id);
+    }
+
+    /*
      * SetStripPower 0x1B（docs/protocol-v4.md §9.5）。命令层已校验 strip 已分配
      * 且 on ∈ {0,1}。这里只改 State 的 strip_power_mask（一位），让小程序立刻
      * 能通过 State 观察到结果。

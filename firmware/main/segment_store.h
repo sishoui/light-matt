@@ -48,17 +48,20 @@ void lumen_segment_store_reset_strip(lumen_segment_store_t *store, uint8_t strip
  *   5 layer1 为空 ⇒ blend 必须为 0
  *   6 blend ≤ 2
  *   7 静态层 param[3..6] 全 0（对两层都生效）
- *   8 各层按 type 校验参数（呼吸 p5 ≤ 100 由本函数单独判）
+ *   8 各层按 type 校验参数（呼吸 p5 ≤ 100、熄灭参数全 0 由本函数单独判）
  *
  * 命令层、剧本层、blob 解码都复用这一处，拒收规则永远一致。
  */
 uint8_t lumen_segment_validate_shape(const lumen_segment_t *seg);
 
 /*
- * 只做「类型参数」规则（§7.1 第 8 步）：flags 保留位与周期下限。
+ * 只做「类型参数」规则（§7.1 第 8 步）：flags 保留位与周期区间。
  *
  * 静态层要求 flags == 0；呼吸 bit3-7 保留、周期 ≥334；彩虹/流光 bit1-7 保留、
- * 周期 ≥200；未知类型一律非法。period_ms == 0 表示静止，不受下限约束。
+ * 周期 ≥200；爆闪 flags == 0、周期 ≥100；心跳 bit1-7 保留、周期 500-1500；
+ * 熄灭 flags == 0 且 period == 0（hue / sat / p5 由
+ * lumen_segment_validate_shape 另判，本函数看不到它们）；未知类型一律非法。
+ * period_ms == 0 表示静止，不受下限约束。
  *
  * v4 的呼吸 p5 从绝对 0-255 改为相对百分比 0-100，这条规则由
  * lumen_segment_validate_shape 单独判（彩虹/流光的 p5 仍是 0-255）。
@@ -115,7 +118,8 @@ bool lumen_segment_store_any_active(const lumen_segment_store_t *store, uint8_t 
 
 /*
  * 帧循环判据（docs/v2-effects-engine.md §3.1）：
- * 任一 strip < strip_count 上存在**动画类**活动段（任一层 type != 0x00）时为真。
+ * 任一 strip < strip_count 上存在**动画类**活动段（见 lumen_effect_is_animated：
+ * 静态与熄灭都不算）时为真。
  *
  * 渲染任务只在为真时带超时等待（动画帧率）；为假时阻塞在信号量上，
  * 与 v1 的静态场景完全一致（零额外 CPU / RMT）。剧本播放（#32）会在

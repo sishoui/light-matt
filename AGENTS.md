@@ -7,14 +7,19 @@
 **先读 [`docs/handoff.md`](docs/handoff.md)。** 它写清了当前在哪、哪些已完成、剩余工作卡在
 什么上。不要凭本文件的简短描述推断进度——项目已经过了三个大版本。
 
-> **刚完成**：UI 重构 + 协议 v4（规格 [#60](https://github.com/sishoui/light-matt/issues/60)，
-> 实现票 #61–#69），在分支 `integration/ui-refactor-v4`，**待合入 master**。底部改为
-> 「设备 / 我的」，发现页降为二级页，新增**灯组详情页**（简单档六张卡 / 进阶档时间轴 + 光区轴
-> + HSV 效果面板），设备页只留总闸、全局亮度与灯组卡片；协议 v4 把层编码扩到 9 字节并新增
-> 逐光区亮度 `level`。`pages/devices`、`pages/scripts`、`pages/segment-edit` 均已删除。
-> 细节、三个陷阱与待办的真机验收见 handoff §0。
+> **刚完成**：灯组进阶编辑器打磨（规格 [#71](https://github.com/sishoui/light-matt/issues/71)，
+> 实现票 #72–#83 全部关闭），在分支 `feat/strip-editor-polish`（基线
+> `integration/ui-refactor-v4`），**待合入 master**。灯珠上限 64→100 且逐组滑块可调；
+> 时间轴固定宽度永不滚动、长按 300ms 抬起跟手重排；光区起止有圆形手柄、弹窗有起止数字滚轮；
+> 方案改为**设备级动态槽位**（默认 1 套、上限 4、可删且不重排）；新增**爆闪 / 心跳 / 熄灭**
+> 三种灯效与 `0x1E ClearScript`。**本轮没上真机**，也**没做叠加层编辑器**，详见 handoff §0。
 
-**上一轮**：v3 的 11 张实现票（#36–#45）与 4 张缺口票（#47–#50）全部关闭，
+**上一轮**：UI 重构 + 协议 v4（规格 [#60](https://github.com/sishoui/light-matt/issues/60)，
+实现票 #61–#69），在分支 `integration/ui-refactor-v4`，**待合入 master**。底部改为
+「设备 / 我的」，发现页降为二级页，新增**灯组详情页**；协议 v4 把层编码扩到 9 字节并新增
+逐光区亮度 `level`。`pages/devices`、`pages/scripts`、`pages/segment-edit` 均已删除。
+
+**上上轮**：v3 的 11 张实现票（#36–#45）与 4 张缺口票（#47–#50）全部关闭，
 **已合入 `master`**（PR #51，merge commit `f9f2fe3`）。**设备侧验收已全部跑完**：协议层 47 项 + 行为语义
 69 项（`scripts/probe-v3-deep.py`）+ 400s 压力（0 事件）均已在真机闭环。
 
@@ -51,7 +56,7 @@ GitHub **#46** 已关闭且**验收项全部闭环**：§1.1–1.8 的 38 项里
 | `pages/discover/discover` | 二级页：**只有扫描**（一个按钮 + 一行状态 + 结果列表） |
 | `pages/device/device` | 二级页：设备名与状态 / 总开关 / 全局亮度 / **灯组两列卡片** / 设备摘要 |
 | `pages/device-info/device-info` | 二级页：身份 / 固件 / 逐组灯珠数与显隐 / 自检 / 改名 / 删除 |
-| `pages/strip/strip` | 二级页：**灯组详情**——简单档六张成品卡 / 进阶档时间轴 + 光区轴 + 效果面板 |
+| `pages/strip/strip` | 二级页：**灯组详情**——简单档九张成品卡 / 进阶档时间轴 + 光区轴 + 效果面板 |
 
 > UI 重构（#60）删除了 `pages/devices`（原 tab 2「发现」）、`pages/scripts` 与
 > `pages/segment-edit`；设备页**不再有**任何灯效编辑控件，全部搬到 `pages/strip`。
@@ -63,10 +68,12 @@ GitHub **#46** 已关闭且**验收项全部闭环**：§1.1–1.8 的 38 项里
 演示设备的封面图在 `assets/devices/*.webp`（三张共 9KB，由 PIL 生成的抽象光照图）；
 **真实设备没有照片时 `photo` 为空串**，页面用设备色渐变兜底，不拿图冒充。
 
-**灯组详情页**：简单档 = 六张成品卡 + 色相 / 饱和度 / 亮度三个滑块；进阶档自上而下是
-时间轴（真实时长比例、长按 380ms 拖动重排、≤8 步骤）→ 时长条（0.5–30 秒）→ 光区轴
-（按灯珠比例、未覆盖灰条、≤8 光区）→ 效果面板（静态 / 呼吸 / 彩虹 / 流光，参数区整体替换）。
-灯珠方格只在弹窗里出现。底部只有一个「应用并播放」，写入失败在按钮下方就地说明。
+**灯组详情页**：简单档 = **九张**成品卡（三列）+ 色相 / 饱和度 / 亮度三个滑块；进阶档自上而下是
+时间轴（**固定宽度不滚动**、比例块 + 24px 保底、长按 300ms 抬起跟手重排、≤8 步骤）→ 时长条（0.5–30 秒）
+→ 光区轴（按灯珠比例、未覆盖灰条、选中两端圆形手柄、≤8 光区）→ 效果面板（**七类型**：静态 / 呼吸 /
+彩虹 / 流光 / 爆闪 / 心跳 / 熄灭，参数区整体替换）。
+灯珠方格只在弹窗里出现（起点实心点 / 终点空心环 + 起止数字滚轮）。
+底部只有一个「应用并播放」，写入失败在按钮下方就地说明。
 **进阶档会把整份方案下发到灯控**（`session.downloadScript(script, { activate: true, loop })`）
 —— 只写实时光区的话第 2..N 步根本播不到。
 
@@ -114,8 +121,8 @@ SHA-256 索引、配置丢失记录。
 ## 测试基线（改代码后必须保持）
 
 ```bash
-cmd.exe //c "firmware\\test\\run-tests.cmd"   # 11449 项断言 + 64 条 v4 向量
-cd miniprogram && npx vitest run              # 1169 用例 / 53 文件（不含 e2e）
+cmd.exe //c "firmware\\test\\run-tests.cmd"   # 12701 项断言 + 78 条 v4 向量
+cd miniprogram && npx vitest run              # 1485 用例 / 57 文件（不含 e2e）
 cd miniprogram && npm run test:ble            # 8 项真机 e2e（无设备自动 skip）
 cd miniprogram && npx tsc --noEmit            # 必须干净
 cd server && npm test                         # 140 用例
@@ -124,10 +131,22 @@ cd server && npm run typecheck                # 必须干净
 
 **模拟器 UI 回归**（改页面后必跑；需要微信开发者工具开着自动化端口）：
 
+**渲染回归脚本（改页面后必跑；需要开发者工具开着自动化端口）**
+
 ```bash
-cd miniprogram && node .auto/verify-effect-editor.mjs   # 137 项：简单档六卡 / 亮度真实下发 / 时间轴 / 光区轴 + 灯珠弹窗 / 效果面板 / 方案真的整份下发（stageCount）/ 术语
-cd miniprogram && node .auto/verify-redesign.mjs        # 37 项：页面树 / 大卡 / 小图切换 / 主题 / tabBar / 发现页 / 我的页
+cd miniprogram && node .auto/verify-effect-editor.mjs   # 147 项：九卡 / 参数区 / 时间轴 / 光区轴 / 灯珠弹窗 / 效果面板 / 叠加层 / 术语
+cd miniprogram && node .auto/verify-redesign.mjs        # 37 项：页面树 / 大卡 / 小图 / 主题 / tabBar / 发现页 / 我的页
 cd miniprogram && node .auto/verify-deep.mjs            # 26 项：电源 / 亮度 / 灯组卡片 / 写入 / 播放 / 断开
+cd miniprogram && node .auto/verify-ui-interaction.mjs  # 40 项：点得动（发现页 / 我的页 / 日志面板 / 删除确认）
+```
+
+> 端口不是默认 9501 时用 `WS=ws://127.0.0.1:9502` 覆盖。
+> 脚本会自己清 `lumen.planDrafts.v1`，可以反复跑（幂等）。
+
+```bash
+cd miniprogram && node .auto/verify-effect-editor.mjs   # ⚠️ 已作废：简单档六卡 / 时间轴 / 光区轴 / 效果面板
+cd miniprogram && node .auto/verify-redesign.mjs        # 37 项：页面树 / 大卡 / 小图切换 / 主题 / tabBar / 发现页 / 我的页
+cd miniprogram && node .auto/verify-deep.mjs            # ⚠️ 已作废：电源 / 亮度 / 灯组卡片 / 写入 / 播放
 cd miniprogram && node .auto/verify-ui-interaction.mjs  # 40 项：点得动（发现页 / 我的页 / 日志面板 / 删除确认）
 ```
 

@@ -69,6 +69,7 @@ import type { UsageLogSink } from "../usage/logger";
 import {
   breathingSegment,
   cmdActivateScript,
+  cmdClearScript,
   cmdClearSegment,
   cmdQueryState,
   cmdScriptAbort,
@@ -219,6 +220,19 @@ export type ScriptResult =
   | { kind: "ok"; plan?: unknown; state?: DeviceState | null }
   | { kind: "invalid"; message: string }
   | { kind: "too-large"; message: string }
+  | { kind: "ack-error"; ack: AckResult }
+  | { kind: "stale" }
+  | { kind: "error"; message: string };
+
+/**
+ * ClearScript 的结果（#83）。
+ *
+ * 与 `ScriptResult` 同形但**去掉了 `invalid` / `too-large`**：清空没有「剧本
+ * 太大」这回事，非法编号在构造器里就被拦成 `error`。页面因此可以安全地读
+ * `ok` 分支的 `state`（清掉的若是激活方案，设备已停播并退回「无激活剧本」）。
+ */
+export type ClearScriptResult =
+  | { kind: "ok"; state?: DeviceState | null }
   | { kind: "ack-error"; ack: AckResult }
   | { kind: "stale" }
   | { kind: "error"; message: string };
@@ -882,7 +896,7 @@ export class ControlSession {
    *  - 不重传：重建是重操作，超时重发只会撞上 0x05 Busy；超时按断线处理；
    *  - 成功才更新本地 ledCount（设备权威），失败保留旧值并给出具体提示。
    *
-   * 输入校验（1-64、纯整数）在页面层用 parseLedCountInput 先做，这里再兜一次：
+   * 输入校验（1-100、纯整数）在页面层用 parseLedCountInput 先做，这里再兜一次：
    * 非法值不发帧，直接返回错误，绝不「尽量发送」。
    */
   async setLedCount(count: number, stripId = this.activeStrip): Promise<CommandResult> {
@@ -1102,6 +1116,49 @@ export class ControlSession {
   /** 丢弃设备侧的暂存（ScriptAbort 0x18）。 */
   async abortScript(scriptId: number): Promise<ScriptResult> {
     return this.sendScriptOnly(cmdScriptAbort(scriptId));
+  }
+
+  /**
+   * 真正从设备上清空一套已提交的方案（ClearScript 0x1E，#73 / #83）。
+   *
+   * 与「本机删草稿」是两件事：本机草稿由页面在**这里返回 ok 之后**才删，
+   * 所以设备拒绝时不会出现「本机没了但设备还在」的静默不一致（#83 的要求）。
+   *
+   * 越界的编号在构造器里就被拒绝（一帧都不发，返回 error）；设备侧的拒绝
+   * 原样带回 `ack-error`，页面的 `resultText` 给出人话原因。成功后读回 State：
+   * 清掉的若是激活方案，设备会退回「无激活剧本」并停播，UI 以设备为准。
+   *
+   * 未提交的编号视为成功（协议幂等），所以重复删除不会报错。
+   */
+  async clearScript(scriptId: number): Promise<ClearScriptResult> {
+    if (this.transport.linkState !== "ready") {
+      return { kind: "error", message: "设备未连接" };
+    }
+    const epoch = this.reconnect.epoch;
+    let request: CommandRequest;
+    try {
+      request = cmdClearScript(scriptId);
+    } catch (err) {
+      /* 非法编号不是设备错误：本地就拒绝，绝不发一帧。 */
+      return { kind: "error", message: errorText(err) };
+    }
+    try {
+      const ack = await this.sendCommand(request);
+      if (this.reconnect.isStale(epoch)) {
+        return { kind: "stale" };
+      }
+      if (!ack.ok) {
+        return { kind: "ack-error", ack };
+      }
+      /* 清掉的可能是激活方案（设备已停播）：读回 State 让 UI 跟着回落。 */
+      const state = await this.refreshState().catch(() => this.latestState);
+      return { kind: "ok", state: state ?? this.latestState };
+    } catch (err) {
+      if (this.reconnect.isStale(epoch)) {
+        return { kind: "stale" };
+      }
+      return { kind: "error", message: errorText(err) };
+    }
   }
 
   /**
