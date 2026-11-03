@@ -33,7 +33,12 @@ typedef struct {
     uint8_t script_id;      /* 0xFF = 无激活剧本 */
     uint8_t stage_index;    /* 当前阶段；无剧本时 0 */
     uint8_t playback_state; /* 0 停止 / 1 播放 / 2 暂停 */
-    uint8_t flags;          /* bit0 loop；bit1 script_active；bit2-7 保留 = 0 */
+    /*
+     * bit0 循环中；bit1 script_active；bit2 最后一步循环；bit3-7 保留 = 0。
+     * 位表与 ScriptSummary / 剧本 blob 共用（script_store.h 的
+     * lumen_loop_flags / lumen_loop_from_flags，#98）。
+     */
+    uint8_t flags;
     /*
      * 每条灯带的独立开关（docs/protocol-v4.md §9.5）。bit i = 第 i 条。
      * 实际是否出光 = 全局 power && 对应位。默认 0xFF（全开）。

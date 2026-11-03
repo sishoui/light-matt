@@ -164,16 +164,23 @@ uint8_t lumen_led_engine_script_abort(uint8_t script_id);
  */
 uint8_t lumen_led_engine_clear_script(uint8_t script_id);
 
-uint8_t lumen_led_engine_activate_script(uint8_t script_id, bool loop);
+/*
+ * 激活一套已提交剧本。loop 是 lumen_loop_mode_t 的线上字节（0 不循环 /
+ * 1 全部循环 / 2 最后一步循环，#98），命令层已拒绝 > 2 的值。
+ */
+uint8_t lumen_led_engine_activate_script(uint8_t script_id, uint8_t loop);
 
-/* ScriptSummary 0x85 的数据源：stage_count / flags(bit0 loop) / active(bit1)。
- * 未提交返回 false。 */
+/*
+ * ScriptSummary 0x85 的数据源：stage_count / flags / active。
+ *
+ * flags 与 State 字节 10 共用 script_store.h 的位表：bit0 循环中、bit1 active、
+ * bit2 最后一步循环、bit3-7 = 0。未提交返回 false。 */
 bool lumen_led_engine_script_summary(uint8_t script_id, uint8_t *stage_count, uint8_t *flags);
 
 /* 本次下发的累计接受帧数（ScriptProgress 0x86 的数据源）。 */
 uint16_t lumen_led_engine_script_frames(uint8_t script_id, uint16_t *frames_written);
 
-/* SetPlayback 0x13：action 0 stop / 1 play / 2 pause。 */
-uint8_t lumen_led_engine_set_playback(uint8_t action, bool loop);
+/* SetPlayback 0x13：action 0 stop / 1 play / 2 pause，loop 是 lumen_loop_mode_t。 */
+uint8_t lumen_led_engine_set_playback(uint8_t action, uint8_t loop);
 
 bool lumen_led_engine_selftest_active(void);

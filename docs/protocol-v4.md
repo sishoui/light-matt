@@ -1,8 +1,8 @@
 # lumen 协议规格 v4
 
-**状态**：**已实现（2026-11-03，分支 `feat/68-protocol-v4`）**。本文件取代 `docs/protocol-v3.md`
-（v3 保留为历史参考，不再维护）。
-固件 host 测试 12098 项断言与 `docs/protocol-testvectors-v4.json`（68 条向量）
+**状态**：**已实现（2026-11-03，分支 `feat/68-protocol-v4`；2026-11-04 原地扩展 #98）**。
+本文件取代 `docs/protocol-v3.md`（v3 保留为历史参考，不再维护）。
+固件 host 测试 13996 项断言与 `docs/protocol-testvectors-v4.json`（93 条向量）
 都对着本文件跑。
 **适用范围**：微信小程序 ↔ ESP32-C3 固件之间的 BLE 协议。
 **唯一真相**：本文件定义字节级契约，`docs/protocol-testvectors-v4.json` 是它的可执行副本。
@@ -231,13 +231,13 @@ export function crc16(bytes: Uint8Array): number {
 | `0x10` | SetSegment | 见 §7.1 | **23**（v3: 21） |
 | `0x11` | ClearSegment | `strip_id, seg_id` | 2 |
 | `0x12` | QueryStrip | `strip_id` | 1 |
-| `0x13` | SetPlayback | `action, loop` | 2 |
+| `0x13` | SetPlayback | `action, loop`（loop 0/1/2，见 §7.5） | 2 |
 | `0x14` | ScriptBegin | `script_id, stage_count, strip_count` | 3 |
 | `0x15` | ScriptStage | `script_id, stage_index, duration, fade` | 6 |
 | `0x16` | ScriptSegment | `script_id, stage_index` + §7.1 | **25**（v3: 23） |
 | `0x17` | ScriptCommit | `script_id` | 1 |
 | `0x18` | ScriptAbort | `script_id` | 1 |
-| `0x19` | ActivateScript | `script_id, loop` | 2 |
+| `0x19` | ActivateScript | `script_id, loop`（loop 0/1/2，见 §7.5） | 2 |
 | `0x1A` | QueryScript | `script_id` | 1 |
 | `0x1B` | SetStripPower | `strip_id, on` | 2 |
 | `0x1C` | QueryStripConfig | — | 0 |
@@ -321,7 +321,8 @@ export function crc16(bytes: Uint8Array): number {
 ```
 偏移  宽  字段
 0     1   type        0x00 静态 / 0x01 呼吸 / 0x02 彩虹 / 0x03 流光 /
-                      0x04 爆闪 / 0x05 心跳 / 0x06 熄灭 / 0xFF 空层
+                      0x04 爆闪 / 0x05 心跳 / 0x06 熄灭 / 0x07 随机闪烁 /
+                      0xFF 空层
 1..7  7   param       参数块右对齐填满 7 字节，未用字节必须为 0
 8     1   level       v4 新增：本层亮度档位 0-100（100 满亮，0 不出光）
 ```
@@ -334,14 +335,15 @@ v4 下呼吸的 `p5` 是**相对百分比 0-100**（见下方 `level` 语义与 
 | `0x00` 静态 | 3 | `hue(2 LE), sat(1)`；`param[3..6]` = 0 |
 | `0x01` 呼吸 | 7 | `hue(2 LE), sat(1), period_ms(2 LE), p5(minLevel **%), flags(波形)` |
 | `0x02` 彩虹 | 7 | `hue(2 LE), sat(1), period_ms(2 LE), p5(span), flags(bit0 reverse)` |
-| `0x03` 流光 | 7 | `hue(2 LE), sat(1), period_ms(2 LE), p5(tail), flags(bit0 reverse)` |
+| `0x03` 流光 | 7 | `hue(2 LE), sat(1), period_ms(2 LE), p5(tail), flags(bit0 reverse / bit1 实色拖尾 / bit2-3 头数量-1)` |
 | `0x04` 爆闪 | 7 | `hue(2 LE), sat(1), period_ms(2 LE), p5(duty), flags(必须 0)` |
 | `0x05` 心跳 | 7 | `hue(2 LE), sat(1), period_ms(2 LE), p5(pulse), flags(bit0 双脉冲)` |
 | `0x06` 熄灭 | 7 | 全部 0（`hue/sat/p5/period/flags` 任一非 0 → `InvalidParam`） |
+| `0x07` 随机闪烁 | 7 | `hue(2 LE), sat(1), period_ms(2 LE), p5(亮着的比例), flags(必须 0)` |
 | `0xFF` 空层 | 0 | 其余 8 字节（param 7 + level 1）全为 0 |
 
-> **#74 的三种新类型复用同一个 7 字节参数块**，所以层编码仍是 9 字节、
-> 段载荷仍是 23 / 25、报告仍是 23、状态 blob 仍是 1440、**协议版本号仍是 4**。
+> **#74 的三种新类型与 #98 的随机闪烁复用同一个 7 字节参数块**，所以层编码仍是
+> 9 字节、段载荷仍是 23 / 25、报告仍是 23、状态 blob 仍是 1440、**协议版本号仍是 4**。
 > 它们没有吃掉 effects-spec §2.8 记录的「动画类只剩 2 字节余量」——余量原封不动。
 
 **`level` 的语义**：
@@ -367,10 +369,13 @@ v4 下呼吸的 `p5` 是**相对百分比 0-100**（见下方 `level` 语义与 
 8. 各层按 type 做参数校验（周期下限、flags 保留位、**呼吸 `p5 ≤ 100`**，见 §11.3）：
    - `0x00` 静态：`flags == 0`；
    - `0x01` 呼吸：`flags & 0xF8 == 0`，`p5 ≤ 100`，`period == 0` 或 `≥ 334`；
-   - `0x02` 彩虹 / `0x03` 流光：`flags & 0xFE == 0`，`period == 0` 或 `≥ 200`；
+   - `0x02` 彩虹：`flags & 0xFE == 0`，`period == 0` 或 `≥ 200`；
+   - **`0x03` 流光（#98 扩展）**：`flags & 0xF0 == 0`（bit4-7 保留），`period == 0`
+     或 `≥ 200`；bit0 = reverse、bit1 = 实色拖尾、bit2-3 = 头数量 - 1（0..3 ⇒ 1..4 个）；
    - **`0x04` 爆闪（#74）**：`flags == 0`，`period == 0` 或 `≥ 100`（10Hz 上界）；
    - **`0x05` 心跳（#74）**：`flags & 0xFE == 0`（bit0 = 双脉冲），`period == 0` 或 `500-1500`（40-120 BPM）；
-   - **`0x06` 熄灭（#74）**：`hue / sat / p5 / flags / period_ms` 全部为 0。
+   - **`0x06` 熄灭（#74）**：`hue / sat / p5 / flags / period_ms` 全部为 0；
+   - **`0x07` 随机闪烁（#98）**：`flags == 0`，`period == 0` 或 `≥ 334`（3Hz，与呼吸同一条安全线）。
 9. 熄灭层的 `level` **不参与**上述参数校验（熄灭本来就是黑的），但 `level ≤ 100` 仍由第 4 步统一约束。
 
 > **熄灭必须同时出现在 `lumen_effect_type_known` 与 `lumen_effect_type_implemented` 里**，
@@ -378,6 +383,13 @@ v4 下呼吸的 `p5` 是**相对百分比 0-100**（见下方 `level` 语义与 
 >
 > **熄灭不算动画类型**（`lumen_effect_is_animated` 显式枚举：静态与熄灭为 false）。
 > 这不影响协议字节，只影响渲染层是否为「一整组只有熄灭」的配置启动帧循环。
+>
+> **流光的多头 / 实色拖尾（#98）用的是同一字节的保留位**：旧固件只认 bit0
+> （`flags & 0xFE == 0`），所以带 bit1-3 的流光在旧固件上回 `InvalidParam`，
+> 不会静默丢掉密度或拖尾形状——这正是「旧固件安全拒绝」的依据。
+>
+> **随机闪烁 `0x07` 是全新的类型值**：旧固件的已知类型表里没有它，
+> 按第 2 步（`layer0` 必须已知且已实现）回 `InvalidParam`，不改任何配置。
 >
 > **熄灭作为 layer1（叠加层）**：协议层不额外拒绝——语义就是「黑色叠加」
 > （覆盖 / 相乘都会把整段变黑）。界面层不提供这个选项（#80 / #81），
@@ -421,7 +433,7 @@ State 特征值 read 与 `StateReport 0x82` 载荷同布局（v4 未改，仍是
 | 7 | script_id | 1 | `0xFF` = 无激活剧本 |
 | 8 | stage_index | 1 | 当前阶段；无剧本时 0 |
 | 9 | playback_state | 1 | 0 停止 / 1 播放 / 2 暂停 |
-| 10 | flags | 1 | bit0 loop；bit1 script_active；bit2-7 保留 = 0 |
+| 10 | flags | 1 | bit0 循环中；bit1 script_active；bit2 最后一步循环；bit3-7 保留 = 0（§7.5） |
 | 11 | strip_power_mask | 1 | bit i = 第 i 条灯带的独立开关 |
 | 12 | strip_anim_mask | 1 | bit i = 第 i 条灯带当前有动画类活动段 |
 | 13-28 | strip_counts[8] | 8×2 | 每条灯带的灯珠数（u16 小端） |
@@ -446,6 +458,10 @@ State 特征值 read 与 `StateReport 0x82` 载荷同布局（v4 未改，仍是
 | `0x83` | SegmentReport | 与 §7.1 SetSegment 同构 | **23**（固定） | 回显 QueryStrip |
 | `0x84` | SegmentListEnd | `strip_id, seg_mask` | 2 | 回显 QueryStrip |
 | `0x85` | ScriptSummary | `script_id, stage_count, flags, active` | 4 | 回显 QueryScript |
+
+`ScriptSummary` 的 `flags` 与 State 字节 10 是**同一张位表**（§7.5）：
+bit0 = 循环中、bit1 = active、bit2 = 最后一步循环、bit3-7 = 0。未激活剧本只报 0
+（循环是播放属性，未激活剧本没有独立的循环存储位置）。
 | `0x86` | ScriptProgress | `script_id, frames_lo, frames_hi` | 3 | 回显下发请求 |
 | `0x87` | StripConfigReport | 8 × `[strip_id, gpio, flags]` | 24 | 回显 QueryStripConfig |
 | `0x88` | DeviceInfoReport | 见下 | 15 | 回显 QueryDeviceInfo |
@@ -472,6 +488,27 @@ State 特征值 read 与 `StateReport 0x82` 载荷同布局（v4 未改，仍是
 
 **Event code**：`0x01` 存储失败（detail = 触发命令字）；`0x02` ScriptCommit 校验失败
 （detail = script_id）；`0x03-0xFF` 保留。`ScriptTooLarge` **走 ACK 结果码 `0x0A`**，不走 Event。
+
+### 7.5 循环字段（`loop`）
+
+`SetPlayback (0x13)` 与 `ActivateScript (0x19)` 的第二个字节从布尔扩成三值
+（#98）。**值就是线上字节，不做重映射**：
+
+| 值 | 名称 | 语义 |
+|---|---|---|
+| `0x00` | 不循环 | 走完最后一步停在最后一帧（`hold_last`），`playback_state = 0` |
+| `0x01` | 全部循环 | 走完最后一步回到第 0 步 |
+| `0x02` | 最后一步循环 | 第 0..N-2 步各播一次，第 N-1 步**原地重播** |
+| `0x03-0xFF` | 非法 | `InvalidParam (0x01)`，不改任何配置 |
+
+- **旧固件天然安全拒绝**：它们原本的实现就是 `loop > 1 → InvalidParam`，
+  所以 `0x02` 会被拒收且不产生副作用，不需要额外迁移代码。
+- **持久化与上报共用一张位表**（§7.3 / §7.4 / §10.3）：
+  `bit0 = 循环中`（`loop != 0`，**保留旧语义**，旧读者仍能看到「在循环」）、
+  `bit1 = 有激活剧本 / active`、`bit2 = 最后一步循环`（`loop == 2`）、`bit3-7` 保留 = 0。
+  因此 `loop = 1` 写 `0x01`、`loop = 2` 写 `0x05`。
+- 剧本 blob 的 flags 没有「激活」概念（激活 id 是独立字段），`bit1` 恒 0；
+  解码时 `bit1` 或 `bit3-7` 非 0、或 `bit2` 单独出现（无 `bit0`）都**整份拒收**。
 
 ---
 
@@ -565,7 +602,49 @@ gain  = floor + (level - floor) × e // e = 波形包络 0-1
 - `level = 50, p5 = 0` → 0..50%（峰值半亮）。
 - `level = 50, p5 = 100` → 恒 50%（完全不呼吸）。
 
-#### 9.3.4 爆闪 / 心跳 / 熄灭的合成（#74）
+#### 9.3.4 流光的多头与实色拖尾（#98）
+
+头数量 `H = (flags bit2-3) + 1`（1..4），沿整条**均分**。每个灯珠的权重是
+所有头的**最大值**（绝不相加，重叠处不会亮度翻倍）：
+
+```
+phase    = (now - t0) / period            // [0,1)
+head_k   = round(k × N / H)               // 0..N-1，k = 0..H-1
+p_k      = ((i / N) - phase - head_k / N) mod 1
+tail_n   = 1 + (tail/255) × (N-1)          // 以灯珠数计
+w_i      = max over k of  head_gain(p_k)
+```
+
+`head_gain(p)`：
+
+- **衰减拖尾（flags bit1 = 0）**：`p × N < tail_n` 时 `exp(-3 × p × N / tail_n)`，
+  否则 0（即 effects-spec §3.4 的原公式）。
+- **实色拖尾（flags bit1 = 1）**：`p × N < 1` 那颗是头（Q16 满值），其余落在尾巴里的
+  是固定的 **75%**（Q16 `49152`）。头与尾之间因此始终保留一颗的亮暗台阶，
+  不会糊成一条同亮的块。`tail = 0` 时尾巴为空，仍然只有头。
+- `N` 不能被 `H` 整除时头位置四舍五入到整颗灯，各头亮度因此始终对齐。
+
+#### 9.3.5 随机闪烁（#98）
+
+每颗灯珠按自己的哈希相位做确定性亮灭方波：
+
+```
+seed      = mix(i, N, t0_ms)              // 16 位，同一份配置下是常量
+s_i       = seed / 65536                  // 该灯的空间相位
+time      = (now - t0) / period           // [0,1)；period = 0 时恒 0
+p         = (time + s_i) mod 1
+duty      = p5 / 255
+gain      = square_with_5pct_ramps(p, duty)   // 与爆闪同一套边沿
+```
+
+- **确定性**：`seed` 不含 `now_ms`，所以同一颗灯在同一时刻反复求值结果一致；
+  它不是逐帧白噪声。`t0_ms` 参与种子，因此「重新下发同一份配置」会换来一张
+  新的分布图，而同一份配置期间它不变。
+- **密度**：`p5` 是同时亮着的比例。各灯的 `s_i` 均匀撒在 `[0,1)`，所以任一时刻
+  亮的比例约等于 `p5/255`；`p5 = 0` 全灭、`p5 = 255` 几乎常亮。
+- `period == 0` 时时间相位不前进，画面冻结在一张固定分布上。
+
+#### 9.3.6 爆闪 / 心跳 / 熄灭的合成（#74）
 
 三种新类型与呼吸一样是**整段同色同步**（包络只与时间有关，与段内位置无关），
 所以每颗灯的求值都是 `static_rgb(hue, sat) × level/100 × envelope(t)`：
@@ -607,7 +686,7 @@ ScriptBegin(script_id, stage_count, strip_count)      → ACK 0x00
 ScriptStage(script_id, stage, duration_ms, fade_ms)   × stage_count → ACK
 ScriptSegment(script_id, stage, ...)                  × 每个有内容的段 → ACK
 ScriptCommit(script_id)                               → ACK 0x00 / 0x01 / 0x0A
-ActivateScript(script_id, loop)                       → ACK 0x00
+ActivateScript(script_id, loop)                       → ACK 0x00（loop 0/1/2）
 ClearScript(script_id)                                → ACK 0x00 / 0x01 / 0x06
 ```
 
@@ -687,7 +766,7 @@ magic 同时升级（`LMS3` → `LMS4`）、版本 2 → 3：v4 每条记录多�
 0..3    magic 'L','M','S','4'
 4..5    version = 3
 6       active_script_id
-7       flags（bit0 loop）
+7       flags（bit0 循环中、bit1 恒 0、bit2 最后一步循环、bit3-7 保留 = 0；§7.5）
 8..     4 个剧本槽位，按 id 升序：
           0 committed | 1 stage_count | 2 strip_count
           然后 stage_count 个阶段：
@@ -705,8 +784,12 @@ magic 同时升级（`LMS3` → `LMS4`）、版本 2 → 3：v4 每条记录多�
 level 字节）。对应 `LUMEN_SCRIPT_SEGMENT_MIN = 3`（记录头）与
 `LUMEN_SCRIPT_SEGMENT_MAX = 21`（v3 是 19）。
 
-**整份拒绝**：长度 < 8 / magic 不符 / version ≠ 3 / flags 保留位非 0 / 激活 id 指向未提交
-剧本 —— 任一不符返回 `false`，调用方必须重新 `lumen_script_store_init()`。
+**整份拒绝**：长度 < 8 / magic 不符 / version ≠ 3 / flags 的 `bit1` 或 `bit3-7`
+非 0 / `bit2` 单独出现（无 `bit0`）/ 激活 id 指向未提交剧本 —— 任一不符返回
+`false`，调用方必须重新 `lumen_script_store_init()`。
+
+> 旧固件对 blob flags 的检查是 `flags & 0xFE != 0 → 拒`，所以带 `bit2` 的
+> 新 blob 会被旧固件明确拒收，而不是被当成「不循环」静默降级。
 
 ### 10.4 上限与失败语义
 
@@ -763,7 +846,7 @@ level 字节）。对应 `LUMEN_SCRIPT_SEGMENT_MIN = 3`（记录头）与
 
 ## 11. 测试向量
 
-`docs/protocol-testvectors-v4.json` 是本文的可执行副本（78 条用例），字段：
+`docs/protocol-testvectors-v4.json` 是本文的可执行副本（93 条用例），字段：
 
 ```jsonc
 {
@@ -818,6 +901,26 @@ level 字节）。对应 `LUMEN_SCRIPT_SEGMENT_MIN = 3`（记录头）与
 v3 向量里对应加一条 `set_segment_bad_strobe_type_unsupported` / 同类用例：
 v3 固件不认识 `0x04`-`0x06`，按未知类型回 `InvalidParam`（**不静默降级**）。
 
+**`#98` 流光密度 / 实色拖尾 / 随机闪烁 / 循环三值的向量**：
+
+| 用例 | 期望 |
+|---|---|
+| `set_segment_comet_heads_1` | OK（flags = 0x00，1 个头） |
+| `set_segment_comet_heads_2` | OK（flags = 0x04，2 个头） |
+| `set_segment_comet_heads_4` | OK（flags = 0x0C，4 个头） |
+| `set_segment_comet_solid_tail` | OK（flags = 0x02，实色拖尾） |
+| `set_segment_comet_heads4_solid_reverse` | OK（flags = 0x0F，4 头 + 实色 + 反向） |
+| `set_segment_bad_comet_flags_reserved` | `0x01`（flags bit4 非 0） |
+| `set_segment_single_flicker` | OK（`0x07`，period 1000ms、duty 128） |
+| `set_segment_flicker_plus_static` | OK（随机闪烁作 layer1，相乘） |
+| `set_segment_bad_flicker_period` | `0x01`（333ms < 334ms） |
+| `set_segment_bad_flicker_flags` | `0x01`（随机闪烁 flags 非 0） |
+| `set_playback_loop_last` | OK（loop = 2） |
+| `activate_script_loop_last` | OK（loop = 2） |
+| `set_playback_loop_invalid` | `0x01`（loop = 3） |
+| `activate_script_loop_invalid` | `0x01`（loop = 3） |
+| `state_report_loop_last` | OK（flags = 0x07：循环中 + 激活 + 最后一步循环） |
+
 **`0x1E ClearScript`（#73）的向量**：
 
 | 用例 | 期望 |
@@ -830,8 +933,10 @@ v3 固件不认识 `0x04`-`0x06`，按未知类型回 `InvalidParam`（**不静�
 断言 23 / 25 字节）。
 独立校验器：`scripts/check-protocol-testvectors-v4.mjs`（只读 JSON，不信任生成器；
 另外校验「合法帧里每层 level ≤ 100」「空层 level 必须 0」「三档都有向量」，
-以及 **#74 的类型规则**：已知七种类型、各类型的 flags 保留位与周期区间、
-熄灭层参数全 0、三种新类型的编码用例与边界拒绝用例）。
+以及 **#74 / #98 的类型规则**：已知八种类型、各类型的 flags 保留位与周期区间、
+熄灭层参数全 0、三种新类型的编码用例与边界拒绝用例，以及 **#98 的流光 flags
+位域（bit4-7 必须 0）、随机闪烁（flags = 0、周期 ≥ 334）、循环三值（2 接受、
+3 拒绝）**）。
 
 ---
 
@@ -870,6 +975,22 @@ v3 固件不认识 `0x04`-`0x06`，按未知类型回 `InvalidParam`（**不静�
 | 固件 | `test/test_skeleton.c` | 清空 / 幂等 / 越界 / 激活回退判定 / 预检编码 |
 | 向量 | `scripts/gen-*.mjs` / `check-*.mjs` | v4 三条用例；v3 一条「未知命令」用例 |
 | 小程序 | `utils/protocol/*` | `CMD.CLEAR_SCRIPT = 0x1E` + `cmdClearScript`（调用方是 #83） |
+
+**v4 内的增量改动（#98，流光密度 / 随机闪烁 / 循环三值）**——协议版本号同样**不变**：
+
+| 端 | 文件 | 改什么 |
+|---|---|---|
+| 固件 | `main/effects.h/.c` | `LUMEN_EFFECT_FLICKER = 0x07`；流光 flags 位定义；`lumen_layer_comet_gain_q16` 多头（取 max）+ 实色拖尾；`lumen_effect_flicker_phase_seed` / `_gain_q16` |
+| 固件 | `main/segment_store.c` | 流光 flags 保留位改成 `0xF0`（bit0-3 有含义）；新增随机闪烁的 flags / 周期校验 |
+| 固件 | `main/script_store.h` | `lumen_loop_mode_t`（0/1/2）+ State / ScriptSummary / blob 共用的 flags 位表与两个转换 helper |
+| 固件 | `main/script_store.c` | 「最后一步循环」在 `lumen_script_playback_tick` 里原地重播 |
+| 固件 | `main/command.c/h` | loop 边界 `> LUMEN_LOOP_MAX`（0x13 / 0x19），`script_loop` 从 bool 变 uint8 |
+| 固件 | `main/led_engine.c/h` | `activate_script` / `set_playback` 收 `uint8_t loop`；State flags 与 ScriptSummary flags 走同一张位表 |
+| 固件 | `main/script_blob.c/h` | blob flags 按位表编码 / 解码（bit1 与 bit3-7 拒收） |
+| 固件 | `main/state_store.c/h` | `load_scripts` 的 `loop` 出参改 `uint8_t` |
+| 固件 | `test/test_skeleton.c` | 流光 1/2/3/4 头、取 max、实色 vs 衰减、随机闪烁确定性与密度、最后一步循环、循环非法值、blob 三档往返 |
+| 向量 | `scripts/gen-*.mjs` / `check-*.mjs` | #98 的 15 条用例 + 类型 / 位域规则 |
+| 小程序 | `utils/protocol/*` | `SEGMENT_TYPE.FLICKER = 0x07`；流光 `cometFlags/cometHeads/cometSolidTail`；`LOOP` 三值与 `assertLoopMode`；State / ScriptSummary 的循环位解析 |
 
 ---
 

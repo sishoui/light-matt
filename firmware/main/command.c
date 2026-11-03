@@ -255,7 +255,12 @@ static void wire_segment_read(const uint8_t payload[LUMEN_WIRE_SEGMENT_BYTES],
  * 真正的暂存 / 提交 / 激活在 led_engine 里执行——它持剧本表与锁。
  */
 
-/* SetPlayback 0x13：action ∈ {0,1,2}，loop ∈ {0,1}。 */
+/*
+ * SetPlayback 0x13：action ∈ {0,1,2}，loop ∈ {0,1,2}（#98 三值）。
+ *
+ * 旧固件原本就是 `loop > 1 → InvalidParam`，所以 2 这个新值天然被旧固件
+ * 安全拒绝——这里把边界放到 LUMEN_LOOP_MAX，两端对同一帧给同一个判定。
+ */
 static void dispatch_set_playback(const lumen_frame_t *frame, const lumen_state_t *current,
                                   lumen_command_outcome_t *outcome)
 {
@@ -265,7 +270,7 @@ static void dispatch_set_playback(const lumen_frame_t *frame, const lumen_state_
         outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
         return;
     }
-    if (loop > 1) {
+    if (loop > LUMEN_LOOP_MAX) {
         outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
         return;
     }
@@ -274,7 +279,7 @@ static void dispatch_set_playback(const lumen_frame_t *frame, const lumen_state_
     outcome->result_code = LUMEN_RESULT_OK;
     outcome->script_op = LUMEN_SCRIPT_OP_PLAYBACK;
     outcome->script_action = action;
-    outcome->script_loop = loop != 0;
+    outcome->script_loop = loop;
 }
 
 /* ScriptBegin 0x14：script_id < MAX_SCRIPTS，stage_count 1-8，strip_count 1-8。 */
@@ -488,20 +493,20 @@ static void dispatch_clear_script(const lumen_frame_t *frame, lumen_command_outc
     outcome->clear_script_id = script_id;
 }
 
-/* ActivateScript 0x19：script_id, loop。 */
+/* ActivateScript 0x19：script_id, loop（0/1/2，见 lumen_loop_mode_t）。 */
 static void dispatch_activate_script(const lumen_frame_t *frame,
                                      lumen_command_outcome_t *outcome)
 {
     uint8_t script_id = frame->payload[0];
     uint8_t loop = frame->payload[1];
-    if (script_id >= LUMEN_MAX_SCRIPTS || loop > 1) {
+    if (script_id >= LUMEN_MAX_SCRIPTS || loop > LUMEN_LOOP_MAX) {
         outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
         return;
     }
     outcome->result_code = LUMEN_RESULT_OK;
     outcome->script_op = LUMEN_SCRIPT_OP_ACTIVATE;
     outcome->script_id = script_id;
-    outcome->script_loop = loop != 0;
+    outcome->script_loop = loop;
 }
 
 /*
@@ -676,7 +681,7 @@ void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *cur
     outcome->script_strip = 0;
     outcome->script_seg = 0;
     outcome->script_segment.active = false;
-    outcome->script_loop = false;
+    outcome->script_loop = LUMEN_LOOP_NONE;
     outcome->clear_script = false;
     outcome->clear_script_id = 0;
     outcome->next = *current;

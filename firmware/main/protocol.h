@@ -192,8 +192,9 @@ size_t lumen_protocol_encode_segment_list_end(uint8_t seq, uint8_t strip_id, uin
 
 /*
  * ScriptSummary 0x85：载荷 [script_id, stage_count, flags, active]，seq 回显 QueryScript。
- * flags bit0 = loop，bit1 = active；active 是 0/1 的独立字节（与 State 的 flags
- * 同位掩码不同，这里是显式字段，按 §7.4 的字段顺序编码）。
+ * flags 与 State 字节 10 同一张位表（§7.5）：bit0 循环中、bit1 active、
+ * bit2 最后一步循环、bit3-7 = 0；active 另外还有一个 0/1 的独立字节（按 §7.4
+ * 的字段顺序编码，与 flags 的 bit1 冗余）。
  */
 size_t lumen_protocol_encode_script_summary(uint8_t seq, uint8_t script_id, uint8_t stage_count,
                                             uint8_t flags, uint8_t active, uint8_t *out,

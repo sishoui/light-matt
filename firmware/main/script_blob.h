@@ -14,7 +14,8 @@
  *   0..3   magic 'L' 'M' 'S' '4'
  *   4..5   version (小端) = 3
  *   6      active_script_id（0xFF = 无）
- *   7      flags（bit0 loop；其余保留 = 0）
+ *   7      flags（bit0 循环中、bit1 恒 0、bit2 最后一步循环、bit3-7 保留 = 0；
+ *                与 State / ScriptSummary 共用 script_store.h 的位表，见 #98）
  *   8..    4 个剧本槽位，按 id 升序：
  *             0 committed | 1 stage_count | 2 strip_count
  *             然后 stage_count 个阶段：
@@ -70,11 +71,11 @@
 #define LUMEN_SCRIPT_BLOB_MAX 16384
 
 /*
- * 编码已提交剧本 + 激活 id + loop。
+ * 编码已提交剧本 + 激活 id + loop 模式（lumen_loop_mode_t，0/1/2）。
  * 返回写入字节数；参数非法或超出 LUMEN_SCRIPT_BLOB_MAX 返回 0。
  */
 size_t lumen_script_blob_encode(const lumen_script_store_t *store, uint8_t active_script_id,
-                                bool loop, uint8_t *out, size_t out_cap);
+                                uint8_t loop, uint8_t *out, size_t out_cap);
 
 /*
  * 带槽位覆盖的编码（ScriptCommit 的尺寸预检用）。
@@ -89,8 +90,8 @@ size_t lumen_script_blob_encode(const lumen_script_store_t *store, uint8_t activ
 size_t lumen_script_blob_encode_with_override(const lumen_script_store_t *store,
                                               uint8_t override_slot,
                                               const lumen_script_t *override_script,
-                                              uint8_t active_script_id, bool loop, uint8_t *out,
-                                              size_t out_cap);
+                                              uint8_t active_script_id, uint8_t loop,
+                                              uint8_t *out, size_t out_cap);
 
 /*
  * 把 `cleared_slot` **当成未提交**来编码（ClearScript 0x1E 的落盘前预检，#73）。
@@ -100,11 +101,11 @@ size_t lumen_script_blob_encode_with_override(const lumen_script_store_t *store,
  * 撕裂状态（此时回 StorageFailed，原剧本保持可用）。
  *
  * 成功时写入的 active_script_id / loop 由调用方给（清空的正是激活剧本时传
- * LUMEN_NO_SCRIPT / false）。cleared_slot 越界返回 0。
+ * LUMEN_NO_SCRIPT 与当前 loop 模式）。cleared_slot 越界返回 0。
  */
 size_t lumen_script_blob_encode_with_cleared(const lumen_script_store_t *store,
                                              uint8_t cleared_slot, uint8_t active_script_id,
-                                             bool loop, uint8_t *out, size_t out_cap);
+                                             uint8_t loop, uint8_t *out, size_t out_cap);
 
 /*
  * 解码并整份校验。strip_counts 是每条灯带自己的灯珠数（与 commit 同一份规则）。
@@ -116,4 +117,4 @@ size_t lumen_script_blob_encode_with_cleared(const lumen_script_store_t *store,
 bool lumen_script_blob_decode(const uint8_t *blob, size_t len,
                               const uint16_t strip_counts[LUMEN_MAX_STRIPS],
                               lumen_script_store_t *store, uint8_t *active_script_id,
-                              bool *loop);
+                              uint8_t *loop);

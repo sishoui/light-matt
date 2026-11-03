@@ -27,6 +27,9 @@ import {
 } from "./constants";
 import {
   breathingWaveform,
+  cometHeads,
+  cometSolidTail,
+  loopModeFromFlags,
   parseDeviceInfoReport,
   parseSegmentPayload,
   parseState,
@@ -72,6 +75,8 @@ export function layerTypeName(type: number): string {
       return "heartbeat";
     case SEGMENT_TYPE.OFF:
       return "off";
+    case SEGMENT_TYPE.FLICKER:
+      return "flicker";
     case NO_EFFECT:
       return "empty";
     default:
@@ -98,10 +103,11 @@ export function blendName(blend: number): string {
  *   0x00 静态：`static(hue=.. sat=.. level=..)`；
  *   0x01 呼吸：period / min_level(百分比) / waveform；
  *   0x02 彩虹：period / span / reverse；
- *   0x03 流光：period / tail / reverse；
+ *   0x03 流光：period / tail / heads / solid / reverse（#98 的 bit1-3）；
  *   0x04 爆闪：period / duty / （无 flags 位）；
  *   0x05 心跳：period / pulse / double（bit0）；
  *   0x06 熄灭：`off(level=..)`，参数恒 0；
+ *   0x07 随机闪烁：period / density（p5 = 同时亮着的比例）；
  *   0xFF 空层：`empty`（空层没有亮度可言，不写 level）。
  */
 export function describeLayer(layer: EffectLayer): string {
@@ -131,9 +137,19 @@ export function describeLayer(layer: EffectLayer): string {
   if (layer.type === SEGMENT_TYPE.OFF) {
     return `${head})`;
   }
-  const p5Name = layer.type === SEGMENT_TYPE.RAINBOW ? "span" : "tail";
+  if (layer.type === SEGMENT_TYPE.FLICKER) {
+    return `${head} period=${layer.periodMs} density=${layer.p5})`;
+  }
+  if (layer.type === SEGMENT_TYPE.RAINBOW) {
+    return (
+      `${head} period=${layer.periodMs} span=${layer.p5} ` +
+      `reverse=${segmentReverse(layer.flags) ? 1 : 0} flags=${hex2(layer.flags)})`
+    );
+  }
+  /* 流光（#98）：除了 tail / reverse，还要写出头数量与拖尾形状。 */
   return (
-    `${head} period=${layer.periodMs} ${p5Name}=${layer.p5} ` +
+    `${head} period=${layer.periodMs} tail=${layer.p5} heads=${cometHeads(layer.flags)} ` +
+    `solid=${cometSolidTail(layer.flags) ? 1 : 0} ` +
     `reverse=${segmentReverse(layer.flags) ? 1 : 0} flags=${hex2(layer.flags)})`
   );
 }
@@ -190,7 +206,7 @@ export function describeCommand(command: number, payload: Uint8Array): string {
         ? `${name} strip=${payload[0]} on=${payload[1]}`
         : `${name} ${bytesToHex(payload)}`;
     case CMD.SET_PLAYBACK:
-      /* action 0 stop / 1 play / 2 pause；loop 是持久化字段（§10.5）。 */
+      /* action 0 stop / 1 play / 2 pause；loop 是三值循环模式（#98）。 */
       return payload.length === 2
         ? `${name} action=${playbackName(payload[0])} loop=${payload[1]}`
         : `${name} ${bytesToHex(payload)}`;
@@ -385,11 +401,17 @@ export function describeDeviceInfoBytes(payload: Uint8Array): string {
   }
 }
 
-/** ScriptSummary 0x85：剧本摘要（QueryScript 的响应）。 */
+/**
+ * ScriptSummary 0x85：剧本摘要（QueryScript 的响应）。
+ *
+ * #98：`loop` 直接从三值位表解（0 不循环 / 1 全部循环 / 2 最后一步循环），
+ * 不再是布尔投影——`loop=2` 在日志里能直接看出是「最后一步循环」。
+ */
 export function describeScriptSummary(summary: ScriptSummary): string {
+  const mode = summary.loopMode ?? loopModeFromFlags(summary.flags);
   return (
     `ScriptSummary script=${summary.scriptId} stages=${summary.stageCount} ` +
-    `loop=${(summary.flags & 0x01) !== 0 ? 1 : 0} active=${summary.active ? 1 : 0}`
+    `loop=${mode} active=${summary.active ? 1 : 0}`
   );
 }
 

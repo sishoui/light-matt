@@ -488,8 +488,8 @@ void lumen_script_playback_init(lumen_script_playback_t *playback)
     playback->state = LUMEN_PLAYBACK_STOPPED;
 }
 
-void lumen_script_playback_select(lumen_script_playback_t *playback, uint8_t script_id, bool loop,
-                                  uint32_t now_ms)
+void lumen_script_playback_select(lumen_script_playback_t *playback, uint8_t script_id,
+                                  uint8_t loop, uint32_t now_ms)
 {
     if (playback == NULL) {
         return;
@@ -619,10 +619,20 @@ bool lumen_script_playback_tick(const lumen_script_t *script, lumen_script_playb
 
             uint8_t next = (uint8_t)(playback->stage_index + 1u);
             if (next >= script->stage_count) {
-                if (playback->loop) {
-                    next = 0; /* 循环：回到第一阶段 */
+                if (playback->loop == LUMEN_LOOP_ALL) {
+                    next = 0; /* 全部循环：回到第一阶段 */
+                } else if (playback->loop == LUMEN_LOOP_LAST) {
+                    /*
+                     * 最后一步循环（#98）：前 N-1 步各播一次，最后一步**原地重播**。
+                     * 播放头不动、state 保持 PLAYING ——「原地」意味着不回到第一阶段，
+                     * 也不进停止态。elapsed 保留减完 duration 后的余数，时间轴因此
+                     * 不会因为重播而比真实时间慢一帧（与 loop=1 的做法一致）。
+                     */
+                    playback->stage_index = (uint8_t)(script->stage_count - 1u);
+                    stage_changed = true;
+                    break;
                 } else {
-                    /* 非循环：停在最后一阶段画面，停止态。 */
+                    /* 不循环：停在最后一阶段画面，停止态。 */
                     playback->state = LUMEN_PLAYBACK_STOPPED;
                     playback->hold_last = true;
                     playback->elapsed_ms = (uint32_t)duration; /* 停在末尾，不再前进 */

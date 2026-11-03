@@ -59,7 +59,8 @@ interface MockRuntime {
   scripts: Map<number, number>;
   activeScript: number;
   playback: number;
-  loop: boolean;
+  /** 循环模式 0 不循环 / 1 全部循环 / 2 最后一步循环（#98，与固件同值）。 */
+  loop: number;
   /** 下发中的剧本暂存（Begin 之后、Commit 之前）。 */
   staging: { scriptId: number; stages: Map<number, { durationMs: number; segments: SegmentSpec[] }> } | null;
 }
@@ -95,7 +96,7 @@ function seedRuntime(spec: MockDeviceSpec): MockRuntime {
     scripts: new Map(),
     activeScript: NO_SCRIPT,
     playback: 0,
-    loop: false,
+    loop: 0,
     staging: null,
   };
 }
@@ -372,15 +373,20 @@ export class MockTransport {
     scriptId: number;
     stageCount: number;
     flags: number;
+    loopMode: number;
     active: boolean;
   }> {
     this.ensureWritable();
     const runtime = this.runtimeOrThrow();
+    const active = runtime.activeScript === scriptId;
+    /* 未激活剧本没有独立的循环存储位置（loop 是播放属性），与固件一致只报 0。 */
+    const flags = active && runtime.loop !== 0 ? (runtime.loop === 2 ? 0x05 : 0x01) | 0x02 : 0x00;
     return {
       scriptId,
       stageCount: runtime.scripts.get(scriptId) ?? 0,
-      flags: runtime.loop ? 0x01 : 0x00,
-      active: runtime.activeScript === scriptId,
+      flags,
+      loopMode: active ? runtime.loop : 0,
+      active,
     };
   }
 
@@ -532,8 +538,12 @@ export class MockTransport {
         if (action > 2) {
           return 0x01;
         }
+        /* #98：loop 是三值；越界与固件一样回 InvalidParam（不改状态）。 */
+        if (payload[1] > 2) {
+          return 0x01;
+        }
         runtime.playback = action;
-        runtime.loop = payload[1] === 1;
+        runtime.loop = payload[1];
         return 0x00;
       }
       case 0x14: {
@@ -596,8 +606,11 @@ export class MockTransport {
         if (!runtime.scripts.has(scriptId)) {
           return 0x01;
         }
+        if (payload[1] > 2) {
+          return 0x01;
+        }
         runtime.activeScript = scriptId;
-        runtime.loop = payload[1] === 1;
+        runtime.loop = payload[1];
         runtime.playback = 1;
         return 0x00;
       }
@@ -659,7 +672,9 @@ export class MockTransport {
       scriptId: runtime.activeScript,
       stageIndex: 0,
       playbackState: runtime.playback,
-      flags: (runtime.loop ? 0x01 : 0x00) | (runtime.activeScript !== NO_SCRIPT ? 0x02 : 0x00),
+      flags:
+        (runtime.loop === 0 ? 0x00 : runtime.loop === 2 ? 0x05 : 0x01) |
+        (runtime.activeScript !== NO_SCRIPT ? 0x02 : 0x00),
       stripPowerMask: runtime.stripPowerMask,
       stripAnimMask: 0x00,
       stripCounts: [...runtime.ledCounts],
