@@ -854,6 +854,10 @@ Page({
    *
    * `draftOwned` 是这件事的判据：只有真正被编辑过（或从存储读回的）槽位才迁移，
    * 否则会把「设备上其实有方案」的槽位用空白默认草稿覆盖掉存储。
+   *
+   * #75 起草稿是**设备级**的（键 `deviceKey#slot`，没有灯组维度）：读回的是
+   * 整份方案（含其它灯组的光区切片），本页只展示 / 修改 `stripId` 那一片。
+   * 这样两套灯组看到的是同一份方案，写入时后写的那组不会把前一组清掉。
    */
   ensureDraftsLoaded(): void {
     const storage = this.storage;
@@ -864,17 +868,16 @@ Page({
     if (key === this.draftsKey) {
       return;
     }
-    const stripId = this.data.stripId;
     /* 键变了：把用户自己的草稿迁到新键（deviceId → hardwareId 的升级）。 */
     if (this.draftsKey.length > 0) {
       for (let slot = 0; slot < this.drafts.length; slot += 1) {
         if (this.draftOwned[slot] === true) {
-          savePlanDraft(storage, key, stripId, slot, this.drafts[slot]);
+          savePlanDraft(storage, key, slot, this.drafts[slot]);
         }
       }
     }
     this.draftsKey = key;
-    const stored = loadPlanDrafts(storage, key, stripId);
+    const stored = loadPlanDrafts(storage, key);
     if (stored === null) {
       /* 新键没有历史：保留内存里的（迁移上来的部分），其余仍是默认草稿。 */
       this.setData({ planSub: this.planSubOf(this.data.planSlot) });
@@ -899,7 +902,13 @@ Page({
     }
   },
 
-  /** 把某个槽位写进存储（键未知时静默跳过，绝不编造键）。 */
+  /**
+   * 把某个槽位写进存储（键未知时静默跳过，绝不编造键）。
+   *
+   * 写的是**整份设备级草稿**：内存里的草稿是从存储读回来的（含其它灯组的
+   * 切片），而编辑只经过 `writeStepZones` 替换「当前步骤 × 当前灯组」那一片，
+   * 所以其它灯组 / 其它步骤原样落盘。
+   */
   saveDraft(slot: number, draft: ScriptDraft): void {
     const storage = this.storage;
     const key = this.draftsKey.length > 0 ? this.draftsKey : this.deviceKeyForDrafts();
@@ -907,7 +916,7 @@ Page({
       return;
     }
     this.draftsKey = key;
-    savePlanDraft(storage, key, this.data.stripId, slot, draft);
+    savePlanDraft(storage, key, slot, draft);
   },
 
   /** 当前步骤里当前灯组的光区。 */
