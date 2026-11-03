@@ -35,7 +35,7 @@ static const char *TAG = "lumen_engine";
  * 无论 BLE 回调提交多快，渲染任务醒来永远只取最后一个快照，不排队旧帧。
  *
  * s_segments 是段配置的唯一权威，同一把锁保护。段配置没有自己的邮箱：
- * 渲染任务每次醒来在锁内整份拷出（64 个槽位 × 16 字节 = 1KB），
+ * 渲染任务每次醒来在锁内整份拷出（8 带 × 8 段 × 28 字节 = 1792 B，v4 记录），
  * 天然 latest-wins，并且与 State 快照来自同一临界区，不会出现
  * 「状态更新了但段还是旧的」这种撕裂帧。
  */
@@ -49,9 +49,10 @@ static lumen_segment_store_t s_segments;
 /*
  * #32 剧本：已提交剧本表 + 播放时间轴 + 「当前阶段的段配置」缓存。
  *
- * 三者都由 s_state_lock 保护。s_stage_segments 是渲染任务专用的合成缓冲
- * （1KB，放静态区而不是 4KB 的渲染任务栈上）：它只在渲染任务里写，其余路径
- * 只把 s_stage_valid 置 false 请求重建。
+ * 三者都由 s_state_lock 保护。s_stage_segments 是渲染任务的合成缓冲
+ * （8 带 × 8 段 × 28 字节 = 1792 B，放静态区而不是 4KB 的渲染任务栈上）：
+ * 内容由渲染任务在锁内按播放头重建；其它路径（SetLedCount 的裁剪）只在同一
+ * 把锁下删掉越界段并把 s_stage_valid 置 false 请求重建，不参与逐帧写入。
  *
  * 阶段切换时把每个段的 t0_ms 重置为**切换时刻的剧本时间**，即相位重置
  * （docs/v2-effects-engine.md §6.2 的已定取舍）。
@@ -63,8 +64,8 @@ static lumen_segment_store_t s_stage_segments;
 /*
  * 渲染任务的工作区（**静态**，不是栈上局部变量）。
  *
- * 为什么必须静态：lumen_segment_store_t 是 8×8×16 = 1024 字节，
- * lumen_persist_t 再大一点（状态 + 段表 ≈ 1060 字节）。这些结构一旦放在
+ * 为什么必须静态：lumen_segment_store_t 是 8×8×28 = 1792 字节，
+ * lumen_persist_t 再大一点（状态 + 段表 ≈ 1.83 KB）。这些结构一旦放在
  * render_task 的栈上，再叠上 led_strip / RMT 驱动的调用深度，4KB 栈会被打穿
  * ——真机实测报 `Guru Meditation ... Stack protection fault, task "lumen_render"`，
  * 表现为上电即反复重启。
@@ -257,8 +258,9 @@ static void persist_snapshot_locked(lumen_persist_t *out)
 /*
  * 请求持久化剧本表 + 激活 id + loop（**调用者必须持锁**）。
  *
- * 在这里就地编码成 blob（4KB 静态缓冲）再交给 state_store：剧本表本身约
- * 41KB，存储侧再存一份会白吃 41KB DRAM，而编码是纯函数、只读表。
+ * 在这里就地编码成 blob（16KB 静态缓冲）再交给 state_store：剧本表本身约
+ * 70KB（v4：5 套 × 8 阶段 × 8 带 × 8 段 × 28B），存储侧再存一份会白吃
+ * 70KB DRAM，而编码是纯函数、只读表。
  * 锁序固定「引擎锁 → 存储锁」，存储任务从不反过来取引擎锁。
  *
  * 播放位置不在快照里，所以播放/暂停不会改变持久化内容（loop 会）。
@@ -296,6 +298,42 @@ static void strip_counts_locked(uint16_t out[LUMEN_MAX_STRIPS])
         }
     } else {
         out[0] = s_state.led_count;
+    }
+}
+
+/*
+ * 灯珠数变化后的统一裁剪（**调用者必须持锁**）。
+ *
+ * 三条 SetLedCount 路径（strip 0 单灯带 / TDM 模式的 strip 0 / strip 1..7）
+ * 必须做同一件事，否则同一份越界段在不同路径上会留下不同的持久化后果：
+ *  - 静态段表与当前阶段快照里留着越界段 → 画面引用越界区间，State 摘要与
+ *    下一次 commit 的校验口径不一致；
+ *  - 已提交剧本里留着越界段 → 那份 blob 一旦落盘，下次上电
+ *    `lumen_script_blob_decode` 会**整份拒收**（它复用单段校验，end 越界即
+ *    非法），`led_engine` 回落到 `lumen_script_store_init`，**四套方案静默丢失**。
+ *
+ * 语义严格对齐 `lumen_segment_store_prune`：`end >= new_count` 的活动段整体
+ * 失效，**不自动缩短区间**。剧本表真的被改动时立即重新编码排队落盘
+ * （写盘本身的 500ms debounce 由存储侧负责）。
+ */
+static void prune_for_strip_locked(uint8_t strip_id, uint16_t new_count)
+{
+    uint16_t static_pruned = lumen_segment_store_prune(&s_segments, strip_id, new_count);
+    /* 当前阶段快照是剧本的副本，同样要裁：渲染与 State 摘要都读它。 */
+    uint16_t stage_pruned = lumen_segment_store_prune(&s_stage_segments, strip_id, new_count);
+    uint16_t script_pruned = lumen_script_store_prune_strip(&s_scripts, strip_id, new_count);
+
+    if (static_pruned > 0 || stage_pruned > 0 || script_pruned > 0) {
+        ESP_LOGW(TAG, "led count -> strip %u = %u：越界段失效 static=%u stage=%u scripts=%u",
+                 strip_id, new_count, static_pruned, stage_pruned, script_pruned);
+    }
+    if (stage_pruned > 0 || script_pruned > 0) {
+        /* 阶段缓存必须按裁剪后的剧本重建，否则画面里还留着那条已失效的段。 */
+        s_stage_valid = false;
+    }
+    if (script_pruned > 0) {
+        /* 已提交剧本属于持久化内容：改了就必须重新落盘一遍。 */
+        persist_scripts_locked();
     }
 }
 
@@ -400,6 +438,16 @@ static void rebuild_led_count_if_pending(void)
         bool committed = lumen_led_count_job_complete(&s_led_count_job, true, &s_state);
         s_state.led_count = target;
         (void)lumen_planar_set_count(&s_planar, 0, target);
+        /*
+         * 越界段必须一起裁掉：静态段表、当前阶段快照、已提交剧本三处都要。
+         * 以前这里只改了数量就落盘，一份带尾巴段的剧本会让下次上电的 blob
+         * 解码整份失败，四套方案静默丢失（见 prune_for_strip_locked 的说明）。
+         */
+        if (committed) {
+            prune_for_strip_locked(0, target);
+            /* 裁剪可能让当前生效段数 / 基准色变化：摘要按裁剪后的表重算。 */
+            refresh_state_summary_from_active_locked();
+        }
         persist_snapshot_locked(&s_render_persist);
         xSemaphoreGive(s_state_lock);
 
@@ -522,20 +570,11 @@ static void rebuild_led_count_if_pending(void)
         /*
          * 裁剪越界段（docs/v2-effects-engine.md §7.2 第 3 条）：任何 end >= 新数量
          * 的段失效，不自动缩短阈值——自动改用户边界比丢弃更意外。
+         *
+         * 静态段表 / 当前阶段快照 / 已提交剧本三处都要裁，规则与文案集中在
+         * prune_for_strip_locked。剧本被改动时它会顺手重新编码排队落盘。
          */
-        uint8_t pruned = lumen_segment_store_prune(&s_segments, 0, s_state.led_count);
-        if (pruned > 0) {
-            ESP_LOGW(TAG, "led count -> %u：%u 个段越界已失效", s_state.led_count, pruned);
-        }
-        /*
-         * #32：当前阶段的段配置也要裁剪，否则数量变小后剧本画面会引用
-         * 越界区间（渲染层会钳住，但 State 摘要与下一次 commit 的校验会不一致）。
-         * 裁剪后强制重建一次阶段缓存。
-         */
-        if (lumen_segment_store_prune(&s_stage_segments, 0, s_state.led_count) > 0) {
-            ESP_LOGW(TAG, "led count -> %u：当前阶段有越界段已失效", s_state.led_count);
-            s_stage_valid = false;
-        }
+        prune_for_strip_locked(0, s_state.led_count);
         refresh_state_summary_from_active_locked();
         /* 重建期间 commit 过的快照已经被这一帧覆盖，邮箱不再需要。 */
         s_mailbox_dirty = false;
@@ -933,7 +972,8 @@ static void render_task(void *arg)
         snapshot.flags = s_state.flags;
         /*
          * 段配置与状态来自同一临界区，避免撕裂帧。播放中改用「当前阶段」的
-         * 段配置；停止时回到静态配置。两者都是整份拷贝（1KB），与 v1 同一代价。
+         * 段配置；停止时回到静态配置。两者都是整份拷贝（8×8×28 B ≈ 1.75 KB），
+         * 与 v1 同一代价。
          */
         s_render_segments = script_rendering ? s_stage_segments : s_segments;
         /*
@@ -1408,11 +1448,26 @@ uint8_t lumen_led_engine_set_led_count_for_strip(uint8_t strip_id, uint16_t coun
             (void)lumen_planar_set_count(&s_planar, strip_id, count);
             /* 数量变了：该条上一帧的尺寸不再有效，强制重刷一次。 */
             s_tdm_rendered_valid[strip_id] = false;
+            /*
+             * 越界段必须一起裁掉（这条路径以前既没裁剪也没持久化）：
+             * 不裁剪 → 越界段仍然生效，剧本 blob 还会被整份拒收；
+             * 不持久化 → 重启后数量又回到旧值。
+             */
+            prune_for_strip_locked(strip_id, count);
+            /* 摘要按**当前生效**的段表重算（播放中即已裁剪的阶段快照）。 */
+            refresh_state_summary_from_active_locked();
+            /*
+             * 本路径跑在 BLE 回调（NimBLE 主机任务）里，**不能**用
+             * s_render_persist——那是渲染任务的私有缓冲，共用会撕裂。
+             */
+            persist_snapshot_locked(&s_commit_persist);
         }
         xSemaphoreGive(s_state_lock);
         if (!valid) {
             return LUMEN_RESULT_INVALID_PARAM;
         }
+        /* 成功才持久化（§11.3 第 2 条）：数量与裁剪后的段表一起跨断电。 */
+        lumen_state_store_request_save(&s_commit_persist, LUMEN_CMD_SET_LED_COUNT);
         xSemaphoreGive(s_render_signal);
         ESP_LOGI(TAG, "SetLedCount strip %u -> %u（seq=0x%02X），无需重建句柄", strip_id, count,
                  seq);

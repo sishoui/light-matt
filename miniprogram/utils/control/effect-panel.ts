@@ -943,8 +943,16 @@ export function panelLayer(type: PanelType, params: EffectParams): EffectLayer {
  * 呼吸 / 彩虹 / 流光走滑块口径（0.5 秒步进，见 `clampPeriodMs`）；
  * 爆闪 / 心跳的周期由频率 / 节奏换算，粒度是毫秒级，**不能**过 `clampPeriodMs`
  * （200ms 会被圆到 0 再抬到 500ms，读回来频率就错了）。
+ *
+ * **0 必须原样返回 0**：0 在协议里表示「静止」，而爆闪 / 心跳的下限钳位
+ * 会把 0 抬成 100ms / 500ms —— 那正是**最快**的两档（10Hz / 120BPM）。
+ * 若不在这里短路，一台把爆闪设成静止的设备读回来会显示成最亮的爆闪，
+ * 用户一碰滑块就把「静止」变成「10Hz」。
  */
 function periodMsFor(type: PanelType, periodMs: number): number {
+  if (!Number.isFinite(periodMs) || periodMs <= 0) {
+    return 0;
+  }
   if (type === "strobe") {
     return Math.max(STROBE_MIN_PERIOD_MS, Math.round(periodMs));
   }

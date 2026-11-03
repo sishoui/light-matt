@@ -30,9 +30,22 @@ import { percentOf100, spanText, tailText } from "./segment-view";
 /**
  * 层在界面上的灯效档位。
  *
- * 与协议类型一一对应，但「关闭」只在叠加效果（第 2 层）出现：主效果必填。
+ * 与协议类型一一对应，但两个「没有效果」要分开：
+ *  - `off`  = 空层（0xFF），「叠加效果没有设置」；
+ *  - `dark` = 熄灭（0x06），「这一段保持黑色」。
+ *
+ * 合并成一个会让设备页把一条熄灭的灯组显示成「关闭」——用户看到的是
+ * 「这个光区没配」，而设备的真实状态是「这个光区被显式设成全黑」。
  */
-export type LayerMode = "static" | "breathing" | "rainbow" | "comet" | "off";
+export type LayerMode =
+  | "static"
+  | "breathing"
+  | "rainbow"
+  | "comet"
+  | "strobe"
+  | "heartbeat"
+  | "dark"
+  | "off";
 
 /** 一个灯效选项（主效果 / 叠加效果各一份列表）。 */
 export interface ModeOption {
@@ -55,7 +68,14 @@ export const OVERLAY_MODE_OPTIONS: readonly ModeOption[] = [
   { mode: "off", name: "关闭", type: NO_EFFECT },
 ];
 
-/** 灯效类型 → 界面档位；未知类型按静态显示（与旧页面一致）。 */
+/**
+ * 灯效类型 → 界面档位；未知类型按静态显示（与旧页面一致）。
+ *
+ * 七种协议类型都必须有独立的档位，否则设备页会把它们合并成同一个名字：
+ * 0x04（爆闪）/ 0x05（心跳）曾经落到 `default`，于是一条正在爆闪的灯组在
+ * 卡片上显示「静态」；0x06（熄灭）同样被显示成「静态」，用户会以为设备
+ * 没执行刚才那条设置。
+ */
 export function layerModeOf(type: number): LayerMode {
   switch (type) {
     case SEGMENT_TYPE.BREATHING:
@@ -64,11 +84,40 @@ export function layerModeOf(type: number): LayerMode {
       return "rainbow";
     case SEGMENT_TYPE.COMET:
       return "comet";
+    case SEGMENT_TYPE.STROBE:
+      return "strobe";
+    case SEGMENT_TYPE.HEARTBEAT:
+      return "heartbeat";
+    case SEGMENT_TYPE.OFF:
+      return "dark";
     case NO_EFFECT:
       return "off";
     default:
       return "static";
   }
+}
+
+/**
+ * 灯效档位 → 用户看到的名字（设备页的卡片摘要用）。
+ *
+ * 与 `layerModeOf` 放在一起是刻意的：两者必须同步，任何一边漏一种类型都会
+ * 让卡片上的名字与实际画面不符（#72 之后 0x04/0x05/0x06 曾经落进默认分支
+ * 被叫成「静态」）。`pages/device` 只调这个函数，不再自己写一份 switch。
+ */
+const MODE_NAMES: Readonly<Record<LayerMode, string>> = {
+  static: "静态",
+  breathing: "呼吸",
+  rainbow: "彩虹",
+  comet: "流光",
+  strobe: "爆闪",
+  heartbeat: "心跳",
+  dark: "熄灭",
+  off: "关闭",
+};
+
+/** 协议类型 → 显示名（未知类型按「静态」，与 `layerModeOf` 的兜底一致）。 */
+export function layerModeNameOf(type: number): string {
+  return MODE_NAMES[layerModeOf(type)];
 }
 
 /** 波形选项（顺序 = 协议枚举值）。 */

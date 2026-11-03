@@ -6837,6 +6837,140 @@ static void test_script_blob_roundtrip(void)
     }
 }
 
+/* ---------------- #72 漏项：灯珠数变小后裁剪剧本 ---------------- */
+
+/*
+ * 裁剪只动**指定灯带**的越界段：
+ *  - strip 0 的 [20-29] 在 new_count = 20 时失效（end >= 20）；
+ *  - strip 0 的 [0-9]、strip 1 的 [0-5] 原样保留；
+ *  - 其它已提交槽位（1 号剧本）与暂存区同规则处理，但互不影响。
+ */
+static void test_script_store_prune_strip(void)
+{
+    uint16_t counts[LUMEN_MAX_STRIPS] = {30, 12, 0, 0, 0, 0, 0, 0};
+    lumen_script_store_t store;
+    lumen_script_store_init(&store);
+
+    /* 0 号剧本：2 阶段 × 2 条灯带，strip 0 各有一个内段 + 一个尾巴段。 */
+    CHECK(lumen_script_begin(&store, 0, 2, 2));
+    for (uint8_t st = 0; st < 2; ++st) {
+        CHECK(lumen_script_stage(&store, 0, st, 1000, 0));
+        lumen_segment_t head = make_static(0, 9, 1000, 255);
+        lumen_segment_t tail = make_static(20, 29, 2000, 255);
+        lumen_segment_t other = make_static(0, 5, 3000, 255);
+        CHECK(lumen_script_segment(&store, 0, st, 0, 0, &head, NULL));
+        CHECK(lumen_script_segment(&store, 0, st, 0, 1, &tail, NULL));
+        CHECK(lumen_script_segment(&store, 0, st, 1, 0, &other, NULL));
+    }
+    CHECK(lumen_script_commit(&store, 0, counts, NULL, 0, NULL) == LUMEN_SCRIPT_COMMIT_OK);
+
+    /* 1 号剧本：同形，但只在 strip 0 放一个内段（不该被 0 号的影响）。 */
+    CHECK(lumen_script_begin(&store, 1, 1, 1));
+    CHECK(lumen_script_stage(&store, 1, 0, 700, 0));
+    lumen_segment_t keep = make_static(0, 4, 4000, 255);
+    CHECK(lumen_script_segment(&store, 1, 0, 0, 0, &keep, NULL));
+    CHECK(lumen_script_commit(&store, 1, counts, NULL, 0, NULL) == LUMEN_SCRIPT_COMMIT_OK);
+
+    const lumen_script_t *s0 = lumen_script_get(&store, 0);
+    CHECK(s0 != NULL);
+    if (s0 == NULL) {
+        return;
+    }
+    CHECK(s0->stages[0].segments[0][1].active);
+    CHECK(s0->stages[1].segments[0][1].active);
+
+    /* strip 0 → 20 灯：两个阶段各掉一个尾巴段 = 2。 */
+    CHECK(lumen_script_store_prune_strip(&store, 0, 20) == 2);
+    CHECK(!s0->stages[0].segments[0][1].active);
+    CHECK(!s0->stages[1].segments[0][1].active);
+    /* 内段与 strip 1 的段都不受影响（不自动缩短 / 不跨带误删）。 */
+    CHECK(s0->stages[0].segments[0][0].active);
+    CHECK(s0->stages[0].segments[0][0].end == 9);
+    CHECK(s0->stages[0].segments[1][0].active);
+    CHECK(s0->stages[0].segments[1][0].end == 5);
+    /* 其它槽位原样。 */
+    CHECK(lumen_script_is_committed(&store, 1));
+    CHECK(lumen_script_get(&store, 1)->stages[0].segments[0][0].active);
+
+    /* 再裁一次：无事发生（幂等）。 */
+    CHECK(lumen_script_store_prune_strip(&store, 0, 20) == 0);
+
+    /* 参数防御：越界 strip / NULL 返回 0 且不改内容。 */
+    CHECK(lumen_script_store_prune_strip(NULL, 0, 20) == 0);
+    CHECK(lumen_script_store_prune_strip(&store, LUMEN_MAX_STRIPS, 20) == 0);
+
+    /* 暂存区同规则：Begin 一套带尾巴段的暂存，裁 strip 0 = 20 后尾巴消失。 */
+    CHECK(lumen_script_begin(&store, 2, 1, 1));
+    CHECK(lumen_script_stage(&store, 2, 0, 500, 0));
+    lumen_segment_t staging_tail = make_static(10, 25, 5000, 255);
+    CHECK(lumen_script_segment(&store, 2, 0, 0, 0, &staging_tail, NULL));
+    CHECK(lumen_script_store_prune_strip(&store, 0, 20) == 1);
+    /* 暂存仍是活动状态（裁剪不等于 Abort），但那个段没了。 */
+    CHECK(store.staging_active);
+    CHECK(!store.staging.stages[0].segments[0][0].active);
+}
+
+/*
+ * 裁剪之后，blob 的 encode → decode 必须重新可用。
+ *
+ * 这是一份「带尾巴段的方案」在真机上的复盘：裁剪前用新数量解码会**整份
+ * 失败**（blob 解码复用单段校验，end 越界即非法），而这正是四套方案一起
+ * 丢失的机制。裁剪保证「写下去的一定读得回来」。
+ */
+static void test_script_prune_then_blob_roundtrip(void)
+{
+    uint16_t before[LUMEN_MAX_STRIPS] = {30, 12, 0, 0, 0, 0, 0, 0};
+    uint16_t after[LUMEN_MAX_STRIPS] = {20, 12, 0, 0, 0, 0, 0, 0};
+
+    lumen_script_store_t store;
+    lumen_script_store_init(&store);
+
+    CHECK(lumen_script_begin(&store, 3, 2, 2));
+    for (uint8_t st = 0; st < 2; ++st) {
+        CHECK(lumen_script_stage(&store, 3, st, 900, 0));
+        lumen_segment_t head = make_static(0, 9, 1000, 255);
+        lumen_segment_t tail = make_static(20, 29, 2000, 255);
+        lumen_segment_t other = make_static(0, 5, 3000, 255);
+        CHECK(lumen_script_segment(&store, 3, st, 0, 0, &head, NULL));
+        CHECK(lumen_script_segment(&store, 3, st, 0, 1, &tail, NULL));
+        CHECK(lumen_script_segment(&store, 3, st, 1, 0, &other, NULL));
+    }
+    CHECK(lumen_script_commit(&store, 3, before, NULL, 0, NULL) == LUMEN_SCRIPT_COMMIT_OK);
+
+    uint8_t blob[LUMEN_SCRIPT_BLOB_MAX];
+    size_t len = lumen_script_blob_encode(&store, 3, false, blob, sizeof(blob));
+    CHECK(len > 8);
+
+    lumen_script_store_t restored;
+    uint8_t active = LUMEN_NO_SCRIPT;
+    bool loop = false;
+
+    /* 裁剪前：按 20 灯解码 → 整份拒收（这正是上电丢配置的路径）。 */
+    lumen_script_store_init(&restored);
+    CHECK(!lumen_script_blob_decode(blob, len, after, &restored, &active, &loop));
+
+    /* 裁剪后：同一份 store 重新编码就能按 20 灯解码成功。 */
+    CHECK(lumen_script_store_prune_strip(&store, 0, 20) == 2);
+    len = lumen_script_blob_encode(&store, 3, false, blob, sizeof(blob));
+    CHECK(len > 8);
+    lumen_script_store_init(&restored);
+    CHECK(lumen_script_blob_decode(blob, len, after, &restored, &active, &loop));
+    CHECK(active == 3);
+    const lumen_script_t *s3 = lumen_script_get(&restored, 3);
+    CHECK(s3 != NULL);
+    if (s3 != NULL) {
+        CHECK(s3->stage_count == 2);
+        CHECK(s3->stages[0].segments[0][0].active);
+        CHECK(!s3->stages[0].segments[0][1].active);
+        CHECK(s3->stages[1].segments[0][0].active);
+        CHECK(!s3->stages[1].segments[0][1].active);
+        /* strip 1 的段在裁剪中毫发无损。 */
+        CHECK(s3->stages[0].segments[1][0].active);
+        CHECK(s3->stages[1].segments[1][0].active);
+    }
+}
+
+
 
 /* ---------------- #37：两层模型 / blend / 校验矩阵 / gamma 一次 ---------------- */
 
@@ -7956,6 +8090,8 @@ int main(int argc, char **argv)
     test_script_playback_pause_resume();
     test_script_playback_hold_during_selftest();
     test_script_blob_roundtrip();
+    test_script_store_prune_strip();
+    test_script_prune_then_blob_roundtrip();
     test_script_fade_roundtrip();
     test_script_two_layer_persist();
     test_script_clear_slot();

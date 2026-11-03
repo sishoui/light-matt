@@ -23,6 +23,9 @@ import {
   clampSliderValue,
   defaultParams,
   DUTY_OPTIONS,
+  FREQUENCY_MAX,
+  BPM_MAX,
+  heartbeatPeriodMs,
   HUE_RAMP_GRADIENT,
   isPanelSliderKey,
   layerCheck,
@@ -43,11 +46,19 @@ import {
   paramsFromLayer,
   sliderView,
   SLIDER_KEYS,
+  strobePeriodMs,
   switchPanelType,
   type EffectParams,
   type PanelType,
 } from "../utils/control/effect-panel";
-import { BLEND, NO_EFFECT, SEGMENT_TYPE, WAVEFORM } from "../utils/protocol/constants";
+import {
+  BLEND,
+  HEARTBEAT_MIN_PERIOD_MS,
+  NO_EFFECT,
+  SEGMENT_TYPE,
+  STROBE_MIN_PERIOD_MS,
+  WAVEFORM,
+} from "../utils/protocol/constants";
 import { cmdSetSegment } from "../utils/protocol/commands";
 import { buildZoneSpec } from "../utils/control/zone-model";
 import type { EffectLayer, SegmentSpec } from "../utils/protocol/types";
@@ -689,6 +700,34 @@ describe("草稿 → 协议层", () => {
   it("设备上周期为 0（静止）时退回该类型默认周期，滑块不落在 0", () => {
     const next = paramsFromLayer("comet", layer(SEGMENT_TYPE.COMET, { periodMs: 0 }));
     expect(next.periodMs).toBe(defaultParams("comet").periodMs);
+  });
+
+  /*
+   * 爆闪 / 心跳的周期 0 是「静止」，**不是**最快档。
+   *
+   * 回归：`periodMsFor` 过去直接做下限钳位，于是 0 被抬成 100ms / 500ms ——
+   * 前者正好是 10Hz（爆闪上限）、后者是 120BPM（心跳上限）。一台把爆闪设成
+   * 静止的设备读回来会显示成最快的爆闪，用户一碰滑块就把静止变成 10Hz。
+   */
+  it("爆闪周期 0（静止）退回默认频率，不能显示成 10Hz", () => {
+    const next = paramsFromLayer("strobe", layer(SEGMENT_TYPE.STROBE, { periodMs: 0 }));
+    expect(next.frequencyHz).toBe(defaultParams("strobe").frequencyHz);
+    expect(next.frequencyHz).toBeLessThan(FREQUENCY_MAX);
+    expect(strobePeriodMs(next.frequencyHz)).not.toBe(STROBE_MIN_PERIOD_MS);
+  });
+
+  it("心跳周期 0（静止）退回默认节奏，不能显示成 120BPM", () => {
+    const next = paramsFromLayer("heartbeat", layer(SEGMENT_TYPE.HEARTBEAT, { periodMs: 0 }));
+    expect(next.bpm).toBe(defaultParams("heartbeat").bpm);
+    expect(next.bpm).toBeLessThan(BPM_MAX);
+    expect(heartbeatPeriodMs(next.bpm)).not.toBe(HEARTBEAT_MIN_PERIOD_MS);
+  });
+
+  it("非 0 周期仍按频率 / 节奏换算（0 的短路不影响正常值）", () => {
+    const strobe = paramsFromLayer("strobe", layer(SEGMENT_TYPE.STROBE, { periodMs: 200 }));
+    expect(strobe.frequencyHz).toBe(5);
+    const heart = paramsFromLayer("heartbeat", layer(SEGMENT_TYPE.HEARTBEAT, { periodMs: 1000 }));
+    expect(heart.bpm).toBe(60);
   });
 
   it("归一函数把外部值全钳进合法区间", () => {

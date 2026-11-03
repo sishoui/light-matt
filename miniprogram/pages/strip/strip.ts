@@ -169,7 +169,7 @@ import {
 } from "../../utils/control/zone-axis";
 import type { ScriptDraft } from "../../utils/control/script-view";
 import { layerFromFlat } from "../../utils/control/segment-model";
-import { MAX_LEDS, NO_EFFECT, SEGMENT_TYPE } from "../../utils/protocol/constants";
+import { MAX_LEDS, MAX_SCRIPTS, MIN_LEDS, NO_EFFECT, SEGMENT_TYPE } from "../../utils/protocol/constants";
 import type {
   DeviceState,
   EffectLayer,
@@ -256,7 +256,7 @@ Page({
     ledCount: 0,
     ledText: "连接后显示灯珠数",
     /* 灯珠数滑块（#79）：拖动只改本地，松手才下发；缩小越界要二次确认。 */
-    ledMin: 1,
+    ledMin: MIN_LEDS,
     ledMax: MAX_LEDS,
     /** 滑块值：下界是 1，「还没读到」时显示 1（0 在滑块上没有位置）。 */
     ledSliderValue: 1,
@@ -763,7 +763,7 @@ Page({
     }
     /* 播放态也在 State 里：只有「哪套在播」真的变了才重画 tab（20Hz 下不动）。 */
     const playingId =
-      state.playbackState !== 0 && state.scriptId < 4 ? state.scriptId : -1;
+      state.playbackState !== 0 && state.scriptId < MAX_SCRIPTS ? state.scriptId : -1;
     if (playingId !== this.planPlayingId) {
       this.planPlayingId = playingId;
       this.renderPlans();
@@ -2174,10 +2174,14 @@ Page({
     }
     const state = this.session?.deviceState ?? null;
     const playingId =
-      state !== null && state.playbackState !== 0 && state.scriptId < 4 ? state.scriptId : null;
+      state !== null && state.playbackState !== 0 && state.scriptId < MAX_SCRIPTS ? state.scriptId : null;
     this.setData({
       planTabs: buildPlanTabs(this.planIds, this.data.planSlot, summaries, playingId),
-      planCanAdd: !plansFull(this.planIds),
+      /*
+       * 新建要求**已经读到设备摘要**（`planStepCounts !== null`）：否则不知道
+       * 哪些槽位被占，新建会覆盖设备上已有的方案（见 onPlanAdd）。
+       */
+      planCanAdd: this.data.ready && this.planStepCounts !== null && !plansFull(this.planIds),
       ...patch,
     });
   },
@@ -2209,10 +2213,20 @@ Page({
    * 但它们确实占着编号，拿它当空位会覆盖别人下发过的内容。所以分配用并集
    * （`planIdsFromSources`，把当前 tab 表也算进去）。
    *
+   * **必须先读到设备摘要**：`planStepCounts === null` 表示还没连上灯控（或读
+   * 失败），此时"哪些槽位被占"完全未知。`planIdsFromSources` 只能看到本机
+   * 草稿，会把一个上一台/上一次会话下发过方案的槽位当成空位发出去，
+   * 随后的「应用并播放」就**覆盖掉设备上已有的方案**——用户没打算删的东西
+   * 就没了。所以这里直接拦住，而不是猜一个空位。
+   *
    * 四套都在用时按钮是禁用的；这里再兜一次（防重入 / 事件漏判），并就地提示。
    */
   onPlanAdd() {
     if (this.data.planDeleting >= 0) {
+      return;
+    }
+    if (!this.data.ready || this.planStepCounts === null) {
+      this.setData({ planHint: "先连上灯控读取方案，再新建" });
       return;
     }
     const reserved = planIdsFromSources(this.planStepCountsRecord(), this.planIds);

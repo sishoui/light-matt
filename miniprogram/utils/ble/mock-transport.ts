@@ -29,6 +29,7 @@ import { toFlat } from "../protocol/segment-shapes";
 import {
   BLEND,
   MAX_LEDS,
+  MAX_SCRIPTS,
   NO_EFFECT,
   NO_SCRIPT,
   SEGMENT_TYPE,
@@ -538,7 +539,7 @@ export class MockTransport {
       case 0x14: {
         const scriptId = payload[0];
         const stageCount = payload[1];
-        if (scriptId >= 4 || stageCount < 1 || stageCount > 8) {
+        if (scriptId >= MAX_SCRIPTS || stageCount < 1 || stageCount > 8) {
           return 0x01;
         }
         runtime.staging = { scriptId, stages: new Map() };
@@ -620,7 +621,7 @@ export class MockTransport {
         /* ClearScript（#73 / #83）：未提交的编号也视为成功（协议幂等）；
          * 清掉的正是激活方案时退回「无激活剧本」并停播。 */
         const scriptId = payload[0];
-        if (!Number.isInteger(scriptId) || scriptId >= 4) {
+        if (!Number.isInteger(scriptId) || scriptId >= MAX_SCRIPTS) {
           return 0x01;
         }
         runtime.scripts.delete(scriptId);

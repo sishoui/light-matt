@@ -42,7 +42,7 @@ import {
   loadRegistry,
   type DeviceRegistry,
 } from "../../utils/control/device-registry";
-import { layerModeOf } from "../../utils/control/effect-view";
+import { layerModeNameOf } from "../../utils/control/effect-view";
 import { PAGE_ROUTES, pushTo, queryText } from "../../utils/control/routes";
 import { ControlSession } from "../../utils/control/session";
 import { getSession, isMockSession } from "../../utils/control/session-singleton";
@@ -786,18 +786,13 @@ Page({
   },
 });
 
-/** 灯效类型 → 用户看到的名称（四种灯效 + 空层）。 */
+/**
+ * 灯效类型 → 用户看到的名称。
+ *
+ * 名字表与 `layerModeOf` 一起放在 `effect-view`（单一来源）：这里自己写一份
+ * switch 时，新增类型（0x04 爆闪 / 0x05 心跳 / 0x06 熄灭）会静默落进
+ * 默认分支，卡片上把正在爆闪的灯组写成「静态」。
+ */
 function modeNameOf(type: number): string {
-  switch (layerModeOf(type)) {
-    case "breathing":
-      return "呼吸";
-    case "rainbow":
-      return "彩虹";
-    case "comet":
-      return "流光";
-    case "off":
-      return "关闭";
-    default:
-      return "静态";
-  }
+  return layerModeNameOf(type);
 }

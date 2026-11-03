@@ -164,6 +164,24 @@ bool lumen_script_store_clear(lumen_script_store_t *store, uint8_t script_id);
  */
 bool lumen_script_should_deactivate(uint8_t active_script_id, uint8_t cleared_script_id);
 
+/*
+ * SetLedCount 之后的剧本裁剪（#72 漏项）：灯珠数变小后，任何 `end >= new_count`
+ * 的活动段都必须失效——否则它会被写进 NVS，下次上电 `script_blob_decode`
+ * 整份拒收，`led_engine` 回落到 `lumen_script_store_init`，**四套方案全部
+ * 静默丢失**。
+ *
+ * 语义严格对齐 `lumen_segment_store_prune`：只清段槽位（memset 成 0，active
+ * 归 false），**不自动缩短区间**；只看 `strip_id` 这一条灯带，其余灯带与
+ * 其它槽位原样保留。
+ *
+ * 覆盖全部已提交槽位 + 暂存区（staging_active 时）。返回被丢弃的段数
+ * （所有阶段相加）。
+ *
+ * strip_id 越界（>= LUMEN_MAX_STRIPS）或 store 为 NULL 返回 0，内容不变。
+ */
+uint16_t lumen_script_store_prune_strip(lumen_script_store_t *store, uint8_t strip_id,
+                                        uint16_t new_count);
+
 /* 取已提交剧本；不存在返回 NULL。 */
 const lumen_script_t *lumen_script_get(const lumen_script_store_t *store, uint8_t script_id);
 

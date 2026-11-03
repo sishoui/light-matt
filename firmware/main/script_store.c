@@ -72,8 +72,8 @@ static bool stage_has_overlap(const lumen_script_stage_t *stage, uint8_t strip)
  * 复用 segment_store 的**单段**规则（不含重叠），这样命令层与剧本层的拒收
  * 规则永远一致，不会各写一份。重叠由 stage_has_overlap 单独判过。
  *
- * 这里刻意**不**构造 1KB 的临时 lumen_segment_store_t：commit 跑在 NimBLE
- * 主机任务的 4KB 栈上，而 lumen_script_store_t 本身（~70KB）在静态区。
+ * 这里刻意**不**构造临时的 lumen_segment_store_t（v4 是 1792 字节）：commit
+ * 跑在 NimBLE 主机任务的 4KB 栈上，而 lumen_script_store_t 本身（~70KB）在静态区。
  */
 static uint8_t validate_stage_segment(uint8_t strip_id, uint8_t strip_count, uint16_t led_count,
                                       const lumen_segment_t *seg)
@@ -366,6 +366,79 @@ bool lumen_script_store_clear(lumen_script_store_t *store, uint8_t script_id)
         store->frames_written = 0;
     }
     return true;
+}
+
+/*
+ * 裁剪一个阶段表的某条灯带。stages / strips 由调用方按**已提交声明的**数量给
+ * （暂存区没有 committed 标志，不能靠 script->committed 判断）。
+ */
+static uint16_t prune_stage_table(lumen_script_stage_t *stages, uint8_t stage_count,
+                                  uint8_t strip_count, uint8_t strip_id, uint16_t new_count)
+{
+    /* 该剧本本来就不覆盖这条灯带：槽位全 0，无事可做。 */
+    if (strip_id >= strip_count) {
+        return 0;
+    }
+    uint16_t pruned = 0;
+    for (uint8_t st = 0; st < stage_count; ++st) {
+        for (uint8_t seg = 0; seg < LUMEN_MAX_SEGMENTS; ++seg) {
+            lumen_segment_t *slot = &stages[st].segments[strip_id][seg];
+            if (!slot->active) {
+                continue;
+            }
+            if (slot->end >= new_count) {
+                memset(slot, 0, sizeof(*slot));
+                ++pruned;
+            }
+        }
+    }
+    return pruned;
+}
+
+/* 一套已提交剧本的裁剪；未提交槽位（committed == false）直接跳过。 */
+static uint16_t prune_committed_script(lumen_script_t *script, uint8_t strip_id,
+                                       uint16_t new_count)
+{
+    if (script == NULL || !script->committed) {
+        return 0;
+    }
+    uint8_t stages = script->stage_count > LUMEN_MAX_STAGES ? LUMEN_MAX_STAGES
+                                                            : script->stage_count;
+    uint8_t strips = script->strip_count > LUMEN_MAX_STRIPS ? LUMEN_MAX_STRIPS
+                                                            : script->strip_count;
+    return prune_stage_table(script->stages, stages, strips, strip_id, new_count);
+}
+
+uint16_t lumen_script_store_prune_strip(lumen_script_store_t *store, uint8_t strip_id,
+                                        uint16_t new_count)
+{
+    if (store == NULL || strip_id >= LUMEN_MAX_STRIPS) {
+        return 0;
+    }
+    uint16_t pruned = 0;
+    for (uint8_t id = 0; id < LUMEN_MAX_SCRIPTS; ++id) {
+        pruned = (uint16_t)(pruned + prune_committed_script(&store->committed[id], strip_id,
+                                                            new_count));
+    }
+    /*
+     * 暂存区：`staging.committed` 在 Begin 时是 false（要 Commit 成功才置真），
+     * 所以上面那条路径会把 staging 跳过。这里用同一张阶段表、同一套规则单独
+     * 处理：暂存里的段同样会参与 commit 校验，若不裁，用户「改小数量 → 继续
+     * 下发 → Commit」会撞上一个自己刚刚删掉尾巴的旧段。
+     *
+     * 暂存不进入持久化，但**必须**裁——它的内容会变成下一次 commit 的候选。
+     */
+    if (store->staging_active) {
+        uint8_t stages = store->staging.stage_count > LUMEN_MAX_STAGES
+                             ? LUMEN_MAX_STAGES
+                             : store->staging.stage_count;
+        uint8_t strips = store->staging.strip_count > LUMEN_MAX_STRIPS
+                             ? LUMEN_MAX_STRIPS
+                             : store->staging.strip_count;
+        pruned = (uint16_t)(pruned + prune_stage_table(store->staging.stages, stages, strips,
+                                                       strip_id, new_count));
+    }
+    return pruned;
 }
 
 bool lumen_script_should_deactivate(uint8_t active_script_id, uint8_t cleared_script_id)
