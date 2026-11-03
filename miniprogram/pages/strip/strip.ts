@@ -5,23 +5,23 @@
  *
  * 用户从设备页的灯组卡片点进来，只想改**这一条灯组**长什么样。本票实现
  * 「简单档」：九张成品效果卡（三列）+ 色相 / 饱和度 / 亮度三个滑块，底部只有
- * 一个「应用并播放」。进阶编排（时间轴 / 光区分段）在 #65–#67，本页先给
+ * 一个「应用并播放」。进阶编排（时间轴 / 分区分段）在 #65–#67，本页先给
  * 占位说明。
  *
  * ## 语义：整组覆盖
  *
- * 点一张卡 = 这一组整体变成该效果。协议要求同一条灯组的光区互不重叠，
- * 所以**写入前先读回并清掉槽位 0 以外的所有光区**（`clearSegment`），再
- * `setSegment(buildQuickSpec(...))`。漏掉这一步，多光区的灯组会被设备回
+ * 点一张卡 = 这一组整体变成该效果。协议要求同一条灯组的分区互不重叠，
+ * 所以**写入前先读回并清掉槽位 0 以外的所有分区**（`clearSegment`），再
+ * `setSegment(buildQuickSpec(...))`。漏掉这一步，多分区的灯组会被设备回
  * `InvalidParam`，用户点了卡片却毫无变化——这是票面点名的陷阱 #3。
  *
  * 写成功后重新 `queryStrip`，界面以设备读回值为准（`syncQuickFromDevice`）：
- * 只有「整组一个光区、从 0 覆盖到最后一颗、无叠加层」时才回填成某张卡。
+ * 只有「整组一个分区、从 0 覆盖到最后一颗、无叠加层」时才回填成某张卡。
  *
  * ## 亮度滑块
  *
- * 逐光区亮度是协议 v4 的层字段 `level`（0-100，票 #69 接通）。滑块松手即写进
- * 光区草稿并发给设备；它只作用于**这一条灯组的这个光区**，与设备全局亮度无关
+ * 逐分区亮度是协议 v4 的层字段 `level`（0-100，票 #69 接通）。滑块松手即写进
+ * 分区草稿并发给设备；它只作用于**这一条灯组的这个分区**，与设备全局亮度无关
  * （全局亮度会串到别的灯组）。
  */
 
@@ -93,6 +93,11 @@ import {
   planTabSummary,
 } from "../../utils/control/plan-slots";
 import { zonesFromReports } from "../../utils/control/zone-editor";
+import {
+  buildPreviewLeds,
+  previewAvailable,
+  type PreviewLed,
+} from "../../utils/control/zone-preview";
 import { checkScriptBlobBytes } from "../../utils/control/script-plan";
 import { draftCapacityBytes, draftToScriptConfig } from "../../utils/control/script-view";
 import {
@@ -209,7 +214,7 @@ import type {
   SegmentSpec,
 } from "../../utils/protocol/types";
 
-/** 编辑档位：简单（点效果卡）/ 进阶（时间轴 + 光区）。 */
+/** 编辑档位：简单（点效果卡）/ 进阶（时间轴 + 分区）。 */
 type StripMode = "simple" | "advanced";
 
 /**
@@ -357,7 +362,14 @@ Page({
      */
     timelineSettling: false,
 
-    /* ---- 进阶档：光区轴（#66） ---- */
+    /* ---- 进阶档：分区预览条（#97，只读聚合视图） ---- */
+    previewOpen: false,
+    /** 预览条的逐颗灯珠（按分区颜色）。 */
+    previewLeds: [] as PreviewLed[],
+    /** 预览条是否可用（有分区且有灯珠）。 */
+    previewAvailable: false,
+
+    /* ---- 进阶档：分区轴（#66） ---- */
     zoneBlocks: [] as ZoneAxisBlock[],
     zoneSummary: "",
     zoneCount: 0,
@@ -367,7 +379,7 @@ Page({
     selectedZoneText: "",
     /** 选中区间的数字核对（「第 0–19 颗 · 20 颗」，#77）；未选中为空串。 */
     selectedZoneRangeDetail: "",
-    /** 零光区时的引导（#77）；有光区时为空串。 */
+    /** 零分区时的引导（#77）；有分区时为空串。 */
     zoneGuide: "",
     zoneHint: "",
 
@@ -378,7 +390,7 @@ Page({
     pickerRangeText: "",
     pickerError: "",
     pickerCanConfirm: false,
-    /** 新建还是改已有光区（按钮文案与「删除」的可用性）。 */
+    /** 新建还是改已有分区（按钮文案与「删除」的可用性）。 */
     pickerEditing: false,
     pickerTitle: "选一段灯珠",
     pickerLedText: "",
@@ -424,9 +436,9 @@ Page({
      * 界面上没有任何可调项，只说明这一片是黑的）。
      */
     panelNotice: "",
-    /** 当前选中的光区是否可编辑（否则只有引导文字）。 */
+    /** 当前选中的分区是否可编辑（否则只有引导文字）。 */
     panelHasZone: false,
-    /** 没得编辑时的引导（方案为空 / 这一步为空 / 没选中光区）。 */
+    /** 没得编辑时的引导（方案为空 / 这一步为空 / 没选中分区）。 */
     panelGuide: "",
     /** 色相滑轨的彩虹渐变。 */
     hueRamp: HUE_RAMP_GRADIENT,
@@ -446,7 +458,7 @@ Page({
   themeMode: "system" as ThemeMode,
   /** 是否已经为这台设备发起过连接（避免 onShow 重复连接）。 */
   autoConnectTried: false,
-  /** 设备权威的光区列表（当前灯组，最近一次 QueryStrip）。 */
+  /** 设备权威的分区列表（当前灯组，最近一次 QueryStrip）。 */
   segmentReports: [] as SegmentReport[],
   /** 当前选中的效果卡；null = 设备上不是「整组一张卡」。 */
   quickCardId: null as string | null,
@@ -488,8 +500,8 @@ Page({
    */
   planPlayingId: -1,
 
-  /* ---- 进阶档：时间轴与光区的本地草稿（#65 / #66，不进设备） ---- */
-  /** 4 个方案槽位各自的草稿（`ScriptDraft`：步骤 → 光区）；进阶档的唯一真相。 */
+  /* ---- 进阶档：时间轴与分区的本地草稿（#65 / #66，不进设备） ---- */
+  /** 4 个方案槽位各自的草稿（`ScriptDraft`：步骤 → 分区）；进阶档的唯一真相。 */
   drafts: [] as ScriptDraft[],
   /** 哪些槽位是**用户自己的**草稿（读过落盘 / 本次会话改过），摘要以它为准。 */
   draftOwned: [false, false, false, false] as boolean[],
@@ -531,11 +543,11 @@ Page({
   dragTapUntil: 0,
   /** 已经做过测量的标记（不需要每次 setData 后重新测量）。 */
   timelineMeasured: false,
-  /** 光区轴选中的槽位；-1 = 没选中。 */
+  /** 分区轴选中的槽位；-1 = 没选中。 */
   pickedSegId: -1,
   /** 灯珠弹窗的选择状态（纯数据，规则在 `led-picker`）。 */
   picker: { segId: null, anchor: null, cursor: null } as PickerState,
-  /** 面板参数属于「哪一步 × 哪个光区」；变化时从草稿重新读层（保住未下发的亮度草稿）。 */
+  /** 面板参数属于「哪一步 × 哪个分区」；变化时从草稿重新读层（保住未下发的亮度草稿）。 */
   panelKey: "",
   /** 面板当前的效果类型（同时镜像到 `data.panelType` 给 WXML）。 */
   panelMode: "static" as PanelType,
@@ -568,10 +580,10 @@ Page({
   /** 面板的一次性反馈（`data.panelHint` 的镜像，换目标时清空）。 */
   panelHintText: "",
   /**
-   * 逐光区的亮度草稿（`panelKey → level`）。
+   * 逐分区的亮度草稿（`panelKey → level`）。
    *
    * v4 起 `level` 有落盘位置（`layer0.level`），所以这张表只剩一个用途：
-   * 记住**用户刚拖过、但还没写进设备**的滑块值，跨「切光区再切回来」不丢。
+   * 记住**用户刚拖过、但还没写进设备**的滑块值，跨「切分区再切回来」不丢。
    * 一旦落进草稿/设备，`paramsFromLayer` 会从层里读回来，不再依赖这张表。
    */
   panelLevels: {} as Record<string, number>,
@@ -836,7 +848,7 @@ Page({
     /* ready 是状态跳变（不是 20Hz 事件）：这里补一次完整派生，把
      * `clearStripViews` 留下的「未连接」原因换成真实可用性。 */
     this.renderQuick();
-    /* 光区与方案摘要都不在 State 里、设备也不会主动上报：进页面各读一次。 */
+    /* 分区与方案摘要都不在 State 里、设备也不会主动上报：进页面各读一次。 */
     void this.refreshSegments();
     void this.refreshPlanSlots();
     /* 0x88 读回来之后设备键才稳定（hardwareId）：这里再读一次草稿。 */
@@ -959,7 +971,7 @@ Page({
       applyError: "",
       zoneBlocks: [],
       zoneCount: 0,
-      zoneSummary: "还没有光区",
+      zoneSummary: "还没有分区",
       zoneCanAdd: false,
       selectedSegId: -1,
       selectedZoneRangeDetail: "",
@@ -998,7 +1010,7 @@ Page({
       this.renderQuick({ quickHint: "" });
       return;
     }
-    /* 第一次进进阶档：把灯控现在的光区填进当前步骤，用户从「现在的样子」改，
+    /* 第一次进进阶档：把灯控现在的分区填进当前步骤，用户从「现在的样子」改，
      * 而不是面对一条空白。已有草稿的步骤不会被覆盖。 */
     this.seedAdvancedFromDevice();
     /* 进进阶档才渲染时间轴：块的宽度依赖真实容器宽，行不在 DOM 里就量不到。 */
@@ -1006,7 +1018,7 @@ Page({
     this.measureTimeline(true);
   },
 
-  /** 把设备读回的当前灯组光区填进当前步骤（只填空步骤，不覆盖草稿）。 */
+  /** 把设备读回的当前灯组分区填进当前步骤（只填空步骤，不覆盖草稿）。 */
   seedAdvancedFromDevice(): void {
     const reports = this.segmentReports;
     if (reports.length === 0) {
@@ -1024,7 +1036,7 @@ Page({
   /**
    * 时间轴块的派生（`layoutBlocks` 的唯一调用点）。
    *
-   * 抽出来是为了拖动：`touchmove` 只需要重画块（位移 / 落点），不必重算光区轴
+   * 抽出来是为了拖动：`touchmove` 只需要重画块（位移 / 落点），不必重算分区轴
    * 与效果面板。两条路径共用这一个函数，块宽与位移规则因此不会分叉。
    */
   timelineBlocksOf(timelineSteps: ReturnType<typeof timelineStepsOf>): {
@@ -1054,7 +1066,7 @@ Page({
   /**
    * 拖动中的轻量重绘：只更新 `steps`（块宽不会变，但位移与落点会）。
    *
-   * 用 `setData` 的路径串而不是整页派生：`touchmove` 每秒几十次，重算光区轴
+   * 用 `setData` 的路径串而不是整页派生：`touchmove` 每秒几十次，重算分区轴
    * 与效果面板纯属浪费，而且会拖慢跟手。
    */
   renderDragBlocks(): void {
@@ -1064,7 +1076,7 @@ Page({
   },
 
   /**
-   * 重画进阶档（唯一派生入口）：时间轴 + 光区轴一起算。
+   * 重画进阶档（唯一派生入口）：时间轴 + 分区轴一起算。
    *
    * 两条轴必须来自**同一份草稿**：分开各自派生迟早会出现「轴上三段、块里
    * 两条色带」。所以只有这一个入口，任何一步改动都走它。
@@ -1115,9 +1127,9 @@ Page({
       selectedZoneText:
         selectedInput === undefined
           ? axisZones.length === 0
-            ? "点「+ 新增」划出第一个光区"
+            ? "点「+ 新增」划出第一个分区"
             : "点一块选中它，再点一次改范围"
-          : `已选中光区 ${selectedInput.segId + 1} · 再点一次改范围`,
+          : `已选中分区 ${selectedInput.segId + 1} · 再点一次改范围`,
       /* 轴下方的数字核对（#77）：与设备上的区间同一口径（0 基闭区间）。 */
       selectedZoneRangeDetail:
         selectedInput === undefined
@@ -1151,7 +1163,7 @@ Page({
     this.drafts = this.drafts.map((draft, index) => (index === slot ? next : draft));
     this.draftOwned[slot] = true;
     this.saveDraft(slot, next);
-    /* tab 摘要跟着草稿走：用户一画光区，对应 tab 立刻从「空白」变成「n 步」。 */
+    /* tab 摘要跟着草稿走：用户一画分区，对应 tab 立刻从「空白」变成「n 步」。 */
     this.renderPlans();
   },
 
@@ -1189,7 +1201,7 @@ Page({
    * 否则会把「设备上其实有方案」的槽位用空白默认草稿覆盖掉存储。
    *
    * #75 起草稿是**设备级**的（键 `deviceKey#slot`，没有灯组维度）：读回的是
-   * 整份方案（含其它灯组的光区切片），本页只展示 / 修改 `stripId` 那一片。
+   * 整份方案（含其它灯组的分区切片），本页只展示 / 修改 `stripId` 那一片。
    * 这样两套灯组看到的是同一份方案，写入时后写的那组不会把前一组清掉。
    */
   ensureDraftsLoaded(): void {
@@ -1264,7 +1276,7 @@ Page({
     savePlanDraft(storage, key, slot, draft);
   },
 
-  /** 当前步骤里当前灯组的光区。 */
+  /** 当前步骤里当前灯组的分区。 */
   currentZones() {
     return stepZonesOf(this.currentDraft(), this.timelineIndex, this.data.stripId);
   },
@@ -1275,7 +1287,7 @@ Page({
     return stage === undefined ? clampDuration(DEFAULT_STEP_MS) : stageDurationMs(stage);
   },
 
-  /** 当前灯组的灯珠数（门禁：没读到就不能划光区）。 */
+  /** 当前灯组的灯珠数（门禁：没读到就不能划分区）。 */
   currentLedCount(): number {
     return Math.min(this.stripLedCount(), MAX_LEDS);
   },
@@ -1294,9 +1306,9 @@ Page({
   },
 
   /**
-   * 松手：缩小且这条灯组有越界光区 / 草稿时先确认；确认后下发并就地清理。
+   * 松手：缩小且这条灯组有越界分区 / 草稿时先确认；确认后下发并就地清理。
    *
-   * 只改**当前灯组**：其它灯组的灯珠数与光区一个字节都不动。
+   * 只改**当前灯组**：其它灯组的灯珠数与分区一个字节都不动。
    */
   async onLedCountChange(e: WechatMiniprogram.SliderChange) {
     const session = this.session;
@@ -1317,8 +1329,8 @@ Page({
       return;
     }
 
-    /* 缩小前的本地预检：设备光区 + 4 套草稿，数出会越界的个数。改大永远 0。
-     * 设备光区**现读一次**（不只用缓存的 `segmentReports`）：确认文案里的数字
+    /* 缩小前的本地预检：设备分区 + 4 套草稿，数出会越界的个数。改大永远 0。
+     * 设备分区**现读一次**（不只用缓存的 `segmentReports`）：确认文案里的数字
      * 必须与设备上真实存在的段对得上。读失败就按缓存算。 */
     let deviceZones = zonesFromReports(
       this.segmentReports.filter((report) => report.stripId === this.data.stripId),
@@ -1337,7 +1349,7 @@ Page({
       );
       if (affected > 0) {
         const confirmed = await showModal(
-          "缩短灯组会截断光区",
+          "缩短灯组会截断分区",
           shrinkConfirmText(affected, value),
           "继续缩短",
         );
@@ -1364,7 +1376,7 @@ Page({
   /**
    * 下发当前灯组的灯珠数。
    *
-   * 成功：清理草稿（截断 / 删除越界光区）并把截断后的光区写回设备。
+   * 成功：清理草稿（截断 / 删除越界分区）并把截断后的分区写回设备。
    * 失败：**就地显示原因并保留原灯珠数**（草稿一个字节都不动）。
    */
   async applyLedCount(
@@ -1393,7 +1405,7 @@ Page({
           ledHint: `已设为 ${applied} 颗`,
         });
         if (value < current) {
-          /* 缩小：草稿与设备上的光区同步截断（截到新末尾、完全越界的删除）。 */
+          /* 缩小：草稿与设备上的分区同步截断（截到新末尾、完全越界的删除）。 */
           this.shrinkDraftsForStrip(applied);
           await this.rewriteClampedZones(deviceZones, applied);
           if (this.data.mode === "advanced") {
@@ -1456,7 +1468,7 @@ Page({
   },
 
   /**
-   * 把当前灯组在 4 套草稿里的越界光区按新长度清理并落盘。
+   * 把当前灯组在 4 套草稿里的越界分区按新长度清理并落盘。
    *
    * 只碰 `stripId` 那一片（`shrinkDraft` 的语义）；其它灯组、其它槽位原样保留。
    * 当前槽位走 `setDraft`（顺带更新右上角摘要），其余槽位直接落盘。
@@ -1481,7 +1493,7 @@ Page({
   },
 
   /**
-   * 把被截断的光区按新终点重新写回设备（只写当前灯组）。
+   * 把被截断的分区按新终点重新写回设备（只写当前灯组）。
    *
    * 固件在数量变更时会把 `end >= new_count` 的段整段 prune 掉（不自动缩短，
    * protocol-v4 §7.2），所以确认后只需把「截断版」写回去——`SetSegment` 按
@@ -1501,13 +1513,13 @@ Page({
       for (const zone of plan.clamped) {
         const ack = await session.setSegment(zone);
         if (!ack.ok) {
-          this.setData({ ledHint: `灯珠数已改；光区写回失败（${resultText(ack.resultCode)}）` });
+          this.setData({ ledHint: `灯珠数已改；分区写回失败（${resultText(ack.resultCode)}）` });
           return;
         }
       }
       await this.refreshSegments();
     } catch (err) {
-      this.setData({ ledHint: `灯珠数已改；光区写回失败（${errorText(err)}）` });
+      this.setData({ ledHint: `灯珠数已改；分区写回失败（${errorText(err)}）` });
     }
   },
 
@@ -1518,10 +1530,10 @@ Page({
    *
    * 两件事在这里发生：
    *
-   *  1. **换目标时从草稿重新读层**。`panelKey = 方案:步骤:光区`，一变就把那一片
+   *  1. **换目标时从草稿重新读层**。`panelKey = 方案:步骤:分区`，一变就把那一片
    *     `layer0`（含 v4 的 `level`）读成面板草稿；没变就**保留**页面上的草稿——
    *     拖动中的读数不该被一次重画冲掉；
-   *  2. **没得编辑时给引导**。方案为空 / 这一步为空 / 有光区但没选中，三种情况
+   *  2. **没得编辑时给引导**。方案为空 / 这一步为空 / 有分区但没选中，三种情况
    *     文案不同：一片空白会让人以为界面坏了。
    */
   panelData(): Record<string, unknown> {
@@ -1559,15 +1571,15 @@ Page({
     return {
       panelTypes: view.types,
       panelType: view.type,
-      /* 没有可编辑的光区时不留任何滑块 / 选择控件：用户不该看到一个改不动的旋钮，
+      /* 没有可编辑的分区时不留任何滑块 / 选择控件：用户不该看到一个改不动的旋钮，
        * 引导文字会告诉他下一步做什么。 */
       panelSliders: zone === null ? [] : view.sliders,
       panelChoices: zone === null ? [] : view.choices,
-      /* 预览色块与摘要也只在真有可编辑的光区时才显示：没有目标时的「静态 · 40°」
+      /* 预览色块与摘要也只在真有可编辑的分区时才显示：没有目标时的「静态 · 40°」
        * 是一句凭空捏造的描述。 */
       panelColorHex: zone === null ? "" : view.colorHex,
       panelSummary: zone === null ? "" : view.summary,
-      /* 「熄灭」没有任何旋钮：说明必须跟着光区一起出现 / 消失，否则没选中光区时
+      /* 「熄灭」没有任何旋钮：说明必须跟着分区一起出现 / 消失，否则没选中分区时
        * 它会变成一句凭空捏造的描述。 */
       panelNotice: zone === null ? "" : view.notice,
       panelHasZone: zone !== null,
@@ -1575,7 +1587,7 @@ Page({
       panelFacts: PANEL_FACTS,
       hueRamp: HUE_RAMP_GRADIENT,
       panelHint: this.panelHintText,
-      /* ---- 叠加层（#71 US49/US50）：没有光区时整块隐藏 ---- */
+      /* ---- 叠加层（#71 US49/US50）：没有分区时整块隐藏 ---- */
       overlayChoices: zone === null ? [] : OVERLAY_CHOICE_OPTIONS,
       overlayChoice: this.panelOverlay.type,
       overlayEnabled: zone !== null && overlayEnabled(this.panelOverlay),
@@ -1613,13 +1625,13 @@ Page({
     this.clearPanelHint();
   },
 
-  /** 只重画面板（拖滑块时用：不动时间轴与光区轴，拖动才跟手）。 */
+  /** 只重画面板（拖滑块时用：不动时间轴与分区轴，拖动才跟手）。 */
   renderPanel(patch: Record<string, unknown> = {}): void {
     this.setData({ ...this.panelData(), ...patch });
   },
 
   /**
-   * 把面板草稿写进「当前步骤 × 当前灯组 × 当前光区」的那一片。
+   * 把面板草稿写进「当前步骤 × 当前灯组 × 当前分区」的那一片。
    *
    * 装配走 `applyPanelToZone` → `zone-model.buildZoneSpec`：叠加层为空时叠加方式
    * 归一为覆盖、两层定宽、深拷贝——面板只改效果，不顺手把叠加层弄丢。
@@ -1661,7 +1673,7 @@ Page({
     if (!PANEL_TYPE_OPTIONS.some((option) => option.type === type)) {
       return;
     }
-    /* 没有可编辑的光区时类型行是灰的（点不动），这里再挡一次渲染层的意外事件。 */
+    /* 没有可编辑的分区时类型行是灰的（点不动），这里再挡一次渲染层的意外事件。 */
     if (this.data.panelHasZone !== true || type === this.panelMode) {
       return;
     }
@@ -1855,7 +1867,7 @@ Page({
       .exec();
   },
 
-  /** 点时间轴的块：选中它，下方的时长与光区跟着切换。 */
+  /** 点时间轴的块：选中它，下方的时长与分区跟着切换。 */
   onStepTap(e: WechatMiniprogram.TouchEvent) {
     /* 拖动刚松手：这一次点击是同一次触摸的尾巴，不能改选中。
      * 用时间戳而不是布尔量——卡在 true 会让整条时间轴从此点不动。 */
@@ -1870,7 +1882,7 @@ Page({
       return;
     }
     this.timelineIndex = index;
-    /* 换步骤后原来选中的光区可能不存在了：让 `selectedZoneAfter` 重新挑一个。 */
+    /* 换步骤后原来选中的分区可能不存在了：让 `selectedZoneAfter` 重新挑一个。 */
     this.renderTimeline({ stepHint: "" });
   },
 
@@ -1967,7 +1979,7 @@ Page({
     this.dragFollow = follow;
     this.dragTo = nextTo;
     this.dragOutside = target.outside;
-    /* 只重画块：光区轴与效果面板在拖动中没变，不必跟着重算（跟手更顺）。 */
+    /* 只重画块：分区轴与效果面板在拖动中没变，不必跟着重算（跟手更顺）。 */
     this.renderDragBlocks();
   },
 
@@ -2110,13 +2122,13 @@ Page({
     this.applyDuration(ms / 1000);
   },
 
-  // ---------------- 进阶档：光区轴（#66） ----------------
+  // ---------------- 进阶档：分区轴（#66） ----------------
 
   /**
-   * 点光区轴上的一块。
+   * 点分区轴上的一块。
    *
    * 第一次点只**选中**它（选中态是 2px 描边）；再点已选中的那一块才打开
-   * 弹窗改范围。分成两步是因为窄光区（30 颗时可能只有 20px）一次点击既要
+   * 弹窗改范围。分成两步是因为窄分区（30 颗时可能只有 20px）一次点击既要
    * 选中又要开弹窗，用户就永远看不到「选中」这件事。灰条（没被覆盖的
    * 部分）点不动。
    */
@@ -2133,7 +2145,7 @@ Page({
     this.renderTimeline({ zoneHint: "" });
   },
 
-  /** 长按光区块：直接打开弹窗改它的范围（跳过一次「再点一下」）。 */
+  /** 长按分区块：直接打开弹窗改它的范围（跳过一次「再点一下」）。 */
   onZoneAxisLongPress(e: WechatMiniprogram.TouchEvent) {
     const segId = Number(e.currentTarget.dataset.segId);
     if (!Number.isInteger(segId) || segId < 0) {
@@ -2143,7 +2155,39 @@ Page({
     this.openPicker(segId);
   },
 
-  /** 「+ 新增」：打开灯珠弹窗，从空白开始选。8 个光区后不可用。 */
+  /**
+   * 预览按钮（#97）：点开一条全宽预览条，按分区颜色画出该组**每一颗灯珠**。
+   *
+   * 只读视图：不绑定任何 touch 处理，点它不会误改分区。再点一次收起。
+   */
+  onPreviewToggle() {
+    if (this.data.previewOpen) {
+      this.setData({ previewOpen: false });
+      return;
+    }
+    const zones = this.currentZones();
+    const ledCount = this.currentLedCount();
+    if (!previewAvailable(zones, ledCount)) {
+      this.renderTimeline({ zoneHint: "先划出至少一个分区，再看预览" });
+      return;
+    }
+    this.setData({
+      previewOpen: true,
+      previewLeds: buildPreviewLeds(zones, ledCount),
+      previewAvailable: true,
+      zoneHint: "",
+    });
+  },
+
+  /** 重新生成预览（分区变化后调用；预览关着时什么都不做）。 */
+  refreshPreviewIfOpen(): void {
+    if (!this.data.previewOpen) {
+      return;
+    }
+    this.setData({ previewLeds: buildPreviewLeds(this.currentZones(), this.currentLedCount()) });
+  },
+
+  /** 「+ 新增」：打开灯珠弹窗，从空白开始选。8 个分区后不可用。 */
   onZoneAdd() {
     const reason = this.disabledReason();
     if (reason !== "") {
@@ -2151,19 +2195,10 @@ Page({
       return;
     }
     if (!canAddZoneAt(axisZonesOf(this.currentZones()))) {
-      this.renderTimeline({ zoneHint: `每组最多 ${MAX_ZONES} 个光区，请先删掉一个` });
+      this.renderTimeline({ zoneHint: `每组最多 ${MAX_ZONES} 个分区，请先删掉一个` });
       return;
     }
     this.openPicker(null);
-  },
-
-  /** 「改范围」：对当前选中的光区打开弹窗；没选中时给提示。 */
-  onZoneEditSelected() {
-    if (this.pickedSegId < 0) {
-      this.renderTimeline({ zoneHint: "先点一块光区" });
-      return;
-    }
-    this.openPicker(this.pickedSegId);
   },
 
   /** 打开灯珠弹窗（`segId === null` = 新建）。 */
@@ -2179,7 +2214,7 @@ Page({
         ? null
         : zones.find((zone) => zone.segId === segId) ?? null;
     if (segId !== null && existing === null) {
-      this.renderTimeline({ zoneHint: "这个光区不在了，请重新选" });
+      this.renderTimeline({ zoneHint: "这个分区不在了，请重新选" });
       return;
     }
     this.picker = createPickerState(
@@ -2200,9 +2235,9 @@ Page({
       others,
       zoneCount: zones.length,
     });
-    /* 滚轮值域只来自与锚点连通的连续空闲段（#78）：被别的光区占着的序号
+    /* 滚轮值域只来自与锚点连通的连续空闲段（#78）：被别的分区占着的序号
      * 根本不在候选里，所以选不出非法区间。回显文案由纯函数给出——点格子
-     * 跨过别人的光区时那一端不在候选里，滚轮仍如实显示它（同时确定是灰的）。 */
+     * 跨过别人的分区时那一端不在候选里，滚轮仍如实显示它（同时确定是灰的）。 */
     const options = pickerOptions(this.picker, { ledCount, others });
     /* 冲突在弹窗里**当场**显示：用户划到别人的格子上时立刻看到原因，
      * 而不是按了确定才被拒。`patch` 放在后面，提交失败的专门文案可以覆盖它。 */
@@ -2214,7 +2249,7 @@ Page({
       pickerError: check.ok ? "" : check.message,
       pickerCanConfirm: check.ok,
       pickerEditing: this.picker.segId !== null,
-      pickerTitle: this.picker.segId === null ? "新增光区" : "改光区范围",
+      pickerTitle: this.picker.segId === null ? "新增分区" : "改分区范围",
       pickerLedText: `这组一共 ${ledCount} 颗灯珠`,
       pickerStartLabels: options.startLabels,
       pickerStartIndex: options.startIndex,
@@ -2269,7 +2304,7 @@ Page({
     const ledCount = this.currentLedCount();
     const others = otherZones(this.currentZones(), this.picker.segId);
     const outcome = pickerTap(this.picker, index, { ledCount, others });
-    /* 属于其它光区的格子「点不动」：状态一点不变（灰底与小色点已经说明归属）。 */
+    /* 属于其它分区的格子「点不动」：状态一点不变（灰底与小色点已经说明归属）。 */
     if (outcome.disabled) {
       return;
     }
@@ -2298,11 +2333,11 @@ Page({
     this.applyStepZones(result.zones);
     this.pickedSegId = this.lastSegIdOf(result.zones, this.picker.segId, before);
     this.closePicker({
-      zoneHint: added ? "已新增一个光区" : "范围已更新",
+      zoneHint: added ? "已新增一个分区" : "范围已更新",
     });
   },
 
-  /** 删除：只对已有光区可用（新建状态下按钮隐藏）。 */
+  /** 删除：只对已有分区可用（新建状态下按钮隐藏）。 */
   onPickerDelete() {
     const segId = this.picker.segId;
     if (segId === null) {
@@ -2311,23 +2346,18 @@ Page({
     const zones = this.currentZones();
     const next = deletePickerZone(zones, segId);
     if (next === zones) {
-      this.closePicker({ zoneHint: "这个光区已经不在了" });
+      this.closePicker({ zoneHint: "这个分区已经不在了" });
       return;
     }
     this.applyStepZones(next);
     this.pickedSegId = -1;
-    this.closePicker({ zoneHint: "已删掉这个光区" });
+    this.closePicker({ zoneHint: "已删掉这个分区" });
   },
 
-  /** 把光区列表写进「当前步骤 × 当前灯组」（多灯组语义只在这一处落地）。 */
+  /** 把分区列表写进「当前步骤 × 当前灯组」（多灯组语义只在这一处落地）。 */
   applyStepZones(zones: Parameters<typeof writeStepZones>[3]): void {
     const draft = this.currentDraft();
     this.setDraft(writeStepZones(draft, this.timelineIndex, this.data.stripId, zones));
-  },
-
-  /** 取消：什么都不改。 */
-  onPickerCancel() {
-    this.closePicker({});
   },
 
   /** 点遮罩：等同取消（不会误删正在划的选择——选择本来就只存在弹窗里）。 */
@@ -2411,7 +2441,7 @@ Page({
    * 某一个方案 tab 的摘要（界面上只出现「空白」或「n 步」）。
    *
    * 优先级：
-   *  1. **用户自己的草稿**（有光区才算有内容）——它是进阶档的真相；
+   *  1. **用户自己的草稿**（有分区才算有内容）——它是进阶档的真相；
    *  2. 设备摘要（`planStepCounts`）——没动过的方案反映「灯控上有什么」；
    *  3. 都没读到 → 「空白」（不是「读取中…」：新建的方案本来就是空的）。
    */
@@ -2496,7 +2526,7 @@ Page({
     }
   },
 
-  /** 切到某一套方案（顶部 tab）：时间轴 / 光区轴 / 效果面板整体跟着换。 */
+  /** 切到某一套方案（顶部 tab）：时间轴 / 分区轴 / 效果面板整体跟着换。 */
   onPlanTap(e: WechatMiniprogram.TouchEvent) {
     const id = Number(e.currentTarget.dataset.planId);
     if (!Number.isInteger(id) || id === this.data.planSlot) {
@@ -2506,7 +2536,7 @@ Page({
       return;
     }
     this.setData({ planSlot: id, planHint: "" });
-    /* 换方案 = 换一份草稿：步骤下标与光区选中都要重新落到合法值。 */
+    /* 换方案 = 换一份草稿：步骤下标与分区选中都要重新落到合法值。 */
     this.timelineIndex = 0;
     this.pickedSegId = -1;
     this.panelKey = "";
@@ -2744,8 +2774,8 @@ Page({
   /**
    * 下发灯珠数（与旧滑块同一条路径：`applyLedCount`）。
    *
-   * 复用而不是重写：截断草稿、回写越界光区、失败保留原值这些规则只能有一份。
-   * 设备光区**现读一次**（不只用缓存），这样截断的是设备上真实存在的段。
+   * 复用而不是重写：截断草稿、回写越界分区、失败保留原值这些规则只能有一份。
+   * 设备分区**现读一次**（不只用缓存），这样截断的是设备上真实存在的段。
    */
   async commitLedCount(next: number): Promise<void> {
     const session = this.session;
@@ -2770,7 +2800,7 @@ Page({
 
   // ---------------- 简单档：读取与派生 ----------------
 
-  /** 从设备读回当前灯组的光区（设备权威；进页面与写后各读一次）。 */
+  /** 从设备读回当前灯组的分区（设备权威；进页面与写后各读一次）。 */
   async refreshSegments(): Promise<void> {
     const session = this.session;
     const stripId = this.data.stripId;
@@ -2874,7 +2904,7 @@ Page({
   /**
    * 从设备读回值推断「现在是哪张卡」。
    *
-   * 只有整组一个光区、覆盖到最后一颗、无叠加层时才回填；否则清掉选中态，
+   * 只有整组一个分区、覆盖到最后一颗、无叠加层时才回填；否则清掉选中态，
    * 免得界面一直高亮一个设备上早就不存在的效果。
    */
   syncQuickFromDevice() {
@@ -3032,11 +3062,11 @@ Page({
   },
 
   /**
-   * 把当前卡片 + 参数写成「整组单层光区」并发给设备。
+   * 把当前卡片 + 参数写成「整组单层分区」并发给设备。
    *
    * 顺序必须是这样（票面陷阱 #3）：
-   *  1. 先 `queryStrip` 读回设备上的真实光区（不信任本地缓存）；
-   *  2. 清掉槽位 0 以外的**所有**光区——协议要求同组光区不重叠，不清就被拒；
+   *  1. 先 `queryStrip` 读回设备上的真实分区（不信任本地缓存）；
+   *  2. 清掉槽位 0 以外的**所有**分区——协议要求同组分区不重叠，不清就被拒；
    *  3. 再 `SetSegment` 写整组（槽位 0，区间 0..n-1）；
    *  4. 重新读回，界面以设备为准（失败也读，绝不保留假的成功画面）。
    */
@@ -3057,10 +3087,10 @@ Page({
     this.setData({ quickBusy: true, applyError: "" });
     try {
       /*
-       * #96：立即生效的顺序 —— **停播 → 写实时光区 → 静默下发整份方案 → 恢复播放**。
+       * #96：立即生效的顺序 —— **停播 → 写实时分区 → 静默下发整份方案 → 恢复播放**。
        *
        * 停播是必须的第一步：设备在播放方案时按 `active_segments` 渲染，写进去的
-       * 实时光区（`s_segments`）看不见。这是硬件事实，界面不假装能实时预览。
+       * 实时分区（`s_segments`）看不见。这是硬件事实，界面不假装能实时预览。
        * 记住「原来在播」，写完再恢复，用户不会因为改个颜色就停播。
        */
       const state = session.deviceState;
@@ -3072,15 +3102,15 @@ Page({
       }
 
       /*
-       * #91：单光区灯组**跳过预读 / 清空 / 回读**。
+       * #91：单分区灯组**跳过预读 / 清空 / 回读**。
        *
-       * 协议要求同组光区不重叠，所以整组改写要想安全，通常得先读回、把槽位
+       * 协议要求同组分区不重叠，所以整组改写要想安全，通常得先读回、把槽位
        * 1..N 清掉、再写槽位 0——一次点击变成十来个来回，用户看到的就是
        * 「高亮过一两秒才定下来」。但只有槽位 0 有内容时，写槽位 0 覆盖的是
        * 同一个区间，不可能与别的槽位重叠：清空这一步可以整段省掉。
        *
        * `singleZone` 用本地镜像判断（上一次 queryStrip 的结果）；镜像为空时
-       * 保守走完整路径——宁可慢一点，也不能把多光区写坏。
+       * 保守走完整路径——宁可慢一点，也不能把多分区写坏。
        */
       const singleZone =
         this.segmentReports.length === 1 && this.segmentReports[0].segId === 0;
@@ -3099,7 +3129,7 @@ Page({
       }
 
       const ledCount = this.stripLedCount();
-      /* v4：亮度是逐光区的层字段，真实写进这一条灯组（不碰全局亮度）。
+      /* v4：亮度是逐分区的层字段，真实写进这一条灯组（不碰全局亮度）。
        * #96：随机闪烁没有成品卡，用「常亮」卡作壳再把类型换成 FLICKER。 */
       const spec = this.specForEffect(card, stripId, ledCount);
       const ack = await session.setSegment(spec);
@@ -3119,7 +3149,7 @@ Page({
         { ...spec, stripId, segId: 0 } as unknown as (typeof this.segmentReports)[number],
       ];
       /* #96：静默把整份方案也更新一次（进阶档的编排要能看到这一组的改动），
-       * 再恢复播放。失败不覆盖「已生效」——实时光区已经写进去了。 */
+       * 再恢复播放。失败不覆盖「已生效」——实时分区已经写进去了。 */
       await this.silentDownloadPlans();
       if (wasPlaying) {
         await session.setPlayback(1, loopMode).catch(() => undefined);
@@ -3152,9 +3182,9 @@ Page({
   /**
    * 静默下发整份方案（#96）。
    *
-   * 简单档改的是实时光区；设备上如果有一套已启用的方案，停止播放后回落画面
+   * 简单档改的是实时分区；设备上如果有一套已启用的方案，停止播放后回落画面
    * 才是刚写的内容。这里把草稿里的方案也同步一次，使「停止播放」时看到的
-   * 与方案一致。**失败静默**：实时光区已经写成功，不该因为方案没提交就把
+   * 与方案一致。**失败静默**：实时分区已经写成功，不该因为方案没提交就把
    * 用户的操作判成失败。
    */
   async silentDownloadPlans(): Promise<void> {
@@ -3177,7 +3207,7 @@ Page({
       }
       await session.downloadScript(config, { activate: true, loop: false });
     } catch {
-      /* 方案同步是旁路：实时光区已经生效，这里不覆盖用户看到的结果。 */
+      /* 方案同步是旁路：实时分区已经生效，这里不覆盖用户看到的结果。 */
     }
   },
 
@@ -3209,7 +3239,7 @@ Page({
    * 底部唯一的主按钮。
    *
    * 简单档：有未写入的改动（或设备上不是「整组一张卡」）→ 先写入，成功后再播放。
-   * 进阶档：把当前步骤 × 当前灯组的光区写进设备（`replaceStepZonesInList`
+   * 进阶档：把当前步骤 × 当前灯组的分区写进设备（`replaceStepZonesInList`
    * 语义：只替换这一片，别的灯组 / 别的步骤一字不动），再播放整套方案。
    *
    * 两种档位写入失败都在按钮下方就地显示原因，不弹模态。已经在播放时只给提示，
@@ -3237,7 +3267,7 @@ Page({
     }
     this.setData({ applying: true, applyError: "" });
     try {
-      /* 写整组：有改动，或设备上不是「整组一张卡」（多光区 / 叠加层）。 */
+      /* 写整组：有改动，或设备上不是「整组一张卡」（多分区 / 叠加层）。 */
       if (this.dirty || this.segmentReports.length !== 1) {
         await this.writeQuick();
         if (this.dirty) {
@@ -3272,20 +3302,20 @@ Page({
   },
 
   /**
-   * 进阶档的「应用并播放」：先写实时光区，再**下发整份方案**并播放。
+   * 进阶档的「应用并播放」：先写实时分区，再**下发整份方案**并播放。
    *
    * ## 为什么会话里必须下发方案
    *
    * 固件只在「有一套已提交并启用的方案」时才按方案渲染：没有 `ScriptCommit`
    * + `ActivateScript`，播放头根本没有东西可放，第 2..N 步永远播不到、时长
-   * 拖拽条对设备没有任何作用。只写「当前步骤 × 当前灯组」的实时光区只能让
+   * 拖拽条对设备没有任何作用。只写「当前步骤 × 当前灯组」的实时分区只能让
    * 第 1 步亮起来——那是早期实现漏掉的一步，也是 4 个方案槽位变成纯装饰的原因。
    *
    * ## 顺序（两步都要，各有用途）
    *
    *  0. **纯本地预检**（一帧都不发）：`draftToScriptConfig` 展开 → 校验 → 容量；
-   *  1. 写入前若在播放 → 先停（设备按方案渲染时实时光区不可见）；
-   *  2. **实时光区**：`queryStrip` 读回 → 清掉这一组 → 按草稿逐个 `setSegment`。
+   *  1. 写入前若在播放 → 先停（设备按方案渲染时实时分区不可见）；
+   *  2. **实时分区**：`queryStrip` 读回 → 清掉这一组 → 按草稿逐个 `setSegment`。
    *     这一份是「停止播放时看到的东西」：用户按停止后回落的画面。
    *     清空时先快照，中途失败尽力还原（否则用户看到灯直接灭了）；
    *  3. **整份方案**：`downloadScript(script, { activate: true, loop })`；
@@ -3295,7 +3325,7 @@ Page({
    * 用户看到的只是按钮下方一行原因，而不是「灯先闪了一下又报错」。
    *
    * 预检失败与写入失败都落在 `applyError`（按钮下方就地显示），不弹模态。
-   * 方案写入失败时**不还原**实时光区：那一步已经成功，用户想要的画面已经写进去了，
+   * 方案写入失败时**不还原**实时分区：那一步已经成功，用户想要的画面已经写进去了，
    * 只把「方案没提交」这个原因如实说出来。
    */
   async applyAdvanced(): Promise<void> {
@@ -3314,7 +3344,7 @@ Page({
     const stripId = this.data.stripId;
     this.setPanelHint("");
     this.setData({ applying: true, applyError: "" });
-    /* 写入前先快照设备上这一组的光区：清空之后任何一帧失败都能**尽力还原**。 */
+    /* 写入前先快照设备上这一组的分区：清空之后任何一帧失败都能**尽力还原**。 */
     let restore: SegmentSpec[] = [];
     try {
       /* ⓪ 预检（纯本地）。草稿非法时一帧都不发，设备上的灯保持原样。 */
@@ -3357,7 +3387,7 @@ Page({
         await session.setPlayback(0, loop);
       }
 
-      /* ① 当前步骤 × 当前灯组：先读回、清掉这一组的旧光区，再逐个写。
+      /* ① 当前步骤 × 当前灯组：先读回、清掉这一组的旧分区，再逐个写。
        * 这一步即使 `zones` 为空也照做——「这一步让这条灯组熄一下」是合法的
        * 编排，实时画面（停止播放后的回落）必须与草稿一致。 */
       try {
@@ -3433,7 +3463,7 @@ Page({
   },
 
   /**
-   * 尽力把写入前的光区写回去（失败路径用，**不再报错**）。
+   * 尽力把写入前的分区写回去（失败路径用，**不再报错**）。
    *
    * 「清空 → 逐个写」之间任何一帧失败都会让这一组变暗；先快照再还原，用户最多
    * 看到灯闪一下，而不是莫名其妙全灭。还原本身失败就算了——原来的错误更重要。

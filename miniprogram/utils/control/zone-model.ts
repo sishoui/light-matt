@@ -1,9 +1,9 @@
 /**
- * 一个「光区」的完整形状：构造与读取的唯一入口（#53）。
+ * 一个「分区」的完整形状：构造与读取的唯一入口（#53）。
  *
  * ## 为什么要有这个模块
  *
- * 光区的线上形状是 `SegmentSpec`（v4 是 23 字节：灯组 / 槽位 / 区间 / 叠加方式 +
+ * 分区的线上形状是 `SegmentSpec`（v4 是 23 字节：灯组 / 槽位 / 区间 / 叠加方式 +
  * 两层各 9 字节灯效）。此前有三处各自拼这个对象：
  *
  *  - `segment-editor.assembleSpec`（段编辑页的草稿 → spec）
@@ -21,8 +21,8 @@
  *  - **本模块只做装配与读取**，不判断灯效参数是否合法——那是预检的事；
  *    这里只保证结构正确（层数定宽、空层叠加方式归一、**level 归一**、字段深拷贝）。
  *
- * v4 的 `level`（逐光区亮度）在装配时统一归一（`normalizeLayerLevel`）：
- * 空层恒 0、非空层钳到 0-100 且缺失按满亮。**所有构造光区的路径都必须经过
+ * v4 的 `level`（逐分区亮度）在装配时统一归一（`normalizeLayerLevel`）：
+ * 空层恒 0、非空层钳到 0-100 且缺失按满亮。**所有构造分区的路径都必须经过
  * 这里**，否则「用户调了亮度却被设备拒」只会在真机上暴露。
  *
  * 纯函数、不碰 wx / BLE。
@@ -33,7 +33,7 @@ import { normalizeLayerLevel } from "../protocol/segment-shapes";
 import type { BlendMode, EffectLayer, SegmentReport, SegmentSpec } from "../protocol/types";
 import { emptyLayer } from "./segment-model";
 
-/** 构造一个光区所需的输入。`layer1` 省略 / null 表示单层。 */
+/** 构造一个分区所需的输入。`layer1` 省略 / null 表示单层。 */
 export interface ZoneInput {
   /** 灯组号 0-7。 */
   stripId: number;
@@ -51,7 +51,7 @@ export interface ZoneInput {
   blend?: BlendMode;
 }
 
-/** 读出的光区视图（两层定宽，叠加方式已归一）。 */
+/** 读出的分区视图（两层定宽，叠加方式已归一）。 */
 export interface ZoneView {
   stripId: number;
   segId: number;
@@ -90,7 +90,7 @@ function copyLayer(layer: EffectLayer): EffectLayer {
 }
 
 /**
- * 构造一个光区（`SegmentSpec`）。
+ * 构造一个分区（`SegmentSpec`）。
  *
  * 保证四件事：两层定宽（没有叠加效果时补空层）、叠加方式已归一、
  * 两层都是副本（改调用方的草稿不会污染已下发的对象）、**level 已归一**
@@ -109,7 +109,7 @@ export function buildZoneSpec(zone: ZoneInput): SegmentSpec {
   };
 }
 
-/** 读取一个光区（设备报告或 spec 都接受），归一成 `ZoneView`。 */
+/** 读取一个分区（设备报告或 spec 都接受），归一成 `ZoneView`。 */
 export function readZone(spec: SegmentSpec | SegmentReport): ZoneView {
   return {
     stripId: spec.stripId,
@@ -123,13 +123,13 @@ export function readZone(spec: SegmentSpec | SegmentReport): ZoneView {
   };
 }
 
-/** 读取一个光区并直接产出可下发的 spec（等价于 readZone → 重新装配）。 */
+/** 读取一个分区并直接产出可下发的 spec（等价于 readZone → 重新装配）。 */
 export function zoneSpecOf(spec: SegmentSpec | SegmentReport): SegmentSpec {
   return buildZoneSpec(readZone(spec));
 }
 
 /**
- * 把光区的区间抽出来（喂给 `effect-layout` 的布局逻辑）。
+ * 把分区的区间抽出来（喂给 `effect-layout` 的布局逻辑）。
  *
  * 只是字段投影，不做校验——校验在 `effect-layout`。
  */

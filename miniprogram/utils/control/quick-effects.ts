@@ -231,8 +231,8 @@ export const QUICK_CARDS: readonly QuickEffectCard[] = [
   },
   {
     /*
-     * #81：整组熄灭。它是一条**光区**（主效果 OFF），不是关掉这条灯组的开关：
-     * 灯组自身仍然开着（不碰 strip power），所以别的光区或别的灯组照常工作。
+     * #81：整组熄灭。它是一条**分区**（主效果 OFF），不是关掉这条灯组的开关：
+     * 灯组自身仍然开着（不碰 strip power），所以别的分区或别的灯组照常工作。
      */
     id: "off",
     name: "熄灭黑",
@@ -280,7 +280,7 @@ export function defaultParams(card: QuickEffectCard): Required<QuickParams> {
  * 静态卡片的 period / p5 / flags 必须为 0（§7.1 第 6 条），这里保证；
  * 呼吸的 flags 只写波形位，彩虹/流光的 flags 只写方向位。
  *
- * `level` 是 v4 的逐光区亮度（0-100）；省略时为满亮 100（等价 v3 行为）。
+ * `level` 是 v4 的逐分区亮度（0-100）；省略时为满亮 100（等价 v3 行为）。
  * 它由灯组页的亮度滑块给出，与卡片自己的「最暗」档（`QuickParams.level`）无关。
  */
 export function buildQuickLayer(
@@ -368,10 +368,10 @@ export function buildQuickLayer(
 }
 
 /**
- * 卡片 + 参数 + 灯组 → 一个覆盖整组的光区 spec（单层）。
+ * 卡片 + 参数 + 灯组 → 一个覆盖整组的分区 spec（单层）。
  *
  * 快捷档的语义就是「整组生效」，所以区间恒为 `0 .. ledCount-1`，
- * 槽位固定 0（整组只有这一个光区），叠加层为空、叠加方式覆盖。
+ * 槽位固定 0（整组只有这一个分区），叠加层为空、叠加方式覆盖。
  *
  * 装配委托给 `zone-model.buildZoneSpec`——单层 blend 归一与深拷贝只有一份实现。
  */

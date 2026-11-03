@@ -1,18 +1,18 @@
 /**
- * 进阶档的本地草稿（#65 时间轴 + #66 光区轴）。
+ * 进阶档的本地草稿（#65 时间轴 + #66 分区轴）。
  *
  * ## 为什么要有这一层
  *
- * 进阶档同时有两条轴：时间（步骤）与空间（光区）。两条轴共享同一份数据：
- * **每个步骤 × 每个灯组各有一片光区**。这份形状协议里已经有了（`ScriptDraft`
- * 的 4 套方案 × 8 步骤 × 若干光区），所以不再新造一套，只补「按当前灯组取
+ * 进阶档同时有两条轴：时间（步骤）与空间（分区）。两条轴共享同一份数据：
+ * **每个步骤 × 每个灯组各有一片分区**。这份形状协议里已经有了（`ScriptDraft`
+ * 的 4 套方案 × 8 步骤 × 若干分区），所以不再新造一套，只补「按当前灯组取
  * 切片」的派生与写入。
  *
  * 三条不变量：
  *
  *  1. **写入只替换「当前步骤 × 当前灯组」那一片**（`replaceStepZones`），其它
  *     灯组、其它步骤一字不动——多灯组设备上编辑第 1 组不能清掉第 2 组；
- *  2. **时间轴的缩略色带与光区轴来自同一份草稿**，不会出现「轴上三段、缩略
+ *  2. **时间轴的缩略色带与分区轴来自同一份草稿**，不会出现「轴上三段、缩略
  *     色带两段」的两套真相；
  *  3. 步骤时长在草稿里是**字符串**（`ScriptStageDraft.durationInput`，与
  *     #67 写入路径同形），界面上的人话「1 秒」由 `timeline.ts` 换算。
@@ -65,7 +65,7 @@ export function stageDurationMs(stage: { durationInput: string } | undefined): n
 /**
  * 草稿 → 时间轴视图（`layoutBlocks` 的输入）。
  *
- * 每个块的缩略色带只画**当前灯组**的光区：正在编辑别的组时，时间轴上显示
+ * 每个块的缩略色带只画**当前灯组**的分区：正在编辑别的组时，时间轴上显示
  * 的也应该是那一条灯组的样子。
  */
 export function timelineStepsOf(draft: ScriptDraft, stripId: number): TimelineStep[] {
@@ -83,14 +83,14 @@ export function timelineStepsOf(draft: ScriptDraft, stripId: number): TimelineSt
   });
 }
 
-/** 某一步里当前灯组的光区（按槽位排序）。 */
+/** 某一步里当前灯组的分区（按槽位排序）。 */
 export function stepZonesOf(draft: ScriptDraft, stepIndex: number, stripId: number): SegmentSpec[] {
   const stage = draft.stages[stepIndex];
   return stage === undefined ? [] : zonesOfStep(stage, stripId);
 }
 
 /**
- * 写入某一步里当前灯组的光区（**只替换这一片**）。
+ * 写入某一步里当前灯组的分区（**只替换这一片**）。
  *
  * 步骤下标非法时原样返回（引用不变，页面据此不刷新）。
  */
@@ -107,7 +107,7 @@ export function writeStepZones(
 }
 
 /**
- * 用设备读回的当前灯组光区填进某一步（仅当该步这一组还是空的）。
+ * 用设备读回的当前灯组分区填进某一步（仅当该步这一组还是空的）。
  *
  * 用于「刚进进阶档时，让用户从灯控现在的样子开始改」，不会覆盖已有草稿。
  */
@@ -149,7 +149,7 @@ export function setStageDurationMs(
   return { ...draft, stages };
 }
 
-/** 加一个步骤（默认 1 秒、没有光区）；到 8 个返回原对象（引用不变）。 */
+/** 加一个步骤（默认 1 秒、没有分区）；到 8 个返回原对象（引用不变）。 */
 export function addStepStage(draft: ScriptDraft, durationMs: number = DEFAULT_STEP_MS): ScriptDraft {
   if (draft.stages.length >= MAX_STEPS) {
     return draft;

@@ -52,7 +52,7 @@ import {
   type TimelineStep,
 } from "../utils/control/timeline";
 
-/** 造一个步骤（默认 1 秒、无光区）。 */
+/** 造一个步骤（默认 1 秒、无分区）。 */
 function step(durationMs: number, zones: TimelineStep["zones"] = []): TimelineStep {
   return { durationMs, zones };
 }
@@ -243,7 +243,7 @@ describe("时间轴布局视图", () => {
     expect(layoutBlocks([], { widthPx: 400 })).toEqual([]);
   });
 
-  it("缩略色带跟着该步骤的光区走", () => {
+  it("缩略色带跟着该步骤的分区走", () => {
     const withZones = [
       step(1000, [
         { start: 0, end: 14, hex: "#FF0000" },
@@ -370,7 +370,7 @@ describe("增段", () => {
     expect(timeline.every((item) => item.zones.length === 0)).toBe(true);
   });
 
-  it("加一段：默认 1 秒、无光区，返回新列表并选中新段", () => {
+  it("加一段：默认 1 秒、无分区，返回新列表并选中新段", () => {
     const result = addStep([step(2000)]);
     expect(result).not.toBeNull();
     expect(result!.steps).toHaveLength(2);
@@ -489,21 +489,21 @@ describe("缩略色带", () => {
     expect(bands.map((band) => band.ratio)).toEqual([0.5, 0.5]);
   });
 
-  it("没被光区覆盖的灯珠是留白色带（色带不会整体右移）", () => {
+  it("没被分区覆盖的灯珠是留白色带（色带不会整体右移）", () => {
     const bands = thumbBands([{ start: 6, end: 14, hex: "#00FF00" }], 30);
     expect(bands.map((band) => band.hex)).toEqual(["", "#00FF00", ""]);
     expect(bands.map((band) => band.ratio)).toEqual([0.2, 0.3, 0.5]);
     expect(near(bands.reduce((sum, band) => sum + band.ratio, 0), 1)).toBe(true);
   });
 
-  it("没有光区 → 一条整宽的留白（不是空白一片）", () => {
+  it("没有分区 → 一条整宽的留白（不是空白一片）", () => {
     const bands = thumbBands([], 30);
     expect(bands).toHaveLength(1);
     expect(bands[0].hex).toBe("");
     expect(bands[0].ratio).toBe(1);
   });
 
-  it("一个光区覆盖全条 → 一条满宽色带", () => {
+  it("一个分区覆盖全条 → 一条满宽色带", () => {
     const bands = thumbBands([{ start: 0, end: 29, hex: "#123456" }], 30);
     expect(bands).toHaveLength(1);
     expect(bands[0]).toEqual({
@@ -521,7 +521,7 @@ describe("缩略色带", () => {
     expect(bands[0].style).toContain("background: #FF0000;");
   });
 
-  it("三个等长光区 → 三等分", () => {
+  it("三个等长分区 → 三等分", () => {
     const bands = thumbBands(
       [
         { start: 0, end: 9, hex: "#111111" },
@@ -533,7 +533,7 @@ describe("缩略色带", () => {
     expect(bands.map((band) => band.ratio)).toEqual([1 / 3, 1 / 3, 1 / 3]);
   });
 
-  it("越界 / 倒序 / 空色的光区被跳过或裁剪，不产生负数比例", () => {
+  it("越界 / 倒序 / 空色的分区被跳过或裁剪，不产生负数比例", () => {
     const bands = thumbBands(
       [
         { start: 25, end: 40, hex: "#ABCDEF" }, // 尾部裁剪到 29
@@ -548,7 +548,7 @@ describe("缩略色带", () => {
     expect(bands.every((band) => band.ratio > 0)).toBe(true);
   });
 
-  it("重叠的光区按先来的算，不重复计数", () => {
+  it("重叠的分区按先来的算，不重复计数", () => {
     const bands = thumbBands(
       [
         { start: 0, end: 19, hex: "#111111" },
@@ -1077,7 +1077,7 @@ describe("渲染层：拖动有位移样式、松手后顺序真的变（#82）"
     expect(rule(".timeline-row.settling .timeline-block")).toMatch(/transition:\s*none/);
   });
 
-  it("拖动中只重画块，不重算光区轴与面板（`touchmove` 每秒几十次）", () => {
+  it("拖动中只重画块，不重算分区轴与面板（`touchmove` 每秒几十次）", () => {
     const move = handlerBody(ts, "onStepTouchMove");
     expect(move).toContain("this.renderDragBlocks()");
     expect(move).not.toContain("this.renderTimeline(");

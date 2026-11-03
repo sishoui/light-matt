@@ -624,7 +624,7 @@ describe("分段编辑器纯逻辑（页面侧不变）", () => {
     expect(overlapError(40, 63, rows)).not.toBeNull();
     expect(overlapError(40, 63, rows, 1)).toBeNull();
     expect(overlapError(0, 15, rows, 0)).toBeNull();
-    expect(overlapError(5, 45, rows)).toContain("光区 1");
+    expect(overlapError(5, 45, rows)).toContain("分区 1");
     expect(overlapError(5, 45, rows)).not.toContain("段");
   });
 

@@ -3,8 +3,8 @@
  *
  * 断言：
  *  1. HSV 滑块 ↔ 协议值的换算（色相 0-360 ↔ 0-65535、饱和度 % ↔ 0-255），
- *     以及亮度滑块**真实下发**（v4 的逐光区 level）；
- *  2. 设备读回值只有在「整组一个光区 + 无叠加层」时才敢回填成某张卡。
+ *     以及亮度滑块**真实下发**（v4 的逐分区 level）；
+ *  2. 设备读回值只有在「整组一个分区 + 无叠加层」时才敢回填成某张卡。
  *
  * 方案槽位的文案与轮换已迁到 `plan-slots.ts`（#83 起方案按需增长），
  * 那里有自己的测试文件。
@@ -165,7 +165,7 @@ describe("参数区：只显示该卡支持的滑块", () => {
 });
 
 describe("设备读回 → 当前卡片", () => {
-  it("整组一个光区、无叠加层、类型可辨认时回填", () => {
+  it("整组一个分区、无叠加层、类型可辨认时回填", () => {
     const state = inferSimpleState([report({ end: 29 })], 30);
     expect(state).not.toBeNull();
     expect(state!.cardId).toBe("warm");
@@ -189,7 +189,7 @@ describe("设备读回 → 当前卡片", () => {
     ).toBe("comet");
   });
 
-  it("多个光区认不出（不猜）", () => {
+  it("多个分区认不出（不猜）", () => {
     expect(inferSimpleState([report(), report({ segId: 1, start: 15, end: 29 })], 30)).toBeNull();
   });
 
@@ -211,7 +211,7 @@ describe("设备读回 → 当前卡片", () => {
     expect(inferSimpleState([empty], 30)).toBeNull();
   });
 
-  it("没有任何光区时返回 null", () => {
+  it("没有任何分区时返回 null", () => {
     expect(inferSimpleState([], 30)).toBeNull();
   });
 });
@@ -240,7 +240,7 @@ describe("九张卡里的新三张（#81）", () => {
     }
   });
 
-  it("熄灭卡读回：整组一个光区、主效果熄灭、无叠加层 → 反推出 off", () => {
+  it("熄灭卡读回：整组一个分区、主效果熄灭、无叠加层 → 反推出 off", () => {
     const offLayer = { type: SEGMENT_TYPE.OFF, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 };
     const state = inferSimpleState([report({ layer0: offLayer })], 30);
     expect(state).not.toBeNull();
@@ -254,7 +254,7 @@ describe("九张卡里的新三张（#81）", () => {
     expect(inferSimpleState([report({ layer0: offLayer })], 30)!.cardId).not.toBe("warm");
   });
 
-  it("有多个光区时熄灭卡也认不出（只认整组一张卡）", () => {
+  it("有多个分区时熄灭卡也认不出（只认整组一张卡）", () => {
     const offLayer = { type: SEGMENT_TYPE.OFF, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 };
     expect(
       inferSimpleState(

@@ -2,10 +2,10 @@
  * 灯效方案的编辑模型（#55 / #56）。
  *
  * 锁住四件事：
- *  1. **多灯组隔离**：替换当前组的光区时，别组的光区一个字节都不能动
+ *  1. **多灯组隔离**：替换当前组的分区时，别组的分区一个字节都不能动
  *     （这是自定义档最容易丢配置的地方）；
  *  2. 方案槽位与步骤下标的钳位（换方案 / 删步骤后仍可安全渲染）；
- *  3. 扁平段与两层 spec 混在草稿里时都能正确读成光区；
+ *  3. 扁平段与两层 spec 混在草稿里时都能正确读成分区；
  *  4. 人话时长档位的最近匹配（界面不出现「毫秒」）。
  */
 
@@ -60,7 +60,7 @@ function zone(stripId: number, segId: number, start: number, end: number): Segme
   });
 }
 
-/** 带指定亮度的单层光区（v4 的 level 必须穿过切片替换保住）。 */
+/** 带指定亮度的单层分区（v4 的 level 必须穿过切片替换保住）。 */
 function levelZone(
   stripId: number,
   segId: number,
@@ -121,7 +121,7 @@ describe("方案状态", () => {
 });
 
 describe("步骤 × 灯组切片", () => {
-  it("只读当前灯组的光区，并按槽位排序", () => {
+  it("只读当前灯组的分区，并按槽位排序", () => {
     const s = state();
     const draft = replaceStepZones(
       currentPlanDraft(s)!,
@@ -134,9 +134,9 @@ describe("步骤 × 灯组切片", () => {
     expect(zonesOfStep(step, 1)).toEqual([]);
   });
 
-  it("替换当前组的光区时，别组原样保留（关键），亮度也各自带走", () => {
+  it("替换当前组的分区时，别组原样保留（关键），亮度也各自带走", () => {
     const s = state();
-    /* 先给第 0、1 组都放光区，并给它们不同的亮度档。 */
+    /* 先给第 0、1 组都放分区，并给它们不同的亮度档。 */
     let draft = replaceStepZones(currentPlanDraft(s)!, 0, 0, [levelZone(0, 0, 0, 9, 40)]);
     draft = replaceStepZones(draft, 0, 1, [levelZone(1, 0, 0, 14, 80)]);
     expect(draft.stages[0].segments).toHaveLength(2);
@@ -192,7 +192,7 @@ describe("步骤 × 灯组切片", () => {
     expect(draft.stages[0].segments[0]).not.toBe(read);
   });
 
-  it("扁平段也能读成光区（老草稿兼容）", () => {
+  it("扁平段也能读成分区（老草稿兼容）", () => {
     const draft = currentPlanDraft(state())!;
     const withFlat = {
       ...draft,
@@ -225,7 +225,7 @@ describe("步骤 × 灯组切片", () => {
     expect(zones[0].blend).toBe(BLEND.OVER);
   });
 
-  it("步骤摘要：灯组列表与各组光区数", () => {
+  it("步骤摘要：灯组列表与各组分区数", () => {
     let draft = replaceStepZones(currentPlanDraft(state())!, 0, 0, [zone(0, 0, 0, 9)]);
     draft = replaceStepZones(draft, 0, 0, [zone(0, 0, 0, 4), zone(0, 1, 5, 9)]);
     draft = replaceStepZones(draft, 0, 3, [zone(3, 0, 0, 2)]);
@@ -237,7 +237,7 @@ describe("步骤 × 灯组切片", () => {
 });
 
 describe("空态与时长档位", () => {
-  it("新方案没有任何光区", () => {
+  it("新方案没有任何分区", () => {
     expect(planIsEmpty(currentPlanDraft(state()))).toBe(true);
     const draft = replaceStepZones(currentPlanDraft(state())!, 0, 0, [zone(0, 0, 0, 1)]);
     expect(planIsEmpty(draft)).toBe(false);
@@ -256,7 +256,7 @@ describe("空态与时长档位", () => {
     expect(nearestDurationLabel(0)).toBeTypeOf("string");
   });
 
-  it("由设备光区初始化步骤时沿用默认时长", () => {
+  it("由设备分区初始化步骤时沿用默认时长", () => {
     const step = stepFromDeviceZones([zone(0, 0, 0, 9)]);
     expect(step.durationInput).toBe(String(DEFAULT_STEP_MS));
     expect(step.segments).toHaveLength(1);
@@ -278,7 +278,7 @@ describe("方案消息的术语翻译", () => {
     const text = planMessageText("剧本过大，请减少阶段数/段数/灯带数");
     expect(text).toContain("方案");
     expect(text).toContain("步骤数");
-    expect(text).toContain("光区数");
+    expect(text).toContain("分区数");
     expect(text).toContain("灯组数");
     for (const banned of ["剧本", "阶段", "段数", "灯带数"]) {
       expect(text).not.toContain(banned);

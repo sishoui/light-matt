@@ -246,7 +246,7 @@ describe("新增三张卡（#81）", () => {
     expect(heartbeat.sat).toBeGreaterThan(200);
   });
 
-  it("熄灭黑：整组一个光区，主效果熄灭、参数全 0、无叠加层", () => {
+  it("熄灭黑：整组一个分区，主效果熄灭、参数全 0、无叠加层", () => {
     const spec = buildQuickSpec(off, {}, 1, 20);
     expect(spec.layer0.type).toBe(SEGMENT_TYPE.OFF);
     expect(spec.layer0.hue).toBe(0);
@@ -367,7 +367,7 @@ describe("从设备值反推卡片", () => {
     expect(inferQuickCard({ ...base, type: SEGMENT_TYPE.OFF, level: 0 })).toBe("off");
   });
 
-  it("熄灭卡整组读回后反推出 off（无叠加层、整组一个光区）", () => {
+  it("熄灭卡整组读回后反推出 off（无叠加层、整组一个分区）", () => {
     const off = buildQuickSpec(quickCardOf("off")!, {}, 0, 24);
     /* 设备报告就是 spec 的扁平投影，layer0 足够反推。 */
     expect(inferQuickCard(off.layer0)).toBe("off");

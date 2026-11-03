@@ -175,18 +175,18 @@ describe("演示模式：扫描", () => {
 });
 
 /**
- * 快捷档（#54）的会话级链路：点一张卡 → 整组变成一个光区 → 设备读回真的变了。
+ * 快捷档（#54）的会话级链路：点一张卡 → 整组变成一个分区 → 设备读回真的变了。
  *
  * 页面层只负责 setData；这里验证「写入确实生效」，因为模拟器里的
  * 「界面高亮了」不能证明设备收到了命令。
  */
 describe("演示模式：快捷档写入", () => {
-  it("点卡片后整组变成一个覆盖全条的单层光区（设备读回为准）", async () => {
+  it("点卡片后整组变成一个覆盖全条的单层分区（设备读回为准）", async () => {
     const { session } = makeSession();
     await session.connect(A.deviceId, A.broadcastName);
     const card = quickCardOf("breathe")!;
     const ledCount = session.stripLedCount(0);
-    /* 先清掉预置光区（快捷档整组覆盖，见 device.writeQuick）。 */
+    /* 先清掉预置分区（快捷档整组覆盖，见 device.writeQuick）。 */
     await session.queryStrip(0);
     for (const report of session.segmentsOf(0)) {
       await session.clearSegment(0, report.segId);
@@ -209,7 +209,7 @@ describe("演示模式：快捷档写入", () => {
     await session.connect(A.deviceId, A.broadcastName);
     const card = quickCardOf("rainbow")!;
     const ledCount = session.stripLedCount(0);
-    /* 快捷档的语义是整组覆盖：先读回再清掉该组其它光区（协议要求，见 device.writeQuick）。 */
+    /* 快捷档的语义是整组覆盖：先读回再清掉该组其它分区（协议要求，见 device.writeQuick）。 */
     await session.queryStrip(0);
     for (const report of session.segmentsOf(0)) {
       if (report.segId !== 0) {
@@ -221,7 +221,7 @@ describe("演示模式：快捷档写入", () => {
     const result = await session.queryStrip(0);
     expect(result.kind).toBe("ok");
     if (result.kind !== "ok") return;
-    /* 全条只应该有一个盖满的目标光区（槽位 0 被第二次覆盖）。 */
+    /* 全条只应该有一个盖满的目标分区（槽位 0 被第二次覆盖）。 */
     const covering = result.reports.filter(
       (report) => report.stripId === 0 && report.start === 0 && report.end === ledCount - 1,
     );
@@ -229,10 +229,10 @@ describe("演示模式：快捷档写入", () => {
     expect(covering[0].layer0.periodMs).toBe(6000);
   });
 
-  it("整组写入前必须清掉其它光区，否则设备回 InvalidParam（重叠）", async () => {
+  it("整组写入前必须清掉其它分区，否则设备回 InvalidParam（重叠）", async () => {
     const { session } = makeSession();
     await session.connect(A.deviceId, A.broadcastName);
-    /* 设备 A 的灯组 0 预置了两个光区（0-13 / 14-29）——直接写整组必然重叠。 */
+    /* 设备 A 的灯组 0 预置了两个分区（0-13 / 14-29）——直接写整组必然重叠。 */
     expect(session.segmentsOf(0).length).toBe(0);
     const before = await session.queryStrip(0);
     expect(before.kind).toBe("ok");
@@ -284,7 +284,7 @@ describe("演示模式：快捷档写入", () => {
       await session.clearSegment(0, report.segId);
     }
     await session.setSegment(buildQuickSpec(quickCardOf("off")!, {}, 0, ledCount));
-    /* 熄灭是「光区全黑」，开关位不该被动过。 */
+    /* 熄灭是「分区全黑」，开关位不该被动过。 */
     expect(session.stripPower(0)).toBe(true);
     expect(session.deviceState?.power).toBe(A.power);
   });
@@ -308,7 +308,7 @@ describe("演示模式：快捷档写入", () => {
     expect(state?.cardId).toBe("off");
   });
 
-  it("方案播放中写实时光区前先停止播放（否则设备不出光）", async () => {
+  it("方案播放中写实时分区前先停止播放（否则设备不出光）", async () => {
     const { session } = makeSession();
     await session.connect(A.deviceId, A.broadcastName);
     /* 起一套最小方案并播放，模拟「用户正看着播放中的方案」。 */
@@ -398,7 +398,7 @@ describe("快捷档：视图派生", () => {
  * 那套方案还在，下次进入页面又会冒出来。
  */
 describe("演示模式：清空方案（ClearScript）", () => {
-  /** 一套单步单光区的最小方案。 */
+  /** 一套单步单分区的最小方案。 */
   function minimalScript(scriptId: number, ledCount: number): {
     scriptId: number;
     stripCount: number;
@@ -498,7 +498,7 @@ describe("演示模式：逐灯组灯珠数", () => {
     expect(session.stripLedCount(4)).not.toBe(session.deviceState?.ledCount);
   });
 
-  it("按该组真实长度构造的整组光区会被设备接受", async () => {
+  it("按该组真实长度构造的整组分区会被设备接受", async () => {
     const { session } = makeSession();
     await session.connect(B.deviceId, B.broadcastName);
     const stripId = 4;

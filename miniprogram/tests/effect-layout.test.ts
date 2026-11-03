@@ -1,5 +1,5 @@
 /**
- * 光区布局（纯函数）：区间校验、重叠拦截、默认切分、逐灯珠归属。
+ * 分区布局（纯函数）：区间校验、重叠拦截、默认切分、逐灯珠归属。
  *
  * 这些规则直接决定「会不会发出一帧必定被设备拒绝的配置」，所以必须是
  * 纯函数并在 node 里锁死——靠模拟器点不出来。
@@ -97,7 +97,7 @@ describe("重叠判定", () => {
     expect(rangesOverlap({ start: 5, end: 6 }, { start: 0, end: 19 })).toBe(true);
   });
 
-  it("找到冲突时返回那个光区（含槽位与区间，供提示）", () => {
+  it("找到冲突时返回那个分区（含槽位与区间，供提示）", () => {
     const conflict = findConflict({ start: 5, end: 10 }, zones([0, 0, 14], [1, 20, 29]));
     expect(conflict?.segId).toBe(0);
     expect(conflict?.start).toBe(0);
@@ -118,10 +118,10 @@ describe("validateZone", () => {
     expect(r).toMatchObject({ ok: true, start: 10, end: 19 });
   });
 
-  it("重叠时提示里带「光区 N」（从 1 编号）", () => {
+  it("重叠时提示里带「分区 N」（从 1 编号）", () => {
     const r = validateZone(2, 5, 10, zones([1, 0, 9]), 30);
     expect(r.ok).toBe(false);
-    expect(r.message).toContain("光区 2");
+    expect(r.message).toContain("分区 2");
   });
 
   it("区间非法时先报区间问题（不叠加重叠噪音）", () => {
@@ -196,7 +196,7 @@ describe("默认切分", () => {
 describe("逐灯珠归属", () => {
   const zonesList = zones([0, 0, 9], [1, 10, 19]);
 
-  it("每颗灯珠归属正确的光区", () => {
+  it("每颗灯珠归属正确的分区", () => {
     const cells = buildZoneCells(25, zonesList, new Map(), null);
     expect(cells).toHaveLength(25);
     expect(cells[0].ownerSegId).toBe(0);
@@ -211,12 +211,12 @@ describe("逐灯珠归属", () => {
     expect(cells[24].ownerSegId).toBe(-1);
   });
 
-  it("草稿区间优先显示，且与已有光区相交的部分标冲突", () => {
+  it("草稿区间优先显示，且与已有分区相交的部分标冲突", () => {
     const cells = buildZoneCells(25, zonesList, new Map(), { start: 5, end: 12 }, 2);
     expect(cells[6].editing).toBe(true);
-    expect(cells[6].conflict).toBe(true); // 与光区 0 相交
+    expect(cells[6].conflict).toBe(true); // 与分区 0 相交
     expect(cells[11].editing).toBe(true);
-    expect(cells[11].conflict).toBe(true); // 与光区 1 相交
+    expect(cells[11].conflict).toBe(true); // 与分区 1 相交
     expect(cells[5].editing).toBe(true);
   });
 
@@ -240,7 +240,7 @@ describe("从设备读回的值派生", () => {
     ]);
   });
 
-  it("zoneColorMap 给出每个光区的展示色", () => {
+  it("zoneColorMap 给出每个分区的展示色", () => {
     const map = zoneColorMap([report(0, 0, 9, 0, 255), report(1, 10, 19, 0, 0)]);
     expect(map.get(0)).toMatch(/^#[0-9A-F]{6}$/i);
     expect(map.get(0)).not.toBe(map.get(1));
@@ -250,7 +250,7 @@ describe("从设备读回的值派生", () => {
     expect(uncoveredCount(30, zones([0, 0, 19]))).toBe(10);
     expect(zonesSummary(30, zones([0, 0, 19]))).toContain("10 颗熄灭");
     expect(zonesSummary(30, zones([0, 0, 29]))).toContain("整组覆盖");
-    expect(zonesSummary(30, [])).toContain("还没有光区");
+    expect(zonesSummary(30, [])).toContain("还没有分区");
   });
 });
 
@@ -378,12 +378,12 @@ describe("#53 逐灯珠归属（scanLedOwnership）", () => {
 });
 
 /**
- * #66：光区轴需要「哪几颗、连成几段」的灰条。
+ * #66：分区轴需要「哪几颗、连成几段」的灰条。
  *
- * `uncoveredCount` 只给颗数；把它当灰条用会在两个光区相接时画出假缝隙。
+ * `uncoveredCount` 只给颗数；把它当灰条用会在两个分区相接时画出假缝隙。
  */
 describe("#66 未覆盖区间（uncoveredRanges）", () => {
-  it("零光区 → 整条一根灰条", () => {
+  it("零分区 → 整条一根灰条", () => {
     expect(uncoveredRanges([], 30)).toEqual([{ start: 0, end: 29 }]);
   });
 
@@ -402,7 +402,7 @@ describe("#66 未覆盖区间（uncoveredRanges）", () => {
     expect(uncoveredRanges([{ start: 0, end: 9 }, { start: 10, end: 19 }], 20)).toEqual([]);
   });
 
-  it("单颗光区：前后各一根", () => {
+  it("单颗分区：前后各一根", () => {
     expect(uncoveredRanges([{ start: 0, end: 0 }], 3)).toEqual([{ start: 1, end: 2 }]);
     expect(uncoveredRanges([{ start: 1, end: 1 }], 3)).toEqual([
       { start: 0, end: 0 },

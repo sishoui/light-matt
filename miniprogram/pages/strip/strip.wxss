@@ -579,7 +579,7 @@
 }
 
 /*
- * 选中态用 2px 描边，**不改颜色**：块里铺的是这一步光区的缩略色带，
+ * 选中态用 2px 描边，**不改颜色**：块里铺的是这一步分区的缩略色带，
  * 换底色会把色带本身盖掉。box-shadow 描边不占布局，块宽不会跳。
  */
 .timeline-block.selected {
@@ -620,7 +620,7 @@
   transition: none;
 }
 
-/* 缩略色带：贴块底，按该步骤光区的灯珠比例分成若干条。 */
+/* 缩略色带：贴块底，按该步骤分区的灯珠比例分成若干条。 */
 .timeline-bands {
   position: absolute;
   left: 0;
@@ -747,7 +747,7 @@
   transform: translateX(-100%);
 }
 
-/* ---------------- 进阶档：光区轴（#66） ---------------- */
+/* ---------------- 进阶档：分区轴（#66） ---------------- */
 
 .zone-section {
   gap: 16rpx;
@@ -760,7 +760,7 @@
 }
 
 /*
- * 光区轴的容器：块在里面绝对定位（left / width 由 zone-axis.ts 按灯珠比例
+ * 分区轴的容器：块在里面绝对定位（left / width 由 zone-axis.ts 按灯珠比例
  * 算好写进 style）。相对定位是必须的，否则 left 会相对整页算。
  */
 .zone-axis {
@@ -789,7 +789,7 @@
   overflow: visible;
 }
 
-/* 光区本体：颜色只铺在块里，块的选中态另加描边（不换色）。 */
+/* 分区本体：颜色只铺在块里，块的选中态另加描边（不换色）。 */
 .zone-fill {
   position: absolute;
   top: 4rpx;
@@ -800,13 +800,77 @@
 }
 
 /*
- * 选中态：2px 描边，不改颜色（光区自身就有颜色，换底色会混淆）——
+ * 选中态：2px 描边，不改颜色（分区自身就有颜色，换底色会混淆）——
  * 与 `.timeline-block.selected` 同一套处理方式。z-index 抬起来，
- * 否则窄光区的描边会被邻块盖住一半。
+ * 否则窄分区的描边会被邻块盖住一半。
+ */
+/*
+ * #97：选中态是「属于它的灯珠边框高亮」，不是整块换底色——分区本身就有
+ * 颜色，换底色会让人分不清「这是它的颜色」还是「它被选中了」。
  */
 .zone-block.selected {
   z-index: 2;
   box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+/* 预览条（#97）：只读聚合视图，逐颗灯珠按分区颜色画出。 */
+.preview-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10rpx;
+  margin-top: 8rpx;
+  padding: 16rpx 18rpx;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  border: 1rpx dashed var(--border);
+}
+
+.preview-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16rpx;
+}
+
+.preview-title {
+  font-size: 24rpx;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.preview-sub {
+  font-size: 20rpx;
+  color: var(--text-3);
+}
+
+/* 每颗灯珠一个格子：等宽 flex，整条铺满。 */
+.preview-strip {
+  display: flex;
+  gap: 1rpx;
+  height: 34rpx;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  border: 1rpx solid var(--border);
+}
+
+.preview-led {
+  flex: 1 1 0;
+  min-width: 2rpx;
+  background: var(--accent);
+}
+
+/* 未被覆盖的灯珠：灰格（不假装它属于某个分区）。 */
+.preview-led.empty {
+  background: var(--card-press);
+}
+
+/* 分区起点 / 终点：上下细边，方便核对范围。 */
+.preview-led.is-start {
+  box-shadow: inset 3rpx 0 0 var(--text);
+}
+
+.preview-led.is-end {
+  box-shadow: inset -3rpx 0 0 var(--text);
 }
 
 /* 没被覆盖的灯珠：灰条（走 --border，深浅主题都看得见），点不动。 */
@@ -816,7 +880,7 @@
 }
 
 /*
- * 起止手柄（#77）：选中光区的两端各一个实心圆，比条带更高，一眼看出
+ * 起止手柄（#77）：选中分区的两端各一个实心圆，比条带更高，一眼看出
  * 「起点在这一端、终点在这一端」。
  *
  * 三个必须：
@@ -842,7 +906,7 @@
 }
 
 /*
- * 两端挨得太近（单颗光区 / 灯珠很密）：缩小手柄并各自**向外**错开，
+ * 两端挨得太近（单颗分区 / 灯珠很密）：缩小手柄并各自**向外**错开，
  * 让两个圆仍然分得清哪边是起点、哪边是终点，而不是叠成一团。
  */
 .zone-handle.crowded {
@@ -859,7 +923,7 @@
   transform: translateX(0);
 }
 
-/* 零光区的引导：轴下面给出下一步，而不是只有一根灰条。 */
+/* 零分区的引导：轴下面给出下一步，而不是只有一根灰条。 */
 .zone-guide {
   display: flex;
   justify-content: center;
@@ -973,7 +1037,7 @@
   background: var(--card-press);
 }
 
-/* 没有可选的光区时，类型行整体变淡且点不动（引导文字会说明原因）。 */
+/* 没有可选的分区时，类型行整体变淡且点不动（引导文字会说明原因）。 */
 .panel-type.disabled {
   opacity: 0.45;
   pointer-events: none;
@@ -1169,7 +1233,7 @@
   color: var(--text-3);
 }
 
-/* 属于其它光区时的小色点：置灰之后仍然看得出「它归哪一块」。 */
+/* 属于其它分区时的小色点：置灰之后仍然看得出「它归哪一块」。 */
 .picker-owner-dot {
   position: absolute;
   top: 3rpx;
@@ -1179,7 +1243,7 @@
   border-radius: 50%;
 }
 
-/* 属于其它光区：置灰且点不动（不靠颜色深浅，靠斑马纹与降低不透明度）。 */
+/* 属于其它分区：置灰且点不动（不靠颜色深浅，靠斑马纹与降低不透明度）。 */
 .picker-cell.disabled {
   opacity: 0.4;
   pointer-events: none;

@@ -135,7 +135,7 @@
           bindchanging="onParamChanging"
           bindchange="onParamChange"
         />
-        <!-- 滑块的补充说明（目前没有滑块需要说明：亮度走 v4 的逐光区 level，真实下发） -->
+        <!-- 滑块的补充说明（目前没有滑块需要说明：亮度走 v4 的逐分区 level，真实下发） -->
         <text wx:if="{{item.note}}" class="param-note">{{item.note}}</text>
       </view>
 
@@ -175,7 +175,7 @@
           bindtouchend="onStepTouchEnd"
           bindtouchcancel="onStepTouchCancel"
         >
-          <!-- 缩略色带：按这一步的光区灯珠比例铺满整条 -->
+          <!-- 缩略色带：按这一步的分区灯珠比例铺满整条 -->
           <view class="timeline-bands">
             <view wx:for="{{item.bands}}" wx:for-item="band" wx:key="key" class="timeline-band" style="{{band.style}}"></view>
           </view>
@@ -234,12 +234,13 @@
       <text wx:if="{{stepHint}}" class="section-hint">{{stepHint}}</text>
     </view>
 
-    <!-- ---------------- 进阶档：光区轴（#66） ---------------- -->
+    <!-- ---------------- 进阶档：分区轴（#66） ---------------- -->
     <view class="section zone-section">
       <view class="section-head">
-        <text class="section-title">光区</text>
+        <text class="section-title">分区</text>
         <view class="axis-head-right">
           <text class="section-value">{{zoneSummary}}</text>
+          <view class="timeline-add preview-btn" bindtap="onPreviewToggle" hover-class="timeline-add-hover">预览</view>
           <view
             class="timeline-add zone-add {{zoneCanAdd ? '' : 'disabled'}}"
             hover-class="{{zoneCanAdd ? 'timeline-add-hover' : ''}}"
@@ -249,8 +250,8 @@
       </view>
 
       <!--
-        光区轴：每个光区按灯珠下标比例定位（left = 起点 / 灯珠数），没被覆盖的
-        灯珠画成灰条（点不动）。选中态用 2px 描边而不是换底色——光区本身就有
+        分区轴：每个分区按灯珠下标比例定位（left = 起点 / 灯珠数），没被覆盖的
+        灯珠画成灰条（点不动）。选中态用 2px 描边而不是换底色——分区本身就有
         颜色，换底色会让人分不清「这是它的颜色」还是「它被选中了」。
 
         选中的那一块两端各挂一个圆形手柄（#77）：手柄是块的绝对定位子元素，
@@ -268,7 +269,7 @@
         >
           <view wx:if="{{item.kind === 'zone'}}" class="zone-fill" style="background: {{item.hex}}"></view>
           <text wx:if="{{item.showLabel}}" class="zone-label">{{item.label}}</text>
-          <!-- 起止手柄：只有选中的光区才有（未选中时 handles 为空，不渲染节点）。 -->
+          <!-- 起止手柄：只有选中的分区才有（未选中时 handles 为空，不渲染节点）。 -->
           <view
             wx:for="{{item.handles}}"
             wx:for-item="handle"
@@ -279,7 +280,26 @@
         </view>
       </view>
 
-      <!-- 零光区：给引导，而不是一条没有任何说明的灰条。 -->
+      <!--
+        #97 预览条：按每个分区的颜色画出该组**每一颗灯珠**。
+        只读聚合视图（不绑任何 touch 事件），与可编辑的分区轴刻意区分开。
+      -->
+      <view wx:if="{{previewOpen}}" class="preview-block">
+        <view class="preview-head">
+          <text class="preview-title">预览</text>
+          <text class="preview-sub">每一颗灯珠按分区颜色画出，只读</text>
+        </view>
+        <view class="preview-strip">
+          <view
+            wx:for="{{previewLeds}}"
+            wx:key="index"
+            class="preview-led {{item.hex ? '' : 'empty'}} {{item.start ? 'is-start' : ''}} {{item.end ? 'is-end' : ''}}"
+            style="{{item.hex ? 'background: ' + item.hex : ''}}"
+          ></view>
+        </view>
+      </view>
+
+      <!-- 零分区：给引导，而不是一条没有任何说明的灰条。 -->
       <view wx:if="{{zoneGuide}}" class="zone-guide">
         <text class="zone-guide-text">{{zoneGuide}}</text>
       </view>
@@ -293,11 +313,7 @@
       </view>
 
       <view class="zone-actions">
-        <view
-          class="timeline-add {{selectedSegId >= 0 ? '' : 'disabled'}}"
-          hover-class="{{selectedSegId >= 0 ? 'timeline-add-hover' : ''}}"
-          bindtap="onZoneEditSelected"
-        >改范围</view>
+        <!-- #97：没有「改范围」按钮——再点一次选中的分区（或长按）就进入编辑。 -->
         <text class="section-hint">点一块选中；再点一次（或长按）改范围</text>
       </view>
 
@@ -373,7 +389,7 @@
             bindchanging="onPanelSliderChanging"
             bindchange="onPanelSliderChange"
           />
-          <!-- 滑块的补充说明（亮度走 v4 的逐光区 level，真实下发，不需要额外提示） -->
+          <!-- 滑块的补充说明（亮度走 v4 的逐分区 level，真实下发，不需要额外提示） -->
           <text wx:if="{{item.note}}" class="param-note">{{item.note}}</text>
         </view>
 
@@ -567,7 +583,7 @@
           bindtap="onPickerCellTap"
         >
           <text class="picker-cell-no">{{item.label}}</text>
-          <!-- 别人光区的格子置灰，只留一个小色点说明它归哪个光区。 -->
+          <!-- 别人分区的格子置灰，只留一个小色点说明它归哪个分区。 -->
           <view
             wx:if="{{item.ownerHex}}"
             class="picker-owner-dot"
@@ -577,7 +593,7 @@
       </view>
 
       <!-- 两个数字滚轮（#78）：值域只含与锚点连通的连续空闲灯珠，
-           被别的光区占着的序号根本不出现在候选里，所以非法区间选不出来。 -->
+           被别的分区占着的序号根本不出现在候选里，所以非法区间选不出来。 -->
       <view class="picker-wheels">
         <view class="picker-wheel">
           <text class="picker-wheel-tag">起点</text>
@@ -619,7 +635,7 @@
       <text wx:if="{{pickerError}}" class="picker-error">{{pickerError}}</text>
 
       <view class="picker-foot">
-        <button class="btn ghost picker-btn" bindtap="onPickerCancel">取消</button>
+        <!-- #97：没有「取消」按钮——点空白处就关。 -->
         <button
           wx:if="{{pickerEditing}}"
           class="btn danger picker-btn"

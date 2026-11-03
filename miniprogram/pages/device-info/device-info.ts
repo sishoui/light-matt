@@ -222,7 +222,7 @@ Page({
       limitsText:
         info === null
           ? "—"
-          : `灯珠 ${info.maxLeds} · 灯组 ${info.maxStrips} · 光区 ${info.maxSegments} · 步骤 ${info.maxStages} · 方案 ${info.maxScripts}`,
+          : `灯珠 ${info.maxLeds} · 灯组 ${info.maxStrips} · 分区 ${info.maxSegments} · 步骤 ${info.maxStages} · 方案 ${info.maxScripts}`,
     });
 
     /* hwId 由会话在 ready 后写入登记表；重读一次让备注字段反映最新记录。 */
@@ -298,7 +298,7 @@ Page({
   /**
    * 松手：新增 / 缩小 / 改大三条路径。
    *
-   * 缩小且这条灯组有越界的光区或草稿时，先弹二次确认（文案带数量）；
+   * 缩小且这条灯组有越界的分区或草稿时，先弹二次确认（文案带数量）；
    * 取消则设备与草稿都不动，滑块回到设备值。
    */
   async onLedCountChange(e: WechatMiniprogram.SliderChange) {
@@ -321,14 +321,14 @@ Page({
       return;
     }
 
-    /* 缩小才需要预检；改大永远不动任何已有光区（`planShrink` 对改大 0 命中）。 */
+    /* 缩小才需要预检；改大永远不动任何已有分区（`planShrink` 对改大 0 命中）。 */
     let knownZones: SegmentSpec[] = [];
     if (value < current) {
       const precheck = await this.shrinkPlanOf(stripId, value);
       knownZones = precheck.deviceZones;
       if (precheck.affected > 0) {
         const confirmed = await showConfirm(
-          "缩短灯组会截断光区",
+          "缩短灯组会截断分区",
           shrinkConfirmText(precheck.affected, value),
           "继续缩短",
         );
@@ -344,7 +344,7 @@ Page({
     if (applied !== true || value >= current) {
       return;
     }
-    /* 设备在数量变更时会 prune 掉越界的旧光区（不自动缩短），确认后把截断过
+    /* 设备在数量变更时会 prune 掉越界的旧分区（不自动缩短），确认后把截断过
      * 的那几条重新写回去，灯组仍能正常应用并播放。 */
     await this.rewriteClampedZones(stripId, knownZones, value);
   },
@@ -369,9 +369,9 @@ Page({
   },
 
   /**
-   * 缩小前的本地预检：这条灯组的设备光区 + 落盘草稿里有多少会越界。
+   * 缩小前的本地预检：这条灯组的设备分区 + 落盘草稿里有多少会越界。
    *
-   * **一帧都不发**。设备光区读不到时只按草稿算（读失败不该把缩小的路堵死，
+   * **一帧都不发**。设备分区读不到时只按草稿算（读失败不该把缩小的路堵死，
    * 也不该谎报「没有越界」——草稿那一半仍然会数）。
    */
   async shrinkPlanOf(
@@ -423,7 +423,7 @@ Page({
   /**
    * 下发新的灯珠数。
    *
-   * 成功：把落盘草稿里这条灯组越界的光区按新长度清理并写回，滑块交还设备值。
+   * 成功：把落盘草稿里这条灯组越界的分区按新长度清理并写回，滑块交还设备值。
    * 失败：**就地显示原因并保留原灯珠数**（草稿一个字节都不动——设备还是旧
    * 长度，先截断草稿就等于替用户丢编排）。
    */
@@ -444,7 +444,7 @@ Page({
           ledCount: applied,
           ledHint: `灯组 ${stripId + 1} 已设为 ${applied} 颗`,
         });
-        /* 只有缩小才可能让草稿里的光区越界；改大一个字节都不动。 */
+        /* 只有缩小才可能让草稿里的分区越界；改大一个字节都不动。 */
         if (applied < current) {
           await this.persistShrunkDrafts(stripId, applied);
         }
@@ -474,7 +474,7 @@ Page({
   },
 
   /**
-   * 把这条灯组落盘草稿里越界的光区按新长度清理并写回。
+   * 把这条灯组落盘草稿里越界的分区按新长度清理并写回。
    *
    * 只动这条灯组那一片（`shrinkDraft` 只碰 `stripId`）；其它灯组原样保留。
    * 落盘失败只影响本机草稿，不回滚已经成功的设备数量。
@@ -506,7 +506,7 @@ Page({
   },
 
   /**
-   * 把被截断的光区按新终点重新写回设备。
+   * 把被截断的分区按新终点重新写回设备。
    *
    * 设备在数量变更时已经把 `end >= new_count` 的段整段 prune 掉了
    * （protocol-v4 §7.2：不自动缩短，整段丢弃），所以确认后只需把「截断版」
@@ -531,13 +531,13 @@ Page({
         const ack = await session.setSegment(zone);
         if (!ack.ok) {
           this.patchStripRow(stripId, {
-            ledHint: `灯珠数已改；光区写回失败（${resultText(ack.resultCode)}）`,
+            ledHint: `灯珠数已改；分区写回失败（${resultText(ack.resultCode)}）`,
           });
           return;
         }
       }
     } catch (err) {
-      this.patchStripRow(stripId, { ledHint: `灯珠数已改；光区写回失败（${errorText(err)}）` });
+      this.patchStripRow(stripId, { ledHint: `灯珠数已改；分区写回失败（${errorText(err)}）` });
     }
   },
 
@@ -547,7 +547,7 @@ Page({
    * 灯组显隐开关（裁决 §7：从发现页搬到本页，与逐组灯珠数同页）。
    *
    * 这是**本机偏好**：WS2812B 无法回报物理接线，设备判断不了某条带是否真的
-   * 插着。隐藏只是从设备页的灯组切换器里去掉，设备上的光区配置一个字节都
+   * 插着。隐藏只是从设备页的灯组切换器里去掉，设备上的分区配置一个字节都
    * 不动，存储仍是 `lumen.deviceRegistry.v1` 的 `stripMask`。
    */
   async onTrimStrip(e: WechatMiniprogram.SwitchChange) {

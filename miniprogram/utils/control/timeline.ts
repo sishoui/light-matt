@@ -49,7 +49,7 @@ export const MAX_DURATION_MS = 30000;
 export const DURATION_STEP_MS = 500;
 /** 新步骤的默认时长：1 秒。 */
 export const DEFAULT_STEP_MS = 1000;
-/** 刚进进阶档时有几个步骤。光区轴按「当前步骤」取，默认给两个才看得出步骤间差异。 */
+/** 刚进进阶档时有几个步骤。分区轴按「当前步骤」取，默认给两个才看得出步骤间差异。 */
 export const DEFAULT_STEP_COUNT = 2;
 /** 时间轴最多 8 个步骤（与协议每套方案 8 个步骤一致）。 */
 export const MAX_STEPS = 8;
@@ -155,7 +155,7 @@ export function durationTicks(): DurationTickView[] {
   }));
 }
 
-/* ---------------- 步骤与光区 ---------------- */
+/* ---------------- 步骤与分区 ---------------- */
 
 /** 一个步骤里的一条连续灯珠（用于画缩略色带）。 */
 export interface TimelineZone {
@@ -167,11 +167,11 @@ export interface TimelineZone {
   hex: string;
 }
 
-/** 时间轴上的一个步骤。本票的光区列表恒为空（#66 才接）。 */
+/** 时间轴上的一个步骤。本票的分区列表恒为空（#66 才接）。 */
 export interface TimelineStep {
   /** 时长（毫秒）；渲染前会被钳位。 */
   durationMs: number;
-  /** 这一步的光区。 */
+  /** 这一步的分区。 */
   zones: TimelineZone[];
 }
 
@@ -181,20 +181,20 @@ export interface ThumbBand {
   key: string;
   /** 占整条灯组的比例（0-1）；所有色带加起来 = 1。 */
   ratio: number;
-  /** 展示色；空串表示这些灯珠没有被任何光区覆盖（留白，不画色）。 */
+  /** 展示色；空串表示这些灯珠没有被任何分区覆盖（留白，不画色）。 */
   hex: string;
   /** 直接塞进 style：宽度比例 + 颜色（留白不带 background，走 CSS 兜底）。 */
   style: string;
 }
 
-/** 色带样式：宽度按比例分，颜色只有真有光区时才写。 */
+/** 色带样式：宽度按比例分，颜色只有真有分区时才写。 */
 function bandStyle(ratio: number, hex: string): string {
   const flex = `flex: ${Math.max(0, ratio)} 0 0%;`;
   return hex === "" ? flex : `${flex} background: ${hex};`;
 }
 
 /**
- * 新建时间轴：两个 1 秒、没有光区的步骤。
+ * 新建时间轴：两个 1 秒、没有分区的步骤。
  *
  * 两个是为了让「比例」一看就懂（一个块改时长，另一个跟着变），也不至于一进
  * 进阶档就只剩一个块、看不出时间轴是横向排列的。
@@ -209,10 +209,10 @@ export function createTimeline(): TimelineStep[] {
 /* ---------------- 缩略色带 ---------------- */
 
 /**
- * 步骤里的光区 → 缩略色带。
+ * 步骤里的分区 → 缩略色带。
  *
- * 色带**铺满整条灯组**：没有光区覆盖的灯珠也给一条 `hex === ""` 的留白带，
- * 否则色带会整体右移，看起来像是别的位置在发光。比例按灯珠数算（不是按光区
+ * 色带**铺满整条灯组**：没有分区覆盖的灯珠也给一条 `hex === ""` 的留白带，
+ * 否则色带会整体右移，看起来像是别的位置在发光。比例按灯珠数算（不是按分区
  * 个数），所以「前 15 颗红、后 15 颗蓝」在 30 颗的灯组上是 0.5 / 0.5。
  *
  * 非法输入一律跳过（`ledCount < 1`、起点大于终点、越界）；重叠的按先来的算，
@@ -770,7 +770,7 @@ export interface AddStepResult {
 }
 
 /**
- * 加一个步骤：默认 1 秒、没有光区，并返回应该选中的下标。
+ * 加一个步骤：默认 1 秒、没有分区，并返回应该选中的下标。
  *
  * 已到 8 个返回 null——调用方据此禁用按钮，而不是悄悄忽略。
  */

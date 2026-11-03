@@ -1,12 +1,12 @@
 /**
- * 光区编辑器（#55）：拖动划选、快捷切分、增删改。
+ * 分区编辑器（#55）：拖动划选、快捷切分、增删改。
  *
  * 锁住三类「只有模拟器能看出来」的问题：
  *  1. 拖动方向 —— 从右往左拖必须得到 start <= end；
- *  2. 重叠拦截 —— 与已有光区相交时**一帧不发**，并且提示里带对方编号；
+ *  2. 重叠拦截 —— 与已有分区相交时**一帧不发**，并且提示里带对方编号；
  *  3. 切分正确性 —— 整条 / 前半 / 后半 / 均分 2–4 必须互不重叠、覆盖完整。
  *
- * 同时锁住「改一个光区不影响别人」与「叠加层为空时叠加方式归一为覆盖」。
+ * 同时锁住「改一个分区不影响别人」与「叠加层为空时叠加方式归一为覆盖」。
  */
 
 import { describe, expect, it } from "vitest";
@@ -98,11 +98,11 @@ describe("新增预检（一帧不发的判据）", () => {
     expect(checkZoneAdd([], 0, 9).ok).toBe(true);
   });
 
-  it("与已有光区重叠被拦，提示里带对方编号（从 1 数）", () => {
+  it("与已有分区重叠被拦，提示里带对方编号（从 1 数）", () => {
     const existing = [{ segId: 0, start: 0, end: 9 }];
     const check = checkZoneAdd(existing, 5, 14);
     expect(check.ok).toBe(false);
-    expect(check.message).toContain("光区 1");
+    expect(check.message).toContain("分区 1");
   });
 
   it("相邻但不相交（0-9 与 10-19）可以加", () => {
@@ -133,7 +133,7 @@ describe("新增预检（一帧不发的判据）", () => {
 });
 
 describe("快捷切分", () => {
-  it("整条 = 0..ledCount-1 的单光区", () => {
+  it("整条 = 0..ledCount-1 的单分区", () => {
     const zones = splitWhole("whole", 30, 0);
     expect(zones).toHaveLength(1);
     expect(zones[0].start).toBe(0);
@@ -170,7 +170,7 @@ describe("快捷切分", () => {
     expect(zones.map((zone) => zone.end - zone.start + 1)).toEqual([11, 10, 10]);
   });
 
-  it("切分时保留原有光区的灯效（按位置对应）", () => {
+  it("切分时保留原有分区的灯效（按位置对应）", () => {
     const existing = [zone(0, 0, 14), zone(1, 15, 29)];
     existing[1].layer0 = { ...existing[1].layer0, hue: 50000 };
     const zones = splitParts(2, 30, 0, existing);
@@ -200,12 +200,12 @@ describe("增删改", () => {
     expect(addZone([zone(0, 0, 9)], 0, 5, 12)).toBeNull();
   });
 
-  it("改区间不影响其它光区（逐字段对比）", () => {
+  it("改区间不影响其它分区（逐字段对比）", () => {
     const zones = [zone(0, 0, 9), zone(1, 10, 19)];
     const resized = resizeZone(zones, 1, 12, 25)!;
     expect(resized.start).toBe(12);
     expect(resized.end).toBe(25);
-    /* 另一个光区完全没动。 */
+    /* 另一个分区完全没动。 */
     expect(zones[0]).toEqual(zone(0, 0, 9));
   });
 
@@ -305,7 +305,7 @@ describe("设备报告 → 编辑态", () => {
 });
 
 describe("zonesFromSplit 的输入契约", () => {
-  it("空切分列表产出空数组（灯珠数未知时不编造光区）", () => {
+  it("空切分列表产出空数组（灯珠数未知时不编造分区）", () => {
     expect(zonesFromSplit([], 0)).toEqual([]);
   });
 

@@ -8,7 +8,7 @@
  *  2. 它有哪些灯组、各自亮着什么？（两列灯组卡片 + 每组自己的开关）
  *  3. 这台设备本身是什么？（固件 / 硬件号 / 灯组数 / 灯珠总数，只读）
  *
- * **任何灯效编辑都不在本页**：效果卡、参数、光区、步骤、方案都搬到
+ * **任何灯效编辑都不在本页**：效果卡、参数、分区、步骤、方案都搬到
  * `pages/strip/strip`（#64–#67 逐票实现）。协议也没有「逐灯组亮度」——
  * 只有全局 brightness 与逐组 strip_power_mask，所以本页不画逐组亮度。
  *
@@ -78,11 +78,11 @@ interface StripCardView {
   photoIsCustom: boolean;
   /** 该组真实灯珠数（`State.stripCounts[stripId]`）。 */
   ledCount: number;
-  /** 当前效果摘要（设备读回的光区派生，不是本地草稿）。 */
+  /** 当前效果摘要（设备读回的分区派生，不是本地草稿）。 */
   summary: string;
   /** 该组自己的开关位（`State.stripPowerMask`）。 */
   on: boolean;
-  /** 该组当前有动画类光区（`State.stripAnimMask`，只作显示提示）。 */
+  /** 该组当前有动画类分区（`State.stripAnimMask`，只作显示提示）。 */
   animating: boolean;
   /** 这一组的开关命令还在路上。 */
   busy: boolean;
@@ -423,7 +423,7 @@ Page({
     if (current !== null && current !== undefined) {
       this.applyDeviceState(current);
     }
-    /* 刚连上：光区列表由页面按需读（每条灯组一次），读回来才有「效果摘要」。 */
+    /* 刚连上：分区列表由页面按需读（每条灯组一次），读回来才有「效果摘要」。 */
     void this.refreshStripSummaries();
   },
 
@@ -560,9 +560,9 @@ Page({
   },
 
   /**
-   * 从设备读回**每一条可见灯组**的光区，刷新卡片上的效果摘要。
+   * 从设备读回**每一条可见灯组**的分区，刷新卡片上的效果摘要。
    *
-   * 光区不在 State 里，设备也不会主动上报，所以只能逐组 `QueryStrip`。
+   * 分区不在 State 里，设备也不会主动上报，所以只能逐组 `QueryStrip`。
    * 顺序发送（并发多帧重组会交错），并用代次号让旧一轮在 await 后静默退出。
    */
   async refreshStripSummaries(): Promise<void> {
@@ -602,12 +602,12 @@ Page({
   },
 
   /**
-   * 一组光区 → 卡片上的一行效果摘要。
+   * 一组分区 → 卡片上的一行效果摘要。
    *
-   * 单光区覆盖整组时只说效果名（最常见）；只覆盖一段时带区间；
-   * 多个光区时只说数量（卡片太窄，列不完）。
+   * 单分区覆盖整组时只说效果名（最常见）；只覆盖一段时带区间；
+   * 多个分区时只说数量（卡片太窄，列不完）。
    *
-   * 区间按**用户视角从 1 编号**（`1–15`），与灯组页的光区轴一致：协议里从 0
+   * 区间按**用户视角从 1 编号**（`1–15`），与灯组页的分区轴一致：协议里从 0
    * 编号只出现在灯珠弹窗的提示里一次，卡片上出现 `0–29` 会让人以为少了一颗。
    */
   summaryOfReports(reports: readonly SegmentReport[], ledCount: number): string {
@@ -615,7 +615,7 @@ Page({
       return "未设置灯效";
     }
     if (reports.length > 1) {
-      return `${reports.length} 个光区`;
+      return `${reports.length} 个分区`;
     }
     const only = reports[0];
     const base = modeNameOf(only.layer0.type);

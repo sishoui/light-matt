@@ -12,7 +12,7 @@
  *  3. **滑块刻度 ↔ 协议值**。色相 0-360° ↔ 0-65535、饱和度 0-100% ↔ 0-255、
  *     周期秒 ↔ 毫秒、频率赫兹 ↔ 周期毫秒、节奏 BPM ↔ 周期毫秒、
  *     最低亮 / 跨度 / 尾长百分比 ↔ 0-255；
- *  4. **装配光区**。面板只改 `layer0`，但写进设备前必须过 `zone-model.buildZoneSpec`
+ *  4. **装配分区**。面板只改 `layer0`，但写进设备前必须过 `zone-model.buildZoneSpec`
  *     （空叠加层归一、两层定宽、深拷贝），否则设备回 `InvalidParam`；
  *  5. **本地预检**。频率过快、节奏过快或过慢在本机就拦住，一帧都不发。
  *
@@ -27,7 +27,7 @@
  *
  * ## 亮度（v4 起真实生效）
  *
- * `level`（逐光区亮度 0-100）是协议 v4 的层字段（#69 接通）。本模块的
+ * `level`（逐分区亮度 0-100）是协议 v4 的层字段（#69 接通）。本模块的
  * `EffectParams.level` 经 `panelLayer()` 写进 `EffectLayer.level`，再由
  * `zone-model.buildZoneSpec` 归一（空层恒 0、非空层钳到 0-100）后编进 9 字节层。
  * 滑块松手即落进草稿，写设备仍只走「应用并播放」。
@@ -117,7 +117,7 @@ export const OVERLAY_BLEND_OPTIONS: ReadonlyArray<{
   { value: BLEND.ADD, name: "相加", hint: "两者相加，更亮（可能过曝到白）" },
 ];
 
-/** 一个光区的叠加层草稿：没有叠加层时 `type = "none"`。 */
+/** 一个分区的叠加层草稿：没有叠加层时 `type = "none"`。 */
 export interface OverlayDraft {
   type: OverlayChoice;
   /** 叠加层自己的参数，与主效果的草稿互相独立。 */
@@ -131,7 +131,7 @@ export function emptyOverlayDraft(): OverlayDraft {
 }
 
 /**
- * 从设备读回的光区还原叠加层草稿。空层 → 「关闭」。
+ * 从设备读回的分区还原叠加层草稿。空层 → 「关闭」。
  *
  * 设备上若是「熄灭」叠加层（旧数据 / 别的客户端写的），这里如实还原成
  * 「关闭」并把叠加方式归一为覆盖——界面不提供这个选项，也不该假装它存在。
@@ -357,7 +357,7 @@ export function normalizeParams(params: Partial<EffectParams>): EffectParams {
     hue: clampHue(merged.hue),
     sat: clampByte(merged.sat),
     /* 0 是协议合法值（这一层不出光）：设备读回的 0 必须原样保留，
-     * 否则「改个颜色」会把用户关掉的光区偷偷点亮。滑块下限只管拖动。 */
+     * 否则「改个颜色」会把用户关掉的分区偷偷点亮。滑块下限只管拖动。 */
     level: clampZoneLevel(merged.level),
     periodMs: clampPeriodMs(merged.periodMs),
     minLevel: clampPercent(merged.minLevel),
@@ -1085,7 +1085,7 @@ function periodMsFor(type: PanelType, periodMs: number): number {
  * 只取该类型真正用的字段；周期为 0（静止）时退回该类型的默认周期，避免面板上
  * 出现一个「0 秒」的滑块位置。
  *
- * v4：`level` 也一起读回——否则用户切到别的光区再切回来，自己调的亮度会被
+ * v4：`level` 也一起读回——否则用户切到别的分区再切回来，自己调的亮度会被
  * 悄悄重置成 100%（#69 之前正是靠页面里的一张草稿表救场的）。
  */
 export function paramsFromLayer(type: PanelType, layer: EffectLayer): EffectParams {
@@ -1250,7 +1250,7 @@ export function layersCheck(layers: readonly EffectLayer[]): PanelCheckResult {
 }
 
 /**
- * 把一个光区的主效果（必要时连叠加层一起）换掉，其余字段一字不动。
+ * 把一个分区的主效果（必要时连叠加层一起）换掉，其余字段一字不动。
  *
  * 装配走 `buildZoneSpec`：叠加层为空时叠加方式归一为覆盖、两层定宽、深拷贝——
  * 「面板只改颜色 / 效果，不该顺手把叠加层弄丢」。
@@ -1285,7 +1285,7 @@ export function applyPanelToZone(
 /**
  * 「方案内容只存在本机」。
  *
- * v3 的查询只回 4 字节摘要（步骤数 / 是否启用 / 是否循环），步骤时长与光区
+ * v3 的查询只回 4 字节摘要（步骤数 / 是否启用 / 是否循环），步骤时长与分区
  * 内容都读不回来。用户以为能「从灯控把方案拉回来改」是最容易踩的误解。
  */
 export const PANEL_LOCAL_ONLY_NOTE =
@@ -1299,14 +1299,14 @@ export const PANEL_FACTS: readonly string[] = [PANEL_LOCAL_ONLY_NOTE, PANEL_REBU
 
 /** 方案为空时的引导（不是一片空白）。 */
 export const PANEL_EMPTY_PLAN_GUIDE =
-  "这套方案还是空的：先在「光区」里点「+ 新增」划出灯珠区间，再回来选效果。";
+  "这套方案还是空的：先在「分区」里点「+ 新增」划出灯珠区间，再回来选效果。";
 
-/** 当前步骤还没有光区时的引导。 */
+/** 当前步骤还没有分区时的引导。 */
 export const PANEL_EMPTY_STEP_GUIDE =
-  "这一步还没有光区：在「光区」里点「+ 新增」划出第一片灯珠区间。";
+  "这一步还没有分区：在「分区」里点「+ 新增」划出第一片灯珠区间。";
 
-/** 有光区但没选中任何一块时的引导。 */
-export const PANEL_NO_ZONE_GUIDE = "先在上面「光区」轴里点一块，再调它的效果。";
+/** 有分区但没选中任何一块时的引导。 */
+export const PANEL_NO_ZONE_GUIDE = "先在上面「分区」轴里点一块，再调它的效果。";
 
 /** 色相滑轨的彩虹渐变（hsl 不是 hex，不触发「wxss 不写死颜色」的规则）。 */
 export const HUE_RAMP_GRADIENT =

@@ -24,7 +24,7 @@
  * 同一槽位若有多个灯组的内容，取**灯组号最小**的那份，其余与旧键一起丢掉
  * （不做长期双读）。迁移规则是纯函数 `migrateLegacyDrafts`，可直接单测。
  *
- * 值是一个 `ScriptDraft`（4 套 × ≤8 步骤 × 光区）。存储按「一条键一个草稿」
+ * 值是一个 `ScriptDraft`（4 套 × ≤8 步骤 × 分区）。存储按「一条键一个草稿」
  * 平铺，设备删除时按 `deviceKey#` 前缀整体清掉（`clearPlanDraftsForDevice`）。
  *
  * ## 校验
@@ -132,7 +132,7 @@ function parseSegment(value: unknown): ScriptSegment | null {
     return null;
   }
   if (layer0.type === NO_EFFECT) {
-    /* 主效果为空的光区没有意义（面板不会产生它）。 */
+    /* 主效果为空的分区没有意义（面板不会产生它）。 */
     return null;
   }
   return {

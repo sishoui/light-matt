@@ -27,7 +27,7 @@ export function emptyLayer(): EffectLayer {
  * 扁平草稿的灯效字段 → 一层。
  *
  * 扁平形态是 v3 之前的「单层 + 无色亮度」草稿，没有 `level`，所以补满亮 100
- * （等价 v3 行为）。需要逐光区亮度的路径（快捷档 / 效果面板 / 光区轴）都直接
+ * （等价 v3 行为）。需要逐分区亮度的路径（快捷档 / 效果面板 / 分区轴）都直接
  * 构造 `EffectLayer` 并显式给 `level`，不经过这里。
  */
 export function layerFromFlat(segment: SegmentConfig): EffectLayer {
@@ -110,7 +110,7 @@ export function hasSecondLayer(spec: SegmentSpec | SegmentReport): boolean {
  *  - **非空层**：钳到 0-100。缺失 / 非有限值按 100（满亮，等价 v3 行为），
  *    这样从 v3 形状的对象（还没有 level）升级过来不会突然全黑。
  *
- * 这是「装配光区」与「报告转 spec」两处共用的唯一实现，两处不能各写一遍：
+ * 这是「装配分区」与「报告转 spec」两处共用的唯一实现，两处不能各写一遍：
  * 一处漏了约束就是一次 `InvalidParam`。
  */
 export function normalizeLayerLevel(layer: EffectLayer): EffectLayer {

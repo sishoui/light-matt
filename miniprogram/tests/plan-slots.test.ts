@@ -117,11 +117,11 @@ describe("方案删除后的选中项", () => {
 });
 
 describe("方案 tab 文案", () => {
-  it("新建的「一步但无光区」方案标「空白」（不是「1 步」）", () => {
+  it("新建的「一步但无分区」方案标「空白」（不是「1 步」）", () => {
     expect(planTabSummary(createEmptyPlanDraft(0))).toBe("空白");
   });
 
-  it("有光区时说步数", () => {
+  it("有分区时说步数", () => {
     const draft = createEmptyPlanDraft(0);
     draft.stages[0].segments.push({
       stripId: 0,
@@ -255,7 +255,7 @@ describe("实际显示的方案表（首次进入只有一套）", () => {
 });
 
 describe("新建方案的空草稿", () => {
-  it("一套一步、没有任何光区（界面因此显示「空白」）", () => {
+  it("一套一步、没有任何分区（界面因此显示「空白」）", () => {
     const draft = createEmptyPlanDraft(2);
     expect(draft.scriptId).toBe(2);
     expect(draft.stages).toHaveLength(1);
@@ -301,7 +301,7 @@ describe("方案界面不出现协议词", () => {
  * tab 与摘要正确，「新建 / 删除后 tab 与设备摘要同步变化」就成立。
  */
 describe("方案 tab 的行为了（新建 / 删除 / 复用）", () => {
-  /** 一套有光区的草稿（标题说「n 步」）。 */
+  /** 一套有分区的草稿（标题说「n 步」）。 */
   function filledDraft(scriptId: number, steps: number) {
     const draft = createEmptyPlanDraft(scriptId);
     draft.stages = Array.from({ length: steps }, () => ({

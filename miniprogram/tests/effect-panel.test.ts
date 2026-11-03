@@ -7,7 +7,7 @@
  *  2. **切换类型保留颜色与亮度，其余回到新类型默认值**；
  *  3. **滑块刻度 ↔ 协议值**（色相度 / 饱和度百分比 / 周期秒 / 频率 Hz /
  *     节奏 BPM / 最低亮 / 跨度 / 尾长），以及右侧「数值 + 单位」的格式；
- *  4. **装配光区**：叠加层为空时叠加方式归一、只改选中那一个、别的光区一字不动；
+ *  4. **装配分区**：叠加层为空时叠加方式归一、只改选中那一个、别的分区一字不动；
  *  5. **本地预检**：频率过快、节奏过快或过慢都在本机拦住，不发帧；
  *     以及两条必须告知的事实与空态引导文案存在且不含禁用术语。
  */
@@ -753,8 +753,8 @@ describe("草稿 → 协议层", () => {
   });
 });
 
-describe("装配光区", () => {
-  it("只改选中的那个光区，别的光区一字不动", () => {
+describe("装配分区", () => {
+  it("只改选中的那个分区，别的分区一字不动", () => {
     const zones = [zone(0), zone(1), zone(2)];
     const next = applyPanelToZone(zones, 1, "comet", params({ hue: 43690, tail: 200 }));
     expect(next[0]).toBe(zones[0]);
@@ -860,7 +860,7 @@ describe("摘要与两条事实", () => {
   it("空方案 / 空步骤 / 没选中各有自己的引导（不是一片空白）", () => {
     for (const guide of [PANEL_EMPTY_PLAN_GUIDE, PANEL_EMPTY_STEP_GUIDE, PANEL_NO_ZONE_GUIDE]) {
       expect(guide.length).toBeGreaterThan(8);
-      expect(guide).toMatch(/光区/);
+      expect(guide).toMatch(/分区/);
       expect(guide).not.toMatch(/毫秒|阶段|剧本|下发|激活|blend|层/);
     }
     /* 三种场景不能共用同一句话，否则用户不知道下一步到底做什么。 */
@@ -1023,7 +1023,7 @@ describe("叠加层：选项、草稿与装配", () => {
     expect(next[0].blend).toBe(BLEND.MULTIPLY);
   });
 
-  it("关闭叠加层后写出去的光区叠加方式归一为覆盖、layer1 为空层", () => {
+  it("关闭叠加层后写出去的分区叠加方式归一为覆盖、layer1 为空层", () => {
     const zones: SegmentSpec[] = [
       buildZoneSpec({
         stripId: 0,

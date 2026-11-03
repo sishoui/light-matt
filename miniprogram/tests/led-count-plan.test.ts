@@ -28,7 +28,7 @@ import type { ScriptSegment } from "../utils/control/script-plan";
 import { BLEND, NO_EFFECT, SEGMENT_TYPE } from "../utils/protocol/constants";
 import { buildZoneSpec } from "../utils/control/zone-model";
 
-/** 一个静态光区（`SegmentSpec` 形状，`end` 是闭区间）。 */
+/** 一个静态分区（`SegmentSpec` 形状，`end` 是闭区间）。 */
 function zone(segId: number, start: number, end: number, stripId = 0) {
   return buildZoneSpec({
     stripId,
@@ -128,7 +128,7 @@ describe("planShrink：四种输入", () => {
     expect(plan.affected).toBe(0);
   });
 
-  it("改大：不改动任何已有光区（全部进 kept）", () => {
+  it("改大：不改动任何已有分区（全部进 kept）", () => {
     const zones = [zone(0, 0, 9), zone(1, 10, 29)];
     const plan = planShrink(zones, 100);
     expect(plan.kept).toHaveLength(2);
@@ -201,7 +201,7 @@ describe("planShrink：四种输入", () => {
 });
 
 describe("affectedZoneCount", () => {
-  it("设备光区与草稿里同一份定义（播种副本）只算一次", () => {
+  it("设备分区与草稿里同一份定义（播种副本）只算一次", () => {
     const device = [{ segId: 0, start: 0, end: 39 }];
     /* 草稿里是同一份定义（从设备播种来的）。 */
     const draftSlot = [{ segId: 0, start: 0, end: 39 }];
@@ -236,7 +236,7 @@ describe("affectedZoneCount", () => {
 describe("shrinkConfirmText", () => {
   it("文案里带数量与新长度", () => {
     const text = shrinkConfirmText(3, 20);
-    expect(text).toContain("3 个光区");
+    expect(text).toContain("3 个分区");
     expect(text).toContain("20 颗");
     expect(text).toContain("截到新末尾");
   });
@@ -295,7 +295,7 @@ describe("shrinkDrafts", () => {
     expect(result.changedSlots).toEqual([0]);
     expect(result.drafts[0]).not.toBe(changed);
     expect(result.drafts[1]).toBe(untouched);
-    /* 去重口径：两份草稿里同一个光区只算一个。 */
+    /* 去重口径：两份草稿里同一个分区只算一个。 */
     expect(result.affected).toBe(1);
   });
 });

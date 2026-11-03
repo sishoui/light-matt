@@ -4,7 +4,7 @@
  * 这组测试锁「点了就立刻算数」这条承诺，而不是实现细节：
  *  1. 选中在写入期间保持权威（迟到的读回不能覆盖它）；
  *  2. 写入期间的点击排队，而不是被静默丢弃；
- *  3. 单光区灯组只发一条命令（预读 / 清空 / 回读都可以省）。
+ *  3. 单分区灯组只发一条命令（预读 / 清空 / 回读都可以省）。
  *
  * 前两条用纯状态机验证（页面代码在 node 里跑不起来），第三条用页面源码的
  * 结构断言 + 命令计数（回归「一次点击十个来回」）。
@@ -155,7 +155,7 @@ describe("页面真的按这三条实现（结构断言）", () => {
     expect(body![1].split("} catch (err) {")[1]).toContain("refreshSegments");
   });
 
-  it("单光区跳过预读与清空（singleZone 短路）", () => {
+  it("单分区跳过预读与清空（singleZone 短路）", () => {
     expect(STRIP_TS).toContain("singleZone");
     expect(STRIP_TS).toMatch(/if \(!singleZone\) \{/);
     /* 预读与清空都在这个 if 里面。 */
@@ -168,9 +168,9 @@ describe("页面真的按这三条实现（结构断言）", () => {
   });
 });
 
-describe("单光区只发一条 SetSegment", () => {
-  it("单光区路径的命令序列是 [停播?, SetSegment]（无 QueryStrip / ClearSegment）", async () => {
-    /* 用纯逻辑复现页面在该路径上的调用顺序：单光区时直接 setSegment。 */
+describe("单分区只发一条 SetSegment", () => {
+  it("单分区路径的命令序列是 [停播?, SetSegment]（无 QueryStrip / ClearSegment）", async () => {
+    /* 用纯逻辑复现页面在该路径上的调用顺序：单分区时直接 setSegment。 */
     const calls: string[] = [];
     const singleZone = true;
     const session = {
@@ -204,7 +204,7 @@ describe("单光区只发一条 SetSegment", () => {
     expect(calls).toEqual(["setSegment"]);
   });
 
-  it("多光区路径仍然先读回再清空（不把多光区写坏）", async () => {
+  it("多分区路径仍然先读回再清空（不把多分区写坏）", async () => {
     const calls: string[] = [];
     const session = {
       async queryStrip() {

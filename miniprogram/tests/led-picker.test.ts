@@ -3,9 +3,9 @@
  *
  * 这里锁的是四条「不写单测就只能靠模拟器点」的规则：
  *  1. 第一次点只设锚点、第二次才定区间（顺序颠倒也对）；
- *  2. 同一颗点两次 = 取消，**绝不产生单灯珠光区**；
- *  3. 属于其它光区的格子点不动；
- *  4. 与其它光区重叠时当场报错、不落草稿。
+ *  2. 同一颗点两次 = 取消，**绝不产生单灯珠分区**；
+ *  3. 属于其它分区的格子点不动；
+ *  4. 与其它分区重叠时当场报错、不落草稿。
  *
  * 另有一条元规则：`zone-editor.dragRange` 被 `zone-editor.test.ts` 锁住
  * （点一下给单颗区间），本模块**不得**改它——所以规则在这里另写一份。
@@ -54,7 +54,7 @@ function zone(stripId: number, segId: number, start: number, end: number): Segme
   });
 }
 
-/** 点一串灯珠，返回最终状态（默认 30 颗、没有别的光区）。 */
+/** 点一串灯珠，返回最终状态（默认 30 颗、没有别的分区）。 */
 function tapAll(
   state: PickerState,
   indexes: number[],
@@ -71,7 +71,7 @@ describe("弹窗打开时的状态", () => {
     expect(pickerRange(state)).toBeNull();
   });
 
-  it("改已有光区：预填它的区间（打开就能看见原来划的是哪一段）", () => {
+  it("改已有分区：预填它的区间（打开就能看见原来划的是哪一段）", () => {
     const state = createPickerState(1, { start: 5, end: 12 });
     expect(state.segId).toBe(1);
     expect(pickerRange(state)).toEqual({ start: 5, end: 12 });
@@ -135,7 +135,7 @@ describe("同一颗点两次 = 取消", () => {
     expect(state.cursor).toBeNull();
   });
 
-  it("单灯珠选择过不了校验（新建时拒绝只含一颗的光区）", () => {
+  it("单灯珠选择过不了校验（新建时拒绝只含一颗的分区）", () => {
     /* 绕过点击直接构造一个单颗区间：从别的入口进来也必须被拦下。 */
     const forced: PickerState = { segId: null, anchor: 5, cursor: 5 };
     const check = pickerCheck(forced, { ledCount: 30, others: [], zoneCount: 0 });
@@ -158,7 +158,7 @@ describe("同一颗点两次 = 取消", () => {
   });
 });
 
-describe("属于其它光区的格子点不动", () => {
+describe("属于其它分区的格子点不动", () => {
   const others = [{ segId: 1, start: 10, end: 19 }];
 
   it("点在别人的格子上：disabled、状态一点不变", () => {
@@ -208,15 +208,15 @@ describe("属于其它光区的格子点不动", () => {
 describe("重叠当场报错、不落草稿", () => {
   const others = [{ segId: 0, start: 10, end: 19 }];
 
-  it("选区跨过别人的格子 → 校验失败、消息带光区号与区间", () => {
+  it("选区跨过别人的格子 → 校验失败、消息带分区号与区间", () => {
     const state: PickerState = { segId: null, anchor: 5, cursor: 15 };
     const check = pickerCheck(state, { ledCount: 30, others, zoneCount: 0 });
     expect(check.ok).toBe(false);
-    expect(check.message).toContain("光区 1");
+    expect(check.message).toContain("分区 1");
     expect(check.message).toContain("10–19");
   });
 
-  it("commit 失败时不产生任何光区（数组引用不变）", () => {
+  it("commit 失败时不产生任何分区（数组引用不变）", () => {
     const zones = [zone(0, 0, 10, 19)];
     const state: PickerState = { segId: null, anchor: 5, cursor: 15 };
     const result = commitPicker(state, zones, 0, 30);
@@ -270,7 +270,7 @@ describe("校验与提交", () => {
     expect(added.stripId).toBe(0);
   });
 
-  it("改已有光区只改区间，主效果原样保留", () => {
+  it("改已有分区只改区间，主效果原样保留", () => {
     const zones = [zone(0, 0, 0, 4)];
     const result = commitPicker(createPickerState(0, { start: 0, end: 9 }), zones, 0, 30);
     expect(result.changed).toBe(true);
@@ -286,8 +286,8 @@ describe("校验与提交", () => {
     expect(result.zones).toBe(zones);
   });
 
-  it("8 个光区已满 → 新建被拒", () => {
-    /* 八个单颗光区挤在 0–14，选区放在 20–25（不重叠，只触发数量上限）。 */
+  it("8 个分区已满 → 新建被拒", () => {
+    /* 八个单颗分区挤在 0–14，选区放在 20–25（不重叠，只触发数量上限）。 */
     const zones = Array.from({ length: 8 }, (_, index) => zone(0, index, index * 2, index * 2));
     const result = commitPicker({ segId: null, anchor: 20, cursor: 25 }, zones, 0, 30);
     expect(result.changed).toBe(false);
@@ -326,7 +326,7 @@ describe("校验与提交", () => {
 });
 
 describe("删除与区间文字", () => {
-  it("删除已有光区", () => {
+  it("删除已有分区", () => {
     const zones = [zone(0, 0, 0, 4), zone(0, 1, 10, 19)];
     const next = deletePickerZone(zones, 1);
     expect(next.map((item) => item.segId)).toEqual([0]);
@@ -352,7 +352,7 @@ describe("删除与区间文字", () => {
 /* ------------------------------------------------------------------ *
  * #78：起止滚轮与起止样式
  *
- * 滚轮的值域是「与锚点连通的连续空闲段」，被别的光区占着的序号根本不出现，
+ * 滚轮的值域是「与锚点连通的连续空闲段」，被别的分区占着的序号根本不出现，
  * 所以非法区间在界面上不可选。这里逐条锁住：
  *   - 连续空闲段（左端 / 右端 / 两侧被占 / 整条空闲 / 零空闲 / 单颗空闲）；
  *   - 两个滚轮候选（1 基显示、0 基内部）；
@@ -442,7 +442,7 @@ describe("#78 两个滚轮的值域", () => {
     expect(options.endDisabled).toBe(false);
   });
 
-  it("被其它光区占着的序号**根本不出现**在两个滚轮里", () => {
+  it("被其它分区占着的序号**根本不出现**在两个滚轮里", () => {
     const others = [
       { segId: 1, start: 0, end: 2 },
       { segId: 2, start: 8, end: 11 },
@@ -567,7 +567,7 @@ describe("#78 用滚轮改起止", () => {
     expect(applyPickerEnd(state, 4, ctx)).toEqual(state);
   });
 
-  it("选中被别的光区占着的序号：状态不变（值域里本就没有它）", () => {
+  it("选中被别的分区占着的序号：状态不变（值域里本就没有它）", () => {
     const ctx = { ledCount: 12, others: [{ segId: 1, start: 8, end: 11 }] };
     const state = applyPickerStart(createPickerState(null), 3, ctx);
     expect(applyPickerStart(state, 9, ctx)).toEqual(state);
@@ -618,7 +618,7 @@ describe("#78 确定按钮的可用性", () => {
     expect(pickerCanConfirm({ segId: null, anchor: 5, cursor: 15 }, ctx)).toBe(false);
   });
 
-  it("光区已满（新建） → 不可用", () => {
+  it("分区已满（新建） → 不可用", () => {
     const full = { ledCount: 30, others: [], zoneCount: 8 };
     expect(pickerCanConfirm({ segId: null, anchor: 20, cursor: 25 }, full)).toBe(false);
   });

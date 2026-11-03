@@ -1,10 +1,10 @@
 /**
- * 进阶草稿（#65 时间轴 + #66 光区轴）的纯逻辑。
+ * 进阶草稿（#65 时间轴 + #66 分区轴）的纯逻辑。
  *
  * 锁住三条：
  *  1. 写入只替换「当前步骤 × 当前灯组」那一片，别的灯组与别的步骤一字不动
  *     （多灯组设备上编辑第 1 组不能清掉第 2 组）；
- *  2. 时间轴的缩略色带与光区轴来自同一份草稿；
+ *  2. 时间轴的缩略色带与分区轴来自同一份草稿；
  *  3. 增删 / 重排步骤的越界与上限行为（引用不变 = 页面不刷新）。
  */
 
@@ -105,7 +105,7 @@ describe("步骤时长", () => {
 });
 
 describe("增删与重排步骤", () => {
-  it("加步骤：默认 1 秒、没有光区", () => {
+  it("加步骤：默认 1 秒、没有分区", () => {
     const draft = createAdvancedDrafts()[0];
     const next = addStepStage(draft);
     expect(next.stages).toHaveLength(DEFAULT_STEP_COUNT + 1);
@@ -194,7 +194,7 @@ describe("多灯组隔离（关键）", () => {
 });
 
 describe("时间轴色带来自同一份草稿", () => {
-  it("每块色带按该步的光区铺，没覆盖的留白", () => {
+  it("每块色带按该步的分区铺，没覆盖的留白", () => {
     const draft = writeStepZones(createAdvancedDrafts()[0], 0, 0, [zone(0, 0, 0, 9)]);
     const steps = timelineStepsOf(draft, 0);
     expect(steps).toHaveLength(DEFAULT_STEP_COUNT);
@@ -216,7 +216,7 @@ describe("时间轴色带来自同一份草稿", () => {
 describe("从设备播种（seedStepFromReports）", () => {
   const reports = [report(0, 0, 0, 13), report(0, 1, 14, 29), report(1, 0, 0, 17)];
 
-  it("空步骤被填上设备当前的该组光区", () => {
+  it("空步骤被填上设备当前的该组分区", () => {
     const draft = seedStepFromReports(createAdvancedDrafts()[0], 0, 0, reports);
     expect(stepZonesOf(draft, 0, 0).map((zone) => zone.segId)).toEqual([0, 1]);
   });
@@ -234,7 +234,7 @@ describe("从设备播种（seedStepFromReports）", () => {
     expect(stepZonesOf(next, 0, 0)[0].start).toBe(5);
   });
 
-  it("设备上这一组没有光区 → 原对象", () => {
+  it("设备上这一组没有分区 → 原对象", () => {
     const draft = createAdvancedDrafts()[0];
     expect(seedStepFromReports(draft, 0, 2, reports)).toBe(draft);
   });
