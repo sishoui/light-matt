@@ -33,7 +33,6 @@ import { deviceKeyOf } from "../../utils/control/device-history";
 import {
   addStepStage,
   advancedDraftOf,
-  advancedStepCount,
   canAddStepStage,
   createAdvancedDrafts,
   moveStepStage,
@@ -77,7 +76,22 @@ import {
   shrinkDraft,
 } from "../../utils/control/led-count-plan";
 import { ledCountResultHint } from "../../utils/control/ledCount";
-import { loadPlanDrafts, savePlanDraft } from "../../utils/control/plan-drafts";
+import { loadPlanDrafts, removePlanDraft, savePlanDraft } from "../../utils/control/plan-drafts";
+import {
+  addPlan,
+  buildPlanTabs,
+  createEmptyPlanDraft,
+  deletePlan,
+  initialPlanIds,
+  planDeviceSummary,
+  planIdsFromSources,
+  planIsPlaying,
+  planTabSummary,
+  plansFull,
+  selectionAfterDelete,
+  visiblePlanIds,
+  type PlanTabView,
+} from "../../utils/control/plan-slots";
 import { zonesFromReports } from "../../utils/control/zone-editor";
 import { checkScriptBlobBytes } from "../../utils/control/script-plan";
 import { draftCapacityBytes, draftToScriptConfig } from "../../utils/control/script-view";
@@ -112,14 +126,11 @@ import { statusView } from "../../utils/control/status-view";
 import {
   buildSimpleParams,
   clampLevel,
-  cyclePlanSlot,
   hueFromDegrees,
   inferSimpleState,
   LEVEL_DEFAULT,
   levelAfterCardTap,
   levelDraftFromDevice,
-  planSlotLabel,
-  planSlotSub,
   satFromPercent,
   type SimpleParamView,
 } from "../../utils/control/strip-simple";
@@ -253,9 +264,16 @@ Page({
     ledHint: "",
     /* 只读的诊断行：滑块值与设备值的差别（拖动中 / 下发失败后）。 */
     ledPending: false,
+    /* 方案（#83）：按需增长的 tab 行，默认只有一套（①）。 */
     planSlot: 0,
-    planLabel: "方案 ①",
-    planSub: "读取中…",
+    /** 当前显示 / 编辑的方案编号（设备上的编号，页面内部用）。 */
+    planTabs: [] as PlanTabView[],
+    /** 「+ 新建方案」是否可用（四套都在用时禁用）。 */
+    planCanAdd: false,
+    /** 删除中的方案编号（-1 = 没有进行中的删除）；按钮据此转圈并防重入。 */
+    planDeleting: -1,
+    /** 方案操作的就地反馈（删除被拒的原因 / 满四套的提示）；空串 = 不显示。 */
+    planHint: "",
 
     /* ---- 简单 / 进阶 ---- */
     mode: "simple" as StripMode,
@@ -377,10 +395,25 @@ Page({
   quickEpoch: 0,
   /** 有改动还没成功写进设备（写失败 / 拖动中）。 */
   dirty: false,
-  /** 4 个方案槽位的步骤数；null = 还没读回来。 */
+  /** 4 个方案编号的步骤数（设备摘要）；null = 还没读回来。 */
   planStepCounts: null as number[] | null,
   /** 方案摘要读取代次（并发读时旧一轮作废）。 */
   planEpoch: 0,
+  /**
+   * 当前**显示哪几套方案**（升序，最长 4）。
+   *
+   * #83 起方案按需增长：这是「tab 行上有什么」的唯一真相，由本机草稿与
+   * 设备摘要的并集推出（`planIdsFromSources`），新建 / 删除时手动更新。
+   * 它不是 `drafts` 的下标——`drafts` 永远按设备编号定位，删掉②后 ③ 仍占
+   * 下标 3，这样设备上的方案不会因为删一套而整体搬家。
+   */
+  planIds: [] as number[],
+  /**
+   * 上一次重画 tab 时的「正在播放的方案编号」；-1 = 没有播放。
+   *
+   * State 是 20Hz 的，只有这个值真的变了才重画 tab（否则每帧重建数组）。
+   */
+  planPlayingId: -1,
 
   /* ---- 进阶档：时间轴与光区的本地草稿（#65 / #66，不进设备） ---- */
   /** 4 个方案槽位各自的草稿（`ScriptDraft`：步骤 → 光区）；进阶档的唯一真相。 */
@@ -479,6 +512,8 @@ Page({
     this.dirty = false;
     this.planStepCounts = null;
     this.planEpoch = 0;
+    this.planIds = initialPlanIds();
+    this.planPlayingId = -1;
     this.drafts = createAdvancedDrafts();
     this.draftOwned = [false, false, false, false];
     this.draftsKey = "";
@@ -515,10 +550,10 @@ Page({
       mock: isMockSession(),
       stripId,
       title: `灯组 ${stripId + 1}`,
-      planLabel: planSlotLabel(0),
       quickCards: buildQuickCardViews(null),
       durationTicks: durationTicks(),
     });
+    this.renderPlans();
     this.renderTimeline();
     /* 草稿落盘：设备身份已知时把上次的编排读回来（冷启动不丢）。 */
     this.ensureDraftsLoaded();
@@ -726,6 +761,13 @@ Page({
         this.renderTimeline();
       }
     }
+    /* 播放态也在 State 里：只有「哪套在播」真的变了才重画 tab（20Hz 下不动）。 */
+    const playingId =
+      state.playbackState !== 0 && state.scriptId < 4 ? state.scriptId : -1;
+    if (playingId !== this.planPlayingId) {
+      this.planPlayingId = playingId;
+      this.renderPlans();
+    }
   },
 
   /** 标题副行：设备名（本机缓存的名字优先）。 */
@@ -773,6 +815,8 @@ Page({
     this.drafts = createAdvancedDrafts();
     this.draftOwned = [false, false, false, false];
     this.draftsKey = "";
+    this.planIds = initialPlanIds();
+    this.planPlayingId = -1;
     this.timelineIndex = 0;
     this.pickedSegId = -1;
     this.resetPanel();
@@ -783,7 +827,7 @@ Page({
       ledPending: false,
       ledHint: "",
       ledText: "连接后显示灯珠数",
-      planSub: "读取中…",
+      planHint: "",
       quickCards: buildQuickCardViews(null),
       simpleParams: null,
       quickDisabledReason: this.disabledReason(),
@@ -810,6 +854,7 @@ Page({
       panelGuide: "",
       panelHint: "",
     });
+    this.renderPlans({ planHint: "" });
   },
 
   // ---------------- 档位切换 ----------------
@@ -982,8 +1027,8 @@ Page({
     this.drafts = this.drafts.map((draft, index) => (index === slot ? next : draft));
     this.draftOwned[slot] = true;
     this.saveDraft(slot, next);
-    /* 槽位摘要跟着草稿走：用户一改步骤数，右上角立刻显示 N 个步骤。 */
-    this.setData({ planSub: this.planSubOf(slot) });
+    /* tab 摘要跟着草稿走：用户一画光区，对应 tab 立刻从「空白」变成「n 步」。 */
+    this.renderPlans();
   },
 
   /**
@@ -1044,7 +1089,11 @@ Page({
     const stored = loadPlanDrafts(storage, key);
     if (stored === null) {
       /* 新键没有历史：保留内存里的（迁移上来的部分），其余仍是默认草稿。 */
-      this.setData({ planSub: this.planSubOf(this.data.planSlot) });
+      this.planIds = visiblePlanIds(this.planIds, null, this.localPlanIds());
+      if (!this.planIds.includes(this.data.planSlot)) {
+        this.setData({ planSlot: this.planIds[0] ?? 0 });
+      }
+      this.renderPlans();
       return;
     }
     this.drafts = this.drafts.map((draft, slot) => {
@@ -1056,10 +1105,18 @@ Page({
       this.draftOwned[slot] = true;
       return loaded;
     });
-    this.setData({ planSub: this.planSubOf(this.data.planSlot) });
+    /* 落盘里有几套方案，tab 行就该有几套（设备摘要还没读回来时也成立）。 */
+    this.planIds = visiblePlanIds(this.planIds, this.planStepCountsRecord(), this.localPlanIds());
+    if (!this.planIds.includes(this.data.planSlot)) {
+      this.setData({ planSlot: this.planIds[0] ?? 0 });
+    }
+    this.renderPlans();
     /* 已经在进阶档时（0x88 晚到 / 从后台回来）要重画两条轴，否则屏幕上还是默认草稿。 */
     if (this.data.mode === "advanced") {
-      this.timelineIndex = Math.min(this.timelineIndex, Math.max(0, this.currentDraft().stages.length - 1));
+      this.timelineIndex = Math.min(
+        this.timelineIndex,
+        Math.max(0, this.currentDraft().stages.length - 1),
+      );
       this.pickedSegId = -1;
       this.panelKey = "";
       this.renderTimeline();
@@ -2050,47 +2107,247 @@ Page({
     return fresh === undefined ? previous ?? -1 : fresh.segId;
   },
 
-  // ---------------- 方案槽位 ----------------
+  // ---------------- 方案（#83：按需增长的槽位） ----------------
 
-  /** 顶部「方案 ①」按钮：点一下轮换到下一个槽位。 */
-  onPlanSlotTap() {
-    const next = cyclePlanSlot(this.data.planSlot);
+  /**
+   * 本机**有草稿**的方案编号（tab 行的第一份线索）。
+   *
+   * 只算 `draftOwned` 的槽位：默认草稿（`createAdvancedDrafts` 造出来的 4 份
+   * 空壳）不是「用户有这一套」，把它们算进来又变成四个永远占着的坑。
+   */
+  localPlanIds(): number[] {
+    const ids: number[] = [];
+    for (let slot = 0; slot < this.drafts.length; slot += 1) {
+      if (this.draftOwned[slot] === true) {
+        ids.push(slot);
+      }
+    }
+    return ids;
+  },
+
+  /** 设备摘要的编号 → 步骤数（`planIdsFromSources` 的输入）。 */
+  planStepCountsRecord(): Record<number, number> | null {
+    if (this.planStepCounts === null) {
+      return null;
+    }
+    const record: Record<number, number> = {};
+    for (let slot = 0; slot < this.planStepCounts.length; slot += 1) {
+      record[slot] = this.planStepCounts[slot];
+    }
+    return record;
+  },
+
+  /**
+   * 某一个方案 tab 的摘要（界面上只出现「空白」或「n 步」）。
+   *
+   * 优先级：
+   *  1. **用户自己的草稿**（有光区才算有内容）——它是进阶档的真相；
+   *  2. 设备摘要（`planStepCounts`）——没动过的方案反映「灯控上有什么」；
+   *  3. 都没读到 → 「空白」（不是「读取中…」：新建的方案本来就是空的）。
+   */
+  planSummaryOf(slot: number): string {
+    if (this.draftOwned[slot] === true) {
+      const draft = this.drafts[slot];
+      if (draft !== undefined) {
+        return planTabSummary(draft);
+      }
+    }
+    if (this.planStepCounts !== null) {
+      return planDeviceSummary(this.planStepCounts[slot] ?? 0);
+    }
+    return "空白";
+  },
+
+  /**
+   * 重画方案 tab 行（唯一派生入口）。
+   *
+   * 三件事：本机草稿与设备摘要的并集 → 摘要文案 → 播放态。「播放态」取设备
+   * State（不是本地猜的）：删除正在播的方案时要靠它决定先停播。
+   */
+  renderPlans(patch: Record<string, unknown> = {}): void {
+    if (this.planIds.length === 0) {
+      this.planIds = initialPlanIds();
+    }
+    const summaries: Record<number, string> = {};
+    for (const id of this.planIds) {
+      summaries[id] = this.planSummaryOf(id);
+    }
+    const state = this.session?.deviceState ?? null;
+    const playingId =
+      state !== null && state.playbackState !== 0 && state.scriptId < 4 ? state.scriptId : null;
     this.setData({
-      planSlot: next,
-      planLabel: planSlotLabel(next),
-      planSub: this.planSubOf(next),
+      planTabs: buildPlanTabs(this.planIds, this.data.planSlot, summaries, playingId),
+      planCanAdd: !plansFull(this.planIds),
+      ...patch,
     });
+  },
+
+  /** 切到某一套方案（顶部 tab）：时间轴 / 光区轴 / 效果面板整体跟着换。 */
+  onPlanTap(e: WechatMiniprogram.TouchEvent) {
+    const id = Number(e.currentTarget.dataset.planId);
+    if (!Number.isInteger(id) || id === this.data.planSlot || this.data.planDeleting >= 0) {
+      return;
+    }
+    if (!this.planIds.includes(id)) {
+      return;
+    }
+    this.setData({ planSlot: id, planHint: "" });
     /* 换方案 = 换一份草稿：步骤下标与光区选中都要重新落到合法值。 */
     this.timelineIndex = 0;
     this.pickedSegId = -1;
+    this.panelKey = "";
+    this.renderPlans();
     if (this.data.mode === "advanced") {
       this.renderTimeline();
     }
   },
 
   /**
-   * 槽位摘要（「空白 / N 个步骤」）。
+   * 「+ 新建方案」：占用当前未被使用的最小方案编号，建一份空草稿并选中它。
    *
-   * 优先级：
-   *  1. **用户自己的草稿**（本机编排 / 落盘读回的）——它是进阶档的真相，
-   *     用户刚加了一步就应该立刻看到「3 个步骤」，而不是等写设备；
-   *  2. 设备摘要（`planStepCounts`）——没动过的槽位反映「灯控上有什么」；
-   *  3. 都没读到 → 「读取中…」。
+   * 「未使用」要同时算上**设备上已有的方案**：本机没草稿时设备方案不显示，
+   * 但它们确实占着编号，拿它当空位会覆盖别人下发过的内容。所以分配用并集
+   * （`planIdsFromSources`，把当前 tab 表也算进去）。
+   *
+   * 四套都在用时按钮是禁用的；这里再兜一次（防重入 / 事件漏判），并就地提示。
    */
-  planSubOf(slot: number): string {
-    if (this.draftOwned[slot] === true) {
-      const draft = this.drafts[slot];
-      if (draft !== undefined) {
-        return planSlotSub(advancedStepCount(draft));
-      }
+  onPlanAdd() {
+    if (this.data.planDeleting >= 0) {
+      return;
     }
-    if (this.planStepCounts === null) {
-      return "读取中…";
+    const reserved = planIdsFromSources(this.planStepCountsRecord(), this.planIds);
+    const added = addPlan(reserved);
+    if (added === null) {
+      this.setData({ planHint: "最多四套方案；先删掉一套再新建" });
+      return;
     }
-    return planSlotSub(this.planStepCounts[slot] ?? 0);
+    const draft = createEmptyPlanDraft(added.id);
+    this.drafts = this.drafts.map((item, index) => (index === added.id ? draft : item));
+    this.draftOwned[added.id] = true;
+    this.saveDraft(added.id, draft);
+    this.planIds = visiblePlanIds(this.planIds, this.planStepCountsRecord(), this.localPlanIds());
+    this.timelineIndex = 0;
+    this.pickedSegId = -1;
+    this.panelKey = "";
+    this.setData({ planSlot: added.id, planHint: "" });
+    this.renderPlans();
+    if (this.data.mode === "advanced") {
+      this.renderTimeline();
+    }
   },
 
-  /** 读回 4 个槽位的步骤数（QueryScript 只回摘要，内容无法读回）。 */
+  /**
+   * 删除当前正在显示的那套方案（先二次确认）。
+   *
+   * 顺序是票面要求的：
+   *  1. 二次确认（用户点「取消」什么都不动）；
+   *  2. **设备先清**：`ClearScript` 失败就**保留本机草稿**并就地显示原因——
+   *     绝不出现「本机没了但设备还在」的静默不一致；
+   *  3. 设备清成功后才删本机草稿与 tab，并重读摘要。
+   *
+   * 删的正是正在播放的那套时，设备侧清空会同时停播（协议语义），这里也
+   * 主动停一次兜底：旧固件不认识 0x1E 时会回 UnknownCommand，此时若已经
+   * 在播，停播仍然是对的（用户删的就是这套）。
+   */
+  async onPlanDelete() {
+    const target = this.data.planSlot;
+    if (this.data.planDeleting >= 0) {
+      return;
+    }
+    const confirmed = await showModal(
+      `删除方案 ${this.planTabLabel(target)}？`,
+      "方案会从灯控上一起清掉，这个操作不能撤销。",
+      "删除",
+    );
+    if (!confirmed) {
+      return;
+    }
+    this.setData({ planDeleting: target, planHint: "" });
+    try {
+      const session = this.session;
+      if (session === null || !this.data.ready) {
+        /* 未连接时不能清设备：**本机草稿保留**，如实说清原因。
+         * 这条与「设备拒绝」同一口径——绝不出现「本机没了但设备还在」。 */
+        this.setData({ planHint: "未连接灯控，暂时不能删除（设备上的方案清不掉）" });
+        return;
+      }
+      {
+        /* 删除正在播放的这套：先停下，避免设备停在一个不存在的方案上。 */
+        const state = session.deviceState;
+        if (state !== null && planIsPlaying(state, target)) {
+          await session.setPlayback(0, (state.flags & 0x01) === 1);
+        }
+        const cleared = await session.clearScript(target);
+        if (cleared.kind === "ack-error") {
+          this.setData({
+            planHint: `没能从灯控上清掉（${resultText(cleared.ack.resultCode)}）；本机编排已保留`,
+          });
+          return;
+        }
+        if (cleared.kind === "error") {
+          this.setData({ planHint: `没能从灯控上清掉（${cleared.message}）；本机编排已保留` });
+          return;
+        }
+        if (cleared.kind === "stale") {
+          this.setData({ planHint: "连接已经切换，这次删除的结果已放弃；本机编排已保留" });
+          return;
+        }
+        if (cleared.state !== undefined && cleared.state !== null) {
+          this.applyDeviceState(cleared.state);
+        }
+      }
+
+      /* 设备已清：本机草稿与 tab 一起撤掉。 */
+      const before = this.planIds;
+      const nextSelection = selectionAfterDelete(before, target, target);
+      this.removeLocalPlan(target);
+      this.planIds = deletePlan(before, target);
+      if (this.planIds.length === 0) {
+        /* 删光了：补一套空白方案，页面永远有东西可编辑。 */
+        const empty = createEmptyPlanDraft(0);
+        this.drafts = this.drafts.map((item, index) => (index === 0 ? empty : item));
+        this.draftOwned[0] = true;
+        this.saveDraft(0, empty);
+        this.planIds = initialPlanIds();
+        this.setData({ planSlot: 0 });
+      } else if (nextSelection !== null) {
+        this.setData({ planSlot: nextSelection });
+      }
+      this.timelineIndex = 0;
+      this.pickedSegId = -1;
+      this.panelKey = "";
+      this.renderPlans();
+      if (this.data.mode === "advanced") {
+        this.renderTimeline();
+      }
+      if (this.data.ready) {
+        await this.refreshPlanSlots();
+      }
+    } finally {
+      this.setData({ planDeleting: -1 });
+    }
+  },
+
+  /** 删除本机这一套草稿（内存镜像 + 落盘），别的方案与编号原样保留。 */
+  removeLocalPlan(slot: number): void {
+    this.draftOwned[slot] = false;
+    this.drafts = this.drafts.map((draft, index) =>
+      index === slot ? createEmptyPlanDraft(slot) : draft,
+    );
+    const storage = this.storage;
+    const key = this.draftsKey.length > 0 ? this.draftsKey : this.deviceKeyForDrafts();
+    if (storage !== null && key.length > 0) {
+      removePlanDraft(storage, key, slot);
+    }
+  },
+
+  /** 方案 tab 的圈码（确认框标题用；界面上的 tab 文案在 `buildPlanTabs`）。 */
+  planTabLabel(id: number): string {
+    const tab = this.data.planTabs.find((item) => item.id === id);
+    return tab === undefined ? "" : tab.label;
+  },
+
+  /** 读回 4 个方案编号的步骤数（QueryScript 只回摘要，内容无法读回）。 */
   async refreshPlanSlots(): Promise<void> {
     const session = this.session;
     if (session === null || !this.data.ready) {
@@ -2110,10 +2367,15 @@ Page({
         }
       }
       this.planStepCounts = counts;
+      /* 设备上有的方案（哪怕本机没草稿）也要出现在 tab 上才能删得掉。 */
+    this.planIds = visiblePlanIds(this.planIds, this.planStepCountsRecord(), this.localPlanIds());
+      if (!this.planIds.includes(this.data.planSlot)) {
+        this.setData({ planSlot: this.planIds[0] ?? 0 });
+      }
     } else {
       this.planStepCounts = null;
     }
-    this.setData({ planSub: this.planSubOf(this.data.planSlot) });
+    this.renderPlans();
   },
 
   // ---------------- 简单档：读取与派生 ----------------

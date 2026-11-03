@@ -373,6 +373,91 @@ describe("快捷档：视图派生", () => {
 });
 
 /**
+ * 清空方案（#83）：删除必须真的从设备上清掉，且删掉的正是激活方案时停播。
+ *
+ * 这条锁的是「删除不是半成品」：只删本机草稿会让用户以为删了，实际上设备上
+ * 那套方案还在，下次进入页面又会冒出来。
+ */
+describe("演示模式：清空方案（ClearScript）", () => {
+  /** 一套单步单光区的最小方案。 */
+  function minimalScript(scriptId: number, ledCount: number): {
+    scriptId: number;
+    stripCount: number;
+    stages: Array<{ durationMs: number; segments: Array<Record<string, unknown>> }>;
+  } {
+    return {
+      scriptId,
+      stripCount: 1,
+      stages: [
+        {
+          durationMs: 1000,
+          segments: [
+            {
+              stripId: 0,
+              segId: 0,
+              start: 0,
+              end: Math.max(0, ledCount - 1),
+              blend: 0,
+              layer0: {
+                type: SEGMENT_TYPE.STATIC,
+                hue: 0,
+                sat: 0,
+                periodMs: 0,
+                p5: 0,
+                flags: 0,
+                level: 100,
+              },
+              layer1: { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 },
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  it("清空后该方案摘要变空白，其它方案不受影响", async () => {
+    const { session } = makeSession();
+    await session.connect(A.deviceId, A.broadcastName);
+    const ledCount = session.stripLedCount(0);
+    /* 下发两套，1 号是激活方案。 */
+    expect((await session.downloadScript(minimalScript(0, ledCount) as never, { activate: false })).kind).toBe("ok");
+    expect((await session.downloadScript(minimalScript(1, ledCount) as never, { activate: true })).kind).toBe("ok");
+
+    const cleared = await session.clearScript(1);
+    expect(cleared.kind).toBe("ok");
+    /* 摘要读回：1 号 0 步（空白），0 号原样。 */
+    const summaries = await session.queryScriptSummaries();
+    expect(summaries.kind).toBe("ok");
+    if (summaries.kind === "ok") {
+      const byId = new Map(summaries.summaries.map((item) => [item.scriptId, item]));
+      expect(byId.get(1)?.stageCount).toBe(0);
+      expect(byId.get(0)?.stageCount).toBe(1);
+    }
+  });
+
+  it("清空的正是激活方案时设备停播并退回「无激活剧本」", async () => {
+    const { session } = makeSession();
+    await session.connect(A.deviceId, A.broadcastName);
+    const ledCount = session.stripLedCount(0);
+    await session.downloadScript(minimalScript(2, ledCount) as never, { activate: true });
+    await session.setPlayback(1, true);
+    expect(session.deviceState?.playbackState).toBe(1);
+    expect(session.deviceState?.scriptId).toBe(2);
+
+    const cleared = await session.clearScript(2);
+    expect(cleared.kind).toBe("ok");
+    expect(session.deviceState?.playbackState).toBe(0);
+    expect(session.deviceState?.scriptId).not.toBe(2);
+  });
+
+  it("未提交的编号也能清（协议幂等），不会报错", async () => {
+    const { session } = makeSession();
+    await session.connect(A.deviceId, A.broadcastName);
+    expect((await session.clearScript(3)).kind).toBe("ok");
+  });
+});
+
+/**
  * 逐灯组灯珠数（review P0 回归）：多灯组设备的每组长度不同。
  *
  * 协议里 `state.ledCount` 是 **strip 0** 的派生值；编辑第 4 组时若拿它当

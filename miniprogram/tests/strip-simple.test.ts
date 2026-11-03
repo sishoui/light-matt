@@ -1,18 +1,19 @@
 /**
  * 灯组页简单档的纯派生（#64）。
  *
- * 三类断言：
- *  1. 方案槽位按钮的文案与轮换（空槽位必须明说「空白」）；
- *  2. HSV 滑块 ↔ 协议值的换算（色相 0-360 ↔ 0-65535、饱和度 % ↔ 0-255），
+ * 断言：
+ *  1. HSV 滑块 ↔ 协议值的换算（色相 0-360 ↔ 0-65535、饱和度 % ↔ 0-255），
  *     以及亮度滑块**真实下发**（v4 的逐光区 level）；
- *  3. 设备读回值只有在「整组一个光区 + 无叠加层」时才敢回填成某张卡。
+ *  2. 设备读回值只有在「整组一个光区 + 无叠加层」时才敢回填成某张卡。
+ *
+ * 方案槽位的文案与轮换已迁到 `plan-slots.ts`（#83 起方案按需增长），
+ * 那里有自己的测试文件。
  */
 
 import { describe, expect, it } from "vitest";
 import {
   buildSimpleParams,
   clampLevel,
-  cyclePlanSlot,
   hueDegreesOf,
   hueFromDegrees,
   inferSimpleState,
@@ -22,8 +23,6 @@ import {
   OFF_CARD_NOTICE,
   levelAfterCardTap,
   levelDraftFromDevice,
-  planSlotLabel,
-  planSlotSub,
   satFromPercent,
   satPercentOf,
 } from "../utils/control/strip-simple";
@@ -57,41 +56,6 @@ function report(overrides: Partial<SegmentReport> = {}): SegmentReport {
     ...overrides,
   };
 }
-
-describe("方案槽位按钮", () => {
-  it("四个槽位各有自己的圈码，文案是「方案 ①」", () => {
-    expect(planSlotLabel(0)).toBe("方案 ①");
-    expect(planSlotLabel(1)).toBe("方案 ②");
-    expect(planSlotLabel(2)).toBe("方案 ③");
-    expect(planSlotLabel(3)).toBe("方案 ④");
-  });
-
-  it("越界 / 非法槽位号不会崩（按 4 取模）", () => {
-    expect(planSlotLabel(4)).toBe("方案 ①");
-    expect(planSlotLabel(-1)).toBe("方案 ④");
-    expect(planSlotLabel(Number.NaN)).toBe("方案 ①");
-    expect(planSlotLabel(2.7)).toBe("方案 ③");
-  });
-
-  it("空槽位标「空白」，有内容显示步骤数", () => {
-    expect(planSlotSub(0)).toBe("空白");
-    expect(planSlotSub(3)).toBe("3 个步骤");
-    expect(planSlotSub(-2)).toBe("空白");
-    expect(planSlotSub(Number.NaN)).toBe("空白");
-  });
-
-  it("点一下在 0→1→2→3→0 之间轮换", () => {
-    expect(cyclePlanSlot(0)).toBe(1);
-    expect(cyclePlanSlot(1)).toBe(2);
-    expect(cyclePlanSlot(2)).toBe(3);
-    expect(cyclePlanSlot(3)).toBe(0);
-  });
-
-  it("槽位数可配（测试用 2 槽位也不会越界）", () => {
-    expect(cyclePlanSlot(1, 2)).toBe(0);
-    expect(cyclePlanSlot(0, 0)).toBe(1);
-  });
-});
 
 describe("HSV 换算", () => {
   it("协议色相 0-65535 ↔ 滑块 0-360 度", () => {

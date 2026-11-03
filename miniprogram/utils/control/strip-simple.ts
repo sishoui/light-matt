@@ -23,41 +23,17 @@ import {
   type QuickParams,
 } from "./quick-effects";
 
-/** 方案槽位数（协议：设备侧可存 4 套）。 */
-export const PLAN_SLOT_COUNT = 4;
-
 /** 亮度滑块的显示区间：0 会让整组不出光，给用户的下限留 5%。 */
 export const LEVEL_MIN = 5;
 export const LEVEL_MAX = 100;
 export const LEVEL_DEFAULT = 100;
 
-const CIRCLED = ["①", "②", "③", "④"] as const;
-
-/** 槽位号 → 「方案 ①」；越界按 4 取模（按钮是轮换的，不会出现非法值）。 */
-export function planSlotLabel(slot: number): string {
-  const index = normalizedSlot(slot);
-  return `方案 ${CIRCLED[index]}`;
-}
-
-/** 槽位内容摘要：空槽位必须明说「空白」，有内容说步骤数。 */
-export function planSlotSub(stepCount: number): string {
-  const count = Number.isFinite(stepCount) ? Math.max(0, Math.floor(stepCount)) : 0;
-  return count === 0 ? "空白" : `${count} 个步骤`;
-}
-
-/** 点一下切到下一个槽位（0→1→2→3→0）。 */
-export function cyclePlanSlot(current: number, count: number = PLAN_SLOT_COUNT): number {
-  const size = Number.isFinite(count) && count > 0 ? Math.floor(count) : PLAN_SLOT_COUNT;
-  return (normalizedSlot(current, size) + 1) % size;
-}
-
-function normalizedSlot(slot: number, count: number = PLAN_SLOT_COUNT): number {
-  if (!Number.isFinite(slot)) {
-    return 0;
-  }
-  const mod = Math.floor(slot) % count;
-  return mod < 0 ? mod + count : mod;
-}
+/*
+ * 方案槽位的文案与轮换已经不在这里（#83）：方案改为按需增长，规则全是
+ * 「最小空位 / 删除不重排 / tab 文案」，集中在 `plan-slots.ts`。
+ * 这里曾经有 `planSlotLabel` / `planSlotSub` / `cyclePlanSlot`——固定四套
+ * 轮换的遗留物，留着只会让页面在两套口吻之间漂移。
+ */
 
 /* ---------------- HSV 滑块与协议值的换算 ---------------- */
 

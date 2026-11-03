@@ -20,6 +20,7 @@ import {
   migrateLegacyDrafts,
   PLAN_DRAFTS_KEY,
   planDraftKey,
+  removePlanDraft,
   savePlanDraft,
   savePlanDrafts,
 } from "../utils/control/plan-drafts";
@@ -406,6 +407,54 @@ describe("删除", () => {
     expect(clearPlanDraftsForDevice(storage, "DEV-X")).toBe(0);
     expect(clearPlanDrafts(storage, "DEV-X")).toBe(0);
     expect(storage.map.has(PLAN_DRAFTS_KEY)).toBe(false);
+  });
+});
+
+describe("删除单套方案草稿（#83）", () => {
+  it("只删这一套，别的方案与编号原样保留", () => {
+    const storage = createSessionStorage();
+    savePlanDraft(storage, "DEV-A", 0, draftWithStep(1));
+    savePlanDraft(storage, "DEV-A", 1, draftWithStep(2));
+    savePlanDraft(storage, "DEV-A", 3, draftWithStep(4));
+
+    expect(removePlanDraft(storage, "DEV-A", 1)).toBe(true);
+    const drafts = loadPlanDrafts(storage, "DEV-A")!;
+    expect(drafts[0]?.stages).toHaveLength(1);
+    /* 删掉②之后 ③ 仍在**它自己的编号**上，没有搬到 ②。 */
+    expect(drafts[1]).toBeNull();
+    expect(drafts[3]?.stages).toHaveLength(4);
+  });
+
+  it("没存过的槽位返回 false（不写空表、不误报）", () => {
+    const storage = createSessionStorage();
+    savePlanDraft(storage, "DEV-A", 0, draftWithStep(1));
+    const before = storage.map.get(PLAN_DRAFTS_KEY);
+    expect(removePlanDraft(storage, "DEV-A", 2)).toBe(false);
+    expect(storage.map.get(PLAN_DRAFTS_KEY)).toBe(before);
+  });
+
+  it("设备键为空时什么都不做", () => {
+    const storage = createSessionStorage();
+    savePlanDraft(storage, "DEV-A", 0, draftWithStep(1));
+    expect(removePlanDraft(storage, "", 0)).toBe(false);
+    expect(loadPlanDrafts(storage, "DEV-A")![0]?.stages).toHaveLength(1);
+  });
+
+  it("删掉后再新建同一个编号能正常落盘（复用的键不残留旧内容）", () => {
+    const storage = createSessionStorage();
+    savePlanDraft(storage, "DEV-A", 1, draftWithStep(5));
+    expect(removePlanDraft(storage, "DEV-A", 1)).toBe(true);
+    savePlanDraft(storage, "DEV-A", 1, draftWithStep(1));
+    expect(loadPlanDrafts(storage, "DEV-A")![1]?.stages).toHaveLength(1);
+  });
+
+  it("只删本机这套，别的设备完全不受影响", () => {
+    const storage = createSessionStorage();
+    savePlanDraft(storage, "DEV-A", 0, draftWithStep(2));
+    savePlanDraft(storage, "DEV-B", 0, draftWithStep(3));
+    removePlanDraft(storage, "DEV-A", 0);
+    expect(loadPlanDrafts(storage, "DEV-A")).toBeNull();
+    expect(loadPlanDrafts(storage, "DEV-B")![0]?.stages).toHaveLength(3);
   });
 });
 

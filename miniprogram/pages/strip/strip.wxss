@@ -103,32 +103,118 @@
   line-height: 1.4;
 }
 
-/* 方案槽位按钮：点一下轮换 ①→②→③→④→①，空槽位写「空白」。 */
-.plan-slot {
+/* ---------------- 方案 tab 行（#83） ----------------
+ * 按需增长：每套一个 tab，显示自己的圈码与「空白 / n 步」。
+ * 选中态用主题色描边 + 淡底（不换文字颜色，深色主题下也可读）；
+ * 正在播放的那套右上角一个小圆点。
+ */
+
+.plan-bar {
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
-  gap: 4rpx;
-  padding: 14rpx 22rpx;
-  border-radius: var(--radius-md);
-  background: var(--card);
-  box-shadow: inset 0 0 0 1rpx var(--border);
-  flex-shrink: 0;
+  gap: 10rpx;
+  margin-top: 12rpx;
 }
 
-.plan-slot-hover {
+.plan-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 8rpx;
+}
+
+.plan-tab {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4rpx;
+  padding: 12rpx 8rpx;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+  transition: background 160ms ease, box-shadow 160ms ease;
+}
+
+.plan-tab.on {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 2rpx var(--accent);
+}
+
+.plan-tab-hover {
   background: var(--card-press);
 }
 
-.plan-slot-label {
+.plan-tab-label {
   font-size: 25rpx;
   font-weight: 600;
   color: var(--text);
 }
 
-.plan-slot-sub {
+.plan-tab-sub {
   font-size: 20rpx;
   color: var(--text-3);
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.plan-tab.on .plan-tab-sub {
+  color: var(--text-2);
+}
+
+/* 正在播放：一个小圆点，不抢文字的位置（绝对定位在右上角）。 */
+.plan-tab-dot {
+  position: absolute;
+  top: 8rpx;
+  right: 8rpx;
+  width: 10rpx;
+  height: 10rpx;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.plan-actions {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+}
+
+.plan-action {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12rpx 8rpx;
+  border-radius: var(--radius-md);
+  font-size: 23rpx;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+.plan-action.danger {
+  color: var(--danger);
+  background: var(--danger-soft);
+  box-shadow: none;
+}
+
+.plan-action-hover {
+  background: var(--card-press);
+}
+
+.plan-action.disabled {
+  color: var(--text-3);
+  opacity: 0.55;
+}
+
+.plan-hint {
+  font-size: 21rpx;
+  color: var(--danger);
+  line-height: 1.4;
 }
 
 /* ---------------- 简单 / 进阶 分段控件 ---------------- */

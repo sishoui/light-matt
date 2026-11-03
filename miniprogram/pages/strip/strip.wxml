@@ -19,17 +19,48 @@
     >重连</text>
   </view>
 
-  <!-- ---------------- 顶部：灯组名 / 灯珠数 + 方案槽位按钮 ---------------- -->
+  <!-- ---------------- 顶部：灯组名 / 灯珠数 ---------------- -->
   <view class="strip-head">
     <view class="strip-head-main">
       <text class="strip-name">{{title}}</text>
       <text class="strip-meta">{{ledText}}</text>
     </view>
-    <!-- 点一下在四个槽位之间轮换；空槽位标注「空白」，有内容显示步骤数 -->
-    <view class="plan-slot" bindtap="onPlanSlotTap" hover-class="plan-slot-hover">
-      <text class="plan-slot-label">{{planLabel}}</text>
-      <text class="plan-slot-sub">{{planSub}}</text>
+  </view>
+
+  <!--
+    方案 tab 行（#83）：按需增长，不再固定四个坑。
+    每套显示自己的圈码与「空白 / n 步」；「+ 新建」占用当前最小的空位，
+    四套都在用时禁用。删除前有二次确认，且会真的从灯控上清掉。
+    界面上只出现圈码与步数，不出现任何协议词或内部编号。
+  -->
+  <view class="plan-bar">
+    <view class="plan-tabs">
+      <view
+        wx:for="{{planTabs}}"
+        wx:key="id"
+        class="plan-tab {{item.selected ? 'on' : ''}} {{item.playing ? 'playing' : ''}}"
+        data-plan-id="{{item.id}}"
+        bindtap="onPlanTap"
+        hover-class="plan-tab-hover"
+      >
+        <text class="plan-tab-label">{{item.label}}</text>
+        <text class="plan-tab-sub">{{item.summary}}</text>
+        <view wx:if="{{item.playing}}" class="plan-tab-dot"></view>
+      </view>
     </view>
+    <view class="plan-actions">
+      <view
+        class="plan-action {{planCanAdd ? '' : 'disabled'}}"
+        hover-class="{{planCanAdd ? 'plan-action-hover' : ''}}"
+        bindtap="onPlanAdd"
+      >+ 新建</view>
+      <view
+        class="plan-action danger {{planDeleting >= 0 ? 'disabled' : ''}}"
+        hover-class="{{planDeleting >= 0 ? '' : 'plan-action-hover'}}"
+        bindtap="onPlanDelete"
+      >{{planDeleting >= 0 ? '删除中…' : '删除'}}</view>
+    </view>
+    <text wx:if="{{planHint}}" class="plan-hint">{{planHint}}</text>
   </view>
 
   <!--

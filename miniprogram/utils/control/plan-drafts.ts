@@ -359,6 +359,29 @@ export function savePlanDrafts(
 }
 
 /**
+ * 删掉某台设备的**一套**方案草稿（#83 删除方案时调用）。
+ *
+ * 只删这一个键：同设备其它方案原样保留，编号也不动。返回是否真的删掉了
+ * （没存过的槽位返回 false，调用方据此不必重写存储）。
+ *
+ * 注意这是**本机**的删除；设备上的内容由页面另外走 `ClearScript`，两者
+ * 失败时的先后顺序由页面决定（设备拒绝时不删本机草稿）。
+ */
+export function removePlanDraft(storage: SessionStorage, deviceKey: string, slot: number): boolean {
+  if (deviceKey.length === 0) {
+    return false;
+  }
+  const table = readTableMigrated(storage, deviceKey);
+  const key = planDraftKey(deviceKey, slot);
+  if (!(key in table)) {
+    return false;
+  }
+  delete table[key];
+  writeAll(storage, table);
+  return true;
+}
+
+/**
  * 删掉某台设备的全部草稿（**只在用户显式删除设备时调用**）。
  *
  * 断线、切灯组、退出页面都不清：草稿的卖点就是「编排不会因为一件小事消失」。

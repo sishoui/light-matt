@@ -616,6 +616,20 @@ export class MockTransport {
         /* 查询类由各自的 async 方法处理；走到这里说明调用方用错了通道。 */
         return 0x00;
       }
+      case 0x1e: {
+        /* ClearScript（#73 / #83）：未提交的编号也视为成功（协议幂等）；
+         * 清掉的正是激活方案时退回「无激活剧本」并停播。 */
+        const scriptId = payload[0];
+        if (!Number.isInteger(scriptId) || scriptId >= 4) {
+          return 0x01;
+        }
+        runtime.scripts.delete(scriptId);
+        if (runtime.activeScript === scriptId) {
+          runtime.activeScript = NO_SCRIPT;
+          runtime.playback = 0;
+        }
+        return 0x00;
+      }
       default:
         return 0x02;
     }
@@ -674,6 +688,7 @@ function commandLabel(command: number): string {
     0x1b: "SetStripPower",
     0x1c: "QueryStripConfig",
     0x1d: "QueryDeviceInfo",
+    0x1e: "ClearScript",
   };
   return labels[command] ?? `cmd 0x${command.toString(16)}`;
 }
