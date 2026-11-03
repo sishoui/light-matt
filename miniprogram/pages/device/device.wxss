@@ -1,0 +1,859 @@
+/*
+ * 设备详情页（原「灯光」页 + 连接语义）。
+ * 共享外观在 app.wxss，这里只放本页独有布局。
+ */
+
+/* ---------------- 连接提示 ---------------- */
+
+.notice-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20rpx;
+  padding: 24rpx 28rpx;
+  border-radius: var(--radius-lg);
+  background: var(--danger-soft);
+}
+
+.notice-text {
+  flex: 1;
+  font-size: 23rpx;
+  color: var(--danger);
+  line-height: 1.5;
+}
+
+.notice-action {
+  font-size: 25rpx;
+  font-weight: 600;
+  color: var(--danger);
+  flex-shrink: 0;
+}
+
+/* ---------------- 灯带切换器 ---------------- */
+
+.strip-switcher {
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+}
+
+.strip-switcher.disabled {
+  opacity: 0.45;
+}
+
+/* 8 条带横向滚动，不换行：换行会把下面的开关挤出首屏。 */
+.strip-scroll {
+  width: 100%;
+  white-space: nowrap;
+}
+
+.strip-chip-row {
+  display: flex;
+  gap: 12rpx;
+  padding: 4rpx 0;
+}
+
+.strip-chip {
+  flex: 0 0 auto;
+  min-width: 200rpx;
+  padding: 20rpx 24rpx;
+  border-radius: var(--radius-md);
+  background: var(--card);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+  transition: background 160ms ease;
+}
+
+.strip-chip-hover {
+  background: var(--card-press);
+}
+
+.strip-chip.selected {
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 2rpx var(--accent);
+}
+
+/* 关着的带整体压暗，但文字仍可读（要能看见灯珠数与段数）。 */
+.strip-chip.off {
+  opacity: 0.6;
+}
+
+.strip-chip-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8rpx;
+}
+
+.strip-chip-title {
+  font-size: 27rpx;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* 动画提示点：只作显示（协议 §9.1 明确它不能当正确性依据）。 */
+.strip-anim-dot {
+  width: 12rpx;
+  height: 12rpx;
+  border-radius: 50%;
+  background: var(--blue);
+  flex-shrink: 0;
+}
+
+.strip-chip-sub {
+  font-size: 21rpx;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.strip-empty {
+  padding: 24rpx 8rpx;
+  font-size: 22rpx;
+  color: var(--text-3);
+}
+
+/* ---------------- 控制卡（电源 + 本条带开关） ---------------- */
+
+.control-card {
+  background: var(--card);
+  border-radius: var(--radius-xl);
+  padding: 16rpx 28rpx 28rpx;
+  box-shadow: var(--shadow-card);
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+}
+
+.control-card.disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.power-btn-hover {
+  opacity: 0.85;
+}
+
+.strip-power-row {
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+  padding-top: 20rpx;
+  border-top: 1rpx solid var(--divider);
+}
+
+.strip-power-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+  min-width: 0;
+}
+
+.strip-power-title {
+  font-size: 26rpx;
+  font-weight: 500;
+  color: var(--text);
+}
+
+/* ---------------- 段列表补充 ---------------- */
+
+.seg-head-actions {
+  display: flex;
+  gap: 24rpx;
+}
+
+.section-action {
+  font-size: 25rpx;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.seg-row-hover {
+  background: var(--card-press);
+}
+
+.seg-edit {
+  font-size: 22rpx;
+  color: var(--blue);
+  padding: 4rpx 8rpx;
+  flex-shrink: 0;
+}
+
+/* ---------------- 其他入口 ---------------- */
+
+.link-list {
+  border-radius: var(--radius-lg);
+  background: var(--card);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.link-row {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  padding: 28rpx;
+  border-bottom: 1rpx solid var(--divider);
+}
+
+.link-row:last-child {
+  border-bottom: none;
+}
+
+.link-row-hover {
+  background: var(--card-press);
+}
+
+.link-label {
+  font-size: 28rpx;
+  color: var(--text);
+  min-width: 140rpx;
+}
+
+.link-value {
+  flex: 1;
+  font-size: 23rpx;
+  color: var(--text-2);
+  text-align: right;
+}
+
+.link-chevron {
+  width: 16rpx;
+  height: 16rpx;
+  border-right: 3rpx solid var(--text-3);
+  border-top: 3rpx solid var(--text-3);
+  transform: rotate(45deg);
+  flex-shrink: 0;
+}
+
+/* ============ 当前灯效摘要行 ============ */
+
+.effect-row {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  padding: 26rpx 28rpx;
+  border-radius: var(--radius-lg);
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+
+.effect-row.disabled {
+  opacity: 0.6;
+}
+
+.effect-row-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6rpx;
+  min-width: 0;
+}
+
+.effect-row-label {
+  font-size: 21rpx;
+  color: var(--text-3);
+}
+
+.effect-row-value {
+  font-size: 28rpx;
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.effect-row-edit {
+  font-size: 24rpx;
+  color: var(--accent);
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+/* ============ 快捷 / 自定义 档位开关 ============ */
+
+.mode-switch {
+  display: flex;
+  gap: 8rpx;
+  padding: 8rpx;
+  border-radius: var(--radius-lg);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+.mode-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4rpx;
+  padding: 18rpx 8rpx;
+  border-radius: var(--radius-md);
+  transition: background 160ms ease;
+}
+
+.mode-tab.on {
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+
+.mode-tab-label {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.mode-tab.on .mode-tab-label {
+  color: var(--text);
+}
+
+.mode-tab-sub {
+  font-size: 20rpx;
+  color: var(--text-3);
+}
+
+/* ============ 快捷档：6 张成品效果卡 ============ */
+
+.quick-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16rpx;
+}
+
+.quick-grid.disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.quick-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  padding: 20rpx;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+  transition: background 160ms ease;
+}
+
+.quick-card-hover {
+  background: var(--card-press);
+}
+
+/* 选中态用描边 + 微底：色块本身就有颜色，不能靠颜色区分选中。 */
+.quick-card.selected {
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 2rpx var(--accent);
+}
+
+.quick-swatch {
+  width: 56rpx;
+  height: 56rpx;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+.quick-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+  min-width: 0;
+  flex: 1;
+}
+
+.quick-name {
+  font-size: 26rpx;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.quick-hint {
+  font-size: 20rpx;
+  color: var(--text-2);
+  line-height: 1.4;
+}
+
+/* 右上角的小勾：选中时有、未选中时占位不渲染（不撑高行）。 */
+.quick-check {
+  width: 26rpx;
+  height: 14rpx;
+  border-left: 4rpx solid var(--accent);
+  border-bottom: 4rpx solid var(--accent);
+  transform: rotate(-45deg) translateY(-4rpx);
+  flex-shrink: 0;
+}
+
+/* ============ 快捷档：参数区 ============ */
+
+.quick-panel {
+  gap: 20rpx;
+}
+
+.quick-presets {
+  display: flex;
+  gap: 14rpx;
+  flex-wrap: wrap;
+}
+
+.quick-preset {
+  width: 52rpx;
+  height: 52rpx;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1rpx var(--border);
+  transition: box-shadow 140ms ease;
+}
+
+/* 选中色块：外圈 + 留白，深色浅色都可辨（不用纯白描边）。 */
+.quick-preset.on {
+  box-shadow: 0 0 0 4rpx var(--card), 0 0 0 7rpx var(--accent);
+}
+
+.quick-choice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20rpx;
+}
+
+.quick-choice-label {
+  font-size: 25rpx;
+  color: var(--text-2);
+  flex-shrink: 0;
+}
+
+.quick-choice-options {
+  display: flex;
+  gap: 8rpx;
+  flex: 1;
+  justify-content: flex-end;
+}
+
+.quick-option {
+  min-width: 100rpx;
+  padding: 12rpx 0;
+  text-align: center;
+  font-size: 24rpx;
+  color: var(--text-2);
+  border-radius: var(--radius-sm);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+.quick-option.on {
+  color: var(--accent-ink);
+  background: var(--accent);
+  box-shadow: none;
+  font-weight: 600;
+}
+
+/* ============ 自定义档：面包屑 / 方案 / 步骤 ============ */
+
+.custom-breadcrumb {
+  padding: 0 4rpx;
+}
+
+.plan-tabs {
+  display: flex;
+  gap: 8rpx;
+  padding: 6rpx;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+}
+
+.plan-tabs.disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.plan-tab {
+  flex: 1;
+  text-align: center;
+  padding: 14rpx 0;
+  font-size: 24rpx;
+  color: var(--text-2);
+  border-radius: var(--radius-sm);
+}
+
+.plan-tab.on {
+  background: var(--card);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: var(--shadow);
+}
+
+.step-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10rpx;
+}
+
+.step-row {
+  display: flex;
+  align-items: center;
+  gap: 14rpx;
+  padding: 18rpx 20rpx;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+.step-row.selected {
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 2rpx var(--accent);
+}
+
+.step-title {
+  font-size: 25rpx;
+  font-weight: 600;
+  color: var(--text);
+  flex-shrink: 0;
+}
+
+.step-summary {
+  flex: 1;
+  font-size: 21rpx;
+  color: var(--text-2);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.step-duration {
+  font-size: 21rpx;
+  color: var(--text-3);
+  flex-shrink: 0;
+}
+
+.step-actions {
+  display: flex;
+  gap: 10rpx;
+  flex-shrink: 0;
+}
+
+.step-action {
+  font-size: 21rpx;
+  color: var(--blue);
+  padding: 2rpx 4rpx;
+}
+
+.step-action.muted {
+  color: var(--text-3);
+}
+
+.step-action.danger {
+  color: var(--danger);
+}
+
+.step-durations {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  padding-top: 6rpx;
+}
+
+.step-durations .quick-choice-options {
+  flex-wrap: wrap;
+}
+
+/* ============ 自定义档：灯珠条 ============ */
+
+.led-bar {
+  display: flex;
+  gap: 3rpx;
+  padding: 12rpx;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+  min-height: 72rpx;
+  align-items: stretch;
+}
+
+/* 一格一颗：flex:1 让 64 颗也能在一行里排开。 */
+.led-cell {
+  flex: 1;
+  min-width: 4rpx;
+  height: 48rpx;
+  border-radius: 4rpx;
+  background: var(--card-press);
+}
+
+.led-cell.dark {
+  background: var(--card-press);
+}
+
+.led-cell.editing {
+  box-shadow: 0 0 0 2rpx var(--blue);
+}
+
+/* 冲突必须明显：红 + 描边，与「正在划」的蓝色区分开。 */
+.led-cell.conflict {
+  background: var(--danger) !important;
+  box-shadow: 0 0 0 2rpx var(--danger);
+}
+
+.led-empty {
+  flex: 1;
+  text-align: center;
+  font-size: 21rpx;
+  color: var(--text-3);
+  align-self: center;
+}
+
+.led-legend {
+  display: flex;
+  justify-content: space-between;
+  gap: 12rpx;
+}
+
+.led-draft {
+  font-size: 21rpx;
+  color: var(--blue);
+}
+
+.led-draft.conflict {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.split-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8rpx;
+}
+
+.split-btn {
+  padding: 12rpx 18rpx;
+  font-size: 22rpx;
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+/* ============ 自定义档：光区卡片 ============ */
+
+.zone-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14rpx;
+}
+
+.zone-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14rpx;
+  padding: 20rpx;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+.zone-head {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+.zone-swatch {
+  width: 32rpx;
+  height: 32rpx;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+.zone-title {
+  font-size: 25rpx;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.zone-range {
+  flex: 1;
+  font-size: 22rpx;
+  color: var(--text-2);
+}
+
+.zone-edit {
+  font-size: 22rpx;
+  color: var(--blue);
+  flex-shrink: 0;
+}
+
+.zone-delete {
+  font-size: 22rpx;
+  color: var(--danger);
+  flex-shrink: 0;
+}
+
+.zone-confirm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12rpx;
+  padding: 12rpx 16rpx;
+  border-radius: var(--radius-sm);
+  background: var(--danger-soft);
+}
+
+.zone-confirm-text {
+  flex: 1;
+  font-size: 21rpx;
+  color: var(--danger);
+}
+
+.zone-confirm-cancel {
+  font-size: 22rpx;
+  font-weight: 600;
+  color: var(--danger);
+  flex-shrink: 0;
+}
+
+.zone-modes {
+  display: flex;
+  gap: 8rpx;
+}
+
+.zone-mode {
+  flex: 1;
+  text-align: center;
+  padding: 12rpx 0;
+  font-size: 22rpx;
+  color: var(--text-2);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+.zone-mode.on {
+  color: var(--accent-ink);
+  background: var(--accent);
+  box-shadow: none;
+  font-weight: 600;
+}
+
+.zone-colors {
+  display: flex;
+  gap: 10rpx;
+  flex-wrap: wrap;
+}
+
+.zone-colors .quick-preset {
+  width: 40rpx;
+  height: 40rpx;
+}
+
+.zone-overlay {
+  display: flex;
+  flex-direction: column;
+  gap: 10rpx;
+  padding-top: 10rpx;
+  border-top: 1rpx solid var(--divider);
+}
+
+.zone-overlay-head {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+.zone-overlay-name {
+  flex: 1;
+  font-size: 22rpx;
+  color: var(--text);
+}
+
+.zone-overlay-name.muted {
+  color: var(--text-3);
+}
+
+.zone-blends {
+  display: flex;
+  gap: 8rpx;
+}
+
+/* ============ 自定义档：数字精修 / 写入 / 播放 ============ */
+
+.range-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+  padding: 16rpx;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+}
+
+.range-inputs {
+  display: flex;
+  align-items: center;
+  gap: 10rpx;
+}
+
+.range-input {
+  flex: 1;
+  height: 64rpx;
+  padding: 0 16rpx;
+  font-size: 26rpx;
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+.range-dash {
+  color: var(--text-3);
+}
+
+.range-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 24rpx;
+}
+
+.range-cancel {
+  font-size: 24rpx;
+  color: var(--text-2);
+}
+
+.range-ok {
+  font-size: 24rpx;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.plan-actions {
+  display: flex;
+  gap: 10rpx;
+}
+
+.plan-write {
+  flex: 2;
+  text-align: center;
+  padding: 22rpx 0;
+  font-size: 27rpx;
+  font-weight: 600;
+  color: var(--accent-ink);
+  border-radius: var(--radius-md);
+  background: var(--accent);
+}
+
+.plan-write.busy {
+  opacity: 0.6;
+}
+
+.plan-play {
+  flex: 1;
+  text-align: center;
+  padding: 22rpx 0;
+  font-size: 24rpx;
+  color: var(--text);
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}

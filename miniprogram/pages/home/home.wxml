@@ -1,0 +1,133 @@
+<view class="page {{themeClass}}">
+  <nav-bar
+    title="设备"
+    subtitle="{{empty ? '还没有设备' : (ready ? '已连接' : '未连接')}}"
+    action-text="发现"
+    bind:action="onGoDiscover"
+  />
+
+  <!-- 空态：没有任何设备时给出下一步 -->
+  <view wx:if="{{empty}}" class="empty-card" bindtap="onEmptyTap" hover-class="empty-card-hover">
+    <view class="empty-glyph">
+      <view class="empty-glyph-ring"></view>
+      <view class="empty-glyph-dot"></view>
+    </view>
+    <text class="empty-title">还没有设备</text>
+    <text class="empty-hint">{{emptyHint}}</text>
+    <view class="empty-cta">去发现</view>
+  </view>
+
+  <block wx:else>
+    <!-- ============ 方形大卡：图片铺满，信息叠在底部 ============ -->
+    <view
+      class="hero-card tone-{{current.tone}}"
+      bindtap="onCardTap"
+      bindlongpress="onClearPhoto"
+      hover-class="hero-card-hover"
+    >
+      <!-- 封面：有照片用照片，没有就用设备色渐变（不假装有照片） -->
+      <image
+        wx:if="{{current.photo}}"
+        class="hero-photo"
+        src="{{current.photo}}"
+        mode="aspectFill"
+        lazy-load="{{false}}"
+      />
+      <view wx:else class="hero-photo hero-photo-fallback" style="{{current.glowStyle}}"></view>
+
+      <!-- 压暗层：保证底部文字在任何照片上都可读 -->
+      <view class="hero-scrim"></view>
+
+      <!-- 顶部：状态 + 电源键 -->
+      <view class="hero-top">
+        <view class="hero-status">
+          <view class="hero-dot"></view>
+          <text class="hero-status-text">{{current.statusText}}</text>
+        </view>
+
+        <view class="hero-actions">
+          <!-- 封面：用户自定义图片（catchtap 不冒泡，否则会进详情） -->
+          <view
+            class="hero-cover-btn {{photoBusy ? 'busy' : ''}}"
+            catchtap="onPickPhoto"
+            hover-class="hero-cover-hover"
+          >
+            <text class="hero-cover-text">{{current.photoIsUserPicked ? '更换' : '封面'}}</text>
+          </view>
+
+          <!-- 电源快捷键：catchtap 阻止冒泡，不触发进详情 -->
+          <view
+            class="hero-power {{current.powerOn ? 'on' : ''}} {{busy ? 'busy' : ''}}"
+            catchtap="onPowerTap"
+            hover-class="hero-power-hover"
+          >
+            <view class="hero-power-ring"></view>
+            <view class="hero-power-bar"></view>
+          </view>
+        </view>
+      </view>
+
+      <!-- 底部：标题信息叠加在图片上 -->
+      <view class="hero-bottom">
+        <text class="hero-name">{{current.name}}</text>
+        <view class="hero-meta-row">
+          <text class="hero-meta">{{current.metaText}}</text>
+          <text wx:if="{{current.brightnessPercent !== null}}" class="hero-brightness">
+            {{current.brightnessPercent}}%
+          </text>
+        </view>
+        <!-- 亮度条：只读展示，真正的调节在详情页 -->
+        <view wx:if="{{current.brightnessPercent !== null}}" class="hero-meter">
+          <view class="hero-meter-fill" style="width: {{current.brightnessPercent}}%;"></view>
+        </view>
+      </view>
+    </view>
+
+    <!-- ============ 其他设备小图 ============ -->
+    <block wx:if="{{thumbnails.length > 0}}">
+      <text class="section-label">其他设备</text>
+      <scroll-view scroll-x class="thumb-scroll" enhanced show-scrollbar="{{false}}">
+        <view class="thumb-row">
+          <view
+            wx:for="{{thumbnails}}"
+            wx:key="key"
+            class="thumb"
+            data-key="{{item.key}}"
+            bindtap="onThumbTap"
+            hover-class="thumb-hover"
+          >
+            <view class="thumb-disc tone-{{item.tone}}">
+              <image
+                wx:if="{{item.photo}}"
+                class="thumb-photo"
+                src="{{item.photo}}"
+                mode="aspectFill"
+              />
+              <text wx:else class="thumb-initial">{{item.initial}}</text>
+              <view wx:if="{{item.connected}}" class="thumb-live"></view>
+            </view>
+            <text class="thumb-name">{{item.name}}</text>
+          </view>
+        </view>
+      </scroll-view>
+    </block>
+
+    <!-- 连接状态条：连接中 / 出错时才有信息量 -->
+    <view
+      wx:if="{{connectingName || linkClass === 'link-error' || linkClass === 'link-warn'}}"
+      class="statusbar {{linkClass}}"
+      bindtap="onStatusTap"
+    >
+      <view class="status-dot"></view>
+      <view class="status-main">
+        <text class="status-text">{{statusText}}</text>
+        <text class="status-sub">{{statusSub}}</text>
+      </view>
+      <text class="status-action">{{statusAction}}</text>
+    </view>
+
+    <view wx:if="{{mock}}" class="demo-note">
+      演示模式：这些设备是占位数据，控制会真实生效但不会连到硬件
+    </view>
+  </block>
+</view>

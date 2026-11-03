@@ -1,4 +1,5 @@
 {
-  "navigationBarTitleText": "设备详情",
-  "usingComponents": {}
+  "usingComponents": {
+    "nav-bar": "/components/nav-bar/nav-bar"
+  }
 }

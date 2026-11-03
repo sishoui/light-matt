@@ -24,9 +24,22 @@
 import { errorText } from "../../utils/ble/errors";
 import type { LogPanelRow } from "../../utils/ble/log-panel";
 import type { LinkDetail } from "../../utils/ble/transport";
+import { ConnectCancelledError } from "../../utils/ble/transport";
 import { ControlSession, detectDevMode } from "../../utils/control/session";
-import { getSession } from "../../utils/control/session-singleton";
+import {
+  getSession,
+  isMockSession,
+  reloadSession,
+} from "../../utils/control/session-singleton";
 import { statusView } from "../../utils/control/status-view";
+import {
+  loadTheme,
+  saveTheme,
+  themeClass,
+  THEME_OPTIONS,
+  type ThemeMode,
+} from "../../utils/control/theme";
+import { setMockMode } from "../../utils/control/mock-mode";
 import {
   loadRegistry,
   removeDevice,
@@ -48,7 +61,7 @@ import { getDeviceApi } from "../../utils/control/device-api-singleton";
 import { LogPanelView } from "../../utils/control/log-panel-view";
 import { MAX_STRIPS } from "../../utils/protocol/constants";
 import type { DeviceState, DiscoveredDevice, LinkState } from "../../utils/protocol/types";
-import { TAB_ROUTES, PAGE_ROUTES, pushTo, switchTabTo } from "../../utils/control/routes";
+import { PAGE_ROUTES, pushTo } from "../../utils/control/routes";
 
 /** 「我的设备」的视图行 = 合并模型的展示投影（名字 / 灯带数 / 时间 / 可连性）。 */
 interface DeviceRowView {
@@ -76,11 +89,11 @@ interface NearbyRowView extends NearbyDeviceRow {
   rssiText: string;
 }
 
-/** 连接成功后的自动跳转：只跳一次，避免每次 onShow 都抢用户导航。 */
-let autoJumpedOnce = false;
-
 Page({
   data: {
+    themeClass: "",
+    mock: false,
+
     statusText: "未连接",
     statusSub: "点击扫描",
     statusAction: "扫描",
@@ -108,6 +121,10 @@ Page({
     // 灯带启用掩码（App 本地偏好，永不下发）
     stripRows: [] as Array<{ stripId: number; label: string; enabled: boolean }>,
 
+    // 外观（主题切换）
+    themeOptions: THEME_OPTIONS,
+    themeMode: "system" as ThemeMode,
+
     // 日志面板（#13）
     logVisible: false,
     logPaused: false,
@@ -122,15 +139,32 @@ Page({
   logView: null as LogPanelView | null,
   registry: null as DeviceRegistry | null,
   sync: null as DeviceSync | null,
-  /** 后端列表（最近一次成功拉取；失败时保留上一次成功的，不清空）。 */
+  /**
+   * 后端列表（最近一次成功拉取；失败时保留上一次成功的，不清空）。
+   *
+   * **必须在 onLoad 里显式兜底**：`Page({...})` 只保证 `data` 里的字段
+   * 出现在 `this.data`，对象字面量上的其它字段并不保证被复制到页面实例。
+   * 实测（开发者工具 2.02）`this.remoteDevices` 是 `undefined`，
+   * `applyListViews` 读 `.length` 直接抛 TypeError，而它在 `onLoad` 的
+   * 调用链上 → 页面初始化中断 → 所有 `bindtap` 都不再响应，
+   * 表现就是「点扫描 / 连接 / 取消全都没反应」。构建、tsc、单测都发现不了。
+   */
   remoteDevices: [] as SyncedDevice[],
-  /** 实时扫描结果（原始，派生视图每次重算）。 */
+  /** 实时扫描结果（原始，派生视图每次重算）。同上，onLoad 里兜底。 */
   discovered: [] as DiscoveredDevice[],
   /** 后端同步进行中：避免 onShow + 连接完成叠成两次并发。 */
   syncing: false,
   unsubscribers: [] as Array<() => void>,
 
   onLoad() {
+    /* 这些是「页面私有状态」不是视图数据，不进 data；但 Page() 不保证
+     * 对象字面量字段会被复制，所以在这里显式初始化（见字段注释）。 */
+    this.registry = null;
+    this.remoteDevices = [];
+    this.discovered = [];
+    this.unsubscribers = [];
+    this.syncing = false;
+
     const session = getSession();
     this.session = session;
     this.logView = new LogPanelView(session.log, {
@@ -142,8 +176,9 @@ Page({
       storage: createWxStorage(),
     });
     this.refreshLocal();
+    this.applyThemeView();
     console.log(
-      `[lumen] 设备页就绪（开发版日志 ${detectDevMode() ? "开启" : "关闭"}）`,
+      `[lumen] 发现页就绪（开发版日志 ${detectDevMode() ? "开启" : "关闭"}）`,
     );
   },
 
@@ -152,6 +187,8 @@ Page({
     this.syncStatus();
     /* 先渲染本地（同步函数，不等待），再后台同步。 */
     this.refreshLocal();
+    this.applyThemeView();
+    this.syncTabBar();
     void this.syncFromBackend();
   },
 
@@ -191,7 +228,9 @@ Page({
   },
 
   unsubscribe() {
-    for (const off of this.unsubscribers) {
+    /* `?? []` 不是冗余：onUnload 可能先于 onLoad 的初始化跑到（页面重载
+     * 时序），此时 this.unsubscribers 仍是 undefined。 */
+    for (const off of this.unsubscribers ?? []) {
       off();
     }
     this.unsubscribers = [];
@@ -227,20 +266,68 @@ Page({
         : {}),
     });
     if (state === "ready") {
-      /* 票面验收：从设备页连接成功后自动跳到灯光页（整段会话只跳一次）。 */
-      if (!autoJumpedOnce) {
-        autoJumpedOnce = true;
-        switchTabTo(TAB_ROUTES.light);
-      }
       /* 连上就同步一次：登记 + seen（幂等，失败只置离线提示）。 */
       void this.syncConnected();
       this.refreshLocal();
     } else {
-      /* 断线后允许下一次连接再次自动跳转。 */
-      autoJumpedOnce = false;
       /* 扫描状态影响「附近设备」的空态文案。 */
       this.applyListViews();
     }
+  },
+
+  /** 自定义 tabBar 的选中态（索引与 app.json 顺序一致）。 */
+  syncTabBar() {
+    const tabBar = this.getTabBar?.();
+    if (tabBar !== undefined && tabBar !== null) {
+      tabBar.setData({ selected: 1 });
+    }
+  },
+
+  /** 主题：读偏好 → 页面根节点的 class + 选择器选中态。 */
+  applyThemeView() {
+    const storage = createWxStorage();
+    const mode = loadTheme(storage);
+    this.setData({ themeClass: themeClass(mode), themeMode: mode, mock: isMockSession() });
+  },
+
+  onThemeTap(e: WechatMiniprogram.TouchEvent) {
+    const value = String(e.currentTarget.dataset.value ?? "");
+    if (value !== "light" && value !== "dark" && value !== "system") {
+      return;
+    }
+    saveTheme(createWxStorage(), value);
+    this.applyThemeView();
+    /* tabBar 自己监听主题（它在页面外层），这里只需让它重算一次。
+     * 「跟随系统」时传空串，让它回落到系统判断。 */
+    const tabBar = this.getTabBar?.();
+    if (tabBar !== undefined && tabBar !== null) {
+      tabBar.setData({ themeClass: themeClass(value) });
+    }
+  },
+
+  /**
+   * 演示模式开关：把演示设备播种 / 清除，然后**重建会话**。
+   *
+   * 会话在构造时就绑定了传输层、并且只读一次 `recentDevices`；换一批设备数据
+   * 不可能在原地完成。重建会断开当前连接——可接受（演示模式本身就是空状态
+   * 切换）。旧会话的监听随 destroy 失效，所以必须重新订阅。
+   */
+  async onToggleMock(e: WechatMiniprogram.SwitchChange) {
+    const enabled = Boolean(e.detail.value);
+    const storage = createWxStorage();
+    /* 只写开关，让 reconcileMockMode 在重建会话时统一播种 / 清理。 */
+    setMockMode(storage, enabled);
+    this.unsubscribe();
+    reloadSession();
+    this.session = getSession();
+    this.subscribe();
+    this.syncStatus();
+    this.refreshLocal();
+    this.applyThemeView();
+    wx.showToast({
+      title: enabled ? "已打开演示模式" : "已关闭演示模式",
+      icon: "none",
+    });
   },
 
   async onStatusTap() {
@@ -249,14 +336,25 @@ Page({
       return;
     }
     const state = session.linkState;
-    if (state === "scanning" || state === "connecting" || state === "initializing") {
-      if (state === "scanning") {
-        await session.stopScan();
+    if (state === "scanning") {
+      await session.stopScan();
+      return;
+    }
+    if (state === "connecting" || state === "initializing") {
+      /* 状态条在这里写的是「取消」，必须真的能取消。
+       * 底层 wx 的连接调用无法中断，cancelConnect 让这次尝试作废并把链路
+       * 改回 idle；被打断的 connect() 会抛 ConnectCancelledError，由
+       * onDeviceTap 静默吞掉（不是错误，不该弹提示）。 */
+      if (!session.cancelConnect()) {
+        return;
       }
+      this.setData({ switchBusy: false, scanHint: "" });
+      wx.showToast({ title: "已取消连接", icon: "none" });
       return;
     }
     if (state === "ready") {
-      switchTabTo(TAB_ROUTES.light);
+      /* 已连接：进当前设备的详情（控制面板在那里）。 */
+      pushTo(PAGE_ROUTES.device);
       return;
     }
     await this.startScan();
@@ -281,6 +379,15 @@ Page({
 
   async onRescan() {
     await this.startScan();
+  },
+
+  /** 导航栏右侧动作：扫描 / 停止（WXML 里做三元绑定拿不到方法引用）。 */
+  async onNavAction() {
+    if (this.data.scanning) {
+      await this.onStopScan();
+      return;
+    }
+    await this.onRescan();
   },
 
   async onStopScan() {
@@ -321,7 +428,14 @@ Page({
       await session.stopScan().catch(() => undefined);
       this.setData({ currentDeviceId: deviceId, currentDeviceName: name });
       this.refreshLocal();
+      /* 连上就进控制面板——发现页是「找到并连接」，控制属于设备详情。 */
+      pushTo(PAGE_ROUTES.device);
     } catch (err) {
+      /* 用户点「取消」：不是错误。状态条已经是「未连接 / 已取消连接」，
+       * 这里绝不能把「已取消连接」覆盖成错误文案。 */
+      if (err instanceof ConnectCancelledError) {
+        return;
+      }
       this.setData({ scanHint: errorText(err) });
     } finally {
       this.setData({ switchBusy: false });
@@ -399,7 +513,7 @@ Page({
   toRowView(row: MyDeviceRow, current: string): DeviceRowView {
     const cached = row.stripCountSource !== "device";
     const stripsText =
-      row.stripCount === null ? "灯带数未知" : `灯带 ${row.stripCount} 条`;
+      row.stripCount === null ? "灯组数未知" : `灯组 ${row.stripCount} 条`;
     const sourceTag =
       row.stripCountSource === "backend-cache"
         ? " · 缓存"
@@ -434,7 +548,7 @@ Page({
     for (let stripId = 0; stripId < stripCount; stripId += 1) {
       stripRows.push({
         stripId,
-        label: `灯带 ${stripId + 1}`,
+        label: `灯组 ${stripId + 1}`,
         /* 没有 deviceId（还没连过）时按默认全启用显示。 */
         enabled: deviceId.length === 0 ? true : stripEnabled(registry, deviceId, stripId),
       });

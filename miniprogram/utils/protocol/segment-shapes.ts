@@ -93,15 +93,20 @@ export function hasSecondLayer(spec: SegmentSpec | SegmentReport): boolean {
  *
  * 用途：QueryStrip 读回后原地改一层再写回（#42 的「读-改-写」），
  * 避免把 `type/hue/sat/...` 这些冗余字段也塞进命令载荷。
+ *
+ * 装配沿用 `zone-model.buildZoneSpec` 的同一条规则（两层定宽、单层 blend
+ * 归一、深拷贝）。协议层不能反向依赖 `utils/control/`，所以这里显式展开
+ * ——两处规则由 `tests/zone-model.test.ts` 锁住一致性。
  */
 export function specFromReport(report: SegmentReport): SegmentSpec {
+  const layer1 = report.layer1.type === NO_EFFECT ? emptyLayer() : { ...report.layer1 };
   return {
     stripId: report.stripId,
     segId: report.segId,
     start: report.start,
     end: report.end,
-    blend: report.blend,
+    blend: layer1.type === NO_EFFECT ? BLEND.OVER : report.blend,
     layer0: { ...report.layer0 },
-    layer1: { ...report.layer1 },
+    layer1,
   };
 }

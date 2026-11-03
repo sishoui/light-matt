@@ -1,0 +1,22 @@
+<view class="tabbar {{themeClass}}">
+  <view
+    wx:for="{{tabs}}"
+    wx:key="path"
+    class="tab {{selected === item.index ? 'on' : ''}}"
+    data-index="{{item.index}}"
+    bindtap="onTabTap"
+  >
+    <!-- 图标全部 CSS 绘制：同色系细线条，不依赖位图分辨率 -->
+    <view class="tab-glyph glyph-{{item.index}}">
+      <block wx:if="{{item.index === 0}}">
+        <view class="glyph-home-lid"></view>
+        <view class="glyph-home-body"></view>
+      </block>
+      <block wx:else>
+        <view class="glyph-discover-ring"></view>
+        <view class="glyph-discover-dot"></view>
+      </block>
+    </view>
+    <text class="tab-label">{{item.label}}</text>
+  </view>
+</view>

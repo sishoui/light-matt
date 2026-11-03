@@ -1,5 +1,12 @@
-<view class="page">
-  <!-- 连接状态条：已连接时点它跳到灯光页；未连接时开始扫描 -->
+<view class="page {{themeClass}}">
+  <nav-bar
+    title="发现"
+    subtitle="{{scanning ? '扫描中…' : (ready ? '已连接 ' + currentDeviceName : '查找附近的灯控')}}"
+    action-text="{{scanning ? '停止' : '扫描'}}"
+    bind:action="onNavAction"
+  />
+
+  <!-- 连接状态条：已连接时点它进控制页；未连接时开始扫描 -->
   <view class="statusbar {{linkClass}}" bindtap="onStatusTap">
     <view class="status-dot"></view>
     <view class="status-main">
@@ -19,11 +26,11 @@
     <text>{{identityHint}}</text>
   </view>
 
-  <!-- 当前设备：备注名 + 详情入口 + 灯带启用掩码（App 本地偏好） -->
+  <!-- 当前设备：备注名 + 控制入口 + 灯组启用掩码（App 本地偏好） -->
   <view class="section" wx:if="{{ready}}">
     <view class="section-head">
       <text class="section-title">{{currentDeviceName || '当前设备'}}</text>
-      <text class="section-action" bindtap="onOpenDeviceInfo">设备详情</text>
+      <text class="section-action" bindtap="onStatusTap">控制</text>
     </view>
     <view class="info-row">
       <text class="info-label">deviceId</text>
@@ -42,14 +49,14 @@
     </view>
 
     <view class="section-subhead">
-      <text class="section-title small">显示的灯带</text>
+      <text class="section-title small">显示的灯组</text>
       <text class="section-hint inline">只在本机生效，设备配置不会改变</text>
     </view>
     <view class="strip-trim-row" wx:for="{{stripRows}}" wx:key="stripId">
       <text class="strip-trim-label">{{item.label}}</text>
       <switch
         checked="{{item.enabled}}"
-        color="#ffb478"
+        color="#ff9500"
         data-strip-id="{{item.stripId}}"
         bindchange="onTrimStrip"
       />
@@ -88,7 +95,7 @@
         <text class="device-delete" data-key="{{item.key}}" catchtap="onDeleteDevice">删除</text>
       </view>
     </view>
-    <text class="section-hint">灯带数标「缓存 / 上次」时不是设备当前配置，连接后以设备为准</text>
+    <text class="section-hint">灯组数标「缓存 / 上次」时不是灯控当前配置，连接后以灯控为准</text>
   </view>
 
   <!-- 附近设备（实时扫描结果）：与本机记录同一台的不重复列出 -->
@@ -120,10 +127,39 @@
     <text wx:if="{{switchBusy}}" class="scan-hint">正在连接 / 切换…</text>
   </view>
 
+  <!-- 外观：浅色 / 深色 / 跟随系统 -->
+  <view class="section">
+    <view class="section-head">
+      <text class="section-title">外观</text>
+      <text class="section-value">{{themeMode === 'light' ? '浅色' : (themeMode === 'dark' ? '深色' : '跟随系统')}}</text>
+    </view>
+    <view class="segmented">
+      <view
+        wx:for="{{themeOptions}}"
+        wx:key="value"
+        class="segment {{themeMode === item.value ? 'on' : ''}}"
+        data-value="{{item.value}}"
+        bindtap="onThemeTap"
+      >{{item.label}}</view>
+    </view>
+  </view>
+
+  <!-- 演示数据：无真机时默认开启，方便看到首页的交互设计 -->
+  <view class="section">
+    <view class="section-head">
+      <text class="section-title">演示设备</text>
+      <switch checked="{{mock}}" color="#ff9500" bindchange="onToggleMock" />
+    </view>
+    <text class="section-hint">
+      没有真机记录时默认开启：三台占位设备会出现在首页，控制会真实改动它们的
+      模拟状态（不连硬件）。接入真机后可以关掉。
+    </text>
+  </view>
+
   <!-- 页脚：版本号连点 5 次开启隐藏协议日志面板（#13） -->
   <view class="footer">
     <text class="version" bindtap="onVersionTap">v{{version}}</text>
-    <text class="footer-hint">连接后自动进入灯光页</text>
+    <text class="footer-hint">连接后自动进入控制页</text>
   </view>
 
   <!-- 隐藏协议日志面板：数据源是会话的 FrameLog（与 console 同源） -->

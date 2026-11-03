@@ -23,7 +23,7 @@ import {
   TX_UUID,
 } from "../utils/protocol/constants";
 import { FrameLog } from "../utils/ble/log";
-import { BleTransport } from "../utils/ble/transport";
+import { BleTransport, ConnectCancelledError } from "../utils/ble/transport";
 
 const DEVICE_ID = "DEV-1";
 
@@ -78,15 +78,52 @@ class FakeWx {
   offBluetoothAdapterStateChange(): void {}
 
   openBluetoothAdapter(opts: any): void {
+    /* 模拟热重载：适配器底层已打开，wx 回 fail already opened（无 errCode）。 */
+    if (this.adapterAlreadyOpened) {
+      opts.fail?.({
+        errCode: undefined,
+        errMsg: "openBluetoothAdapter: openBluetoothAdapter: fail already opened",
+      });
+      return;
+    }
     opts.success?.({});
   }
+
+  /** true 时 openBluetoothAdapter 回「已经打开」错误。 */
+  adapterAlreadyOpened = false;
 
   closeBLEConnection(opts: any): void {
     opts.success?.({});
   }
 
-  createBLEConnection(opts: any): void {
+  /*
+   * 取消测试用：挂起 createBLEConnection，由用例手动放行，
+   * 模拟 wx 那种无法中断的原子调用。
+   * 注意必须用箭头函数属性——微信 API 是被裸引用传给 wxCall 的，普通方法会丢 this。
+   */
+  holdConnection = false;
+  private heldConnection: any = null;
+
+  createBLEConnection = (opts: any): void => {
+    if (this.holdConnection) {
+      this.heldConnection = opts;
+      return;
+    }
     opts.success?.({});
+  };
+
+  /** 放行被挂起的 createBLEConnection（模拟底层调用最终跑完）。 */
+  releaseConnection(ok = true): void {
+    const opts = this.heldConnection;
+    this.heldConnection = null;
+    if (opts === null) {
+      return;
+    }
+    if (ok) {
+      opts.success?.({});
+    } else {
+      opts.fail?.({ errCode: 10003, errMsg: "mock connect failure" });
+    }
   }
 
   getBLEDeviceServices(opts: any): void {
@@ -149,6 +186,10 @@ class FakeWx {
   };
 
   stopBluetoothDevicesDiscovery(opts: any): void {
+    opts.success?.({});
+  }
+
+  startBluetoothDevicesDiscovery(opts: any): void {
     opts.success?.({});
   }
 
@@ -449,5 +490,117 @@ describe("断线清理", () => {
     await transport.disconnect();
     expect(transport.chunkCapacityBytes).toBe(20);
     expect(transport.negotiatedMtu).toBeNull();
+  });
+});
+
+/**
+ * 适配器「已经打开」不是失败。
+ *
+ * 真实现场：开发者工具热重载后 `adapterOpened` 随新实例重置为 false，
+ * 而底层适配器还开着，wx 回 `fail already opened`（且没有 errCode）。
+ * 早期把它当失败处理并把 `scanRequested` 清掉，用户看到的现象就是
+ * 「点扫描永远没反应」。
+ */
+describe("适配器已打开（already opened）", () => {
+  it("不当成失败：链路回到 idle，扫描能继续", async () => {
+    fakeWx.adapterAlreadyOpened = true;
+    const transport = makeTransport("android");
+
+    const states: string[] = [];
+    transport.onLink((state) => states.push(state));
+
+    await expect(transport.startScan()).resolves.toBeUndefined();
+    expect(transport.linkState).toBe("scanning");
+    expect(states).not.toContain("failed");
+  });
+
+  it("already opened 之后仍能正常连接", async () => {
+    fakeWx.adapterAlreadyOpened = true;
+    const transport = makeTransport("android");
+
+    const state = await transport.connect(DEVICE_ID);
+    expect(transport.linkState).toBe("ready");
+    expect(state.ledCount).toBe(30);
+  });
+});
+
+/**
+ * 取消连接（状态条上的「取消」）。
+ *
+ * 背景：`createBLEConnection` / GATT 发现是 wx 的原子调用，**没有中断接口**。
+ * 早期实现的「取消」只是文案——`onStatusTap` 对 connecting 直接 return，
+ * 用户点了什么也不会发生。现在的做法是让这次尝试作废（代次号），
+ * 底层调用跑完后静默退出，不覆盖用户意图。
+ *
+ * 这些用例锁的就是「取消之后状态不许被幽灵连接翻掉」。
+ */
+describe("取消连接", () => {
+  it("连接中被取消：链路回到 idle，不显示错误", async () => {
+    fakeWx.holdConnection = true;
+    const transport = makeTransport("android");
+
+    const states: string[] = [];
+    transport.onLink((state) => states.push(state));
+
+    const pending = transport.connect(DEVICE_ID);
+    await settle(3);
+    expect(transport.linkState).toBe("connecting");
+
+    expect(transport.cancelConnect()).toBe(true);
+    expect(transport.linkState).toBe("idle");
+
+    /* 底层调用最终失败也不能把已取消的连接翻成 failed。 */
+    fakeWx.releaseConnection(false);
+    await expect(pending).rejects.toBeInstanceOf(ConnectCancelledError);
+    await settle(3);
+    expect(transport.linkState).toBe("idle");
+    expect(states).not.toContain("failed");
+  });
+
+  it("底层连接最终成功，也绝不会把已取消的状态翻成 ready", async () => {
+    fakeWx.holdConnection = true;
+    const transport = makeTransport("android");
+
+    const pending = transport.connect(DEVICE_ID);
+    await settle(3);
+    expect(transport.linkState).toBe("connecting");
+
+    expect(transport.cancelConnect()).toBe(true);
+
+    /* 关键路径：createBLEConnection 成功返回，流水线必须发现代次已变。 */
+    fakeWx.releaseConnection(true);
+    await expect(pending).rejects.toBeInstanceOf(ConnectCancelledError);
+    await settle(10);
+    expect(transport.linkState).toBe("idle");
+    /* 取消后不应继续走 MTU 协商 / GATT 发现。 */
+    expect(transport.negotiatedMtu).toBeNull();
+  });
+
+  it("不在连接中时取消是空操作（不误改 ready / scanning 状态）", async () => {
+    const transport = makeTransport("android");
+    await transport.connect(DEVICE_ID);
+    expect(transport.linkState).toBe("ready");
+
+    expect(transport.cancelConnect()).toBe(false);
+    expect(transport.linkState).toBe("ready");
+  });
+
+  it("取消后可以立刻重新连接，且新连接不受旧尝试影响", async () => {
+    fakeWx.holdConnection = true;
+    const transport = makeTransport("android");
+
+    const first = transport.connect(DEVICE_ID);
+    await settle(3);
+    transport.cancelConnect();
+
+    /* 放行旧尝试（它会成功），但结果必须被丢弃。 */
+    fakeWx.releaseConnection(true);
+    await expect(first).rejects.toBeInstanceOf(ConnectCancelledError);
+
+    /* 第二次连接正常完成。 */
+    fakeWx.holdConnection = false;
+    const state = await transport.connect(DEVICE_ID);
+    expect(transport.linkState).toBe("ready");
+    expect(state.ledCount).toBe(30);
   });
 });

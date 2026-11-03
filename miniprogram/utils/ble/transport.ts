@@ -113,6 +113,23 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * `openBluetoothAdapter` 返回「已经打开」——这是成功状态，不是失败。
+ *
+ * 微信给这个错误的 errMsg 形如
+ * `openBluetoothAdapter:fail already opened`（模拟器实测还有
+ * `openBluetoothAdapter: openBluetoothAdapter: fail already opened` 这种前缀重复），
+ * 且**不带 errCode**，所以只能匹配文案。
+ *
+ * 若不识别它，热重载后第一次扫描就会把链路打成 failed 并清掉
+ * `scanRequested`，用户看到的是「点扫描毫无反应」。
+ */
+function isAdapterAlreadyOpened(err: unknown): boolean {
+  const raw = err instanceof WxCallError ? err.raw : err;
+  const message = `${(raw as { errMsg?: string } | null)?.errMsg ?? ""} ${(err as Error)?.message ?? ""}`;
+  return /already\s*open/i.test(message);
+}
+
 /** 一条「只有单帧报告、没有多帧续」的查询（v3：0x1C / 0x1D）。 */
 interface SingleReportQuery<T> {
   seq: number;
@@ -143,6 +160,19 @@ class StateReadFallbackError extends Error {
   }
 }
 
+/**
+ * 用户点「取消」后，正在跑的连接尝试用它退出。
+ *
+ * 刻意不是 `Error` 的普通失败：取消是用户的正常意图，不该显示成错误，
+ * 也不该触发自动回连退避。调用方靠 `instanceof` 区分「取消」与「连不上」。
+ */
+export class ConnectCancelledError extends Error {
+  constructor() {
+    super("已取消连接");
+    this.name = "ConnectCancelledError";
+  }
+}
+
 export class BleTransport {
   readonly log: FrameLog;
 
@@ -167,6 +197,17 @@ export class BleTransport {
 
   /** 每条连接从 0x01 开始；发送时分配，回绕 0xFF → 0x00。 */
   private nextSeq = 1;
+
+  /**
+   * 连接尝试的代次。用户点「取消」时 +1。
+   *
+   * `createBLEConnection` / GATT 发现是 wx 的原子调用，**没有中断接口**，
+   * 只能让它自己跑完。所以取消的做法是让这次尝试的结果作废：流水线在每次
+   * await 之后核对代次，发现变了就静默退出，不写链路状态、不覆盖用户意图。
+   * 如果不做这一步，用户取消后 3 秒（createBLEConnection 超时）整条链路会
+   * 被那次「幽灵连接」翻成 failed 或 ready。
+   */
+  private connectEpoch = 0;
 
   private readonly listeners = new TransportListeners();
   private readonly scanner: DeviceScanner;
@@ -297,6 +338,23 @@ export class BleTransport {
         this.setLink("adapter-off", { message: this.adapterOffText(err) });
         return;
       }
+      /*
+       * `fail already opened`：适配器**已经打开**，这是成功状态不是失败。
+       *
+       * 实测这个错误不带可用 errCode，只能看 errMsg。场景：
+       *  - 开发者工具热重载后，新模块实例的 adapterOpened 是 false，
+       *    而底层适配器还开着；
+       *  - 真机上切换账号 / 重新进入小程序。
+       * 早期把它当失败处理（scanRequested=false + failed），表现是「点扫描
+       * 永远没反应」——扫描请求被自己取消了。
+       */
+      if (isAdapterAlreadyOpened(err)) {
+        this.adapterOpened = true;
+        if (this.link === "uninitialized" || this.link === "adapter-off") {
+          this.setLink("idle");
+        }
+        return;
+      }
       this.scanRequested = false;
       this.setLink("failed", { message: this.adapterOffText(err) });
       throw err;
@@ -336,11 +394,22 @@ export class BleTransport {
     this.setLink("scanning", { message: "扫描中…" });
 
     try {
+      /*
+       * **全量扫描，不带 `services` 过滤。**
+       *
+       * 曾经写成 `services: [SERVICE_UUID]`，指望系统只回 lumen 设备。这在
+       * 不少 Android 机型上会把真设备一起滤掉：微信把该参数下发给系统级
+       * ScanFilter，而广播包里的 128-bit UUID 常被截断/拿不到，系统判定
+       * 「UUID 不匹配」→ 设备明明在广播却一条也不回。表现就是「手机上搜不到
+       * 设备」，而 PC 侧用 bleak 能正常扫到同一台。
+       *
+       * 改成全量扫描 + JS 层过滤（见 DeviceScanner.addDevices）。代价是扫描
+       * 期间会收到周边所有蓝牙设备，但用户看不到——列表在 JS 里已筛过。
+       */
       await wxCall(
         "startBluetoothDevicesDiscovery",
         wx.startBluetoothDevicesDiscovery,
         {
-          services: [SERVICE_UUID],
           allowDuplicatesKey: true,
           interval: 500,
         },
@@ -414,6 +483,9 @@ export class BleTransport {
     this.deviceId = targetDeviceId;
     this.filterDeviceId = targetDeviceId;
     this.deviceName = name ?? null;
+    /* 本次尝试的代次。取消（cancelConnect）会让它失效，后续每一步都要核对。 */
+    const epoch = this.connectEpoch;
+    const cancelled = (): boolean => epoch !== this.connectEpoch;
     this.setLink("connecting", { deviceName: this.deviceName ?? undefined });
 
     try {
@@ -421,22 +493,41 @@ export class BleTransport {
       await wxCall("closeBLEConnection", wx.closeBLEConnection, { deviceId: targetDeviceId }, 2000).catch(
         () => undefined,
       );
+      if (cancelled()) {
+        throw new ConnectCancelledError();
+      }
       await wxCall(
         "createBLEConnection",
         wx.createBLEConnection,
         { deviceId: targetDeviceId, timeout: 10000 },
         12000,
-      );
+      ).catch((err) => {
+        /* 已取消时，底层无论是成功还是失败都不得改写链路状态：
+         * 失败也要先翻成取消，否则页面会把「我主动取消」显示成连接错误。 */
+        throw cancelled() ? new ConnectCancelledError() : err;
+      });
+      if (cancelled()) {
+        throw new ConnectCancelledError();
+      }
       this.connectionConfirmed = true;
 
       this.setLink("initializing", { deviceName: this.deviceName ?? undefined });
       // 新连接：seq 重置为 1，写队列解除上一个连接的失败状态。
       this.nextSeq = 1;
       this.writer.revive();
-      const state = await this.initLink();
+      const state = await this.initLink(cancelled);
+      if (cancelled()) {
+        throw new ConnectCancelledError();
+      }
       this.setLink("ready", { deviceName: this.deviceName ?? undefined });
       return state;
     } catch (err) {
+      // 取消不是失败：不写 failed、不抛给页面（页面已经改回「未连接」了）。
+      if (err instanceof ConnectCancelledError) {
+        this.connectionConfirmed = false;
+        this.clearConnectionHandles();
+        throw err;
+      }
       // 初始化失败时先主动断开，避免设备侧残留连接（单连接设备）。
       // 先把 connectionConfirmed 清掉，让 close 触发的 DISCONNECT 走「旧连接」分支，
       // 不会把下面的 failed 状态覆盖回 idle。
@@ -457,25 +548,62 @@ export class BleTransport {
   }
 
   /**
+   * 用户点「取消」：让正在进行的连接尝试作废，链路回到 `idle`。
+   *
+   * 不返回 Promise 是因为底层的 `createBLEConnection` 无法中断——它还会继续
+   * 跑到自己的超时，只是结果被代次号丢掉。这里立刻把 UI 状态改回去，用户
+   * 感知是即时的。
+   *
+   * 返回 `true` 表示确实取消了一次进行中的尝试（调用方据此决定是否提示）。
+   */
+  cancelConnect(): boolean {
+    if (this.link !== "connecting" && this.link !== "initializing") {
+      return false;
+    }
+    this.connectEpoch += 1;
+    /* 底层连接可能已经建成：主动关掉，避免设备侧留着一个没人用的连接
+     * （协议是单连接，留着会让下一次扫描扫不到设备）。 */
+    const deviceId = this.deviceId;
+    if (deviceId !== null && this.connectionConfirmed) {
+      this.connectionConfirmed = false;
+      wx.closeBLEConnection({ deviceId, fail: () => undefined });
+    }
+    this.clearConnectionHandles();
+    this.setLink("idle", { message: "已取消连接" });
+    return true;
+  }
+
+  /**
    * 固定初始化顺序（spec §3）：Android MTU → services → characteristics →
    * notify → 等 500ms → 读 State。每次连接都重新发现 GATT 句柄。
    *
    * v3：MTU 协商结果决定分片容量；协商失败或平台不支持时按 23（20 字节）
    * 工作——功能不降级，只是分片更多（§2.1）。
    */
-  private async initLink(): Promise<DeviceState> {
+  private async initLink(cancelled: () => boolean = () => false): Promise<DeviceState> {
     const deviceId = this.deviceId;
     if (deviceId === null) {
       throw new Error("未连接");
     }
 
-    await this.negotiateMtu(deviceId);
+    /* 每个 await 之后都要核对代次：用户取消后，底层调用无论成败都不能再
+     * 改写链路状态（否则「我主动取消」会被显示成各种连接错误）。 */
+    const step = async <T>(run: () => Promise<T>): Promise<T> => {
+      try {
+        const value = await run();
+        if (cancelled()) {
+          throw new ConnectCancelledError();
+        }
+        return value;
+      } catch (err) {
+        throw cancelled() ? new ConnectCancelledError() : err;
+      }
+    };
 
-    const servicesRes = await wxCall<any>(
-      "getBLEDeviceServices",
-      wx.getBLEDeviceServices,
-      { deviceId },
-      5000,
+    await step(() => this.negotiateMtu(deviceId));
+
+    const servicesRes = await step(() =>
+      wxCall<any>("getBLEDeviceServices", wx.getBLEDeviceServices, { deviceId }, 5000),
     );
     const services: any[] = servicesRes?.services ?? [];
     const service = services.find((s) => upper(s.uuid) === SERVICE_UUID);
@@ -485,11 +613,13 @@ export class BleTransport {
     this.serviceId = service.uuid;
     const serviceId = service.uuid;
 
-    const charsRes = await wxCall<any>(
-      "getBLEDeviceCharacteristics",
-      wx.getBLEDeviceCharacteristics,
-      { deviceId, serviceId },
-      5000,
+    const charsRes = await step(() =>
+      wxCall<any>(
+        "getBLEDeviceCharacteristics",
+        wx.getBLEDeviceCharacteristics,
+        { deviceId, serviceId },
+        5000,
+      ),
     );
     const characteristics: any[] = charsRes?.characteristics ?? [];
     const rx = characteristics.find((c) => upper(c.uuid) === RX_UUID);
@@ -512,24 +642,26 @@ export class BleTransport {
     this.txId = tx.uuid;
     this.stateId = state.uuid;
 
-    await wxCall(
-      "notifyBLECharacteristicValueChange",
-      wx.notifyBLECharacteristicValueChange,
-      {
-        state: true,
-        deviceId,
-        serviceId,
-        characteristicId: tx.uuid,
-        type: "notification",
-      },
-      5000,
+    await step(() =>
+      wxCall(
+        "notifyBLECharacteristicValueChange",
+        wx.notifyBLECharacteristicValueChange,
+        {
+          state: true,
+          deviceId,
+          serviceId,
+          characteristicId: tx.uuid,
+          type: "notification",
+        },
+        5000,
+      ),
     );
 
     // notify 后立刻写会触发 Android 10008；等一小段或先读一次。
-    await delay(this.initSettleMs);
+    await step(() => delay(this.initSettleMs));
 
     // read 的 success 只代表请求受理，真正的值走 value 事件。
-    return this.readState();
+    return step(() => this.readState());
   }
 
   async disconnect(): Promise<void> {

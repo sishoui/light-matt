@@ -8,16 +8,20 @@
  * 函数体内部才碰 wx（模块 import 无副作用），node 单测不会触发。
  */
 
-/** tabBar 三页（必须与 app.json 的 tabBar.list 完全一致）。 */
+/**
+ * tabBar 两页（必须与 app.json 的 tabBar.list 完全一致）。
+ *
+ * #58：删除「剧本」tab —— 灯效方案已并入设备详情页的自定义档，
+ * 独立的时间轴编辑器不再有入口，留着只会让用户以为还有第二个地方能编。
+ */
 export const TAB_ROUTES = {
+  home: "/pages/home/home",
   devices: "/pages/devices/devices",
-  light: "/pages/light/light",
-  scripts: "/pages/scripts/scripts",
 } as const;
 
 /** 二级页（push 进入，不在 tabBar 里）。 */
 export const PAGE_ROUTES = {
-  segmentEdit: "/pages/segment-edit/segment-edit",
+  device: "/pages/device/device",
   deviceInfo: "/pages/device-info/device-info",
 } as const;
 
@@ -52,4 +56,21 @@ export function queryInt(options: Record<string, string | undefined>, key: strin
   }
   const value = Number(raw);
   return Number.isInteger(value) ? value : fallback;
+}
+
+/** 从页面 options 里取一个字符串查询参数；缺失时返回 fallback。 */
+export function queryText(
+  options: Record<string, string | undefined>,
+  key: string,
+  fallback = "",
+): string {
+  const raw = options[key];
+  if (raw === undefined) {
+    return fallback;
+  }
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
 }

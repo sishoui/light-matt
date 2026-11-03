@@ -26,7 +26,14 @@ import {
   SEGMENT_TYPE,
 } from "../protocol/constants";
 import type { BlendMode, EffectLayer, SegmentReport, SegmentSpec } from "../protocol/types";
+import {
+  findStripConflict,
+  parseRangeText,
+  scanLedOwnership,
+  type RangeResult,
+} from "./effect-layout";
 import { emptyLayer } from "./segment-model";
+import { buildZoneSpec } from "./zone-model";
 
 /** 编辑中的段草稿。区间用**原样的字符串**，解析失败也要能回显给用户。 */
 export interface SegmentDraft {
@@ -77,12 +84,7 @@ export interface DraftValidation {
   spec: SegmentSpec | null;
 }
 
-export interface RangeCheck {
-  ok: boolean;
-  start: number;
-  end: number;
-  message: string;
-}
+export type RangeCheck = RangeResult;
 
 /** 预检所需的设备上下文。 */
 export interface DraftContext {
@@ -95,36 +97,13 @@ export interface DraftContext {
 }
 
 /**
- * 解析区间输入。
+ * 解析区间输入（草稿的文本字段 → 闭区间）。
  *
- * 与灯光页的 `parseRangeInput` 同源规则，但**不接受空串当 0**：
- * `Number("") === 0` 会把「没填」误判成合法起点。
+ * 实现委托给 `effect-layout.parseRangeText`——区间规则只有一份，
+ * 本页只是把草稿的两个字符串喂进去。
  */
 export function parseDraftRange(draft: Pick<SegmentDraft, "startText" | "endText">, ledCount: number): RangeCheck {
-  const invalid = (message: string): RangeCheck => ({ ok: false, start: -1, end: -1, message });
-  if (!Number.isInteger(ledCount) || ledCount < 1) {
-    return invalid("设备灯珠数量未知，请先连接");
-  }
-  const startRaw = String(draft.startText).trim();
-  const endRaw = String(draft.endText).trim();
-  if (startRaw === "" || endRaw === "") {
-    return invalid("起点与终点都要填");
-  }
-  const start = Number(startRaw);
-  const end = Number(endRaw);
-  if (!Number.isInteger(start) || !Number.isInteger(end)) {
-    return invalid("起点与终点必须都是整数");
-  }
-  if (start < 0 || end < 0) {
-    return invalid("起点与终点不能是负数");
-  }
-  if (start > end) {
-    return invalid(`起点 ${start} 不能大于终点 ${end}`);
-  }
-  if (end > MAX_LEDS - 1 || end >= ledCount) {
-    return invalid(`终点 ${end} 超出灯珠范围（0-${Math.min(ledCount, MAX_LEDS) - 1}）`);
-  }
-  return { ok: true, start, end, message: "" };
+  return parseRangeText(draft.startText, draft.endText, ledCount);
 }
 
 /**
@@ -133,6 +112,8 @@ export function parseDraftRange(draft: Pick<SegmentDraft, "startText" | "endText
  * 只和 **同一 stripId** 的段比：编辑第 3 条带时，第 1、2 条带的段与它毫无关系，
  * 把它们算进来会误拒（协议里段区间本来就是「每带独立」）。
  * `ignoreSegId` 用于改自己的区间：槽位相同就是替换，不是冲突。
+ *
+ * 实现委托给 `effect-layout.findStripConflict`。
  */
 export function findOverlap(
   stripId: number,
@@ -141,20 +122,9 @@ export function findOverlap(
   end: number,
   existing: readonly SegmentReport[],
 ): SegmentReport | null {
-  for (const item of existing) {
-    if (item.stripId !== stripId) {
-      continue;
-    }
-    if (item.segId === ignoreSegId) {
-      continue;
-    }
-    /* 闭区间：只有 `终点 < 对方起点` 或 `对方终点 < 起点` 才算不相交。 */
-    if (!(end < item.start || item.end < start)) {
-      return item;
-    }
-  }
-  return null;
+  return findStripConflict({ start, end }, existing, stripId, ignoreSegId);
 }
+
 
 /** 该灯效类型的周期下限（0 = 没有下限，如静态 / 空层）。 */
 export function layerPeriodFloor(type: number): number {
@@ -321,7 +291,7 @@ function failed(issues: DraftIssue[], start: number, end: number, blend: BlendMo
   };
 }
 
-/** 装配线上形状（不做校验：调用方已确认合法）。 */
+/** 装配线上形状（不做校验：调用方已确认合法）。委托给 `zone-model.buildZoneSpec`。 */
 export function resolveSpec(
   draft: SegmentDraft,
   start: number,
@@ -338,16 +308,16 @@ function assembleSpec(
   segId: number,
   blend: BlendMode,
 ): SegmentSpec {
-  return {
+  /* 装配（含深拷贝与单层 blend 归一）只有 `zone-model` 一份实现。 */
+  return buildZoneSpec({
     stripId: draft.stripId,
     segId,
     start,
     end,
     blend,
-    /* 深拷贝：spec 会被 session 缓存 / 下发，不能让页面后续改草稿时连带改它。 */
-    layer0: { ...draft.layer0 },
-    layer1: blendEnabled(draft.layer1) ? { ...draft.layer1 } : emptyLayer(),
-  };
+    layer0: draft.layer0,
+    layer1: blendEnabled(draft.layer1) ? draft.layer1 : null,
+  });
 }
 
 /** 空层草稿（每次返回新对象，避免两处编辑共享同一实例）。 */
@@ -483,36 +453,32 @@ export interface LedCellInput {
  *
  * 为什么一格一颗灯珠：64 颗的上限让「每格 1 颗」在 750rpx 宽度里仍然可读，
  * 而且用户数格子的成本最低。超出 64 的部分不存在（协议上限）。
+ *
+ * 归属扫描委托给 `effect-layout.scanLedOwnership`——逐灯珠逻辑只有一份。
+ * 本函数额外做的事只有两件：按 `stripId` 过滤（防别的带的段混进来），
+ * 以及把归属翻译成展示色。
  */
 export function buildLedCells(input: LedCellInput): LedCell[] {
-  const count = Math.max(0, Math.min(input.ledCount, MAX_LEDS));
-  const cells: LedCell[] = [];
-  const hasRange = input.start >= 0 && input.end >= input.start;
   const sameStrip =
     input.stripId === undefined
       ? input.existing
       : input.existing.filter((item) => item.stripId === input.stripId);
-  for (let index = 0; index < count; index += 1) {
-    const covered = hasRange && index >= input.start && index <= input.end;
-    let ownerSegId = -1;
-    let hex = "";
-    for (const item of sameStrip) {
-      if (item.segId === input.segId) {
-        continue;
-      }
-      if (index >= item.start && index <= item.end) {
-        ownerSegId = item.segId;
-        hex = rgbToHex(segmentHueSatToRgb(item.hue, item.sat));
-        break;
-      }
-    }
-    cells.push({
+  const hasRange = input.start >= 0 && input.end >= input.start;
+  const scan = scanLedOwnership(
+    input.ledCount,
+    sameStrip,
+    hasRange ? { start: input.start, end: input.end } : null,
+    input.segId,
+  );
+  return scan.owners.map((ownerSegId, index) => {
+    const item = ownerSegId < 0 ? undefined : sameStrip.find((entry) => entry.segId === ownerSegId);
+    return {
       index,
-      covered,
-      conflict: covered && ownerSegId >= 0,
+      covered: scan.inDraft[index],
+      conflict: scan.conflicts[index],
       ownerSegId,
-      hex,
-    });
-  }
-  return cells;
+      hex: item === undefined ? "" : rgbToHex(segmentHueSatToRgb(item.hue, item.sat)),
+    };
+  });
 }
+

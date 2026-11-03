@@ -10,6 +10,15 @@
  *  - 页面在 `onShow` 订阅、`onHide` 退订，不要假设自己一直活着；
  *  - 读取一律走 `getSession()`，不要自己 new ControlSession（会开出第二条链路）。
  *
+ * ## 演示模式（mock）
+ *
+ * 没有任何真机记录时（或用户显式打开），这里注入 `MockTransport` 并把演示
+ * 设备播种进真实的 recent/registry 存储。会话本身没有感知——它拿到的仍是
+ * 一个「传输层」，所有页面代码、列表派生、命令语义完全不变。
+ *
+ * 播种必须在 `new ControlSession` **之前**：会话只在构造时读一次
+ * `recentDevices`。
+ *
  * 测试永远不 import 本模块：它们用 `new ControlSession({ transportOverride })`。
  * 因此本模块只在函数体内部碰 wx（`detectPlatform` / `createDefaultUsageLogger`
  * 自带守卫），import 时零副作用。
@@ -17,6 +26,11 @@
 
 import { ControlSession } from "./session";
 import { detectDevMode, detectPlatform } from "./platform";
+import { createWxStorage } from "./device-cache";
+import { reconcileMockMode } from "./mock-mode";
+import { BleTransport } from "../ble/transport";
+import { FrameLog } from "../ble/log";
+import { MockTransport } from "../ble/mock-transport";
 /*
  * 必须写全 `../usage/index`，不能写 `../usage`。
  *
@@ -32,6 +46,8 @@ import type { UsageLogSink } from "../usage/logger";
 let session: ControlSession | null = null;
 /** `undefined` = 还没问过配置；`null` = 问了，但后端未配置（功能关闭）。 */
 let usageLogger: UsageLogSink | null | undefined;
+/** 当前是否运行在演示模式（供「发现」页显示开关与提示）。 */
+let mockActive = false;
 
 /**
  * 取 App 级会话（首次调用时创建）。
@@ -42,13 +58,48 @@ let usageLogger: UsageLogSink | null | undefined;
 export function getSession(): ControlSession {
   if (session === null) {
     const logger = getUsageLogger();
+    const storage = createWxStorage();
+    const platform = detectPlatform();
+    const devMode = detectDevMode();
+    /* 播种 / 清理演示设备必须在 new ControlSession 之前：会话只在构造时
+     * 读一次 recentDevices。 */
+    mockActive = reconcileMockMode(storage);
+    const transport = mockActive
+      ? new MockTransport({ log: new FrameLog({ mirrorToConsole: devMode }), platform })
+      : new BleTransport({ log: new FrameLog({ mirrorToConsole: devMode }), platform });
     session = new ControlSession({
-      platform: detectPlatform(),
-      devMode: detectDevMode(),
+      platform,
+      devMode,
+      /* MockTransport 与 BleTransport 的公共面同形；断言只是为了让构造器
+       * 的注入点保持单一类型（生产路径仍是真 BleTransport）。 */
+      transportOverride: transport as unknown as BleTransport,
       ...(logger !== null ? { usageLogger: logger } : {}),
     });
   }
   return session;
+}
+
+/** 当前会话是否使用演示传输层。 */
+export function isMockSession(): boolean {
+  return mockActive;
+}
+
+/**
+ * 丢弃当前会话并让下一次 `getSession()` 重建。
+ *
+ * 用途只有一个：切换演示模式。会话在构造时就绑定了传输层、并在构造时读一次
+ * `recentDevices`，所以「换一批设备数据」不可能在原地完成。
+ *
+ * 调用方必须在本方法之后重新 `getSession()`，并在 `onShow` 里用新实例订阅——
+ * 旧实例已经 `destroy()`，它的监听全部失效。
+ */
+export function reloadSession(): void {
+  if (session === null) {
+    return;
+  }
+  session.destroy();
+  session = null;
+  mockActive = false;
 }
 
 /**
