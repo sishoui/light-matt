@@ -459,7 +459,11 @@
   border-radius: var(--radius-sm);
   background: var(--card-2);
   box-shadow: inset 0 0 0 1rpx var(--border);
-  overflow: hidden;
+  /*
+   * 不能 overflow:hidden：起止手柄比条带高，会被裁掉一半（#77）。
+   * 条带自身的圆角由 .zone-fill 的 border-radius 负责。
+   */
+  overflow: visible;
 }
 
 .zone-block {
@@ -471,7 +475,8 @@
   justify-content: center;
   min-width: 4rpx;
   border-radius: var(--radius-sm);
-  overflow: hidden;
+  /* 手柄挂在块外沿，必须放行，否则选中后两端圆点被切掉。 */
+  overflow: visible;
 }
 
 /* 光区本体：颜色只铺在块里，块的选中态另加描边（不换色）。 */
@@ -498,6 +503,71 @@
 .zone-gap {
   background: var(--border);
   pointer-events: none;
+}
+
+/*
+ * 起止手柄（#77）：选中光区的两端各一个实心圆，比条带更高，一眼看出
+ * 「起点在这一端、终点在这一端」。
+ *
+ * 三个必须：
+ *  1. 绝对定位 + 块内 left 0% / 100%，**不参与块宽计算**——选中不让块变宽；
+ *  2. 圆形用 border-radius:50%，不是图片，主题换了颜色自动跟；
+ *  3. 位置用 translateX(-50%) 圆心中在块边上，起点才真的指在「第一颗的左边」。
+ */
+.zone-handle {
+  position: absolute;
+  /* 圆心落在条带上沿：一半在条带上方，所以「高于条带」但不压住块内文字。 */
+  top: -13rpx;
+  width: 26rpx;
+  height: 26rpx;
+  border-radius: 50%;
+  box-sizing: border-box;
+  background: var(--accent);
+  border: 3rpx solid var(--card);
+  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.28);
+  transform: translateX(-50%);
+  z-index: 3;
+  /* 手柄只是指示器：点它等于点块，不能挡住块的点击。 */
+  pointer-events: none;
+}
+
+/*
+ * 两端挨得太近（单颗光区 / 灯珠很密）：缩小手柄并各自**向外**错开，
+ * 让两个圆仍然分得清哪边是起点、哪边是终点，而不是叠成一团。
+ */
+.zone-handle.crowded {
+  width: 18rpx;
+  height: 18rpx;
+  top: -8rpx;
+}
+
+.zone-handle.crowded.handle-start {
+  transform: translateX(-100%);
+}
+
+.zone-handle.crowded.handle-end {
+  transform: translateX(0);
+}
+
+/* 零光区的引导：轴下面给出下一步，而不是只有一根灰条。 */
+.zone-guide {
+  display: flex;
+  justify-content: center;
+  padding: 2rpx 0;
+}
+
+.zone-guide-text {
+  font-size: 23rpx;
+  color: var(--text-3);
+  text-align: center;
+}
+
+/* 选中区间的数字核对（与设备上的区间同一口径）。 */
+.zone-range-detail {
+  font-size: 23rpx;
+  font-weight: 600;
+  color: var(--text-2);
+  letter-spacing: 0.5rpx;
 }
 
 .zone-label {

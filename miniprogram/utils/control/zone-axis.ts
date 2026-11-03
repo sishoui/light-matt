@@ -26,6 +26,14 @@ export const MAX_ZONES = MAX_SEGMENTS;
 /** 块宽达到这个百分比才画文字（再窄就压到邻块上了）。 */
 export const AXIS_LABEL_MIN_PERCENT = 18;
 
+/**
+ * 两端手柄挨得比这个百分比还近就算「挤」（#77）。
+ *
+ * 手柄是绝对定位的圆，宽度与块宽无关：30 颗里的一颗只占 3.33%，两个圆会完全
+ * 叠在一起。低于 4% 时渲染层缩小手柄并向外错开，保证「起点 / 终点」仍然可读。
+ */
+export const HANDLE_CROWDED_MAX_PERCENT = 4;
+
 /** 画轴需要的最小输入（`SegmentSpec` 与设备报告都能投影成它）。 */
 export interface AxisZoneInput {
   /** 槽位号 0-7；界面显示为「光区 槽位+1」。 */
@@ -46,6 +54,8 @@ export interface ZoneAxisBlock {
   segId: number;
   start: number;
   end: number;
+  /** 这一段包含多少颗灯珠（闭区间所以是 `end - start + 1`）。 */
+  span: number;
   /** 左边缘占整条灯组的比例（0-100）。 */
   left: number;
   /** 宽度占整条灯组的比例（0-100）；最短一段 = 100 / 灯珠数。 */
@@ -60,8 +70,31 @@ export interface ZoneAxisBlock {
   label: string;
   /** 「0–9」/「20–29」。 */
   rangeText: string;
+  /** 「第 0–19 颗 · 20 颗」；灰条为空串（它不是可选区间，别冒充）。 */
+  rangeDetail: string;
   /** 块够宽才画标题。 */
   showLabel: boolean;
+  /** 起止手柄；**只有选中的光区才有**（两头各一个，空数组 = 不画）。 */
+  handles: AxisHandle[];
+}
+
+/**
+ * 光区一端的手柄（#77）。
+ *
+ * `percent` 是绝对位置（占整条灯组的百分比，起点 = `start/灯珠数`，
+ * 终点 = `(end+1)/灯珠数`）；`style` 是**块内**的定位串——手柄是块的绝对定位
+ * 子元素，`left: 0%` 贴块左、`left: 100%` 贴块右，不参与块宽计算，所以选中
+ * 不会让块变宽、位置不会跳。
+ */
+export interface AxisHandle {
+  /** `start` = 起点（这一段的第一颗）；`end` = 终点（最后一颗的右边缘）。 */
+  kind: "start" | "end";
+  /** 绝对位置占整条灯组的百分比（0-100，调试与断言用）。 */
+  percent: number;
+  /** 块内定位串（`left: 0%;` / `left: 100%;`）。 */
+  style: string;
+  /** 两个手柄挤在一起时渲染层缩小尺寸并向外错开。 */
+  crowded: boolean;
 }
 
 /** 一个闭区间占整条灯组的百分比（左边缘与宽度）。 */
@@ -98,6 +131,64 @@ export function axisRect(start: number, end: number, ledCount: number): AxisRect
 /** 「0–9」：区间的人话写法（用短横线，不用连字符，避免与负数混淆）。 */
 export function zoneRangeText(start: number, end: number): string {
   return `${start}–${end}`;
+}
+
+/**
+ * 「第 0–19 颗 · 20 颗」：轴下方给用户核对用的整句（#77）。
+ *
+ * 与灯珠弹窗的 `pickerRangeText` 同一套口径（0 基下标、闭区间），这样
+ * 「轴上看到的一段」与「弹窗里选的那一段」用数字对得上。
+ */
+export function zoneRangeDetail(start: number, end: number): string {
+  const from = Math.max(0, Math.floor(start));
+  const to = Math.max(from, Math.floor(end));
+  return `第 ${from}–${to} 颗 · ${to - from + 1} 颗`;
+}
+
+/**
+ * 光区两端的起止手柄（#77）。
+ *
+ * 纯计算：起点 = `start / 灯珠数`，终点 = `(end+1) / 灯珠数`——终点要包住
+ * 最后一颗灯珠，所以用 `end + 1` 而不是 `end`。手柄以绝对定位挂在块里，
+ * 位置是块内的 0% / 100%，因此**不改变块宽**、选中不会引起布局跳动。
+ *
+ * 越界 / 非法输入返回空数组：宁可不画，也不画一个钳到边上的假手柄。
+ */
+export function axisHandles(start: number, end: number, ledCount: number): AxisHandle[] {
+  const count = Number.isFinite(ledCount) ? Math.floor(ledCount) : 0;
+  if (count < 1) {
+    return [];
+  }
+  const rect = axisRect(start, end, count);
+  if (rect === null) {
+    return [];
+  }
+  const from = Math.max(0, Math.floor(start));
+  const to = Math.min(count - 1, Math.floor(end));
+  const startPercent = (from / count) * 100;
+  const endPercent = ((to + 1) / count) * 100;
+  /* 两柄中心距小于阈值 → 圆会叠成一坨，渲染层缩尺寸并向外错开。 */
+  const crowded = endPercent - startPercent < HANDLE_CROWDED_MAX_PERCENT;
+  return [
+    { kind: "start", percent: startPercent, style: "left: 0%;", crowded },
+    { kind: "end", percent: endPercent, style: "left: 100%;", crowded },
+  ];
+}
+
+/**
+ * 零光区时的引导文案（#77）：轴里不该是一片空白。
+ *
+ * 有光区时返回空串——引导只在「真的没东西可看」时出现，否则页面会一直
+ * 顶着一句「点新增」。
+ */
+export function zoneAxisGuide(zoneCount: number, ledCount: number): string {
+  if (zoneCount > 0) {
+    return "";
+  }
+  const count = Number.isFinite(ledCount) ? Math.max(0, Math.floor(ledCount)) : 0;
+  return count > 0
+    ? `还没有光区，点「+ 新增」划出第一段（这条灯组有 ${count} 颗）`
+    : "还没有光区，先等设备报到灯珠数量";
 }
 
 /** 百分比数字 → CSS 串；保留 4 位小数，避免 33.333333% 这类噪声。 */
@@ -156,20 +247,25 @@ export function buildZoneAxis(input: ZoneAxisInput): ZoneAxisBlock[] {
     .sort((a, b) => a.start - b.start);
 
   for (const entry of zoneRects) {
+    const isSelected = entry.zone.segId === selected;
     blocks.push({
       key: `zone-${entry.zone.segId}`,
       kind: "zone",
       segId: entry.zone.segId,
       start: entry.start,
       end: entry.end,
+      span: entry.span,
       left: entry.rect.left,
       width: entry.rect.width,
       style: axisStyle(entry.rect),
       hex: entry.zone.hex,
-      selected: entry.zone.segId === selected,
+      selected: isSelected,
       label: `光区 ${entry.zone.segId + 1}`,
       rangeText: zoneRangeText(entry.start, entry.end),
+      rangeDetail: zoneRangeDetail(entry.start, entry.end),
       showLabel: entry.rect.width >= AXIS_LABEL_MIN_PERCENT,
+      /* 手柄只挂在选中的那一块上：未选中时块内没有多余节点，也就没有布局影响。 */
+      handles: isSelected ? axisHandles(entry.start, entry.end, count) : [],
     });
   }
 
@@ -185,6 +281,7 @@ export function buildZoneAxis(input: ZoneAxisInput): ZoneAxisBlock[] {
       segId: -1,
       start: gap.start,
       end: gap.end,
+      span: gap.end - gap.start + 1,
       left: rect.left,
       width: rect.width,
       style: axisStyle(rect),
@@ -192,7 +289,9 @@ export function buildZoneAxis(input: ZoneAxisInput): ZoneAxisBlock[] {
       selected: false,
       label: "",
       rangeText: zoneRangeText(gap.start, gap.end),
+      rangeDetail: "",
       showLabel: false,
+      handles: [],
     });
   }
 

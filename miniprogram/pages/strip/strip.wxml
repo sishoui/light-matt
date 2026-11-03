@@ -219,21 +219,40 @@
         光区轴：每个光区按灯珠下标比例定位（left = 起点 / 灯珠数），没被覆盖的
         灯珠画成灰条（点不动）。选中态用 2px 描边而不是换底色——光区本身就有
         颜色，换底色会让人分不清「这是它的颜色」还是「它被选中了」。
+
+        选中的那一块两端各挂一个圆形手柄（#77）：手柄是块的绝对定位子元素，
+        位置是块内的 0% / 100%，所以**不改变块宽**，选中前后块的位置不跳动。
       -->
       <view class="zone-axis">
-      <view
-        wx:for="{{zoneBlocks}}"
-        wx:key="key"
-        class="zone-block {{item.kind === 'gap' ? 'zone-gap' : 'zone-solid'}} {{item.selected ? 'selected' : ''}}"
-        style="{{item.style}}"
-        data-seg-id="{{item.segId}}"
-        bindtap="onZoneAxisTap"
-        bindlongpress="onZoneAxisLongPress"
-      >
+        <view
+          wx:for="{{zoneBlocks}}"
+          wx:key="key"
+          class="zone-block {{item.kind === 'gap' ? 'zone-gap' : 'zone-solid'}} {{item.selected ? 'selected' : ''}}"
+          style="{{item.style}}"
+          data-seg-id="{{item.segId}}"
+          bindtap="onZoneAxisTap"
+          bindlongpress="onZoneAxisLongPress"
+        >
           <view wx:if="{{item.kind === 'zone'}}" class="zone-fill" style="background: {{item.hex}}"></view>
           <text wx:if="{{item.showLabel}}" class="zone-label">{{item.label}}</text>
+          <!-- 起止手柄：只有选中的光区才有（未选中时 handles 为空，不渲染节点）。 -->
+          <view
+            wx:for="{{item.handles}}"
+            wx:for-item="handle"
+            wx:key="kind"
+            class="zone-handle {{handle.kind === 'start' ? 'handle-start' : 'handle-end'}} {{handle.crowded ? 'crowded' : ''}}"
+            style="{{handle.style}}"
+          ></view>
         </view>
       </view>
+
+      <!-- 零光区：给引导，而不是一条没有任何说明的灰条。 -->
+      <view wx:if="{{zoneGuide}}" class="zone-guide">
+        <text class="zone-guide-text">{{zoneGuide}}</text>
+      </view>
+
+      <!-- 选中区间的数字核对：第 0–19 颗 · 20 颗（与设备上的区间同一口径）。 -->
+      <text wx:if="{{selectedZoneRangeDetail}}" class="zone-range-detail mono">{{selectedZoneRangeDetail}}</text>
 
       <view class="zone-meta">
         <text class="section-hint">{{selectedZoneText}}</text>

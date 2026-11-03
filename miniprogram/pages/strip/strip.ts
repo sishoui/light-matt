@@ -130,7 +130,9 @@ import {
   canAddZoneAt,
   MAX_ZONES,
   selectedZoneAfter,
+  zoneAxisGuide,
   zoneAxisSummary,
+  zoneRangeDetail,
   type ZoneAxisBlock,
 } from "../../utils/control/zone-axis";
 import type { ScriptDraft } from "../../utils/control/script-view";
@@ -230,6 +232,10 @@ Page({
     maxZones: MAX_ZONES,
     selectedSegId: -1,
     selectedZoneText: "",
+    /** 选中区间的数字核对（「第 0–19 颗 · 20 颗」，#77）；未选中为空串。 */
+    selectedZoneRangeDetail: "",
+    /** 零光区时的引导（#77）；有光区时为空串。 */
+    zoneGuide: "",
     zoneHint: "",
 
     /* ---- 进阶档：灯珠弹窗（#66） ---- */
@@ -672,6 +678,8 @@ Page({
       zoneSummary: "还没有光区",
       zoneCanAdd: false,
       selectedSegId: -1,
+      selectedZoneRangeDetail: "",
+      zoneGuide: "",
       zoneHint: "",
       pickerOpen: false,
       pickerCells: [],
@@ -783,12 +791,23 @@ Page({
       zoneCount: axisZones.length,
       zoneCanAdd: canAddZoneAt(axisZones),
       selectedSegId: selected,
+      /*
+       * 这一行只讲「选中了哪一块、下一步做什么」；具体颗数交给下面单独的
+       * `selectedZoneRangeDetail`（#77）。两行都写数字时必然一个 0 基一个
+       * 1 基，用户会看到两个不一样的范围。
+       */
       selectedZoneText:
         selectedInput === undefined
           ? axisZones.length === 0
             ? "点「+ 新增」划出第一个光区"
             : "点一块选中它，再点一次改范围"
-          : `光区 ${selectedInput.segId + 1} · 第 ${selectedInput.start + 1}–${selectedInput.end + 1} 颗`,
+          : `已选中光区 ${selectedInput.segId + 1} · 再点一次改范围`,
+      /* 轴下方的数字核对（#77）：与设备上的区间同一口径（0 基闭区间）。 */
+      selectedZoneRangeDetail:
+        selectedInput === undefined
+          ? ""
+          : zoneRangeDetail(selectedInput.start, selectedInput.end),
+      zoneGuide: zoneAxisGuide(axisZones.length, ledCount),
       zoneBlocks: buildZoneAxis({ zones: axisZones, ledCount, selectedSegId: selected }),
       ...patch,
     }, callback);
