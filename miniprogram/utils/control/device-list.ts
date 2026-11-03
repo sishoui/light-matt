@@ -252,7 +252,15 @@ export interface BuildNearbyInput {
  */
 export interface ScanRow {
   deviceId: string;
+  /** 广播名（设备自报；可能为空）。 */
   name: string;
+  /**
+   * 本机登记过的展示名（备注名优先）；没登记时为 null。
+   *
+   * 与 `name` 分开是因为两者来源不同：`name` 是设备说的，`displayName` 是
+   * 用户起的。搜索要两个都看（备注名优先），UI 展示用 `displayName ?? name`。
+   */
+  displayName: string | null;
   rssi: number;
   /** 已在「我的设备」里（按 deviceId 或广播名匹配）。 */
   known: boolean;
@@ -269,11 +277,29 @@ export function buildScanRows(input: BuildNearbyInput): ScanRow[] {
     .map((row) => ({
       deviceId: row.deviceId,
       name: row.name,
+      displayName: displayNameOf(input, row),
       rssi: row.rssi,
       known: row.known,
       current: row.current,
       rssiText: `${row.rssi} dBm`,
     }));
+}
+
+/**
+ * 扫描行对应的「本机登记名」：先按 deviceId 精确命中，再按广播名匹配
+ * （另一台手机登记过 / iOS 换了 UUID）。都命中不了就是 null。
+ */
+function displayNameOf(input: BuildNearbyInput, row: NearbyDeviceRow): string | null {
+  const byId = input.mine.find((item) => item.deviceId !== null && item.deviceId === row.deviceId);
+  if (byId !== undefined) {
+    return byId.name;
+  }
+  const upper = row.name.toUpperCase();
+  if (upper.length === 0) {
+    return null;
+  }
+  const byName = input.mine.find((item) => item.name.toUpperCase() === upper);
+  return byName?.name ?? null;
 }
 
 export function buildNearby(input: BuildNearbyInput): NearbyDeviceRow[] {

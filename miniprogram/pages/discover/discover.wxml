@@ -1,47 +1,120 @@
 <view class="page {{themeClass}}">
-  <nav-bar title="发现设备" subtitle="扫描附近的 Lumen 灯控" back="{{true}}" />
+  <nav-bar title="发现设备" subtitle="{{navSubtitle}}" back="{{true}}" />
 
-  <!-- 唯一的动作按钮：扫描 / 停止 / 取消连接（三态由 data.scanLabel 决定） -->
-  <button class="btn primary scan-btn {{scanning ? 'busy' : ''}}" bindtap="onScanTap">
-    {{scanLabel}}
-  </button>
-
-  <!-- 一行连接状态 -->
-  <view class="statusbar {{linkClass}}">
-    <view class="status-dot"></view>
-    <view class="status-main">
-      <text class="status-text">{{statusText}}</text>
-      <text class="status-sub" wx:if="{{statusSub}}">{{statusSub}}</text>
+  <!-- 灰底圆角搜索条：按名称过滤附近设备（不匹配设备标识） -->
+  <view class="searchbar">
+    <view class="search-glyph">
+      <view class="search-glyph-ring"></view>
+      <view class="search-glyph-handle"></view>
+    </view>
+    <input
+      class="search-input"
+      value="{{query}}"
+      placeholder="搜索名称"
+      placeholder-class="search-placeholder"
+      confirm-type="search"
+      bindinput="onQueryInput"
+    />
+    <view wx:if="{{query}}" class="search-clear" bindtap="onQueryClear" hover-class="search-clear-hover">
+      <view class="search-clear-x"></view>
     </view>
   </view>
 
-  <!-- 扫描结果：已知设备带「已知」徽标，点一行连上并回到来源页 -->
-  <view class="section">
-    <view class="section-head">
-      <text class="section-title">附近的设备</text>
-      <text class="section-value">{{scanned.length}} 台</text>
-    </view>
-    <view wx:if="{{scanned.length === 0}}" class="device-empty">{{scanHint || emptyText}}</view>
-    <view wx:else class="device-list">
-      <view
-        wx:for="{{scanned}}"
-        wx:key="deviceId"
-        class="device-row {{item.current ? 'active' : ''}}"
-        data-device-id="{{item.deviceId}}"
-        data-name="{{item.name}}"
-        bindtap="onRowTap"
-      >
-        <view class="scan-main">
-          <text class="device-name">{{item.name || item.deviceId}}</text>
-          <text class="device-meta">{{item.deviceId}} · {{item.rssiText}}</text>
+  <!-- 分组标题：附近的设备 + 台数 -->
+  <view class="group-head">
+    <text class="group-title">附近的设备</text>
+    <text class="group-count">{{rows.length}} 台</text>
+  </view>
+
+  <!-- 清单：每行封面缩略图 + 名称 + 信号说明 + 四格信号条 -->
+  <view wx:if="{{rows.length === 0}}" class="empty-state">
+    <text class="empty-title">{{emptyText}}</text>
+    <text class="empty-hint">{{scanHint || emptyHint}}</text>
+  </view>
+  <view wx:else class="device-list">
+    <view
+      wx:for="{{rows}}"
+      wx:key="deviceId"
+      class="device-row scan-row {{item.current ? 'active' : ''}}"
+      data-device-id="{{item.deviceId}}"
+      bindtap="onRowTap"
+      hover-class="scan-row-hover"
+    >
+      <image wx:if="{{item.photo}}" class="row-cover" src="{{item.photo}}" mode="aspectFill" />
+      <view wx:else class="row-cover row-cover-fallback">
+        <text class="row-cover-initial">{{item.initial}}</text>
+      </view>
+
+      <view class="row-main">
+        <view class="row-title-line">
+          <text class="row-name">{{item.primary}}</text>
+          <text wx:if="{{item.current}}" class="row-badge">当前</text>
+          <text wx:elif="{{item.known}}" class="row-badge ghost">已添加</text>
         </view>
-        <view class="scan-side">
-          <text wx:if="{{item.current}}" class="device-badge">当前</text>
-          <text wx:elif="{{item.known}}" class="device-badge ghost">已知</text>
+        <view class="row-sub-line">
+          <text class="row-signal-text">{{item.signalText}}</text>
+          <view class="signal-bars">
+            <view
+              wx:for="{{item.bars}}"
+              wx:for-item="bar"
+              wx:key="index"
+              class="signal-bar bar-{{bar.index}} {{bar.lit ? 'lit' : ''}}"
+            ></view>
+          </view>
         </view>
       </view>
+
+      <view class="row-chevron"></view>
     </view>
-    <text wx:if="{{scanHint && scanned.length > 0}}" class="scan-hint">{{scanHint}}</text>
-    <text wx:if="{{busy}}" class="scan-hint">正在连接…</text>
+  </view>
+
+  <text wx:if="{{scanHint && rows.length > 0}}" class="scan-hint">{{scanHint}}</text>
+
+  <!-- 底部主按钮：重新扫描 / 停止 / 取消连接 -->
+  <view class="actions">
+    <button class="btn primary rescan-btn {{scanning ? 'busy' : ''}}" bindtap="onScanTap">
+      {{scanLabel}}
+    </button>
+    <text class="actions-hint">同一时间只能连一台设备</text>
+  </view>
+
+  <!-- ============ 添加设备表单（底部弹层） ============ -->
+  <view wx:if="{{formOpen}}" class="sheet-mask" bindtap="onFormMaskTap">
+    <view class="sheet" catchtap="onFormStopPropagation">
+      <view class="sheet-grabber"></view>
+      <view class="sheet-head">
+        <text class="sheet-title">添加设备</text>
+        <text class="sheet-sub">{{formBroadcastName}}</text>
+      </view>
+
+      <view wx:if="{{formAlreadyAdded}}" class="sheet-note">已添加过，保存会更新本机资料</view>
+
+      <view class="field">
+        <text class="field-label">名称</text>
+        <input
+          class="field-input"
+          value="{{formName}}"
+          maxlength="20"
+          placeholder="给这台设备起个名字"
+          placeholder-class="field-placeholder"
+          bindinput="onFormNameInput"
+        />
+      </view>
+
+      <view class="field">
+        <text class="field-label">封面</text>
+        <view class="cover-picker" bindtap="onFormPickPhoto" hover-class="cover-picker-hover">
+          <image wx:if="{{formPhoto}}" class="cover-preview" src="{{formPhoto}}" mode="aspectFill" />
+          <view wx:else class="cover-empty">
+            <view class="cover-plus"></view>
+            <text class="cover-empty-text">选择图片</text>
+          </view>
+        </view>
+        <text wx:if="{{formPhoto}}" class="cover-remove" catchtap="onFormClearPhoto">移除封面</text>
+      </view>
+
+      <button class="btn primary sheet-submit" bindtap="onFormSubmit">添加并连接</button>
+      <text class="sheet-hint">点空白处关闭；扫描会继续</text>
+    </view>
   </view>
 </view>

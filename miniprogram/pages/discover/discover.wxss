@@ -1,47 +1,498 @@
-/* 发现页（二级页）：一个扫描按钮 + 一行状态 + 一个结果列表。 */
+/*
+ * 发现页（#92）：清单式扫描 + 添加设备表单弹层。
+ *
+ * 颜色一律走主题变量。这里刻意不写死 hex——浅色/深色切换时本页也换。
+ */
 
-.scan-btn {
-  /* 本页只有这一个动作，给它足够的视觉重量。 */
-  height: 96rpx;
-  line-height: 96rpx;
-  font-size: 30rpx;
-}
+/* ---------------- 搜索条 ---------------- */
 
-.scan-btn.busy {
-  opacity: 0.7;
-}
-
-/* 结果行：左名称 / 右徽标，覆盖 app.wxss 的纵向 device-row。 */
-.scan-main {
-  display: flex;
-  flex-direction: column;
-  gap: 6rpx;
-  min-width: 0;
-  flex: 1;
-}
-
-.scan-side {
+.searchbar {
   display: flex;
   align-items: center;
   gap: 12rpx;
-  flex: 0 0 auto;
+  height: 72rpx;
+  padding: 0 20rpx;
+  box-sizing: border-box;
+  border-radius: 18rpx;
+  background: var(--card-2);
+  border: 1rpx solid var(--border);
 }
 
-.device-row {
+.search-glyph {
+  position: relative;
+  width: 30rpx;
+  height: 30rpx;
+  flex-shrink: 0;
+}
+
+.search-glyph-ring {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 22rpx;
+  height: 22rpx;
+  border: 3rpx solid var(--text-3);
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+
+.search-glyph-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 12rpx;
+  height: 3rpx;
+  border-radius: 2rpx;
+  background: var(--text-3);
+  transform: rotate(45deg);
+}
+
+.search-input {
+  flex: 1;
+  min-width: 0;
+  height: 72rpx;
+  font-size: 27rpx;
+  color: var(--text);
+}
+
+.search-placeholder {
+  color: var(--text-3);
+}
+
+.search-clear {
+  width: 44rpx;
+  height: 44rpx;
+  border-radius: 50%;
+  background: var(--card-press);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.search-clear-hover {
+  opacity: 0.7;
+}
+
+/* 一个叉：两条短斜线。 */
+.search-clear-x {
+  position: relative;
+  width: 18rpx;
+  height: 18rpx;
+}
+
+.search-clear-x::before,
+.search-clear-x::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8rpx;
+  width: 18rpx;
+  height: 2rpx;
+  border-radius: 1rpx;
+  background: var(--text-2);
+}
+
+.search-clear-x::before {
+  transform: rotate(45deg);
+}
+
+.search-clear-x::after {
+  transform: rotate(-45deg);
+}
+
+/* ---------------- 分组标题 ---------------- */
+
+.group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 4rpx 4rpx 0;
+}
+
+.group-title {
+  font-size: 28rpx;
+  font-weight: 600;
+  letter-spacing: -0.2rpx;
+}
+
+.group-count {
+  font-size: 23rpx;
+  color: var(--text-3);
+}
+
+/* ---------------- 清单行 ---------------- */
+
+.scan-row {
   flex-direction: row;
   align-items: center;
-  gap: 16rpx;
+  gap: 20rpx;
+  padding: 20rpx;
+  border-radius: var(--radius-md);
+  background: var(--card);
+  border: 1rpx solid var(--border);
+  box-shadow: var(--shadow);
 }
 
-.device-badge {
+.scan-row-hover {
+  background: var(--card-press);
+}
+
+.scan-row.active {
+  border-color: var(--accent);
+}
+
+.row-cover {
+  width: 96rpx;
+  height: 96rpx;
+  border-radius: 16rpx;
+  flex-shrink: 0;
+  background: var(--card-2);
+}
+
+.row-cover-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-soft);
+}
+
+.row-cover-initial {
+  font-size: 38rpx;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+}
+
+.row-title-line {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  min-width: 0;
+}
+
+.row-name {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-badge {
   font-size: 18rpx;
   color: var(--accent);
   padding: 2rpx 12rpx;
   border-radius: 999rpx;
   background: var(--accent-soft);
+  flex-shrink: 0;
 }
 
-.device-badge.ghost {
+.row-badge.ghost {
   color: var(--text-2);
   background: var(--card-press);
+}
+
+.row-sub-line {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+.row-signal-text {
+  font-size: 22rpx;
+  color: var(--text-3);
+}
+
+/* 四格信号条：柱高递增，未点亮的格子走底色。 */
+.signal-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3rpx;
+  height: 22rpx;
+}
+
+.signal-bar {
+  width: 5rpx;
+  border-radius: 2rpx;
+  background: var(--card-press);
+}
+
+.signal-bar.bar-0 {
+  height: 8rpx;
+}
+
+.signal-bar.bar-1 {
+  height: 12rpx;
+}
+
+.signal-bar.bar-2 {
+  height: 17rpx;
+}
+
+.signal-bar.bar-3 {
+  height: 22rpx;
+}
+
+.signal-bar.lit {
+  background: var(--accent);
+}
+
+.row-chevron {
+  width: 14rpx;
+  height: 14rpx;
+  border-top: 3rpx solid var(--text-3);
+  border-right: 3rpx solid var(--text-3);
+  transform: rotate(45deg);
+  flex-shrink: 0;
+}
+
+/* ---------------- 空态 ---------------- */
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+  align-items: center;
+  padding: 88rpx 32rpx;
+  border-radius: var(--radius-lg);
+  background: var(--card);
+  border: 1rpx solid var(--border);
+}
+
+.empty-title {
+  font-size: 29rpx;
+  font-weight: 600;
+  color: var(--text);
+  text-align: center;
+}
+
+.empty-hint {
+  font-size: 23rpx;
+  color: var(--text-3);
+  text-align: center;
+  line-height: 1.7;
+}
+
+.scan-hint {
+  font-size: 22rpx;
+  color: var(--danger);
+  padding: 0 4rpx;
+  line-height: 1.6;
+}
+
+/* ---------------- 底部按钮 ---------------- */
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14rpx;
+  margin-top: 8rpx;
+}
+
+.rescan-btn {
+  width: 100%;
+  height: 92rpx;
+  line-height: 92rpx;
+  font-size: 29rpx;
+}
+
+.rescan-btn.busy {
+  opacity: 0.7;
+}
+
+.actions-hint {
+  font-size: 21rpx;
+  color: var(--text-3);
+}
+
+/* ---------------- 底部弹层（添加设备表单） ---------------- */
+
+.sheet-mask {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 120;
+  background: rgba(0, 0, 0, 0.42);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.sheet {
+  background: var(--bg-elevated);
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  padding: 16rpx 32rpx calc(32rpx + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 24rpx;
+  max-height: 84vh;
+  box-sizing: border-box;
+  animation: sheet-rise 180ms ease-out;
+}
+
+@keyframes sheet-rise {
+  from {
+    transform: translateY(24rpx);
+    opacity: 0.6;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.sheet-grabber {
+  width: 72rpx;
+  height: 8rpx;
+  border-radius: 4rpx;
+  background: var(--card-press);
+  align-self: center;
+}
+
+.sheet-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+}
+
+.sheet-title {
+  font-size: 36rpx;
+  font-weight: 700;
+  letter-spacing: -0.4rpx;
+  color: var(--text);
+}
+
+.sheet-sub {
+  font-size: 22rpx;
+  color: var(--text-3);
+}
+
+.sheet-note {
+  font-size: 22rpx;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+  padding: 14rpx 18rpx;
+  line-height: 1.5;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+}
+
+.field-label {
+  font-size: 23rpx;
+  color: var(--text-2);
+  padding-left: 4rpx;
+}
+
+.field-input {
+  height: 88rpx;
+  padding: 0 24rpx;
+  box-sizing: border-box;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  border: 1rpx solid var(--border);
+  font-size: 29rpx;
+  color: var(--text);
+}
+
+.field-placeholder {
+  color: var(--text-3);
+}
+
+.cover-picker {
+  width: 160rpx;
+  height: 160rpx;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  border: 1rpx dashed var(--border);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cover-picker-hover {
+  opacity: 0.75;
+}
+
+.cover-preview {
+  width: 100%;
+  height: 100%;
+}
+
+.cover-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8rpx;
+}
+
+/* 加号：两条短线。 */
+.cover-plus {
+  position: relative;
+  width: 34rpx;
+  height: 34rpx;
+}
+
+.cover-plus::before,
+.cover-plus::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  border-radius: 2rpx;
+  background: var(--text-3);
+}
+
+.cover-plus::before {
+  width: 34rpx;
+  height: 3rpx;
+  margin: -1rpx 0 0 -17rpx;
+}
+
+.cover-plus::after {
+  width: 3rpx;
+  height: 34rpx;
+  margin: -17rpx 0 0 -1rpx;
+}
+
+.cover-empty-text {
+  font-size: 21rpx;
+  color: var(--text-3);
+}
+
+.cover-remove {
+  font-size: 22rpx;
+  color: var(--danger);
+  padding-left: 4rpx;
+}
+
+.sheet-submit {
+  width: 100%;
+  height: 96rpx;
+  line-height: 96rpx;
+  font-size: 30rpx;
+  margin-top: 8rpx;
+}
+
+.sheet-hint {
+  font-size: 21rpx;
+  color: var(--text-3);
+  text-align: center;
 }
