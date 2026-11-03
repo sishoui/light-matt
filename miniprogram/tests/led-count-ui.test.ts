@@ -139,6 +139,35 @@ describe("灯组详情页：顶部当前组滑块", () => {
   });
 });
 
+/**
+ * 跨页一致性：设备信息页把灯珠数改小后，灯组页还在栈上，内存草稿仍是旧长度
+ * 下的编排；`ensureDraftsLoaded` 的键没变就不重读，于是「应用并播放」会被预检
+ * 以越界拒绝，用户没有恢复手段。
+ */
+describe("灯组页：别处改小灯珠数后草稿要跟着对齐", () => {
+  const ts = src("pages/strip/strip.ts");
+
+  it("记录上一次看到的灯珠数，作为「别处改小了」的判据", () => {
+    expect(ts).toContain("ledCountSeen");
+    /* 必须在 onLoad 显式初始化（否则运行期是 undefined，会中断整页事件绑定）。 */
+    const onLoad = handlerBody(ts, "onLoad");
+    expect(onLoad).toContain("this.ledCountSeen = 0;");
+  });
+
+  it("applyDeviceState 检测到变小就重载草稿并裁剪", () => {
+    const apply = handlerBody(ts, "applyDeviceState");
+    expect(apply).toContain("ledCount < this.ledCountSeen");
+    expect(apply).toContain("this.reloadDraftsAfterShrink(ledCount)");
+  });
+
+  it("重载清掉草稿键强制重读，并按新长度兜底裁剪本组", () => {
+    const reload = handlerBody(ts, "reloadDraftsAfterShrink");
+    expect(reload).toContain('this.draftsKey = ""');
+    expect(reload).toContain("this.ensureDraftsLoaded()");
+    expect(reload).toContain("this.shrinkDraftsForStrip(newLedCount)");
+  });
+});
+
 /** 取页面 TS 里某个方法的方法体（从 `名(` 到下一个顶层方法之前）。 */
 function handlerBody(ts: string, name: string): string {
   const start = new RegExp(`\\n {2}(?:async\\s+)?${name}\\s*\\(`).exec(ts);

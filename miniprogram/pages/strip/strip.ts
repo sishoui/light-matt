@@ -484,6 +484,14 @@ Page({
    * `null` = 没有本地草稿。
    */
   ledDraft: null as number | null,
+  /**
+   * 上一次从设备看到的本组灯珠数（#79 的跨页一致性）。
+   *
+   * 设备信息页也能改灯珠数，那条路径只写存储、不经过本页内存。回到本页时
+   * 若发现设备权威值比这个记录小，说明别处刚缩小过——本页草稿必须按新长度
+   * 重读并裁剪，否则「应用并播放」会被预检以越界拒绝，用户无路可走。
+   */
+  ledCountSeen: 0,
   /** 面板的一次性反馈（`data.panelHint` 的镜像，换目标时清空）。 */
   panelHintText: "",
   /**
@@ -538,6 +546,7 @@ Page({
     this.panelHintText = "";
     this.panelLevels = {};
     this.ledDraft = null;
+    this.ledCountSeen = 0;
 
     const storage = createWxStorage();
     this.storage = storage;
@@ -739,6 +748,15 @@ Page({
   applyDeviceState(state: DeviceState) {
     const ledCount = state.stripCounts[this.data.stripId] ?? 0;
     const changed = ledCount !== this.data.ledCount;
+    /* 别处（设备信息页）把这一组改小了：本页内存草稿仍是旧长度下的编排，
+     * 拿它去「应用并播放」会被预检以越界拒绝，而用户没有恢复手段。
+     * 那边已经把截断结果落盘，这里重读存储再兜底裁剪一次。 */
+    if (changed && ledCount > 0 && this.ledCountSeen > 0 && ledCount < this.ledCountSeen) {
+      this.ledCountSeen = ledCount;
+      this.reloadDraftsAfterShrink(ledCount);
+    } else if (changed && ledCount > 0) {
+      this.ledCountSeen = ledCount;
+    }
     /* 滑块值：有本地草稿（拖动中 / 确认框弹着）时以它为准，否则跟随设备权威值。
      * 拖动期间设备每帧上报旧值，跟着它走滑块就会在手指下跳。
      * 滑块下界是 1，所以「还没读到」时显示 1 而不是 0（0 在滑块上没有位置）。 */
@@ -1301,6 +1319,33 @@ Page({
       ledHint: hint,
     });
     wx.showToast({ title: hint, icon: "none" });
+  },
+
+  /**
+   * 灯珠数被**别的页面**改小之后，把本页草稿对齐到新长度。
+   *
+   * 设备信息页的滑块会写存储，但改不到本页还在栈上的内存镜像；而
+   * `ensureDraftsLoaded` 的键没变就不会重读，于是本页停留在旧长度下的编排，
+   * 「应用并播放」被预检拒绝。两条动作：
+   *
+   *  1. 清掉 `draftsKey` 强制重读存储（那边已把截断结果落盘）；
+   *  2. 对**本组**再跑一次内存兜底裁剪（存储没写成功 / 别的设备路径也覆盖到）。
+   *
+   * 只碰当前灯组那一片，其它灯组的内容原样保留。
+   */
+  reloadDraftsAfterShrink(newLedCount: number): void {
+    this.draftsKey = "";
+    this.ensureDraftsLoaded();
+    this.shrinkDraftsForStrip(newLedCount);
+    if (this.data.mode === "advanced") {
+      this.timelineIndex = Math.min(
+        this.timelineIndex,
+        Math.max(0, this.currentDraft().stages.length - 1),
+      );
+      this.pickedSegId = -1;
+      this.panelKey = "";
+      this.renderTimeline();
+    }
   },
 
   /**
