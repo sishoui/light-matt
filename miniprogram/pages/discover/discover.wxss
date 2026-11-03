@@ -1,0 +1,47 @@
+/* 发现页（二级页）：一个扫描按钮 + 一行状态 + 一个结果列表。 */
+
+.scan-btn {
+  /* 本页只有这一个动作，给它足够的视觉重量。 */
+  height: 96rpx;
+  line-height: 96rpx;
+  font-size: 30rpx;
+}
+
+.scan-btn.busy {
+  opacity: 0.7;
+}
+
+/* 结果行：左名称 / 右徽标，覆盖 app.wxss 的纵向 device-row。 */
+.scan-main {
+  display: flex;
+  flex-direction: column;
+  gap: 6rpx;
+  min-width: 0;
+  flex: 1;
+}
+
+.scan-side {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  flex: 0 0 auto;
+}
+
+.device-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 16rpx;
+}
+
+.device-badge {
+  font-size: 18rpx;
+  color: var(--accent);
+  padding: 2rpx 12rpx;
+  border-radius: 999rpx;
+  background: var(--accent-soft);
+}
+
+.device-badge.ghost {
+  color: var(--text-2);
+  background: var(--card-press);
+}

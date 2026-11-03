@@ -270,7 +270,7 @@ describe("#32 session 播放控制与查询", () => {
 });
 
 describe("#45 容量预检与 ScriptTooLarge (0x0A)", () => {
-  /** 8 带 × 8 阶段 × 8 段两层动画：单套 9835 字节（16192+... 见 script-plan）。 */
+  /** 8 带 × 8 阶段 × 8 段两层动画：v4 单套 10859 字节（见 script-plan 记录宽度 21）。 */
   function worstCaseScript(): ScriptConfig {
     const animation: SegmentSpec = {
       stripId: 0,
@@ -278,8 +278,8 @@ describe("#45 容量预检与 ScriptTooLarge (0x0A)", () => {
       start: 0,
       end: 0,
       blend: 2,
-      layer0: { type: SEGMENT_TYPE.BREATHING, hue: 0, sat: 255, periodMs: 1000, p5: 0, flags: 0 },
-      layer1: { type: SEGMENT_TYPE.COMET, hue: 0, sat: 255, periodMs: 1000, p5: 0, flags: 0 },
+      layer0: { type: SEGMENT_TYPE.BREATHING, hue: 0, sat: 255, periodMs: 1000, p5: 0, flags: 0, level: 100 },
+      layer1: { type: SEGMENT_TYPE.COMET, hue: 0, sat: 255, periodMs: 1000, p5: 0, flags: 0, level: 100 },
     };
     const stages = [];
     for (let stage = 0; stage < 8; stage += 1) {
@@ -294,14 +294,14 @@ describe("#45 容量预检与 ScriptTooLarge (0x0A)", () => {
     return { scriptId: 0, stripCount: 8, stages };
   }
 
-  it("单套理论最坏（9835 B）仍可下发——16KB 是 4 套共享的", async () => {
+  it("单套理论最坏（10859 B）仍可下发——16KB 是 4 套共享的", async () => {
     const transport = new FakeTransport();
     const session = makeSession(transport);
     const script = worstCaseScript();
     const check = session.scriptCapacityForDevice(script);
     expect(check.ok).toBe(true);
     if (check.ok) {
-      expect(check.bytes).toBe(9835);
+      expect(check.bytes).toBe(10859);
     }
     const result = await session.downloadScript(script, { activate: false });
     expect(result.kind).toBe("ok");

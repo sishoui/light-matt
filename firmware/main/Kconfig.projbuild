@@ -158,11 +158,12 @@ menu "Lumen"
         help
             存储任务做 NVS blob 编码与 commit。
 
-            v4 blob 的段记录是 20 字节（两层），所以编码时栈上同时有
-            lumen_persist_t（8×8 段 × 24 + 状态 ≈ 1.6 KB）与 1312 字节的
-            blob 缓冲，合计约 2.9 KB，再加 NVS 在 cache 关闭期间的工作量。
-            v2/v3 时约 1.8 KB / 4 KB；#37 的两层结构把这里推高，默认改为
-            5120。不要压回 2 KB。
+            v5 blob（协议 v4）的段记录是 22 字节（两层各 9 字节 + 4 字节头），
+            所以编码时栈上同时有 lumen_persist_t（8×8 段 × 28 + 状态
+            ≈ 1.83 KB）与 **1440 字节**的 blob 缓冲，合计约 3.3 KB，再加 NVS
+            在 cache 关闭期间的工作量。v2/v3 时约 1.8 KB / 2.9 KB；#37 的
+            两层结构与 v4 的层亮度把这里逐步推高，默认 5120 仍有余量
+            （约 1.8 KB）。**不要压回 4 KB 以下**。
 
     config LUMEN_STORE_TASK_PRIORITY
         int "存储任务优先级"

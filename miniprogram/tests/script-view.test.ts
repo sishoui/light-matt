@@ -319,8 +319,8 @@ describe("#45 两层段进草稿（页面的读-改-写形状）", () => {
       start: 0,
       end: 9,
       blend: BLEND.ADD,
-      layer0: { type: SEGMENT_TYPE.STATIC, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0 },
-      layer1: { type: SEGMENT_TYPE.COMET, hue: 0, sat: 255, periodMs: 1000, p5: 0, flags: 0 },
+      layer0: { type: SEGMENT_TYPE.STATIC, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0, level: 100 },
+      layer1: { type: SEGMENT_TYPE.COMET, hue: 0, sat: 255, periodMs: 1000, p5: 0, flags: 0, level: 100 },
     };
     const draft = setStageSegments(createScriptDraft(), 0, [spec]);
     const config = draftToScriptConfig(draft, 2);
@@ -345,8 +345,8 @@ describe("#45 4 槽位合计容量（§10.4 的上限是整套 blob）", () => {
           start: seg,
           end: seg,
           blend: BLEND.ADD,
-          layer0: { type: SEGMENT_TYPE.BREATHING, hue: 0, sat: 255, periodMs: 1000, p5: 0, flags: 0 },
-          layer1: { type: SEGMENT_TYPE.COMET, hue: 0, sat: 255, periodMs: 1000, p5: 0, flags: 0 },
+          layer0: { type: SEGMENT_TYPE.BREATHING, hue: 0, sat: 255, periodMs: 1000, p5: 0, flags: 0, level: 100 },
+          layer1: { type: SEGMENT_TYPE.COMET, hue: 0, sat: 255, periodMs: 1000, p5: 0, flags: 0, level: 100 },
         });
       }
     }
@@ -362,13 +362,13 @@ describe("#45 4 槽位合计容量（§10.4 的上限是整套 blob）", () => {
 
   it("只有已提交的槽位参与合计；从没下发的草稿不误拦", () => {
     const drafts = [heavyDraft(0), heavyDraft(1), heavyDraft(2), heavyDraft(3)];
-    /* 只有 0 号已提交：合计 ≈ 单套（9835 B），低于 16KB。 */
+    /* 只有 0 号已提交：合计 ≈ 单套（v4 10859 B），低于 16KB。 */
     const onlyOne = scriptCapacitySlots(drafts, [0], 8);
     expect(onlyOne.map((slot) => slot.scriptId)).toEqual([0]);
-    expect(estimateScriptBlobBytes(onlyOne[0])).toBe(9835);
-    /* 当前编辑的那套即使还没提交也一定参与：两套满配就已超限（19662 B）。 */
+    expect(estimateScriptBlobBytes(onlyOne[0])).toBe(10859);
+    /* 当前编辑的那套即使还没提交也一定参与：两套满配就已超限。 */
     const withCurrent = draftCapacityBytes(drafts, [0], 2, 8);
-    expect(withCurrent).toBe(8 + 2 * (9835 - 8));
+    expect(withCurrent).toBe(8 + 2 * (10859 - 8));
     expect(withCurrent).toBeGreaterThan(SCRIPT_BLOB_MAX_BYTES);
     expect(checkScriptBlobBytes(withCurrent).ok).toBe(false);
   });
@@ -376,7 +376,7 @@ describe("#45 4 槽位合计容量（§10.4 的上限是整套 blob）", () => {
   it("4 套都很大时合计超限（页面据此禁用下发）", () => {
     const drafts = [heavyDraft(0), heavyDraft(1), heavyDraft(2), heavyDraft(3)];
     const bytes = draftCapacityBytes(drafts, [0, 1, 2, 3], 0, 8);
-    expect(bytes).toBe(39316);
+    expect(bytes).toBe(43412);
     expect(bytes).toBeGreaterThan(SCRIPT_BLOB_MAX_BYTES);
     expect(checkScriptBlobBytes(bytes).ok).toBe(false);
   });

@@ -1,17 +1,22 @@
 /**
  * 命令构造器与载荷解析（纯函数）。业务范围校验在构造器里做，
- * 字节布局严格按 docs/protocol-v3.md §6/§7。
+ * 字节布局严格按 docs/protocol-v4.md §6/§7。
  *
  * v3（#40）变化：
  *  - 信封换成 16 位长度 + CRC16（frame.ts）；载荷上限 232；
- *  - 段载荷定宽两层：SetSegment 21、ScriptSegment 23、SegmentReport 21；
+ *  - 段载荷定宽两层：SetSegment 23、ScriptSegment 25、SegmentReport 23；
  *  - ScriptStage 增加 `fade_ms`（预留，恒 0）；
  *  - 新增 SetStripPower 0x1B / QueryStripConfig 0x1C / QueryDeviceInfo 0x1D；
  *  - State 从 14 字节扩到 37 字节（带每条灯带的灯珠数 / 段数 / 开关位）。
  *
+ * v4（#69）变化：
+ *  - 层编码 8 → **9 字节**：第 9 字节是 `level`（本层亮度 0-100）；
+ *  - 段载荷 21 → 23、ScriptSegment 23 → 25、SegmentReport 21 → 23；
+ *  - `level > 100` 与「空层带非零 level」在本端就拒绝（设备回 InvalidParam）。
+ *
  * 扁平 vs 两层：`SegmentSpec` 是线上形状；页面沿用的 `SegmentConfig` 是
  * 「只有层 0」的 UI 草稿。两者由 protocol/segment-shapes.ts 互转，
- * 构造器两者都接受（`isSegmentSpec` 区分），这样 #40 不必改页面。
+ * 构造器两者都接受（`isSegmentSpec` 区分）。
  */
 
 import {
@@ -20,6 +25,7 @@ import {
   BREATHING_MIN_PERIOD_MS,
   DEVICE_INFO_BYTES,
   LAYER_BYTES,
+  LAYER_LEVEL_MAX,
   MAX_LEDS,
   MAX_SCRIPTS,
   MAX_SEGMENTS,
@@ -31,6 +37,7 @@ import {
   NO_SCRIPT,
   SCRIPT_SEGMENT_BYTES,
   SEGMENT_BYTES,
+  SEGMENT_HEADER_BYTES,
   SEGMENT_TYPE,
   STATE_BYTES,
   STRIP_CONFIG_BYTES,
@@ -148,7 +155,7 @@ function isKnownLayerType(type: number): boolean {
 /**
  * 层类型的有效参数长度（effects-spec §2.5）：静态 3、动画 7、空层/未知 0。
  *
- * 层在线上是定宽 8 字节（type + 7 字节参数），这里给的是**有效字节数**，
+ * 层在线上是定宽 9 字节（type + 7 字节参数 + level），这里给的是**有效字节数**，
  * 只用于校验与日志，不决定编码宽度。
  */
 export function layerParamLength(type: number): number {
@@ -171,18 +178,36 @@ export function segmentParamLength(type: number): number {
 }
 
 /**
- * 校验一层并按 §7.1 的 8 字节定宽写入。
+ * 本层亮度 `level` 的校验（v4，§7.1）：0-100 的整数。
+ *
+ * 不做钳位、不做回绕——`> 100` 明确拒绝比静默改掉用户意图安全（设备同样是回
+ * `InvalidParam` 而不是截断）。`level = 0` 合法，语义是「这一层不出光」。
+ */
+function assertLevel(value: number, field: string): number {
+  if (!Number.isInteger(value) || value < 0 || value > LAYER_LEVEL_MAX) {
+    throw new RangeError(`${field}.level 必须是 0-${LAYER_LEVEL_MAX} 的整数，收到 ${value}`);
+  }
+  return value;
+}
+
+/**
+ * 校验一层并按 §7.1 的 9 字节定宽写入（type + 7 字节参数 + level）。
  *
  * 规则（顺序固定，§7.1）：
  *  - 未知 type → 拒绝（不静默降级，effects-spec D7）；
+ *  - 空层（0xFF）的 8 字节参数与 level 必须全 0；
  *  - 静态层的 param[3..6] 必须全 0（防止将来语义漂移时旧固件静默接受）；
- *  - 呼吸周期 0 或 ≥ 334；flags bit3-7 必须为 0；
- *  - 彩虹 / 流光周期 0 或 ≥ 200；flags bit1-7 必须为 0。
+ *  - 呼吸周期 0 或 ≥ 334；**呼吸 p5 是相对百分比 0-100**（v4）；flags bit3-7 = 0；
+ *  - 彩虹 / 流光周期 0 或 ≥ 200；p5 保持 0-255；flags bit1-7 = 0。
  */
 function writeLayer(out: Uint8Array, offset: number, layer: EffectLayer, field: string): void {
   const type = layer.type;
+  const level = assertLevel(layer.level, field);
   if (type === NO_EFFECT) {
-    /* 空层：8 字节全 0（type 除外）。 */
+    /* 空层：9 字节全 0（type 除外）。带非零 level 说明把「清槽」和「压暗」混了。 */
+    if (level !== 0) {
+      throw new RangeError(`${field} 是空层，level 必须为 0，收到 ${level}`);
+    }
     out[offset] = NO_EFFECT;
     return;
   }
@@ -204,6 +229,10 @@ function writeLayer(out: Uint8Array, offset: number, layer: EffectLayer, field: 
       throw new RangeError(
         `呼吸周期不能短于 ${BREATHING_MIN_PERIOD_MS}ms（约 3Hz），收到 ${period}`,
       );
+    }
+    /* v4：呼吸的 p5 从绝对 0-255 改为相对百分比 0-100（谷底 = level × p5%）。 */
+    if (p5 > 100) {
+      throw new RangeError(`呼吸的最低亮是百分比 0-100，收到 ${p5}`);
     }
     if ((flags & 0xf8) !== 0) {
       throw new RangeError(`${field} 的 flags 保留位 bit3-7 必须为 0，收到 0x${flags.toString(16)}`);
@@ -230,6 +259,7 @@ function writeLayer(out: Uint8Array, offset: number, layer: EffectLayer, field: 
     out[offset + 6] = p5;
     out[offset + 7] = flags;
   }
+  out[offset + 8] = level;
 }
 
 function assertBlend(blend: number): BlendMode {
@@ -240,13 +270,13 @@ function assertBlend(blend: number): BlendMode {
 }
 
 /**
- * 段载荷（21 字节）的公共校验与编码：SetSegment / ScriptSegment 共用。
+ * 段载荷（23 字节）的公共校验与编码：SetSegment / ScriptSegment 共用。
  *
  * 校验只做构造层能判定的部分（字节范围、start ≤ end、层类型与参数）；
  * 「end < led_count」与「不重叠」是设备侧权威校验（§9.2），这里不做，
  * 以免 App 与设备的 led_count 快照不一致时误拒。
  */
-function encodeSegmentPayload(spec: SegmentSpec): Uint8Array {
+function encodeSegmentPayload(spec: SegmentSpec, allowClearSlot = false): Uint8Array {
   const stripId = assertStripId(spec.stripId);
   const segId = assertSegId(spec.segId);
   const start = assertLedIndex(spec.start, "start");
@@ -257,7 +287,16 @@ function encodeSegmentPayload(spec: SegmentSpec): Uint8Array {
   const blend = assertBlend(spec.blend);
   const layer0 = spec.layer0;
   const layer1 = spec.layer1;
-  if (layer0 === undefined || layer0 === null || layer0.type === NO_EFFECT) {
+  /* 清槽旁路（仅 ScriptSegment）：两层都空是合法形状，普通 SetSegment 不允许。 */
+  const clearSlot =
+    allowClearSlot &&
+    layer0 !== undefined &&
+    layer0 !== null &&
+    layer0.type === NO_EFFECT &&
+    layer1 !== undefined &&
+    layer1 !== null &&
+    layer1.type === NO_EFFECT;
+  if ((layer0 === undefined || layer0 === null || layer0.type === NO_EFFECT) && !clearSlot) {
     throw new RangeError("layer0 不能为空");
   }
   if (layer1 === undefined || layer1 === null) {
@@ -273,13 +312,13 @@ function encodeSegmentPayload(spec: SegmentSpec): Uint8Array {
   payload[2] = start;
   payload[3] = end;
   payload[4] = blend;
-  writeLayer(payload, 5, layer0, "layer0");
-  writeLayer(payload, 5 + LAYER_BYTES, layer1, "layer1");
+  writeLayer(payload, SEGMENT_HEADER_BYTES, layer0, "layer0");
+  writeLayer(payload, SEGMENT_HEADER_BYTES + LAYER_BYTES, layer1, "layer1");
   return payload;
 }
 
 /**
- * SetSegment 0x10：21 字节两层载荷（§7.1）。
+ * SetSegment 0x10：23 字节两层载荷（§7.1）。
  *
  * 接受 `SegmentSpec`（两层）或页面沿用的扁平 `SegmentConfig`（自动补空层、
  * blend = 覆盖）。扁平输入等效于「只设层 0」。
@@ -289,9 +328,14 @@ export function cmdSetSegment(segment: SegmentSpec | SegmentConfig): CommandRequ
   return { command: 0x10, payload: encodeSegmentPayload(spec) };
 }
 
-/** 构造一个静态层（hue 0-65535、sat 0-255）。 */
-export function staticLayer(hue: number, sat: number): EffectLayer {
-  return { type: SEGMENT_TYPE.STATIC, hue, sat, periodMs: 0, p5: 0, flags: 0 };
+/**
+ * 构造一个静态层（hue 0-65535、sat 0-255、level 0-100）。
+ *
+ * `level` 省略时是 100（满亮，等价 v3 行为）——测试与内部装配都按这个默认走，
+ * 只有真正的亮度滑块才会传其它值。
+ */
+export function staticLayer(hue: number, sat: number, level: number = LAYER_LEVEL_MAX): EffectLayer {
+  return { type: SEGMENT_TYPE.STATIC, hue, sat, periodMs: 0, p5: 0, flags: 0, level };
 }
 
 /**
@@ -307,7 +351,18 @@ export function staticSegment(
   hue: number,
   sat: number,
 ): SegmentConfig {
-  return { stripId, segId, start, end, type: SEGMENT_TYPE.STATIC, hue, sat, periodMs: 0, p5: 0, flags: 0 };
+  return {
+    stripId,
+    segId,
+    start,
+    end,
+    type: SEGMENT_TYPE.STATIC,
+    hue,
+    sat,
+    periodMs: 0,
+    p5: 0,
+    flags: 0,
+  };
 }
 
 /**
@@ -329,8 +384,10 @@ export function breathingWaveform(flags: number): number {
 /**
  * 构造一个呼吸段草稿。
  *
- * `minLevel` 是「最暗时的亮度占比」0-255；`waveform` 取 WAVEFORM 枚举；
- * `reverse` 写进 flags bit0（当前无视觉意义，保留）。
+ * `minLevel` 是「最暗时的亮度占比」**百分比 0-100**（v4 起；v3 是绝对 0-255）。
+ * `waveform` 取 WAVEFORM 枚举；`reverse` 写进 flags bit0（当前无视觉意义，保留）。
+ *
+ * 扁平草稿不带 `level`：写成线上 spec 时由 `toSpec` 补 100（满亮）。
  */
 export function breathingSegment(
   stripId: number,
@@ -543,9 +600,13 @@ export function cmdScriptStage(
 }
 
 /**
- * ScriptSegment 0x16：载荷 `script_id, stage_index` + 21 字节段 = 23 字节。
+ * ScriptSegment 0x16：载荷 `script_id, stage_index` + 23 字节段 = 25 字节。
  *
- * 两层段与扁平段都接受（扁平自动补空层）；两层都空等同于「清空该槽位」。
+ * 两层段与扁平段都接受（扁平自动补空层）。
+ *
+ * **清槽旁路**：两层都是 `0xFF` 表示「清空该槽位」（§9.6）。它绕过 shape 校验
+ * （layer0 = 0xFF 本身是非法形状），所以必须单独要求两层的 `level` 都为 0——
+ * 带亮度说明发送端把「清槽」和「压暗」混了，设备会回 `InvalidParam`。
  */
 export function cmdScriptSegment(
   scriptId: number,
@@ -555,7 +616,14 @@ export function cmdScriptSegment(
   const id = assertScriptId(scriptId);
   const stage = assertStageIndex(stageIndex);
   const spec = isSegmentSpec(segment) ? segment : toSpec(segment);
-  const body = encodeSegmentPayload(spec);
+  if (spec.layer0.type === NO_EFFECT && spec.layer1.type === NO_EFFECT) {
+    assertLevel(spec.layer0.level, "layer0");
+    assertLevel(spec.layer1.level, "layer1");
+    if (spec.layer0.level !== 0 || spec.layer1.level !== 0) {
+      throw new RangeError("清空槽位时两层的 level 都必须为 0");
+    }
+  }
+  const body = encodeSegmentPayload(spec, true);
   const payload = new Uint8Array(SCRIPT_SEGMENT_BYTES);
   payload[0] = id;
   payload[1] = stage;
@@ -633,18 +701,36 @@ export function parseScriptProgress(payload: Uint8Array): ScriptProgress {
   };
 }
 
+/** 层编码里 `level` 的字节偏移（type 0、参数 1..7、level 8）。 */
+const LAYER_LEVEL_OFFSET = 8;
+
 /**
- * 解析 8 字节定宽层（§7.1）。
+ * 解析 9 字节定宽层（§7.1）。
  *
- * 未知 type、静态层保留字节非 0 都视为协议不匹配（不「尽量解析」）。
+ * 未知 type、静态层保留字节非 0、空层带非零参数、level > 100、**呼吸层
+ * `p5 > 100`** 都视为协议不匹配（不「尽量解析」，不静默钳位）。
+ *
+ * 呼吸的 `p5` 在 v4 里是最暗基线的**相对百分比**（0-100），不是 v3 的绝对
+ * 0-255。101-255 在固件侧回 `InvalidParam`，所以这里同样拒绝——两端对同一
+ * 帧给出同一个判定，才不会出现「App 觉得读回成功、设备其实拒收」的漂移。
  */
 export function parseLayer(bytes: Uint8Array, offset = 0): EffectLayer {
   if (bytes.length < offset + LAYER_BYTES) {
     throw new RangeError(`层编码需要 ${LAYER_BYTES} 字节，收到 ${bytes.length - offset}`);
   }
   const type = bytes[offset];
+  const level = bytes[offset + LAYER_LEVEL_OFFSET];
+  if (level > LAYER_LEVEL_MAX) {
+    throw new RangeError(`层的 level 必须在 0-${LAYER_LEVEL_MAX}，收到 ${level}`);
+  }
   if (type === NO_EFFECT) {
-    return { type: NO_EFFECT, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0 };
+    /* 空层：type 之外的 8 字节（参数 + level）必须全 0（§7.1 第 3 步）。 */
+    for (let i = offset + 1; i < offset + LAYER_BYTES; i += 1) {
+      if (bytes[i] !== 0) {
+        throw new RangeError(`空层的参数与 level 必须为 0，偏移 ${i} 收到 0x${bytes[i].toString(16)}`);
+      }
+    }
+    return { type: NO_EFFECT, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 };
   }
   if (!isKnownLayerType(type)) {
     throw new RangeError(`层的类型未知：0x${type.toString(16)}`);
@@ -656,10 +742,11 @@ export function parseLayer(bytes: Uint8Array, offset = 0): EffectLayer {
     periodMs: 0,
     p5: 0,
     flags: 0,
+    level,
   };
   if (type === SEGMENT_TYPE.STATIC) {
-    /* 保留位必须是 0（§7.1 第 6 条），否则视为协议漂移。 */
-    for (let i = offset + 4; i < offset + LAYER_BYTES; i += 1) {
+    /* 静态层的保留位 param[3..6]（偏移 4..7）必须是 0；level 在 8，不受这条约束。 */
+    for (let i = offset + 4; i < offset + LAYER_LEVEL_OFFSET; i += 1) {
       if (bytes[i] !== 0) {
         throw new RangeError(`静态层保留字节必须为 0，偏移 ${i} 收到 0x${bytes[i].toString(16)}`);
       }
@@ -669,11 +756,18 @@ export function parseLayer(bytes: Uint8Array, offset = 0): EffectLayer {
   layer.periodMs = bytes[offset + 4] | (bytes[offset + 5] << 8);
   layer.p5 = bytes[offset + 6];
   layer.flags = bytes[offset + 7];
+  /* v4：呼吸的 p5 是相对百分比 0-100；彩虹 / 流光的 p5（跨度 / 尾长）仍是
+   * 0-255，不受这条约束。 */
+  if (type === SEGMENT_TYPE.BREATHING && layer.p5 > 100) {
+    throw new RangeError(
+      `呼吸层的 p5（最低亮）必须是百分比 0-100，收到 ${layer.p5}`,
+    );
+  }
   return layer;
 }
 
 /**
- * 解析 21 字节段载荷（SetSegment / SegmentReport 同构，§7.1）。
+ * 解析 23 字节段载荷（SetSegment / SegmentReport 同构，§7.1）。
  *
  * 返回纯 `SegmentSpec`；报告层的扁平兼容字段由 parseSegmentReport 补。
  */
@@ -681,8 +775,8 @@ export function parseSegmentPayload(payload: Uint8Array): SegmentSpec {
   if (payload.length !== SEGMENT_BYTES) {
     throw new RangeError(`段载荷必须是 ${SEGMENT_BYTES} 字节，收到 ${payload.length}`);
   }
-  const layer0 = parseLayer(payload, 5);
-  const layer1 = parseLayer(payload, 5 + LAYER_BYTES);
+  const layer0 = parseLayer(payload, SEGMENT_HEADER_BYTES);
+  const layer1 = parseLayer(payload, SEGMENT_HEADER_BYTES + LAYER_BYTES);
   const blend = payload[4];
   if (blend > BLEND.ADD) {
     throw new RangeError(`段载荷的 blend 非法：0x${blend.toString(16)}`);
@@ -709,7 +803,7 @@ export function parseSegmentPayload(payload: Uint8Array): SegmentSpec {
 }
 
 /**
- * 解析 SegmentReport 0x83（与 SetSegment 载荷同构，固定 21 字节）。
+ * 解析 SegmentReport 0x83（与 SetSegment 载荷同构，固定 23 字节）。
  *
  * 除两层的权威字段外，还给出 layer0 的扁平投影（type/hue/sat/…），
  * 让 #41 之前的页面继续按「单层」读取，不需要改页面代码。

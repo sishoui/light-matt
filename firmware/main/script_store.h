@@ -24,7 +24,7 @@
  * 已提交的那一套完全不动。commit 成功才整体覆盖。
  */
 
-/* 播放状态（State 字节 12，docs/protocol.md §7）。 */
+/* 播放状态（State 字节 12，docs/protocol-v4.md §7）。 */
 typedef enum {
     LUMEN_PLAYBACK_STOPPED = 0,
     LUMEN_PLAYBACK_PLAYING = 1,
@@ -35,7 +35,7 @@ typedef enum {
 typedef struct {
     uint16_t duration_ms; /* 1-65535；0 = 该阶段还没有时长（commit 时拒绝） */
     /*
-     * fade_ms（v3 新增，docs/protocol-v3.md §9.6）：**格式预留，当前恒为 0**。
+     * fade_ms（v3 新增，docs/protocol-v4.md §9.6）：**格式预留，当前恒为 0**。
      * 非 0 值照常接受并持久化，但播放行为仍是硬切——过渡期要同时渲染两套阶段帧，
      * RMT 负载翻倍，与已实测的 BLE 抢 RMT ISR 问题叠加（见 docs/spec-v3.md 取舍）。
      * caps.bit1 保持 0，App 据此不展示过渡选项。
@@ -46,14 +46,14 @@ typedef struct {
 
 /* 一套已提交（或正在暂存）的剧本。
  *
- * RAM（#37 记录）：段体积从 16 涨到 24 字节后，
- *   sizeof(lumen_script_stage_t) = 8 灯带 × 8 段 × 24 + 2 ≈ 1538 字节
- *   sizeof(lumen_script_t)       = 8 阶段 × 1538 + 3 ≈ 12.3 KB
- *   sizeof(lumen_script_store_t) = 5 套（4 committed + 1 staging）× 12.3 KB
- *                                ≈ 61.5 KB（v2 约 41 KB）
- * 其中约 49 KB 是静态区（led_engine 的 s_scripts），另有 8 灯带 × 8 段 × 24
- * ≈ 1536 字节的阶段渲染快照。C3 的 ~400KB SRAM 要与 NimBLE 共用，这个增量在
- * #39 引入 16KB 剧本 blob 缓冲前需要复核（firmware.md §8 的 RAM risk）。
+ * RAM（v4 记录）：层从 8 涨到 9 字节、段从 24 涨到 28 字节后，
+ *   sizeof(lumen_script_stage_t) = 8 灯带 × 8 段 × 28 + 4 ≈ 1796 字节
+ *   sizeof(lumen_script_t)       = 8 阶段 × 1796 + 3 ≈ 14.4 KB
+ *   sizeof(lumen_script_store_t) = 5 套（4 committed + 1 staging）× 14.4 KB
+ *                                ≈ 70 KB（v3 约 61.5 KB、v2 约 41 KB）
+ * 其中约 56 KB 是静态区（led_engine 的 s_scripts），另有 8 灯带 × 8 段 × 28
+ * = 1792 字节的阶段渲染快照。C3 的 ~400KB SRAM 要与 NimBLE 共用；v4 净增约
+ * 8.4 KB。刷机后配置回默认值、RAM 增量已在上板时复核（见 docs/protocol-v4.md §10）。
  */
 typedef struct {
     bool committed;   /* 已提交才可激活 / 播放 */
@@ -103,14 +103,14 @@ bool lumen_script_stage(lumen_script_store_t *store, uint8_t script_id, uint8_t 
 /*
  * ScriptSegment：写某阶段某条灯带的一个段槽位。
  * 结构校验（id / 下标 / type / 区间基本形状）在这里；**区间与重叠的权威校验
- * 在 commit**（docs/protocol.md §10.4：失败回滚发生在 ScriptCommit）。
+ * 在 commit**（docs/protocol-v4.md §10.4：失败回滚发生在 ScriptCommit）。
  * frames_written 非 NULL 时写回累计接受帧数（0x86 进度）。
  */
 bool lumen_script_segment(lumen_script_store_t *store, uint8_t script_id, uint8_t stage_index,
                           uint8_t strip_id, uint8_t seg_id, const lumen_segment_t *segment,
                           uint16_t *frames_written);
 
-/* ScriptCommit 的结果（docs/protocol-v3.md §10.4「能提交的一定能持久化」）。 */
+/* ScriptCommit 的结果（docs/protocol-v4.md §10.4「能提交的一定能持久化」）。 */
 typedef enum {
     LUMEN_SCRIPT_COMMIT_OK = 0,
     LUMEN_SCRIPT_COMMIT_INVALID = 1,   /* 整份校验不过 → InvalidParam (0x01) */
@@ -125,7 +125,7 @@ typedef enum {
  * flags 保留位与周期下限（与 SetSegment 同一套规则）。
  *
  * 校验通过后**再编码一遍**到调用方给的暂存缓冲，检查持久化尺寸
- * （protocol-v3.md §10.4 的不变式：能 commit 的一定能持久化）。超限回
+ * （protocol-v4.md §10.4 的不变式：能 commit 的一定能持久化）。超限回
  * `LUMEN_SCRIPT_COMMIT_TOO_LARGE`，**RAM 里不会出现「已提交但存不下」的剧本**，
  * NVS 也不会收到任何写入。
  *

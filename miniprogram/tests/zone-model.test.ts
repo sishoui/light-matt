@@ -25,7 +25,17 @@ import { BLEND, NO_EFFECT, SEGMENT_TYPE } from "../utils/protocol/constants";
 import type { EffectLayer, SegmentReport, SegmentSpec } from "../utils/protocol/types";
 
 function layer(type: number, overrides: Partial<EffectLayer> = {}): EffectLayer {
-  return { type, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, ...overrides };
+  return {
+    type,
+    hue: 0,
+    sat: 0,
+    periodMs: 0,
+    p5: 0,
+    flags: 0,
+    /* 空层的 level 必须为 0；非空层默认满亮。 */
+    level: type === NO_EFFECT ? 0 : 100,
+    ...overrides,
+  };
 }
 
 function report(overrides: Partial<SegmentReport> = {}): SegmentReport {
@@ -165,7 +175,75 @@ describe("与 protocol/segment-shapes.specFromReport 规则一致", () => {
   });
 });
 
-describe("产出物一定能过构造器（这是拆 21 字节载荷的唯一目的）", () => {
+describe("v4 逐光区亮度：装配时的结构不变量（#69）", () => {
+  it("空叠加层的 level 恒为 0（即使调用方给了 50）", () => {
+    const spec = buildZoneSpec({
+      stripId: 0,
+      segId: 0,
+      start: 0,
+      end: 9,
+      layer0: layer(SEGMENT_TYPE.STATIC, { level: 40 }),
+      layer1: layer(NO_EFFECT, { level: 50 }),
+    });
+    expect(spec.layer0.level).toBe(40);
+    expect(spec.layer1.type).toBe(NO_EFFECT);
+    expect(spec.layer1.level).toBe(0);
+    /* 装配结果必须能直接下发。 */
+    expect(() => cmdSetSegment(spec)).not.toThrow();
+  });
+
+  it("非空层的 level 钳到 0-100（越界不静默放大）", () => {
+    const high = buildZoneSpec({
+      stripId: 0,
+      segId: 0,
+      start: 0,
+      end: 9,
+      layer0: layer(SEGMENT_TYPE.STATIC, { level: 150 }),
+    });
+    expect(high.layer0.level).toBe(100);
+
+    const negative = buildZoneSpec({
+      stripId: 0,
+      segId: 0,
+      start: 0,
+      end: 9,
+      layer0: layer(SEGMENT_TYPE.STATIC, { level: -8 }),
+    });
+    expect(negative.layer0.level).toBe(0);
+  });
+
+  it("level 缺失（v3 形状的对象）按满亮补齐", () => {
+    const legacy = { type: SEGMENT_TYPE.STATIC, hue: 100, sat: 255, periodMs: 0, p5: 0, flags: 0 };
+    const spec = buildZoneSpec({
+      stripId: 0,
+      segId: 0,
+      start: 0,
+      end: 9,
+      layer0: legacy as unknown as EffectLayer,
+    });
+    expect(spec.layer0.level).toBe(100);
+  });
+
+  it("0 / 50 / 100 原样保留，两层各自独立", () => {
+    const spec = buildZoneSpec({
+      stripId: 0,
+      segId: 0,
+      start: 0,
+      end: 9,
+      blend: BLEND.MULTIPLY,
+      layer0: layer(SEGMENT_TYPE.STATIC, { level: 0 }),
+      layer1: layer(SEGMENT_TYPE.BREATHING, { periodMs: 1000, p5: 20, level: 50 }),
+    });
+    expect(spec.layer0.level).toBe(0);
+    expect(spec.layer1.level).toBe(50);
+    /* 逐字节确认 level 落到了第 9 字节（层 0 偏移 13、层 1 偏移 22）。 */
+    const payload = cmdSetSegment(spec).payload;
+    expect(payload[13]).toBe(0);
+    expect(payload[22]).toBe(50);
+  });
+});
+
+describe("产出物一定能过构造器（这是拆 23 字节载荷的唯一目的）", () => {
   const specs: SegmentSpec[] = [
     buildZoneSpec({ stripId: 0, segId: 0, start: 0, end: 63, layer0: layer(SEGMENT_TYPE.STATIC) }),
     buildZoneSpec({

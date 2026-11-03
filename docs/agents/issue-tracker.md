@@ -48,10 +48,68 @@ Issue 与 spec 住在 GitHub Issues。所有操作走 `gh` CLI；在仓库目录
 
 v1（MVP）的 wayfinder 地图与决策票仍在 `docs/wayfinding/`（历史产物）。之后新开的 wayfinder effort 走 GitHub Issues。
 
-### 当前 effort：v3 扩展
+### 当前 effort：UI 重构 + 协议 v4
+
+- **规格**：[#60 导航重构 + 灯组详情页 + 进阶时间轴编辑器 + 协议 v4 逐光区亮度](https://github.com/sishoui/light-matt/issues/60)，label `spec`。
+- **本地副本**：`.scratch/ui-refactor-v4-spec.md`（与 #60 同内容，离线可读）；实现票底稿在 `.scratch/ui-refactor-tickets/`。
+- **交付顺序**：①路由与骨架 → ②发现页 + 我的页 → ③设备页 + 灯组页 → ④协议 v4。前三步是 UI 重构，第四步独立分支、只能最后合。
+- **三条不能忘的陷阱**：相对 import 不能指向目录；`Page({})` 的非 `data` 字段必须在 `onLoad` 初始化；快捷档写整组前必须先清掉其它光区。
+
+**实现票（9 张，原生阻塞边已建；#69 因 GitHub 循环依赖保护只能靠正文的 Parent 引用）**
+
+```
+#61 路由与页面骨架            ← frontier，可立即开始
+ ├─ #62 发现页 + 我的页
+ └─ #63 设备页瘦身
+      └─ #64 灯组页 · 简单档   (同时阻塞于 #61)
+           └─ #65 时间轴与时长
+                └─ #66 光区轴与灯珠弹窗
+                     └─ #67 效果面板
+                          └─ #69 小程序编解码接 v4  (同时阻塞于 #68)
+
+#68 协议 v4 · 契约、向量与固件  ← 独立分支，可与 #61–#67 并行
+```
+
+| 票 | 标题 | 阻塞于 |
+|---|---|---|
+| #61 | 路由与页面骨架 | — |
+| #62 | 发现页 + 我的页 | #61 |
+| #63 | 设备页瘦身 | #61 |
+| #64 | 灯组页 · 简单档 | #61 #63 |
+| #65 | 进阶档 · 时间轴与时长 | #64 |
+| #66 | 进阶档 · 光区轴与灯珠弹窗 | #65 |
+| #67 | 进阶档 · 效果面板 | #66 |
+| #68 | 协议 v4 · 契约、向量与固件 | — |
+| #69 | 小程序编解码接 v4 | #67 #68 |
+
+**实现进度**（集成分支 `integration/ui-refactor-v4`）
+
+| 票 | 状态 | 证据 |
+|---|---|---|
+| #61 | ✅ 已合入 | 928 用例；tsc 干净 |
+| #68 | ✅ 已合入 | 固件 11449 断言 / 64 向量；`docs/protocol-v4.md` |
+| #62 | ✅ 已合入 | 949 用例；模拟器 41/41 |
+| #63 | ✅ 已合入 | 模拟器 26/26（两列卡片 + 逐组灯珠数） |
+| #64 | ✅ 已合入 | 973 用例；模拟器 57/57 |
+| #65 | ✅ 已合入 | `utils/control/timeline.ts` + `tests/timeline.test.ts`；模拟器时间轴段落 |
+| #66 | ✅ 已合入 | `utils/control/zone-axis.ts` / `led-picker.ts`；模拟器光区轴与灯珠弹窗段落 |
+| #67 | ✅ 已合入 | `utils/control/effect-panel.ts`；模拟器效果面板段落 |
+| #69 | ✅ 已合入 | 小程序编解码接 v4；模拟器 137/137（含「方案真的整份下发」） |
+
+**收尾（code review 后的修正，同一分支）**：进阶档「应用并播放」现在**真的把整份方案
+下发到设备**（`downloadScript(…, { activate: true, loop })`；此前只写实时光区，
+导致第 2..N 步不可达、时长条对设备无作用）；方案草稿落盘 `lumen.planDrafts.v1`
+（键 `deviceKey#stripId#slot`，断线 / 切页不清，**只在删除设备时清**），
+「内容只存在本机」这句承诺才成立。小程序 **1169 用例 / 53 文件**。
+
+**协议 v4 尺寸（实现期裁决，规格原文笔误已修正）**：层 9 字节 → 段载荷 **23**、
+ScriptSegment **25**、SegmentReport **23**、State blob 段记录 22 / 总长 1440。
+v3 的 State blob 版本号已是 4，协议 v4 用 **5**；脚本 blob version 2 → 3。
+
+### 上一 effort：v3 扩展
 
 - **规格（实现层）**：[#35 lumen v3 · 实现规格](https://github.com/sishoui/light-matt/issues/35)，label `spec`。11 张实现票是它的 sub-issues。
-- **字节细节**的唯一真相是 `docs/protocol-v3.md`（v3 契约，含分片与两层段）；可执行副本是 `docs/protocol-testvectors-v3.json`，由 `scripts/gen-protocol-testvectors-v3.mjs` 生成 —— **改契约必须重新生成向量**。
+- **字节细节**的唯一真相是 `docs/protocol-v4.md`（v4 契约，含分片、两层段与逐层亮度）；可执行副本是 `docs/protocol-testvectors-v4.json`，由 `scripts/gen-protocol-testvectors-v4.mjs` 生成 —— **改契约必须重新生成向量**。
 - **不取代**：`docs/effects-spec.md` 的灯效参数语义在 v3 里没有变。
 
 **v3 要解决的核心问题**：v2 把多带 / 多段 / 多阶段 / 多灯效都做进了固件和协议，但**小程序没跟上**（`PRIMARY_STRIP_ID = 0` 写死，无灯带维度）。v3 的主战场是小程序，固件做「补齐 + 放开」。

@@ -240,6 +240,42 @@ export interface BuildNearbyInput {
  * 对「只有后端记录」的设备（没有 deviceId），只能靠广播名——这正是它
  * `remoteOnly` 的原因：扫到才能连。
  */
+/**
+ * 发现页的扫描结果行：**不过滤**已登记设备，只标「已知」。
+ *
+ * 与 `buildNearby` 的区别是用途：`buildNearby` 服务于「我的设备 + 附近设备」
+ * 并排的旧版发现页（同一台在两条里重复出现会让用户不知道该点哪个，所以要
+ * 隐去 duplicate）；新发现页只有一个列表，「已知」设备正是用户最想点的那
+ * 一台，滤掉就没得点了。
+ *
+ * 排序：信号强度降序（最强的通常就是用户要找的那台）。
+ */
+export interface ScanRow {
+  deviceId: string;
+  name: string;
+  rssi: number;
+  /** 已在「我的设备」里（按 deviceId 或广播名匹配）。 */
+  known: boolean;
+  /** 是否是当前连接的这台。 */
+  current: boolean;
+  /** 给 WXML 直接用的信号文本。 */
+  rssiText: string;
+}
+
+export function buildScanRows(input: BuildNearbyInput): ScanRow[] {
+  return buildNearby(input)
+    .slice()
+    .sort((a, b) => b.rssi - a.rssi)
+    .map((row) => ({
+      deviceId: row.deviceId,
+      name: row.name,
+      rssi: row.rssi,
+      known: row.known,
+      current: row.current,
+      rssiText: `${row.rssi} dBm`,
+    }));
+}
+
 export function buildNearby(input: BuildNearbyInput): NearbyDeviceRow[] {
   const knownDeviceIds = new Set<string>();
   const knownNames = new Set<string>();

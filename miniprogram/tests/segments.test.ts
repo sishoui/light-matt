@@ -1,7 +1,7 @@
 /**
  * #25/#30/#31 段配置在 v3 下的形状：命令构造器 / 载荷解析 / 描述 / 扁平⇄两层。
  *
- * 字节期望值直接来自 docs/protocol-testvectors-v3.json（两端共用的唯一真相），
+ * 字节期望值直接来自 docs/protocol-testvectors-v4.json（两端共用的唯一真相），
  * 不在这里另写一份 hex。v3 的段载荷是**固定 21 字节**（两层定宽），
  * 所以「静态 8 / 动画 12」这类 v2 断言已不存在。
  */
@@ -17,6 +17,7 @@ import {
   breathingWaveform,
   cmdClearSegment,
   cmdQueryStrip,
+  cmdScriptSegment,
   cmdSetSegment,
   cometSegment,
   directionFlags,
@@ -74,7 +75,7 @@ interface VectorCase {
 }
 
 const vectors = JSON.parse(
-  readFileSync(new URL("../../docs/protocol-testvectors-v3.json", import.meta.url), "utf8"),
+  readFileSync(new URL("../../docs/protocol-testvectors-v4.json", import.meta.url), "utf8"),
 ) as { cases: VectorCase[] };
 
 function vector(name: string): VectorCase {
@@ -94,7 +95,7 @@ function singleLayer(
   return { stripId, segId, start, end, blend: BLEND.OVER, layer0, layer1: emptyLayer() };
 }
 
-const STATIC_RED: EffectLayer = { type: 0, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0 };
+const STATIC_RED: EffectLayer = { type: 0, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0, level: 100 };
 
 describe("SetSegment 构造器与 v3 向量一致（21 字节定宽）", () => {
   it("单层静态逐字节复现 set_segment_single_static", () => {
@@ -119,7 +120,8 @@ describe("SetSegment 构造器与 v3 向量一致（21 字节定宽）", () => {
           periodMs: 2000,
           p5: 30,
           flags: 0,
-        }),
+            level: 100,
+          }),
       ],
       [
         "set_segment_single_rainbow",
@@ -130,7 +132,8 @@ describe("SetSegment 构造器与 v3 向量一致（21 字节定宽）", () => {
           periodMs: 4000,
           p5: 255,
           flags: 0,
-        }),
+            level: 100,
+          }),
       ],
       [
         "set_segment_single_comet",
@@ -141,7 +144,8 @@ describe("SetSegment 构造器与 v3 向量一致（21 字节定宽）", () => {
           periodMs: 1200,
           p5: 8,
           flags: 1,
-        }),
+            level: 100,
+          }),
       ],
     ];
     for (const [name, spec] of cases) {
@@ -160,7 +164,7 @@ describe("SetSegment 构造器与 v3 向量一致（21 字节定宽）", () => {
       end: 39,
       blend: BLEND.MULTIPLY,
       layer0: STATIC_RED,
-      layer1: { type: SEGMENT_TYPE.STATIC, hue: 0, sat: 0x80, periodMs: 0, p5: 0, flags: 0 },
+      layer1: { type: SEGMENT_TYPE.STATIC, hue: 0, sat: 0x80, periodMs: 0, p5: 0, flags: 0, level: 100 },
     });
     expect(bytesToCompactHex(multiplyReq.payload)).toBe(multiply.payload_hex);
 
@@ -171,8 +175,8 @@ describe("SetSegment 构造器与 v3 向量一致（21 字节定宽）", () => {
       start: 0,
       end: 63,
       blend: BLEND.ADD,
-      layer0: { type: SEGMENT_TYPE.STATIC, hue: 0xaaaa, sat: 255, periodMs: 0, p5: 0, flags: 0 },
-      layer1: { type: SEGMENT_TYPE.STATIC, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0 },
+      layer0: { type: SEGMENT_TYPE.STATIC, hue: 0xaaaa, sat: 255, periodMs: 0, p5: 0, flags: 0, level: 100 },
+      layer1: { type: SEGMENT_TYPE.STATIC, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0, level: 100 },
     });
     expect(bytesToCompactHex(addReq.payload)).toBe(add.payload_hex);
   });
@@ -192,8 +196,9 @@ describe("SetSegment 构造器与 v3 向量一致（21 字节定宽）", () => {
         periodMs: 4000,
         p5: 255,
         flags: 0,
-      },
-      layer1: { type: SEGMENT_TYPE.BREATHING, hue: 0, sat: 0, periodMs: 1500, p5: 20, flags: 0 },
+          level: 100,
+        },
+      layer1: { type: SEGMENT_TYPE.BREATHING, hue: 0, sat: 0, periodMs: 1500, p5: 20, flags: 0, level: 100 },
     });
     expect(bytesToCompactHex(req.payload)).toBe(rainbow.payload_hex);
 
@@ -211,7 +216,8 @@ describe("SetSegment 构造器与 v3 向量一致（21 字节定宽）", () => {
         periodMs: 1200,
         p5: 8,
         flags: 0,
-      },
+          level: 100,
+        },
       layer1: { ...STATIC_RED },
     });
     expect(bytesToCompactHex(overReq.payload)).toBe(over.payload_hex);
@@ -224,8 +230,9 @@ describe("SetSegment 构造器与 v3 向量一致（21 字节定宽）", () => {
     expect(bytesToCompactHex(req.payload)).toBe(
       bytesToCompactHex(cmdSetSegment(singleLayer(0, 0, 0, 9, STATIC_RED)).payload),
     );
-    /* layer1 区域全 0xFF 开头 + 7 个 0。 */
-    expect(req.payload[13]).toBe(NO_EFFECT);
+    /* layer1 从偏移 14 起（段头 5 + layer0 9）：0xFF 开头 + 8 个 0。 */
+    expect(req.payload[14]).toBe(NO_EFFECT);
+    expect(bytesToCompactHex(req.payload.slice(14))).toBe("FF0000000000000000");
   });
 
   it("构造器在本端就拒绝非法 blend / 空 layer0 / 未知类型 / 区间", () => {
@@ -280,7 +287,8 @@ describe("SetSegment 构造器与 v3 向量一致（21 字节定宽）", () => {
         periodMs: 900,
         p5: 128,
         flags: 0,
-      },
+          level: 100,
+        },
       layer1: {
         type: SEGMENT_TYPE.BREATHING,
         hue: 0x4321,
@@ -288,7 +296,8 @@ describe("SetSegment 构造器与 v3 向量一致（21 字节定宽）", () => {
         periodMs: 1500,
         p5: 30,
         flags: breathingFlags(WAVEFORM.TRIANGLE),
-      },
+          level: 100,
+        },
     };
     const first = cmdSetSegment(spec).payload;
     const parsed = parseSegmentPayload(first);
@@ -320,14 +329,14 @@ describe("SetSegment 构造器与 v3 向量一致（21 字节定宽）", () => {
 describe("SegmentReport / SegmentListEnd 解析（21 字节）", () => {
   it("静态报告：两层齐全，扁平字段是 layer0 的投影", () => {
     const report = parseSegmentReport(
-      hexToBytes("0000000900000000FF00000000FF00000000000000") as Uint8Array,
+      hexToBytes("0000000900000000FF0000000064FF0000000000000000") as Uint8Array,
     );
     expect(report.stripId).toBe(0);
     expect(report.segId).toBe(0);
     expect(report.start).toBe(0);
     expect(report.end).toBe(9);
     expect(report.blend).toBe(BLEND.OVER);
-    expect(report.layer0).toEqual({ type: 0, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0 });
+    expect(report.layer0).toEqual({ type: 0, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0, level: 100 });
     expect(report.layer1.type).toBe(NO_EFFECT);
     /* 兼容投影（#41 之前的页面直接读这些字段）。 */
     expect(report.type).toBe(report.layer0.type);
@@ -340,7 +349,7 @@ describe("SegmentReport / SegmentListEnd 解析（21 字节）", () => {
 
   it("两层报告：blend 与两层参数都保留", () => {
     const report = parseSegmentReport(
-      hexToBytes("0003003F01020000FFA00FFF0001000000DC051400") as Uint8Array,
+      hexToBytes("0003003F01020000FFA00FFF006401000000DC05140064") as Uint8Array,
     );
     expect(report.blend).toBe(BLEND.MULTIPLY);
     expect(report.layer0.type).toBe(SEGMENT_TYPE.RAINBOW);
@@ -354,7 +363,7 @@ describe("SegmentReport / SegmentListEnd 解析（21 字节）", () => {
 
   it("日志描述把两层都写出来", () => {
     const report = parseSegmentReport(
-      hexToBytes("0003003F01020000FFA00FFF0001000000DC051400") as Uint8Array,
+      hexToBytes("0003003F01020000FFA00FFF006401000000DC05140064") as Uint8Array,
     );
     const text = describeSegmentReport(report);
     expect(text).toContain("SegmentReport strip=0 seg=3 range=0-63 blend=multiply");
@@ -387,6 +396,104 @@ describe("SegmentReport / SegmentListEnd 解析（21 字节）", () => {
   });
 });
 
+describe("v4 层亮度 level（#69）", () => {
+  it("0 / 50 / 100 都编码到第 9 字节（层 0 偏移 13、层 1 偏移 22）", () => {
+    for (const level of [0, 50, 100]) {
+      const payload = cmdSetSegment(
+        singleLayer(0, 4, 0, 9, { type: SEGMENT_TYPE.STATIC, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0, level }),
+      ).payload;
+      expect(payload.length, String(level)).toBe(SEGMENT_BYTES);
+      expect(payload[13], String(level)).toBe(level);
+      /* 空叠加层：9 字节全 0。 */
+      expect(payload[22], String(level)).toBe(0);
+      /* 与跨端向量逐字节一致（这一档有专门的向量用例）。 */
+      const name = `set_segment_level_${level}`;
+      expect(bytesToCompactHex(payload), name).toBe(vector(name).payload_hex);
+    }
+  });
+
+  it("level > 100 在本端就拒绝（不回绕、不静默钳位）", () => {
+    for (const level of [101, 200, 255]) {
+      expect(
+        () => cmdSetSegment(singleLayer(0, 0, 0, 9, { ...STATIC_RED, level })),
+        String(level),
+      ).toThrow(RangeError);
+    }
+    /* 与向量的越界用例同构。 */
+    expect(bytesToCompactHex(
+      (() => {
+        const payload = new Uint8Array(23);
+        payload[1] = 4; /* 向量 set_segment_bad_level_101 用槽位 4 */
+        payload[3] = 9;
+        payload[4] = 0;
+        payload[5] = SEGMENT_TYPE.STATIC;
+        payload[8] = 255;
+        payload[13] = 101;
+        payload[14] = 0xff;
+        return payload;
+      })(),
+    )).toBe(vector("set_segment_bad_level_101").payload_hex);
+  });
+
+  it("空层的 level 必须为 0（带亮度的空层 = 把清槽和压暗搞混了）", () => {
+    expect(() =>
+      cmdSetSegment({
+        ...singleLayer(0, 0, 0, 9, STATIC_RED),
+        layer1: { ...emptyLayer(), level: 50 },
+      }),
+    ).toThrow(RangeError);
+    /* 正常空层（level 0）能过。 */
+    expect(() => cmdSetSegment(singleLayer(0, 0, 0, 9, STATIC_RED))).not.toThrow();
+  });
+
+  it("呼吸的最低亮是百分比 0-100：101 在下发前被拦", () => {
+    expect(() =>
+      cmdSetSegment(singleLayer(0, 0, 0, 9, {
+        type: SEGMENT_TYPE.BREATHING,
+        hue: 0,
+        sat: 255,
+        periodMs: 1000,
+        p5: 101,
+        flags: 0,
+        level: 100,
+      })),
+    ).toThrow(RangeError);
+    expect(() =>
+      cmdSetSegment(singleLayer(0, 0, 0, 9, {
+        type: SEGMENT_TYPE.BREATHING,
+        hue: 0,
+        sat: 255,
+        periodMs: 1000,
+        p5: 100,
+        flags: 0,
+        level: 100,
+      })),
+    ).not.toThrow();
+  });
+
+  it("ScriptSegment 清槽旁路：两层的 level 必须都为 0", () => {
+    const clear = { ...singleLayer(0, 0, 0, 9, emptyLayer()), layer0: emptyLayer() };
+    expect(() => cmdScriptSegment(0, 0, clear)).not.toThrow();
+    expect(() =>
+      cmdScriptSegment(0, 0, { ...clear, layer0: { ...emptyLayer(), level: 30 } }),
+    ).toThrow(RangeError);
+    /* 与跨端向量同构（清槽旁路 + level 30 → InvalidParam）。 */
+    expect(bytesToCompactHex(
+      (() => {
+        /* 25 字节：script(0) stage(1) | strip(2) seg(3) start(4) end(5) blend(6)
+         * | layer0 type(7) … level(15) | layer1 type(16) … level(24)。 */
+        const payload = new Uint8Array(25);
+        payload[3] = 5; /* seg：向量用槽位 5 */
+        payload[5] = 9;
+        payload[7] = NO_EFFECT;
+        payload[15] = 30;
+        payload[16] = NO_EFFECT;
+        return payload;
+      })(),
+    )).toBe(vector("script_segment_clear_level_nonzero").payload_hex);
+  });
+});
+
 describe("segment-model：扁平 UI ⇄ 两层 spec", () => {
   it("toSpec：layer1 空、blend 覆盖；静态段强制 period/p5/flags 为 0", () => {
     const spec = toSpec({
@@ -402,7 +509,7 @@ describe("segment-model：扁平 UI ⇄ 两层 spec", () => {
       flags: 3,
     });
     expect(spec.blend).toBe(BLEND.OVER);
-    expect(spec.layer0).toEqual({ type: 0, hue: 100, sat: 200, periodMs: 0, p5: 0, flags: 0 });
+    expect(spec.layer0).toEqual({ type: 0, hue: 100, sat: 200, periodMs: 0, p5: 0, flags: 0, level: 100 });
     expect(spec.layer1.type).toBe(NO_EFFECT);
   });
 
@@ -414,7 +521,8 @@ describe("segment-model：扁平 UI ⇄ 两层 spec", () => {
       periodMs: 900,
       p5: 9,
       flags: 2,
-    });
+        level: 100,
+      });
     expect(toFlat(spec)).toEqual({
       stripId: 0,
       segId: 2,
@@ -441,7 +549,7 @@ describe("segment-model：扁平 UI ⇄ 两层 spec", () => {
 
   it("specFromReport 丢掉扁平投影字段（读-改-写不污染载荷）", () => {
     const report = parseSegmentReport(
-      hexToBytes("0003003F01020000FFA00FFF0001000000DC051400") as Uint8Array,
+      hexToBytes("0003003F01020000FFA00FFF006401000000DC05140064") as Uint8Array,
     );
     const spec = specFromReport(report);
     expect(Object.keys(spec).sort()).toEqual([
@@ -453,7 +561,7 @@ describe("segment-model：扁平 UI ⇄ 两层 spec", () => {
       "start",
       "stripId",
     ]);
-    const original = hexToBytes("0003003F01020000FFA00FFF0001000000DC051400") as Uint8Array;
+    const original = hexToBytes("0003003F01020000FFA00FFF006401000000DC05140064") as Uint8Array;
     expect(bytesToCompactHex(cmdSetSegment(spec).payload)).toBe(bytesToCompactHex(original));
   });
 });
@@ -516,12 +624,13 @@ describe("分段编辑器纯逻辑（页面侧不变）", () => {
     expect(overlapError(40, 63, rows)).not.toBeNull();
     expect(overlapError(40, 63, rows, 1)).toBeNull();
     expect(overlapError(0, 15, rows, 0)).toBeNull();
-    expect(overlapError(5, 45, rows)).toContain("段 0");
+    expect(overlapError(5, 45, rows)).toContain("光区 1");
+    expect(overlapError(5, 45, rows)).not.toContain("段");
   });
 
   it("行视图：按 segId 排序、四种类型可编辑、选中态正确", () => {
     const staticReport = parseSegmentReport(
-      hexToBytes("0000000900000000FF00000000FF00000000000000") as Uint8Array,
+      hexToBytes("0000000900000000FF0000000064FF0000000000000000") as Uint8Array,
     );
     const rows = buildSegmentRows(
       [
@@ -556,7 +665,7 @@ describe("分段编辑器纯逻辑（页面侧不变）", () => {
 
 describe("StripQueryCollector：同 seq 多帧收尾（21 字节报告）", () => {
   const report = parseSegmentReport(
-    hexToBytes("0000000900000000FF00000000FF00000000000000") as Uint8Array,
+    hexToBytes("0000000900000000FF0000000064FF0000000000000000") as Uint8Array,
   );
 
   it("收集 SegmentReport 并在 SegmentListEnd 兑现", async () => {
@@ -647,17 +756,18 @@ describe("#30 呼吸：flags / 下限 / 波形 / 行视图", () => {
 
   it("呼吸行视图：标签、波形名与最暗亮度百分比", () => {
     const report = parseSegmentReport(
-      hexToBytes("000100090001100EFFE8036000FF00000000000000") as Uint8Array,
+      hexToBytes("000100090001100EFFE803600064FF0000000000000000") as Uint8Array,
     );
     const rows = buildSegmentRows([report], 1, segmentHueSatToRgb);
     expect(rows[0].typeText).toBe("呼吸");
     expect(rows[0].animated).toBe(true);
     expect(rows[0].breathText).toContain("1000ms");
-    expect(rows[0].breathText).toContain("最暗 38%");
+    /* v4：呼吸的 p5 是相对百分比（0x60 = 96%），不再按 0-255 换算。 */
+    expect(rows[0].breathText).toContain("最暗 96%");
     expect(breathingLabel(report)).toBe(rows[0].breathText);
 
     const still = { ...report, periodMs: 0 };
-    expect(breathingLabel(still)).toBe("静止 · 最暗 38%");
+    expect(breathingLabel(still)).toBe("静止 · 最暗 96%");
   });
 });
 
@@ -699,13 +809,13 @@ describe("#31 彩虹 / 流光：flags / 向量 / 行视图", () => {
 
   it("彩虹 / 流光行视图：类型标签与参数摘要", () => {
     const base = parseSegmentReport(
-      hexToBytes("0000000900000000FF00000000FF00000000000000") as Uint8Array,
+      hexToBytes("0000000900000000FF0000000064FF0000000000000000") as Uint8Array,
     );
     const rainbowReport = {
       ...base,
       segId: 2,
       type: SEGMENT_TYPE.RAINBOW,
-      layer0: { type: SEGMENT_TYPE.RAINBOW, hue: 0, sat: 255, periodMs: 1000, p5: 0, flags: 0 },
+      layer0: { type: SEGMENT_TYPE.RAINBOW, hue: 0, sat: 255, periodMs: 1000, p5: 0, flags: 0, level: 100 },
       periodMs: 1000,
       p5: 0,
       flags: 0,

@@ -34,7 +34,17 @@ import { BLEND, MAX_SEGMENTS, NO_EFFECT, SEGMENT_TYPE } from "../utils/protocol/
 import type { EffectLayer, SegmentReport, SegmentSpec } from "../utils/protocol/types";
 
 function layer(type: number, overrides: Partial<EffectLayer> = {}): EffectLayer {
-  return { type, hue: 1000, sat: 255, periodMs: 0, p5: 0, flags: 0, ...overrides };
+  return {
+    type,
+    hue: 1000,
+    sat: 255,
+    periodMs: 0,
+    p5: 0,
+    flags: 0,
+    /* 空层的 level 必须为 0；非空层默认满亮。 */
+    level: type === NO_EFFECT ? 0 : 100,
+    ...overrides,
+  };
 }
 
 function zone(segId: number, start: number, end: number): SegmentSpec {

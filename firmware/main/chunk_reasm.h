@@ -9,7 +9,7 @@
 /*
  * BLE 分片重组（纯模块，无 ESP-IDF 头，host 可测）。
  *
- * 为什么单独成模块：docs/protocol-v3.md §3.2 的重组规则是**两端对称**的协议
+ * 为什么单独成模块：docs/protocol-v4.md §3.2 的重组规则是**两端对称**的协议
  * 状态机，而 ble_link.c 依赖 NimBLE、无法在 host 上编译。把状态机抽出来并注入
  * now_ms，就能用向量里的 chunks_hex 直接驱动它做逐字节断言。
  *

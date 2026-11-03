@@ -17,7 +17,7 @@
  * 纯函数、不碰 wx / BLE。
  */
 
-import { BLEND, MAX_STAGES } from "../protocol/constants";
+import { BLEND, LAYER_LEVEL_MAX, MAX_STAGES } from "../protocol/constants";
 import type { ScriptDraft, ScriptStageDraft } from "./script-view";
 import type { ScriptSegment } from "./script-plan";
 import type { SegmentSpec } from "../protocol/types";
@@ -102,6 +102,8 @@ export function zonesOfStep(
               periodMs: segment.periodMs,
               p5: segment.p5,
               flags: segment.flags,
+              /* 扁平草稿没有亮度字段：按满亮（等价 v3 行为）。 */
+              level: LAYER_LEVEL_MAX,
             },
             layer1: null,
           }),
@@ -125,7 +127,25 @@ export function replaceStepZones(
   if (step === undefined) {
     return draft;
   }
-  const others = step.segments.filter((segment) => segment.stripId !== stripId);
+  const segments = replaceStepZonesInList(step.segments, stripId, zones);
+  const stages = draft.stages.map((item, index) =>
+    index === stepIndex ? { ...item, segments } : item,
+  );
+  return { ...draft, stages };
+}
+
+/**
+ * 「步骤 × 灯组」替换的**列表层实现**（`replaceStepZones` 与进阶档的步骤草稿共用）。
+ *
+ * 进阶档（#66）只保存「每一步的光区列表」，没有完整的方案草稿；它需要的正是
+ * 同一条语义：**只替换当前灯组那一片**。规则只在这里写一份，两条路径不会漂移。
+ */
+export function replaceStepZonesInList(
+  segments: readonly ScriptSegment[],
+  stripId: number,
+  zones: readonly SegmentSpec[],
+): ScriptSegment[] {
+  const others = segments.filter((segment) => segment.stripId !== stripId);
   const next = zones.map((zone) => ({
     stripId: zone.stripId,
     segId: zone.segId,
@@ -135,10 +155,7 @@ export function replaceStepZones(
     layer0: { ...zone.layer0 },
     layer1: { ...zone.layer1 },
   }));
-  const stages = draft.stages.map((item, index) =>
-    index === stepIndex ? { ...item, segments: [...others, ...next] } : item,
-  );
-  return { ...draft, stages };
+  return [...others, ...next];
 }
 
 /** 当前步骤里覆盖了哪些灯组（三级树的面包屑与摘要用）。 */
@@ -222,6 +239,10 @@ export const PLAN_CAPACITY_NOTE = "4 套方案共用 16KB 空间，超了要先�
  * 逐字核对过的（`docs/acceptance-v3.md` 有它的原文断言），改它要连着改
  * 验收记录；而用户看到的必须是新词（没有「剧本 / 阶段 / 毫秒」）。
  * 所以在「面向用户」的这一层做映射，底层保持协议口径。
+ *
+ * **这里不处理 `ms`**：`planUserMessage` 先做术语替换、再做时长换算。早期实现在
+ * 这里把 `500ms` 直接换成「500 毫秒」，后面的 `durationMessageText` 就再也看不
+ * 到 `ms` 了——输出里留下一个禁用词。毫秒只在 `durationMessageText` 里出现。
  */
 export function planMessageText(message: string): string {
   return message
@@ -232,16 +253,20 @@ export function planMessageText(message: string): string {
     .replace(/剧本/g, "方案")
     .replace(/阶段/g, "步骤")
     .replace(/下发/g, "写入")
-    .replace(/激活/g, "启用")
-    .replace(/(\d+)\s*ms/g, "$1 毫秒");
+    .replace(/激活/g, "启用");
 }
 
-/** 把带 `ms` 的时长描述换成秒（界面不出现「毫秒」这个词）。 */
+/**
+ * 把带 `ms` 的时长描述换成秒（界面不出现「毫秒」这个词）。
+ *
+ * 不足 1 秒一律说「不足 1 秒」——`0.001 秒` 这种数字对用户毫无意义，而「毫秒」
+ * 本身是禁用词。已经是秒的文本（没有 `ms`）原样返回。
+ */
 export function durationMessageText(message: string): string {
-  return message.replace(/(\d+)\s*ms/g, (_, raw: string) => {
+  return message.replace(/(\d+(?:\.\d+)?)\s*ms\b/g, (_, raw: string) => {
     const ms = Number(raw);
     if (!Number.isFinite(ms) || ms <= 0) {
-      return raw;
+      return "不足 1 秒";
     }
     /* 不足 1 秒时说「不足 1 秒」：0.001 秒这种数字对用户毫无意义，
      * 而「毫秒」本身是禁用词。 */
@@ -253,7 +278,12 @@ export function durationMessageText(message: string): string {
   });
 }
 
-/** 面向用户的方案校验消息：换术语 + 把毫秒换成秒。 */
+/**
+ * 面向用户的方案校验消息：换术语 + 把毫秒换成秒。
+ *
+ * 顺序是硬要求：**先换术语，再换时长**。反过来（或在前一步就吃掉 `ms`）
+ * 会让「1ms」变成「1 毫秒」，界面就出现了禁用词。
+ */
 export function planUserMessage(message: string): string {
   return durationMessageText(planMessageText(message));
 }

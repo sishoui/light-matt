@@ -1,0 +1,421 @@
+<view class="page {{themeClass}}">
+  <nav-bar title="{{title}}" subtitle="{{subtitle}}" back="{{true}}" />
+
+  <!-- 连接提示：自动连接失败 / 需要先扫描时才有内容 -->
+  <view wx:if="{{connectHint}}" class="notice-card" bindtap="onRetryConnect">
+    <text class="notice-text">{{connectHint}}</text>
+    <text class="notice-action">重试</text>
+  </view>
+
+  <view class="statusbar {{linkClass}}" bindtap="onRetryConnect">
+    <view class="status-dot"></view>
+    <view class="status-main">
+      <text class="status-text">{{statusText}}</text>
+      <text class="status-sub">{{statusSub}}</text>
+    </view>
+    <text
+      wx:if="{{!ready && !connectBusy && (linkClass === 'link-idle' || linkClass === 'link-error')}}"
+      class="status-action"
+    >重连</text>
+  </view>
+
+  <!-- ---------------- 顶部：灯组名 / 灯珠数 + 方案槽位按钮 ---------------- -->
+  <view class="strip-head">
+    <view class="strip-head-main">
+      <text class="strip-name">{{title}}</text>
+      <text class="strip-meta">{{ledText}}</text>
+    </view>
+    <!-- 点一下在四个槽位之间轮换；空槽位标注「空白」，有内容显示步骤数 -->
+    <view class="plan-slot" bindtap="onPlanSlotTap" hover-class="plan-slot-hover">
+      <text class="plan-slot-label">{{planLabel}}</text>
+      <text class="plan-slot-sub">{{planSub}}</text>
+    </view>
+  </view>
+
+  <!-- ---------------- 简单 / 进阶 ---------------- -->
+  <view class="mode-switch">
+    <view
+      class="mode-tab {{mode === 'simple' ? 'on' : ''}}"
+      data-mode="simple"
+      bindtap="onModeTap"
+    >
+      <text class="mode-tab-label">简单</text>
+      <text class="mode-tab-sub">点一下就好</text>
+    </view>
+    <view
+      class="mode-tab {{mode === 'advanced' ? 'on' : ''}}"
+      data-mode="advanced"
+      bindtap="onModeTap"
+    >
+      <text class="mode-tab-label">进阶</text>
+      <text class="mode-tab-sub">自己编排</text>
+    </view>
+  </view>
+
+  <!-- ---------------- 简单档：六张成品效果卡 ---------------- -->
+  <block wx:if="{{mode === 'simple'}}">
+    <view class="section">
+      <view class="section-head">
+        <text class="section-title">选一个效果</text>
+        <text class="section-value">整组生效</text>
+      </view>
+
+      <view class="quick-grid {{quickDisabledReason ? 'disabled' : ''}}">
+        <view
+          wx:for="{{quickCards}}"
+          wx:key="id"
+          class="quick-card {{item.selected ? 'selected' : ''}}"
+          data-card-id="{{item.id}}"
+          bindtap="onQuickCardTap"
+          hover-class="quick-card-hover"
+        >
+          <view class="quick-swatch" style="background: {{item.hex}}"></view>
+          <view class="quick-body">
+            <text class="quick-name">{{item.name}}</text>
+            <text class="quick-hint">{{item.hint}}</text>
+          </view>
+          <view wx:if="{{item.selected}}" class="quick-check"></view>
+        </view>
+      </view>
+
+      <text wx:if="{{quickDisabledReason}}" class="section-hint">{{quickDisabledReason}}</text>
+    </view>
+
+    <!-- 参数区：只出现这张卡支持的滑块（色相 / 饱和度 + 亮度） -->
+    <view wx:if="{{simpleParams}}" class="section param-panel">
+      <view class="section-head">
+        <text class="section-title">{{simpleParams.cardName}}的参数</text>
+        <view class="param-preview" style="background: {{simpleParams.colorHex}}"></view>
+      </view>
+
+      <view wx:for="{{simpleParams.sliders}}" wx:key="key" class="param-row">
+        <view class="param-head">
+          <text class="param-label">{{item.label}}</text>
+          <text class="param-value mono">{{item.display}}</text>
+        </view>
+        <slider
+          class="param-slider"
+          min="{{item.min}}"
+          max="{{item.max}}"
+          step="{{item.step}}"
+          value="{{item.value}}"
+          data-key="{{item.key}}"
+          disabled="{{!ready}}"
+          activeColor="#ff9500"
+          backgroundColor="rgba(120, 120, 128, 0.2)"
+          block-size="22"
+          bindchanging="onParamChanging"
+          bindchange="onParamChange"
+        />
+        <!-- 滑块的补充说明（目前没有滑块需要说明：亮度走 v4 的逐光区 level，真实下发） -->
+        <text wx:if="{{item.note}}" class="param-note">{{item.note}}</text>
+      </view>
+
+      <text wx:if="{{quickHint}}" class="section-hint">{{quickHint}}</text>
+      <text wx:else class="section-hint">改完立刻生效，整组一起变</text>
+    </view>
+  </block>
+
+  <!-- ---------------- 进阶档：时间轴 + 时长（#65） ---------------- -->
+  <block wx:if="{{mode === 'advanced'}}">
+    <view class="section timeline-section">
+      <view class="section-head">
+        <text class="section-title">时间轴</text>
+        <text class="section-value">{{timelineSummary}}</text>
+      </view>
+
+      <!--
+        每个步骤一个块，宽度按时长比例分配；点选、长按后横向拖动重排。
+        八个步骤时 8×40px 保底可能比屏幕宽，所以外面套一层横向滚动容器。
+      -->
+      <scroll-view
+        class="timeline-scroll {{timelineScrollable ? 'scrollable' : ''}}"
+        scroll-x="{{timelineScrollable}}"
+      >
+        <view class="timeline-row" style="{{timelineRowStyle}}">
+          <view
+            wx:for="{{steps}}"
+            wx:key="key"
+            class="timeline-block {{item.selected ? 'selected' : ''}} {{item.dragging ? 'dragging' : ''}} {{item.dropTarget ? 'drop-target' : ''}}"
+            style="{{item.style}}"
+            data-index="{{item.index}}"
+            bindtap="onStepTap"
+            bindtouchstart="onStepTouchStart"
+            bindtouchmove="onStepTouchMove"
+            bindtouchend="onStepTouchEnd"
+            bindtouchcancel="onStepTouchCancel"
+          >
+            <!-- 缩略色带：按这一步的光区灯珠比例铺满整条 -->
+            <view class="timeline-bands">
+              <view wx:for="{{item.bands}}" wx:for-item="band" wx:key="key" class="timeline-band" style="{{band.style}}"></view>
+            </view>
+            <text wx:if="{{item.showLabel}}" class="timeline-label">{{item.durationText}}</text>
+            <text class="timeline-order">{{item.index + 1}}</text>
+          </view>
+        </view>
+      </scroll-view>
+
+      <view class="timeline-actions">
+        <text class="section-hint">长按步骤可拖动换位置</text>
+        <view class="timeline-actions-right">
+          <view
+            class="timeline-add ghost {{stepCount <= 1 ? 'disabled' : ''}}"
+            hover-class="{{stepCount > 1 ? 'timeline-add-hover' : ''}}"
+            bindtap="onStepRemove"
+          >删步骤</view>
+          <view
+            class="timeline-add {{stepCanAdd ? '' : 'disabled'}}"
+            hover-class="{{stepCanAdd ? 'timeline-add-hover' : ''}}"
+            bindtap="onStepAdd"
+          >+ 加步骤</view>
+        </view>
+      </view>
+
+      <!-- 时长：拖动时上方块宽实时变化，最小单位 0.5 秒 -->
+      <view class="duration-block">
+        <view class="duration-head">
+          <text class="duration-label">这一步时长</text>
+          <text class="duration-value mono">{{stepDurationText}}</text>
+        </view>
+        <slider
+          class="duration-slider"
+          min="0.5"
+          max="30"
+          step="0.5"
+          value="{{stepDurationSeconds}}"
+          disabled="{{stepCount === 0}}"
+          activeColor="#ff9500"
+          backgroundColor="rgba(120, 120, 128, 0.2)"
+          block-size="24"
+          bindchanging="onDurationChanging"
+          bindchange="onDurationChange"
+        />
+        <view class="duration-ticks">
+          <text
+            wx:for="{{durationTicks}}"
+            wx:key="key"
+            class="duration-tick tick-{{item.align}}"
+            style="left: {{item.percent}}%"
+            data-ms="{{item.durationMs}}"
+            bindtap="onDurationTickTap"
+          >{{item.label}}</text>
+        </view>
+      </view>
+
+      <text wx:if="{{stepHint}}" class="section-hint">{{stepHint}}</text>
+    </view>
+
+    <!-- ---------------- 进阶档：光区轴（#66） ---------------- -->
+    <view class="section zone-section">
+      <view class="section-head">
+        <text class="section-title">光区</text>
+        <view class="axis-head-right">
+          <text class="section-value">{{zoneSummary}}</text>
+          <view
+            class="timeline-add zone-add {{zoneCanAdd ? '' : 'disabled'}}"
+            hover-class="{{zoneCanAdd ? 'timeline-add-hover' : ''}}"
+            bindtap="onZoneAdd"
+          >+ 新增</view>
+        </view>
+      </view>
+
+      <!--
+        光区轴：每个光区按灯珠下标比例定位（left = 起点 / 灯珠数），没被覆盖的
+        灯珠画成灰条（点不动）。选中态用 2px 描边而不是换底色——光区本身就有
+        颜色，换底色会让人分不清「这是它的颜色」还是「它被选中了」。
+      -->
+      <view class="zone-axis">
+      <view
+        wx:for="{{zoneBlocks}}"
+        wx:key="key"
+        class="zone-block {{item.kind === 'gap' ? 'zone-gap' : 'zone-solid'}} {{item.selected ? 'selected' : ''}}"
+        style="{{item.style}}"
+        data-seg-id="{{item.segId}}"
+        bindtap="onZoneAxisTap"
+        bindlongpress="onZoneAxisLongPress"
+      >
+          <view wx:if="{{item.kind === 'zone'}}" class="zone-fill" style="background: {{item.hex}}"></view>
+          <text wx:if="{{item.showLabel}}" class="zone-label">{{item.label}}</text>
+        </view>
+      </view>
+
+      <view class="zone-meta">
+        <text class="section-hint">{{selectedZoneText}}</text>
+        <text class="zone-count">{{zoneCount}} / {{maxZones}}</text>
+      </view>
+
+      <view class="zone-actions">
+        <view
+          class="timeline-add {{selectedSegId >= 0 ? '' : 'disabled'}}"
+          hover-class="{{selectedSegId >= 0 ? 'timeline-add-hover' : ''}}"
+          bindtap="onZoneEditSelected"
+        >改范围</view>
+        <text class="section-hint">点一块选中；再点一次（或长按）改范围</text>
+      </view>
+
+      <text wx:if="{{zoneHint}}" class="section-hint">{{zoneHint}}</text>
+    </view>
+
+    <!-- ---------------- 进阶档：效果面板（#67） ---------------- -->
+    <view class="section panel-section">
+      <view class="section-head">
+        <text class="section-title">效果</text>
+        <view class="panel-head-right">
+          <text class="section-value">{{panelSummary}}</text>
+          <view wx:if="{{panelColorHex}}" class="param-preview" style="background: {{panelColorHex}}"></view>
+        </view>
+      </view>
+
+      <!--
+        效果类型行在最上：四个等宽按钮。切换后参数区**整体替换**（列表来自
+        effect-panel.SLIDER_KEYS，页面不按类型写 wx:if 集合）。
+      -->
+      <view class="panel-types">
+        <view
+          wx:for="{{panelTypes}}"
+          wx:key="type"
+          class="panel-type {{item.selected ? 'on' : ''}} {{panelHasZone ? '' : 'disabled'}}"
+          data-type="{{item.type}}"
+          bindtap="onPanelTypeTap"
+          hover-class="panel-type-hover"
+        >{{item.name}}</view>
+      </view>
+
+      <block wx:if="{{panelHasZone}}">
+        <view wx:for="{{panelSliders}}" wx:key="key" class="param-row">
+          <view class="param-head">
+            <text class="param-label">{{item.label}}</text>
+            <text class="param-value mono">{{item.display}}</text>
+          </view>
+          <!-- 色相滑轨铺一条彩虹渐变（hsl，不是 hex 常量）；其余滑轨走主题色。 -->
+          <view wx:if="{{item.rainbow}}" class="hue-track" style="background: {{hueRamp}}">
+            <slider
+              class="param-slider hue-slider"
+              min="{{item.min}}"
+              max="{{item.max}}"
+              step="{{item.step}}"
+              value="{{item.value}}"
+              data-key="{{item.key}}"
+              disabled="{{!ready}}"
+              activeColor="rgba(0, 0, 0, 0)"
+              backgroundColor="rgba(0, 0, 0, 0)"
+              block-size="22"
+              bindchanging="onPanelSliderChanging"
+              bindchange="onPanelSliderChange"
+            />
+          </view>
+          <slider
+            wx:else
+            class="param-slider"
+            min="{{item.min}}"
+            max="{{item.max}}"
+            step="{{item.step}}"
+            value="{{item.value}}"
+            data-key="{{item.key}}"
+            disabled="{{!ready}}"
+            activeColor="#ff9500"
+            backgroundColor="rgba(120, 120, 128, 0.2)"
+            block-size="22"
+            bindchanging="onPanelSliderChanging"
+            bindchange="onPanelSliderChange"
+          />
+          <!-- 滑块的补充说明（亮度走 v4 的逐光区 level，真实下发，不需要额外提示） -->
+          <text wx:if="{{item.note}}" class="param-note">{{item.note}}</text>
+        </view>
+
+        <view wx:for="{{panelChoices}}" wx:key="key" class="panel-choice">
+          <text class="param-label">{{item.label}}</text>
+          <view class="panel-choice-row">
+            <view
+              wx:for="{{item.options}}"
+              wx:for-item="option"
+              wx:key="value"
+              class="panel-option {{option.value === item.value ? 'on' : ''}}"
+              data-key="{{item.key}}"
+              data-value="{{option.value}}"
+              bindtap="onPanelChoiceTap"
+            >{{option.label}}</view>
+          </view>
+        </view>
+
+        <text wx:if="{{panelHint}}" class="section-hint">{{panelHint}}</text>
+      </block>
+
+      <!-- 没得编辑时给引导，而不是一片空白 -->
+      <view wx:else class="panel-guide">
+        <text class="panel-guide-text">{{panelGuide}}</text>
+      </view>
+    </view>
+
+    <!-- 两条必须让用户知道的事实：内容只在本机 / 换机要重编 -->
+    <view class="section panel-facts">
+      <text class="facts-title">关于这套方案</text>
+      <view wx:for="{{panelFacts}}" wx:key="*this" class="facts-row">
+        <text class="facts-dot">·</text>
+        <text class="facts-text">{{item}}</text>
+      </view>
+    </view>
+  </block>
+
+  <!-- ---------------- 灯珠弹窗（#66）：不进主界面，只在新增 / 改范围时出现 ---------------- -->
+  <view wx:if="{{pickerOpen}}" class="picker-mask" bindtap="onPickerMaskTap">
+    <view class="picker-sheet" catchtap="onPickerStopPropagation">
+      <view class="picker-head">
+        <text class="picker-title">{{pickerTitle}}</text>
+        <text class="picker-led">{{pickerLedText}}</text>
+      </view>
+
+      <text class="picker-range">{{pickerRangeText}}</text>
+
+      <!-- 灯珠网格：一次渲染该灯组全部灯珠（有几颗画几颗）。 -->
+      <view class="picker-grid" style="grid-template-columns: repeat({{pickerColumns}}, 1fr);">
+        <view
+          wx:for="{{pickerCells}}"
+          wx:key="index"
+          class="picker-cell {{item.disabled ? 'disabled' : ''}} {{item.selected ? 'selected' : ''}} {{item.anchor ? 'anchor' : ''}} {{item.conflict ? 'conflict' : ''}}"
+          data-index="{{item.index}}"
+          bindtap="onPickerCellTap"
+        >
+          <text class="picker-cell-no">{{item.label}}</text>
+          <!-- 别人光区的格子置灰，只留一个小色点说明它归哪个光区。 -->
+          <view
+            wx:if="{{item.ownerHex}}"
+            class="picker-owner-dot"
+            style="background: {{item.ownerHex}}"
+          ></view>
+        </view>
+      </view>
+
+      <text wx:if="{{pickerError}}" class="picker-error">{{pickerError}}</text>
+
+      <view class="picker-foot">
+        <button class="btn ghost picker-btn" bindtap="onPickerCancel">取消</button>
+        <button
+          wx:if="{{pickerEditing}}"
+          class="btn danger picker-btn"
+          bindtap="onPickerDelete"
+        >删除</button>
+        <button
+          class="btn primary picker-btn"
+          disabled="{{!pickerCanConfirm}}"
+          bindtap="onPickerConfirm"
+        >确定</button>
+      </view>
+    </view>
+  </view>
+
+  <!-- ---------------- 底部：唯一的主按钮 ---------------- -->
+  <view class="apply-bar">
+    <button
+      class="btn primary apply-play"
+      disabled="{{!ready || applying}}"
+      bindtap="onApplyAndPlay"
+    >{{applying ? '正在应用…' : '应用并播放'}}</button>
+    <!-- 写入失败就地说明原因（不弹模态），见 decisions §5 -->
+    <text wx:if="{{applyError}}" class="apply-error">{{applyError}}</text>
+  </view>
+
+  <view class="footer">
+    <text class="footer-hint">灯效以灯控为准{{mock ? '（演示模式）' : ''}}</text>
+  </view>
+</view>

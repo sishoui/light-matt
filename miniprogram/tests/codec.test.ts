@@ -1,10 +1,13 @@
 /**
- * codec 测试：直接消费仓库里 docs/protocol-testvectors-v3.json（两端共用同一份）。
+ * codec 测试：直接消费仓库里 docs/protocol-testvectors-v4.json（两端共用同一份）。
  *
  * 不复制向量、不伪造期望值：任何协议字节变化都会让这里失败。
  *
- * v3 覆盖：58 条向量（编码 / 解码两个方向）、CRC16 标准校验值、分片重组，
- * 以及 232/240 的帧长上限。
+ * v4 覆盖：64 条向量（编码 / 解码两个方向）、CRC16 标准校验值、分片重组、
+ * 层亮度三档（0 / 50 / 100）与越界用例，以及 232/240 的帧长上限。
+ *
+ * **这是跨端契约**：固件 host 测试跑同一份 JSON。这里红了就说明小程序与固件
+ * 对字节的理解已经不一致。
  */
 
 import { readFileSync } from "node:fs";
@@ -43,7 +46,7 @@ interface VectorFile {
 }
 
 const vectors: VectorFile = JSON.parse(
-  readFileSync(new URL("../../docs/protocol-testvectors-v3.json", import.meta.url), "utf8"),
+  readFileSync(new URL("../../docs/protocol-testvectors-v4.json", import.meta.url), "utf8"),
 );
 
 function payloadOf(c: VectorCase): Uint8Array {
@@ -65,12 +68,12 @@ const ENVELOPE_FAILURES: Record<number, string> = {
   0x08: "magic",
 };
 
-describe("协议测试向量（v3）", () => {
-  it("向量文件本身是 v3 且包含 58 个用例", () => {
-    expect(vectors.protocol_version).toBe(3);
+describe("协议测试向量（v4）", () => {
+  it("向量文件本身是 v4 且包含 64 个用例", () => {
+    expect(vectors.protocol_version).toBe(4);
     expect(vectors.magic).toBe("0xA6");
     expect(vectors.state_bytes).toBe(37);
-    expect(vectors.cases.length).toBe(58);
+    expect(vectors.cases.length).toBe(64);
   });
 
   it("app_to_device 有效帧：encode 逐字节复现 frame_hex", () => {
@@ -103,6 +106,10 @@ describe("协议测试向量（v3）", () => {
       (c) => c.direction === "app_to_device" && ENVELOPE_FAILURES[c.result_code] !== undefined,
     );
     expect(cases.length).toBe(4);
+    /* 坏版本用例带的是非 0x04 的版本字节：decode 必须先判版本、再判 CRC（§4）。 */
+    const badVersion = cases.find((c) => c.result_code === 0x07);
+    expect(badVersion, "bad_version").toBeDefined();
+    expect((badVersion as VectorCase).frame_hex.slice(2, 4).toUpperCase()).not.toBe("04");
     for (const c of cases) {
       const bytes = hexToBytes(c.frame_hex) as Uint8Array;
       const result = decodeFrame(bytes);
@@ -147,7 +154,7 @@ describe("协议测试向量（v3）", () => {
     }
   });
 
-  it("58 条向量逐条被覆盖（decode 的 ok 与 frame_valid 一致）", () => {
+  it("64 条向量逐条被覆盖（decode 的 ok 与 frame_valid 一致）", () => {
     const appValid = vectors.cases.filter((c) => c.direction === "app_to_device" && c.frame_valid);
     const appInvalid = vectors.cases.filter((c) => c.direction === "app_to_device" && !c.frame_valid);
     const device = vectors.cases.filter((c) => c.direction === "device_to_app");
@@ -205,20 +212,20 @@ describe("CRC16（CCITT-FALSE）", () => {
     expect(crc16(new Uint8Array(0))).toBe(0xffff);
   });
 
-  it("与协议 §3.3 的示例帧一致（SetPower(on)，seq=1 → F0A0）", () => {
-    /* A6 03 01 01 01 00 01 的 CRC16 = 0xA0F0，小端存 F0 A0。 */
-    const covered = hexToBytes("A6 03 01 01 01 00 01") as Uint8Array;
-    expect(crc16(covered)).toBe(0xa0f0);
+  it("与协议 §3.3 的示例帧一致（SetPower(on)，seq=1 → 0x68B1）", () => {
+    /* A6 04 01 01 01 00 01 的 CRC16 = 0x68B1，小端存 68 B1。 */
+    const covered = hexToBytes("A6 04 01 01 01 00 01") as Uint8Array;
+    expect(crc16(covered)).toBe(0x68b1);
   });
 
   it("CRC 覆盖 magic 到 payload 末字节（改 payload 会变）", () => {
-    const a = hexToBytes("A6 03 01 01 01 00 01") as Uint8Array;
-    const b = hexToBytes("A6 03 01 01 01 00 00") as Uint8Array;
+    const a = hexToBytes("A6 04 01 01 01 00 01") as Uint8Array;
+    const b = hexToBytes("A6 04 01 01 01 00 00") as Uint8Array;
     expect(crc16(a)).not.toBe(crc16(b));
   });
 });
 
-describe("encode 边界（v3：载荷 232 / 整帧 240）", () => {
+describe("encode 边界（v4：载荷 232 / 整帧 240）", () => {
   it("232 字节 payload 恰好 240 字节，不抛错且可解码", () => {
     const payload = new Uint8Array(MAX_PAYLOAD_BYTES);
     const frame = encodeFrame(0x7f, 1, payload);
@@ -259,14 +266,14 @@ describe("encode 边界（v3：载荷 232 / 整帧 240）", () => {
   });
 
   it("短于 8 字节的输入返回 short（不是 magic）", () => {
-    const result = decodeFrame(new Uint8Array([0xa6, 0x03, 0x01]));
+    const result = decodeFrame(new Uint8Array([0xa6, 0x04, 0x01]));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("short");
   });
 });
 
-describe("v3 状态示例", () => {
-  it("state_read_example_hex 是 37 字节且能按 v3 布局解析", async () => {
+describe("v4 状态示例", () => {
+  it("state_read_example_hex 是 37 字节且能按 v4 布局解析", async () => {
     const { parseState } = await import("../utils/protocol/commands");
     const bytes = hexToBytes(vectors.state_read_example_hex) as Uint8Array;
     expect(bytes.length).toBe(37);

@@ -29,7 +29,17 @@ import { PRESETS, rgbToSegmentParams } from "../utils/color/hsv";
 import type { EffectLayer } from "../utils/protocol/types";
 
 function layer(type: number, overrides: Partial<EffectLayer> = {}): EffectLayer {
-  return { type, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, ...overrides };
+  return {
+    type,
+    hue: 0,
+    sat: 0,
+    periodMs: 0,
+    p5: 0,
+    flags: 0,
+    /* 空层的 level 必须为 0；非空层默认满亮。 */
+    level: type === NO_EFFECT ? 0 : 100,
+    ...overrides,
+  };
 }
 
 describe("灯效选项表", () => {
@@ -197,9 +207,9 @@ describe("折叠态", () => {
 
 describe("一层视图（layerView）", () => {
   it("主效果 / 叠加效果的标题不同", () => {
-    /* #53 不改文案（#58 才统一术语），这里锁住现状防止意外漂移。 */
-    expect(layerView(layer(SEGMENT_TYPE.STATIC), 0, false).label).toBe("第 1 层（必填）");
-    expect(layerView(layer(NO_EFFECT), 1, false).label).toBe("第 2 层（可选）");
+    /* 术语（decisions §12）：界面不出现「层」，两层改叫主效果 / 叠加效果。 */
+    expect(layerView(layer(SEGMENT_TYPE.STATIC), 0, false).label).toBe("主效果（必填）");
+    expect(layerView(layer(NO_EFFECT), 1, false).label).toBe("叠加效果（可选）");
   });
 
   it("空层永远展开（否则找不到打开它的入口）", () => {
@@ -219,7 +229,8 @@ describe("一层视图（layerView）", () => {
     );
     expect(view.breathing).toBe(true);
     expect(view.periodText).toBe("1000ms");
-    expect(view.minLevelText).toBe("20%");
+    /* v4：呼吸的 p5 是相对百分比，51 就是 51%。 */
+    expect(view.minLevelText).toBe("51%");
     expect(view.waveform).toBe(WAVEFORM.TRIANGLE);
     expect(view.periodFloor).toBe(BREATHING_MIN_PERIOD_MS);
   });
@@ -253,6 +264,7 @@ describe("整个面板（buildLayerPanel）", () => {
     expect(panel.blendEnabled).toBe(false);
     expect(panel.blend).toBe(BLEND.OVER);
     expect(panel.blendHint).toContain("固定为覆盖");
+    expect(panel.blendHint).not.toContain("层");
   });
 
   it("有叠加效果时保留草稿选的叠加方式", () => {
@@ -264,8 +276,8 @@ describe("整个面板（buildLayerPanel）", () => {
 
   it("视图元组的顺序是「主效果 / 叠加效果」", () => {
     const panel = buildLayerPanel(BLEND.OVER, main, overlay, [false, false]);
-    expect(panel.views[0].label).toBe("第 1 层（必填）");
-    expect(panel.views[1].label).toBe("第 2 层（可选）");
+    expect(panel.views[0].label).toBe("主效果（必填）");
+    expect(panel.views[1].label).toBe("叠加效果（可选）");
   });
 
   it("折叠态原样透传给对应的层", () => {

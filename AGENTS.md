@@ -7,12 +7,14 @@
 **先读 [`docs/handoff.md`](docs/handoff.md)。** 它写清了当前在哪、哪些已完成、剩余工作卡在
 什么上。不要凭本文件的简短描述推断进度——项目已经过了三个大版本。
 
-> **刚完成**：灯效编辑重构（规格 [#52](https://github.com/sishoui/light-matt/issues/52)，
-> 实现票 #53–#58），在分支 `feat/effect-editor`，**待合入 master**。灯效编辑现在是
-> 设备详情页里的「快捷 / 自定义」两档；`pages/scripts` 与 `pages/segment-edit` 已删除。
-> 细节与两个真机陷阱见 handoff §0。
+> **刚完成**：UI 重构 + 协议 v4（规格 [#60](https://github.com/sishoui/light-matt/issues/60)，
+> 实现票 #61–#69），在分支 `integration/ui-refactor-v4`，**待合入 master**。底部改为
+> 「设备 / 我的」，发现页降为二级页，新增**灯组详情页**（简单档六张卡 / 进阶档时间轴 + 光区轴
+> + HSV 效果面板），设备页只留总闸、全局亮度与灯组卡片；协议 v4 把层编码扩到 9 字节并新增
+> 逐光区亮度 `level`。`pages/devices`、`pages/scripts`、`pages/segment-edit` 均已删除。
+> 细节、三个陷阱与待办的真机验收见 handoff §0。
 
-**当前状态**：v3 的 11 张实现票（#36–#45）与 4 张缺口票（#47–#50）全部关闭，
+**上一轮**：v3 的 11 张实现票（#36–#45）与 4 张缺口票（#47–#50）全部关闭，
 **已合入 `master`**（PR #51，merge commit `f9f2fe3`）。**设备侧验收已全部跑完**：协议层 47 项 + 行为语义
 69 项（`scripts/probe-v3-deep.py`）+ 400s 压力（0 事件）均已在真机闭环。
 
@@ -32,19 +34,41 @@ GitHub **#46** 已关闭且**验收项全部闭环**：§1.1–1.8 的 38 项里
 > 初始化全部私有字段（`segment-edit` 有提前 `return` 分支，必须在它之前）。
 > 回归测试：`miniprogram/tests/page-fields.test.ts`。
 
-## 小程序 UI 结构（2026-11-02 改版）
+> **第三个同类陷阱**：`Page({...})` 的私有字段除了要在 `onLoad` 初始化，页面**卸载后**
+> 也不该被当成「数据已丢」——进阶档的方案草稿现在落盘在 `lumen.planDrafts.v1`
+> （`utils/control/plan-drafts.ts`，键 = `deviceKey#stripId#slot`），断线、切页、
+> 重启小程序都不清，**只在用户显式删除设备时清**。那是界面上「内容只存在这台手机上」
+> 这句承诺的实现；改这块之前先看 `tests/plan-drafts.test.ts`。
+
+## 小程序 UI 结构（2026-11-03 改版）
 
 **页面树**（`app.json`，全部 `navigationStyle: custom`）：
 
 | 路由 | 角色 |
 |---|---|
-| `pages/home/home` | **tab 1 设备**：大设备卡 + 下方设备小图 |
-| `pages/devices/devices` | **tab 2 发现**：扫描 / 我的设备 / 外观 / 演示开关 |
-| `pages/device/device` | 二级页：**设备控制 + 灯效编辑（快捷 / 自定义两档）** |
-| `pages/device-info/device-info` | 二级页：身份 / 固件 / 灯珠数 / 自检 / 改名 / 删除 |
+| `pages/home/home` | **tab 1 设备**：大设备卡 + 下方设备小图；右上角下拉菜单进发现 / 设备信息 / 断开 |
+| `pages/me/me` | **tab 2 我的**：本机头像昵称 / 外观 / 演示设备 / 我的设备（删除）/ 版本号 |
+| `pages/discover/discover` | 二级页：**只有扫描**（一个按钮 + 一行状态 + 结果列表） |
+| `pages/device/device` | 二级页：设备名与状态 / 总开关 / 全局亮度 / **灯组两列卡片** / 设备摘要 |
+| `pages/device-info/device-info` | 二级页：身份 / 固件 / 逐组灯珠数与显隐 / 自检 / 改名 / 删除 |
+| `pages/strip/strip` | 二级页：**灯组详情**——简单档六张成品卡 / 进阶档时间轴 + 光区轴 + 效果面板 |
 
-> 灯效编辑重构（#52）删除了 `pages/scripts`（剧本 tab）与 `pages/segment-edit`：
-> 多步骤方案并入设备详情页的「自定义」档，底部只剩「设备 / 发现」两项。
+> UI 重构（#60）删除了 `pages/devices`（原 tab 2「发现」）、`pages/scripts` 与
+> `pages/segment-edit`；设备页**不再有**任何灯效编辑控件，全部搬到 `pages/strip`。
+
+**交互契约**（`pages/home`）：点小图只切换大卡**不连接**；点大卡进 `pages/device`
+（在那里才连接）；卡上的电源键是 `catchtap` 快捷开关，未连接时先连上/切换。
+大卡是 **1:1 方形**，图片 absolute 铺满，状态徽标与电源键在顶部、名称与亮度信息
+叠在图片底部（`.hero-scrim` 渐变保证任意照片上都可读）。
+演示设备的封面图在 `assets/devices/*.webp`（三张共 9KB，由 PIL 生成的抽象光照图）；
+**真实设备没有照片时 `photo` 为空串**，页面用设备色渐变兜底，不拿图冒充。
+
+**灯组详情页**：简单档 = 六张成品卡 + 色相 / 饱和度 / 亮度三个滑块；进阶档自上而下是
+时间轴（真实时长比例、长按 380ms 拖动重排、≤8 步骤）→ 时长条（0.5–30 秒）→ 光区轴
+（按灯珠比例、未覆盖灰条、≤8 光区）→ 效果面板（静态 / 呼吸 / 彩虹 / 流光，参数区整体替换）。
+灯珠方格只在弹窗里出现。底部只有一个「应用并播放」，写入失败在按钮下方就地说明。
+**进阶档会把整份方案下发到灯控**（`session.downloadScript(script, { activate: true, loop })`）
+—— 只写实时光区的话第 2..N 步根本播不到。
 
 **交互契约**（`pages/home`）：点小图只切换大卡**不连接**；点大卡进 `pages/device`
 （在那里才连接）；卡上的电源键是 `catchtap` 快捷开关，未连接时先连上/切换。
@@ -80,8 +104,9 @@ SHA-256 索引、配置丢失记录。
 
 ## 字节契约
 
-- **v3（当前唯一真相）**：`docs/protocol-v3.md` + 可执行副本
-  `docs/protocol-testvectors-v3.json`（由 `scripts/gen-protocol-testvectors-v3.mjs` 生成）
+- **v4（当前唯一真相）**：`docs/protocol-v4.md` + 可执行副本
+  `docs/protocol-testvectors-v4.json`（由 `scripts/gen-protocol-testvectors-v4.mjs` 生成）
+- **v3 已作废**：`docs/protocol-v3.md` 与 `protocol-testvectors-v3.json` 仅保留供对照
 - **v2 已作废**：`docs/protocol.md` 与 `docs/spec-v2.md` 仅保留供对照
 
 改任何字节布局 = 契约 + 向量 + 两端实现同一个 commit。
@@ -89,8 +114,8 @@ SHA-256 索引、配置丢失记录。
 ## 测试基线（改代码后必须保持）
 
 ```bash
-cmd.exe //c "firmware\\test\\run-tests.cmd"   # 11053 项断言 + 58 条 v3 向量
-cd miniprogram && npx vitest run              # 921 用例（不含 e2e）
+cmd.exe //c "firmware\\test\\run-tests.cmd"   # 11449 项断言 + 64 条 v4 向量
+cd miniprogram && npx vitest run              # 1169 用例 / 53 文件（不含 e2e）
 cd miniprogram && npm run test:ble            # 8 项真机 e2e（无设备自动 skip）
 cd miniprogram && npx tsc --noEmit            # 必须干净
 cd server && npm test                         # 140 用例
@@ -100,22 +125,23 @@ cd server && npm run typecheck                # 必须干净
 **模拟器 UI 回归**（改页面后必跑；需要微信开发者工具开着自动化端口）：
 
 ```bash
-cd miniprogram && node .auto/verify-effect-editor.mjs   # 48 项：快捷卡生效 / 参数区 / 切分 / 快照恢复 / 逐组灯珠数 / 术语 / 两 tab
-cd miniprogram && node .auto/verify-redesign.mjs        # 26 项：页面树 / 大卡 / 小图切换 / 主题 / tabBar
-cd miniprogram && node .auto/verify-deep.mjs            # 27 项：电源 / 亮度 / 自定义档 / 写入 / 播放
-cd miniprogram && node .auto/verify-ui-interaction.mjs  # 7 项：点得动
+cd miniprogram && node .auto/verify-effect-editor.mjs   # 137 项：简单档六卡 / 亮度真实下发 / 时间轴 / 光区轴 + 灯珠弹窗 / 效果面板 / 方案真的整份下发（stageCount）/ 术语
+cd miniprogram && node .auto/verify-redesign.mjs        # 37 项：页面树 / 大卡 / 小图切换 / 主题 / tabBar / 发现页 / 我的页
+cd miniprogram && node .auto/verify-deep.mjs            # 26 项：电源 / 亮度 / 灯组卡片 / 写入 / 播放 / 断开
+cd miniprogram && node .auto/verify-ui-interaction.mjs  # 40 项：点得动（发现页 / 我的页 / 日志面板 / 删除确认）
 ```
 
 `verify-effect-editor.mjs` 锁的是「只有渲染层能发现」的问题：白屏、`bindtap` 全失效、
-点小图却发起了连接、主题 class 没挂上、tabBar 没渲染，以及**点效果卡后设备状态
-真的变了**（不是只改 data）。改页面后**跑一次再交付**。
+点小图却发起了连接、主题 class 没挂上、tabBar 没渲染，以及**点效果卡 / 应用并播放后
+设备状态真的变了**（不是只改 data，且方案的步骤数真的到了设备）。改页面后**跑一次再交付**。
 
 ## Agent skills
 
 ### Issue tracker
 
-GitHub Issues（`sishoui/light-matt`）。**当前 effort 的规格父票是 `#35`**（v3），
-11 张实现票 `#36`–`#45` 已关闭，#46 验收票 open。v1 的父票 `#1` 与 v2 的 `#27` 是历史。
+GitHub Issues（`sishoui/light-matt`）。**当前 effort 的规格父票是 `#60`**（UI 重构 +
+协议 v4），9 张实现票 `#61`–`#69` **全部完成并在集成分支**。上一轮 v3 的父票 `#35`
+（`#36`–`#45` / `#46`）已关闭；v1 的 `#1` 与 v2 的 `#27` 是历史。
 详见 `docs/agents/issue-tracker.md`。
 
 ### Domain docs
@@ -133,4 +159,5 @@ GitHub Issues（`sishoui/light-matt`）。**当前 effort 的规格父票是 `#3
 - `scripts/capture-serial.py` —— 抓串口日志（`--reset` 用 DTR/RTS 复位）
 - `scripts/build-firmware.cmd` / `flash-firmware.cmd COM6` —— 编译与烧录
 
-**烧录是断崖升级**：刷 v3 后设备配置回默认值，这是设计取舍，不是 bug。
+**烧录是断崖升级**：刷 v4 后设备配置回默认值，这是设计取舍，不是 bug（v3 的 State blob
+版本 4 与脚本 blob `LMS3`/v2 会被整份拒绝，v4 用版本 5 与 `LMS4`/v3）。

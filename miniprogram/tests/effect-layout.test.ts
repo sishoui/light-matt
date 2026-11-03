@@ -20,6 +20,7 @@ import {
   splitEvenly,
   splitPreset,
   uncoveredCount,
+  uncoveredRanges,
   validateZone,
   zoneColorMap,
   zonesFromReports,
@@ -35,7 +36,7 @@ function zones(...ranges: Array<[number, number, number]>): ZoneRange[] {
 
 function report(segId: number, start: number, end: number, hue = 0, sat = 0): SegmentReport {
   const layer0 = { type: 0, hue, sat, periodMs: 0, p5: 0, flags: 0 };
-  const layer1 = { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0 };
+  const layer1 = { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 };
   return {
     stripId: 0,
     segId,
@@ -373,6 +374,82 @@ describe("#53 逐灯珠归属（scanLedOwnership）", () => {
   it("非法草稿（end < start）等同「没有草稿」", () => {
     const scan = scanLedOwnership(5, [], { start: 4, end: 1 });
     expect(scan.inDraft.every((flag) => flag === false)).toBe(true);
+  });
+});
+
+/**
+ * #66：光区轴需要「哪几颗、连成几段」的灰条。
+ *
+ * `uncoveredCount` 只给颗数；把它当灰条用会在两个光区相接时画出假缝隙。
+ */
+describe("#66 未覆盖区间（uncoveredRanges）", () => {
+  it("零光区 → 整条一根灰条", () => {
+    expect(uncoveredRanges([], 30)).toEqual([{ start: 0, end: 29 }]);
+  });
+
+  it("整条覆盖 → 一根灰条都没有", () => {
+    expect(uncoveredRanges([{ start: 0, end: 29 }], 30)).toEqual([]);
+  });
+
+  it("中间挖空 → 前后两根", () => {
+    expect(uncoveredRanges([{ start: 5, end: 9 }], 30)).toEqual([
+      { start: 0, end: 4 },
+      { start: 10, end: 29 },
+    ]);
+  });
+
+  it("相接的两段覆盖之间**没有**灰条（0–9 与 10–19）", () => {
+    expect(uncoveredRanges([{ start: 0, end: 9 }, { start: 10, end: 19 }], 20)).toEqual([]);
+  });
+
+  it("单颗光区：前后各一根", () => {
+    expect(uncoveredRanges([{ start: 0, end: 0 }], 3)).toEqual([{ start: 1, end: 2 }]);
+    expect(uncoveredRanges([{ start: 1, end: 1 }], 3)).toEqual([
+      { start: 0, end: 0 },
+      { start: 2, end: 2 },
+    ]);
+  });
+
+  it("乱序输入按起点归并（三段并成一段覆盖）", () => {
+    expect(
+      uncoveredRanges(
+        [
+          { start: 20, end: 29 },
+          { start: 0, end: 4 },
+          { start: 5, end: 9 },
+        ],
+        30,
+      ),
+    ).toEqual([{ start: 10, end: 19 }]);
+  });
+
+  it("部分越界的区间被裁剪，不画出假灰条", () => {
+    /* 20..99 在 30 颗灯组上只覆盖 20..29，前面 0..19 才是灰条。 */
+    expect(uncoveredRanges([{ start: 20, end: 99 }], 30)).toEqual([{ start: 0, end: 19 }]);
+  });
+
+  it("完全越界的区间被丢弃（钳进来会伪造一颗被覆盖的灯珠）", () => {
+    expect(uncoveredRanges([{ start: 100, end: 200 }], 30)).toEqual([{ start: 0, end: 29 }]);
+    expect(uncoveredRanges([{ start: -50, end: -1 }], 3)).toEqual([{ start: 0, end: 2 }]);
+  });
+
+  it("灯珠数为 0 / 非法 → 空数组", () => {
+    for (const count of [0, -3, Number.NaN]) {
+      expect(uncoveredRanges([], count), String(count)).toEqual([]);
+    }
+  });
+
+  it("超过协议上限（64）按 64 颗算", () => {
+    expect(uncoveredRanges([], 200)).toEqual([{ start: 0, end: 63 }]);
+  });
+
+  it("与 uncoveredCount 的颗数一致（两套实现的交叉校验）", () => {
+    const list = zones([0, 0, 9], [1, 15, 19]);
+    const fromRanges = uncoveredRanges(list, 30).reduce(
+      (sum, range) => sum + (range.end - range.start + 1),
+      0,
+    );
+    expect(fromRanges).toBe(uncoveredCount(30, list));
   });
 });
 

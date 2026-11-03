@@ -1,0 +1,129 @@
+<view class="page {{themeClass}}">
+  <nav-bar title="我的" subtitle="本机身份 · 外观 · 我的设备" />
+
+  <!-- 本机身份：头像用微信头像选择，昵称用昵称输入框；两者都只存本机 -->
+  <view class="section profile-card">
+    <button
+      class="avatar-btn"
+      open-type="chooseAvatar"
+      bind:chooseavatar="onChooseAvatar"
+    >
+      <image wx:if="{{avatarFile}}" class="avatar-img" src="{{avatarFile}}" mode="aspectFill" />
+      <!-- 默认头像：纯 CSS 人物剪影，不拿图冒充 -->
+      <view wx:else class="avatar-fallback">
+        <view class="avatar-head"></view>
+        <view class="avatar-shoulders"></view>
+      </view>
+    </button>
+    <view class="profile-main">
+      <input
+        class="nickname-input"
+        type="nickname"
+        value="{{nicknameInput}}"
+        maxlength="20"
+        placeholder="微信用户"
+        bindinput="onNicknameInput"
+        bindblur="onNicknameBlur"
+        bindconfirm="onNicknameConfirm"
+      />
+      <text class="profile-hint">头像与昵称只保存在本机，不会上传</text>
+    </view>
+  </view>
+
+  <!-- 外观：浅色 / 深色 / 跟随系统，切换立即生效，tabBar 一起换 -->
+  <view class="section">
+    <view class="section-head">
+      <text class="section-title">外观</text>
+      <text class="section-value">{{themeMode === 'light' ? '浅色' : (themeMode === 'dark' ? '深色' : '跟随系统')}}</text>
+    </view>
+    <view class="segmented">
+      <view
+        wx:for="{{themeOptions}}"
+        wx:key="value"
+        class="segment {{themeMode === item.value ? 'on' : ''}}"
+        data-value="{{item.value}}"
+        bindtap="onThemeTap"
+      >{{item.label}}</view>
+    </view>
+  </view>
+
+  <!-- 演示设备：没有真机记录时默认开启 -->
+  <view class="section">
+    <view class="section-head">
+      <text class="section-title">演示设备</text>
+      <switch checked="{{mock}}" color="#ff9500" bindchange="onToggleMock" />
+    </view>
+    <text class="section-hint">
+      没有真机记录时默认开启：三台占位设备会出现在设备页，控制会真实改动它们的
+      模拟状态（不连硬件）。接入真机后可以关掉。
+    </text>
+  </view>
+
+  <!-- 我的设备：本机记录，可删除（只解除登记，设备本体不受影响） -->
+  <view class="section">
+    <view class="section-head">
+      <text class="section-title">我的设备</text>
+      <text class="section-value">{{myDevices.length}} 台</text>
+    </view>
+    <view wx:if="{{myDevices.length === 0}}" class="device-empty">
+      还没有连接记录。去「发现」扫描附近的 Lumen 设备。
+    </view>
+    <view wx:else class="device-list">
+      <view wx:for="{{myDevices}}" wx:key="key" class="device-item">
+        <view class="device-row {{item.current ? 'active' : ''}}">
+          <view class="device-main">
+            <text class="device-name">{{item.label}}</text>
+            <text class="device-meta">{{item.whenText}}</text>
+          </view>
+          <text wx:if="{{item.current}}" class="device-badge">当前</text>
+        </view>
+        <text class="device-delete" data-key="{{item.key}}" catchtap="onDeleteDevice">删除</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 页脚：版本号连点 5 次开启隐藏协议日志面板 -->
+  <view class="footer">
+    <text class="version" bindtap="onVersionTap">v{{version}}</text>
+    <text class="footer-hint">lumen</text>
+  </view>
+
+  <!-- 隐藏协议日志面板：数据源是会话的 FrameLog（与 console 同源） -->
+  <view wx:if="{{logVisible}}" class="log-mask" bindtap="onLogCloseTap">
+    <view class="log-panel" catchtap="noop">
+      <view class="log-head">
+        <text class="log-title">协议日志 · {{logCount}} 帧{{logPaused ? ' · 视图已暂停' : ''}}</text>
+        <text class="log-close" bindtap="onLogCloseTap">关闭</text>
+      </view>
+      <view class="log-toolbar">
+        <view class="log-btn" bindtap="onLogPauseTap">{{logPaused ? '继续' : '暂停'}}</view>
+        <view class="log-btn" bindtap="onLogClearTap">清空</view>
+        <view class="log-btn" bindtap="onLogCopyTap">复制</view>
+      </view>
+      <text wx:if="{{logHint}}" class="log-hint">{{logHint}}</text>
+      <scroll-view
+        scroll-y
+        class="log-list"
+        scroll-into-view="{{logScrollTarget}}"
+        scroll-with-animation="{{false}}"
+      >
+        <view
+          wx:for="{{logRows}}"
+          wx:key="id"
+          id="log-row-{{item.id}}"
+          class="log-row {{item.dir}} {{item.ok ? '' : 'bad'}}"
+        >
+          <text class="log-time">{{item.time}}</text>
+          <text class="log-arrow">{{item.arrow}}</text>
+          <text class="log-hex">{{item.hex}}</text>
+          <text class="log-name">{{item.name}}{{item.seq === '-' ? '' : ' seq=' + item.seq}}</text>
+          <text class="log-parsed">{{item.parsed}}</text>
+        </view>
+        <view wx:if="{{logRows.length === 0}}" class="log-empty">
+          还没有帧。连接设备并操作后，这里会显示收发记录。
+        </view>
+      </scroll-view>
+      <text class="log-foot">与固件串口按 seq 对齐；开发版 console 打印的是同一份数据</text>
+    </view>
+  </view>
+</view>

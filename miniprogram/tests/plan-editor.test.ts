@@ -35,7 +35,17 @@ import { BLEND, NO_EFFECT, SEGMENT_TYPE } from "../utils/protocol/constants";
 import type { EffectLayer, SegmentSpec } from "../utils/protocol/types";
 
 function layer(type: number, overrides: Partial<EffectLayer> = {}): EffectLayer {
-  return { type, hue: 1000, sat: 255, periodMs: 0, p5: 0, flags: 0, ...overrides };
+  return {
+    type,
+    hue: 1000,
+    sat: 255,
+    periodMs: 0,
+    p5: 0,
+    flags: 0,
+    /* 空层的 level 必须为 0；非空层默认满亮。 */
+    level: type === NO_EFFECT ? 0 : 100,
+    ...overrides,
+  };
 }
 
 function zone(stripId: number, segId: number, start: number, end: number): SegmentSpec {
@@ -46,6 +56,25 @@ function zone(stripId: number, segId: number, start: number, end: number): Segme
     end,
     blend: BLEND.OVER,
     layer0: layer(SEGMENT_TYPE.STATIC),
+    layer1: null,
+  });
+}
+
+/** 带指定亮度的单层光区（v4 的 level 必须穿过切片替换保住）。 */
+function levelZone(
+  stripId: number,
+  segId: number,
+  start: number,
+  end: number,
+  level: number,
+): SegmentSpec {
+  return buildZoneSpec({
+    stripId,
+    segId,
+    start,
+    end,
+    blend: BLEND.OVER,
+    layer0: layer(SEGMENT_TYPE.STATIC, { level }),
     layer1: null,
   });
 }
@@ -105,19 +134,33 @@ describe("步骤 × 灯组切片", () => {
     expect(zonesOfStep(step, 1)).toEqual([]);
   });
 
-  it("替换当前组的光区时，别组原样保留（关键）", () => {
+  it("替换当前组的光区时，别组原样保留（关键），亮度也各自带走", () => {
     const s = state();
-    /* 先给第 0、1 组都放光区。 */
-    let draft = replaceStepZones(currentPlanDraft(s)!, 0, 0, [zone(0, 0, 0, 9)]);
-    draft = replaceStepZones(draft, 0, 1, [zone(1, 0, 0, 14)]);
+    /* 先给第 0、1 组都放光区，并给它们不同的亮度档。 */
+    let draft = replaceStepZones(currentPlanDraft(s)!, 0, 0, [levelZone(0, 0, 0, 9, 40)]);
+    draft = replaceStepZones(draft, 0, 1, [levelZone(1, 0, 0, 14, 80)]);
     expect(draft.stages[0].segments).toHaveLength(2);
 
-    /* 只改第 0 组：第 1 组必须一字不动。 */
-    const next = replaceStepZones(draft, 0, 0, [zone(0, 0, 0, 4), zone(0, 1, 5, 9)]);
+    /* 只改第 0 组：第 1 组必须一字不动（含它 80% 的亮度）。 */
+    const next = replaceStepZones(draft, 0, 0, [
+      levelZone(0, 0, 0, 4, 20),
+      levelZone(0, 1, 5, 9, 100),
+    ]);
     const strip1 = next.stages[0].segments.filter((seg) => seg.stripId === 1);
     expect(strip1).toHaveLength(1);
     expect(strip1[0]).toMatchObject({ start: 0, end: 14 });
-    expect(next.stages[0].segments.filter((seg) => seg.stripId === 0)).toHaveLength(2);
+    expect((strip1[0] as SegmentSpec).layer0.level).toBe(80);
+
+    const strip0 = next.stages[0].segments.filter((seg) => seg.stripId === 0);
+    expect(strip0).toHaveLength(2);
+    /* 新写入的两块各自带着自己的亮度（不串档、不丢档）。 */
+    expect(strip0.map((seg) => (seg as SegmentSpec).layer0.level).sort((a, b) => a - b)).toEqual([
+      20, 100,
+    ]);
+    /* 空叠加层的 level 恒为 0——否则写进设备会被回 InvalidParam。 */
+    for (const seg of next.stages[0].segments) {
+      expect((seg as SegmentSpec).layer1.level).toBe(0);
+    }
   });
 
   it("清空当前组时别组仍在（用户点「整组熄灭」不能连累别组）", () => {
@@ -247,6 +290,8 @@ describe("方案消息的术语翻译", () => {
     expect(durationMessageText("500ms 太短")).toBe("不足 1 秒 太短");
     expect(durationMessageText("2000ms 太长")).toBe("2 秒 太长");
     expect(durationMessageText("没有单位")).toBe("没有单位");
+    /* 小数也不该漏过（`0.5ms` 不能说成「0.5 毫秒」）。 */
+    expect(durationMessageText("0.5ms")).toBe("不足 1 秒");
   });
 
   it("planUserMessage 同时做两件事", () => {
@@ -255,6 +300,23 @@ describe("方案消息的术语翻译", () => {
     expect(text).not.toContain("ms");
     expect(text).toContain("步骤");
     expect(text).toContain("秒");
+  });
+
+  /**
+   * 顺序回归：早期 `planMessageText` 先把 `1ms` 换成「1 毫秒」，后面的秒换算
+   * 再也看不到 `ms`，界面于是出现禁用词。两条路径都必须干净。
+   */
+  it("任何路径都不产出「毫秒」（ms → 秒 的那一步不能被前一步吃掉）", () => {
+    for (const source of [
+      "阶段 2的时长必须 ≥ 1ms（收到 0）",
+      "阶段 1 的时长超过 65535ms 上限",
+      "500ms 太短",
+      "时长 1500ms",
+    ]) {
+      expect(planUserMessage(source), source).not.toContain("毫秒");
+      expect(planUserMessage(source), source).not.toContain("ms");
+      expect(durationMessageText(planMessageText(source)), source).not.toContain("毫秒");
+    }
   });
 
   it("下发 / 激活也翻成写入 / 启用", () => {

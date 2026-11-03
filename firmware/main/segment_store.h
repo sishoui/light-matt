@@ -9,9 +9,9 @@
 /*
  * 段配置存储 + 合成（纯模块，无 ESP-IDF 头，host 可测）。
  *
- * 职责（docs/v2-effects-engine.md §2 / §4、docs/protocol-v3.md §7.1）：
+ * 职责（docs/v2-effects-engine.md §2 / §4、docs/protocol-v4.md §7.1）：
  *  - 8 条灯带 × 8 段的配置数组；
- *  - §7.1 第 2-7 步的**形状**校验（层类型 / blend / 保留位 / 各类型参数）
+ *  - §7.1 第 2-8 步的**形状**校验（层类型 / 层亮度 / blend / 保留位 / 各类型参数）
  *    以及后续的 strip 范围、区间、重叠；
  *  - 把一条灯带的活动段合成为像素缓冲：**先 memset 0，再写各段**——
  *    未覆盖的灯珠必须是 0（WS2812B 锁存，不主动清零会留残影）。
@@ -20,12 +20,13 @@
  */
 
 /*
- * RAM 记录（#37 验收点）：
- *   sizeof(lumen_segment_t)      = 24 字节（v2 是 16：type/hue/sat/period/p5/flags
- *                                  摊平后 16；v3 改成 blend + 两层各 8 字节）
- *   sizeof(lumen_segment_store_t)= 1536 字节（8 条灯带 × 8 段 × 24）
- * v2 的 store 是 1024 字节，净增 512 字节。更大的代价在剧本表（script_store.h），
- * 因为一套剧本是 4 脚本 × 8 阶段 × 8 灯带 × 8 段。
+ * RAM 记录（v4）：
+ *   sizeof(lumen_effect_layer_t) = 9 字节（type + param[7] + level）
+ *   sizeof(lumen_segment_t)      = 28 字节（active + start/end/blend + 2 × 9 +
+ *                                  t0_ms(4)，因 4 字节对齐从 25 涨到 28）
+ *   sizeof(lumen_segment_store_t)= 1792 字节（8 条灯带 × 8 段 × 28）
+ * v3 的 store 是 1536、v2 是 1024。更大的代价在剧本表（script_store.h），
+ * 因为一套剧本是 4 脚本 × 8 阶段 × 8 灯带 × 8 段；v4 起约 70KB。
  */
 typedef struct {
     lumen_segment_t slot[LUMEN_MAX_STRIPS][LUMEN_MAX_SEGMENTS];
@@ -38,33 +39,37 @@ void lumen_segment_store_init(lumen_segment_store_t *store);
 void lumen_segment_store_reset_strip(lumen_segment_store_t *store, uint8_t strip_id);
 
 /*
- * 段的整体形状校验（§7.1 第 2-7 步，**不含 strip / 区间 / 重叠**）。
+ * 段的整体形状校验（§7.1 第 2-8 步，**不含 strip / 区间 / 重叠**）。
  *
  * 顺序固定：
  *   2 layer0 已知且不得为空层
- *   3 layer1 已知或空层
- *   4 layer1 为空 ⇒ blend 必须为 0
- *   5 blend ≤ 2
- *   6 静态层 param[3..6] 全 0（对两层都生效）
- *   7 各层按 type 校验参数
+ *   3 layer1 已知或空层；空层的 level 必须为 0
+ *   4 任一层的 level ≤ 100
+ *   5 layer1 为空 ⇒ blend 必须为 0
+ *   6 blend ≤ 2
+ *   7 静态层 param[3..6] 全 0（对两层都生效）
+ *   8 各层按 type 校验参数（呼吸 p5 ≤ 100 由本函数单独判）
  *
  * 命令层、剧本层、blob 解码都复用这一处，拒收规则永远一致。
  */
 uint8_t lumen_segment_validate_shape(const lumen_segment_t *seg);
 
 /*
- * 只做「类型参数」规则（§7.1 第 7 步）：flags 保留位与周期下限。
+ * 只做「类型参数」规则（§7.1 第 8 步）：flags 保留位与周期下限。
  *
  * 静态层要求 flags == 0；呼吸 bit3-7 保留、周期 ≥334；彩虹/流光 bit1-7 保留、
  * 周期 ≥200；未知类型一律非法。period_ms == 0 表示静止，不受下限约束。
+ *
+ * v4 的呼吸 p5 从绝对 0-255 改为相对百分比 0-100，这条规则由
+ * lumen_segment_validate_shape 单独判（彩虹/流光的 p5 仍是 0-255）。
  */
 uint8_t lumen_segment_store_validate_params(uint8_t type, uint8_t flags, uint16_t period_ms);
 
 /*
- * 校验一个候选段（§7.1 第 2-7 步之后接 strip 范围 / 区间 / 重叠）。
+ * 校验一个候选段（§7.1 第 2-8 步之后接 strip 范围 / 区间 / 重叠）。
  *
  * 顺序严格固定：
- *   2-7 形状（lumen_segment_validate_shape，与命令层同一份规则）
+ *   2-8 形状（lumen_segment_validate_shape，与命令层同一份规则）
  *   strip_id 范围   0 ≤ strip_id < strip_count
  *   段区间          start ≤ end 且 end < led_count
  *   段重叠          与同 strip 的其它活动段无交集（同 seg_id 视为替换自身）
@@ -119,7 +124,7 @@ bool lumen_segment_store_any_active(const lumen_segment_store_t *store, uint8_t 
 bool lumen_segment_store_needs_frames(const lumen_segment_store_t *store, uint8_t strip_count);
 
 /*
- * 把 seg 0 的基准色写进 out_rgb（docs/protocol-v3.md §7.3：State 字节 2-4）。
+ * 把 seg 0 的基准色写进 out_rgb（docs/protocol-v4.md §7.3：State 字节 2-4）。
  * **取 layer[0]** 的 hue+sat（不含动画包络）；段 0 不活动时写全 0。
  */
 void lumen_segment_store_state_rgb(const lumen_segment_store_t *store, uint8_t strip_id,

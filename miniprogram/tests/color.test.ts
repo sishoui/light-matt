@@ -3,11 +3,13 @@
  *
  * 覆盖：
  *  1. HSV→RGB 纯函数：0°/120°/240°、饱和度与明度边界、**不做 gamma**；
- *  2. RGB→HSV 反推（设备状态回填色环）、十六进制互转、预设表；
- *  3. 色环几何：圆环命中判定（中心/环外/边缘容差）、角度与坐标互转；
- *  4. **#25**：SetColor / SetAll 已退役，颜色写进**选中段**（SetSegment 0x10）——
+ *  2. RGB→HSV 反推、十六进制互转、预设表；
+ *  3. **#25**：SetColor / SetAll 已退役，颜色写进**选中段**（SetSegment 0x10）——
  *     没有选中段时不发帧、applyPreset 明确返回错误而不是假装成功；
- *  5. 亮度仍走 20Hz latest-wins 闸门（颜色不再占用这条通道）。
+ *  4. 亮度仍走 20Hz latest-wins 闸门（颜色不再占用这条通道）。
+ *
+ * 色环几何与绘制（`utils/color/wheel`）已随色环 UI 一起删除：现在选颜色走灯组页
+ * 的 HSV 滑块，没有 canvas 可测。
  *
  * 只替换计时器与传输通道（spec 允许的两个假件），不 mock 协议字节。
  */
@@ -18,21 +20,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   hexToRgb,
-  hsvForWheel,
   hsvToRgb,
   normalizeHue,
   PRESETS,
   rgbToHex,
   rgbToHsv,
 } from "../utils/color/hsv";
-import {
-  drawWheel,
-  hueAtPoint,
-  moveWheelMarker,
-  pointForHue,
-  wheelGeometry,
-  WHEEL_HIT_SLOP,
-} from "../utils/color/wheel";
 import { applyLocalColor, clampChannel, clampRgb, presetBrightness, sameRgb } from "../utils/control/color";
 import { ControlSession } from "../utils/control/session";
 import { bytesToCompactHex } from "../utils/protocol/hex";
@@ -59,7 +52,7 @@ interface VectorCase {
 }
 
 const vectors = JSON.parse(
-  readFileSync(new URL("../../docs/protocol-testvectors-v3.json", import.meta.url), "utf8"),
+  readFileSync(new URL("../../docs/protocol-testvectors-v4.json", import.meta.url), "utf8"),
 ) as { cases: VectorCase[]; state_read_example_hex: string };
 
 function vector(name: string): VectorCase {
@@ -138,7 +131,7 @@ class FakeTransport {
       start,
       end,
       blend: 0 as const,
-      layer0: { type: 0, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0 },
+      layer0: { type: 0, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0, level: 100 },
       layer1: { ...EMPTY_EFFECT },
       type: 0,
       hue: 0,
@@ -295,7 +288,7 @@ describe("HSV → 用户空间 RGB（不做 gamma）", () => {
     }
   });
 
-  it("RGB → HSV 反推：纯色与灰阶（灰阶保留上次色相）", () => {
+  it("RGB → HSV 反推：纯色与灰阶", () => {
     expect(rgbToHsv({ r: 255, g: 0, b: 0 })).toEqual({ h: 0, s: 1, v: 1 });
     expect(rgbToHsv({ r: 0, g: 255, b: 0 })).toEqual({ h: 120, s: 1, v: 1 });
     expect(rgbToHsv({ r: 0, g: 0, b: 255 })).toEqual({ h: 240, s: 1, v: 1 });
@@ -309,11 +302,6 @@ describe("HSV → 用户空间 RGB（不做 gamma）", () => {
       expect(Math.abs(hsv.h - hue)).toBeLessThan(2);
       expect(Math.abs(hsv.s - 0.6)).toBeLessThan(0.02);
     }
-
-    /* 灰阶：色相无意义，保留调用方给的 fallback（避免选中点跳到正红）。 */
-    const gray = hsvForWheel({ r: 128, g: 128, b: 128 }, 200);
-    expect(gray.h).toBe(200);
-    expect(gray.s).toBe(0);
   });
 
   it("十六进制互转只用于展示，非法输入返回 null", () => {
@@ -384,96 +372,6 @@ describe("颜色语义纯函数", () => {
   });
 });
 
-describe("色环几何（触控精度只到这里，其余待真机）", () => {
-  const geometry = wheelGeometry(420);
-
-  it("由尺寸推导环宽与半径，环带不与中心重叠", () => {
-    expect(geometry.size).toBe(420);
-    expect(geometry.center).toBe(210);
-    expect(geometry.outerRadius).toBe(209);
-    expect(geometry.ringWidth).toBeCloseTo(100.8, 5);
-    expect(geometry.innerRadius).toBeCloseTo(108.2, 5);
-    expect(geometry.markerRadius).toBeCloseTo(158.6, 5);
-    /* 环中线到内外边缘的距离相等。 */
-    expect(geometry.markerRadius - geometry.innerRadius).toBeCloseTo(
-      geometry.outerRadius - geometry.markerRadius,
-      5,
-    );
-    /* 非法尺寸不会产生负半径。 */
-    expect(wheelGeometry(0).outerRadius).toBeGreaterThan(0);
-    expect(wheelGeometry(Number.NaN).innerRadius).toBeGreaterThanOrEqual(0);
-  });
-
-  it("触摸点 → 色相：右 0°、下 90°、左 180°、上 270°", () => {
-    const mid = geometry.markerRadius;
-    expect(hueAtPoint(geometry.center + mid, geometry.center, geometry)).toBeCloseTo(0, 5);
-    expect(hueAtPoint(geometry.center, geometry.center + mid, geometry)).toBeCloseTo(90, 5);
-    expect(hueAtPoint(geometry.center - mid, geometry.center, geometry)).toBeCloseTo(180, 5);
-    expect(hueAtPoint(geometry.center, geometry.center - mid, geometry)).toBeCloseTo(270, 5);
-  });
-
-  it("中心空白与环外返回 null，边缘有容差", () => {
-    expect(hueAtPoint(geometry.center, geometry.center, geometry)).toBeNull();
-    expect(hueAtPoint(0, 0, geometry)).toBeNull();
-    expect(hueAtPoint(Number.NaN, 10, geometry)).toBeNull();
-
-    /* 内圈稍微越界（在 HIT_SLOP 内）仍然命中：手指有宽度。 */
-    const justInside = geometry.center + geometry.innerRadius - WHEEL_HIT_SLOP + 1;
-    expect(hueAtPoint(justInside, geometry.center, geometry)).not.toBeNull();
-    /* 深入内圈（超过容差）不命中，避免手指划过中心导致颜色乱跳。 */
-    const deepInside = geometry.center + geometry.innerRadius - WHEEL_HIT_SLOP - 1;
-    expect(hueAtPoint(deepInside, geometry.center, geometry)).toBeNull();
-    /* 环外超过容差不命中。 */
-    const wellOutside = geometry.center + geometry.outerRadius + WHEEL_HIT_SLOP + 1;
-    expect(hueAtPoint(wellOutside, geometry.center, geometry)).toBeNull();
-  });
-
-  it("色相 → 坐标 → 色相 往返一致", () => {
-    for (const hue of [0, 45, 90, 135, 180, 225, 270, 315]) {
-      const point = pointForHue(hue, geometry);
-      const back = hueAtPoint(point.x, point.y, geometry);
-      expect(back).not.toBeNull();
-      expect(Math.abs((back as number) - hue)).toBeLessThan(0.01);
-    }
-  });
-
-  it("绘制函数只接触受控的 2D 接口（不依赖 DOM）", () => {
-    /* 记录调用的假上下文：验证绘制顺序与 dpr 缩放，不验证像素。 */
-    const calls: string[] = [];
-    const ctx = {
-      setTransform: () => calls.push("setTransform"),
-      clearRect: () => calls.push("clearRect"),
-      beginPath: () => calls.push("beginPath"),
-      arc: () => calls.push("arc"),
-      stroke: () => calls.push("stroke"),
-      fill: () => calls.push("fill"),
-      strokeStyle: "",
-      fillStyle: "",
-      lineWidth: 0,
-      lineCap: "butt" as const,
-    };
-    drawWheel(ctx, geometry, 2, 30, "#FFB478");
-    expect(calls[0]).toBe("setTransform");
-    expect(calls[1]).toBe("clearRect");
-    /* 360 段弧 + 选中点 2 段弧。 */
-    expect(calls.filter((c) => c === "arc")).toHaveLength(362);
-    expect(calls.filter((c) => c === "fill")).toHaveLength(1);
-
-    /* 拖动：只擦旧位置并补回该角区间的环弧，再画新标记。 */
-    calls.length = 0;
-    moveWheelMarker(ctx, geometry, 2, 60, "#FFB478", 30);
-    expect(calls[0]).toBe("setTransform");
-    expect(calls.filter((c) => c === "clearRect")).toHaveLength(1);
-    expect(calls.filter((c) => c === "fill")).toHaveLength(1);
-    /* 擦除工作量恒定，与拖动历史无关。 */
-    const arcsForMove = calls.filter((c) => c === "arc").length;
-    expect(arcsForMove).toBeLessThan(80);
-    calls.length = 0;
-    moveWheelMarker(ctx, geometry, 2, 300, "#FFB478", 60);
-    expect(calls.filter((c) => c === "arc").length).toBe(arcsForMove);
-  });
-});
-
 describe("#25：颜色写进选中段（不再是占位）", () => {
   it("没有选中段时 queueColor / commitColor 不发帧（不能假装成功）", async () => {
     const { session, transport, clock } = makeSession();
@@ -506,10 +404,10 @@ describe("#25：颜色写进选中段（不再是占位）", () => {
     const req = transport.writes[0];
     expect(req.command).toBe(0x10);
     /* strip, seg, start, end, type, hue_lo, hue_hi, sat */
-    /* v3：21 字节两层载荷，单层时 layer1 全 0xFF。 */
-    expect(req.payload.length).toBe(21);
+    /* v4：23 字节两层载荷，单层时 layer1 全 0xFF 且 level 0。 */
+    expect(req.payload.length).toBe(23);
     expect(bytesToCompactHex(req.payload)).toBe(
-      "0002283F00000000FF00000000FF00000000000000",
+      "0002283F00000000FF0000000064FF0000000000000000",
     );
 
     /* 连续拖动：50ms 闸门，只保留最新值。 */
@@ -529,7 +427,7 @@ describe("#25：颜色写进选中段（不再是占位）", () => {
     /* 绿色 hue=120° → 0x5555（21845），sat=255。 */
     const last = transport.writes[transport.writes.length - 1];
     expect(bytesToCompactHex(last.payload)).toBe(
-      "0002283F00005555FF00000000FF00000000000000",
+      "0002283F00005555FF0000000064FF0000000000000000",
     );
 
     vi.restoreAllMocks();
@@ -549,7 +447,7 @@ describe("#25：颜色写进选中段（不再是占位）", () => {
     expect(transport.writes).toHaveLength(1);
     expect(transport.writes[0].command).toBe(0x10);
     expect(bytesToCompactHex(transport.writes[0].payload)).toBe(
-      "0000000F00000000FF00000000FF00000000000000",
+      "0000000F00000000FF0000000064FF0000000000000000",
     );
 
     vi.restoreAllMocks();

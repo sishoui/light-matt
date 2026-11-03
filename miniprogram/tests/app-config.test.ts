@@ -98,6 +98,47 @@ describe("app.json 配置契约", () => {
   });
 });
 
+describe("路由常量与 app.json 一致（#61）", () => {
+  /**
+   * 直接读文本而不是 `import "@utils/control/routes"`：那个模块的类型引用了
+   * `wx`（全局），在 node 环境下的 ts 解析链并不可靠；而这里只需要字面量。
+   */
+  const routesSrc = readFileSync(join(ROOT, "utils/control/routes.ts"), "utf8");
+
+  /** 抓 `export const X = { a: "/p/a", b: "/p/b" } as const;` 的 value 列表。 */
+  function routeValues(name: string): string[] {
+    const start = routesSrc.indexOf(`export const ${name} = {`);
+    if (start < 0) return [];
+    const end = routesSrc.indexOf("} as const;", start);
+    if (end < 0) return [];
+    const body = routesSrc.slice(start, end);
+    const out: string[] = [];
+    const re = /^\s+[A-Za-z_$][\w$]*:\s*"([^"]*)"/gm;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(body)) !== null) out.push(m[1]);
+    return out;
+  }
+
+  /** app.json 里写的是无前导斜杠的路径；routes.ts 带斜杠，统一去掉再比。 */
+  const bare = (path: string): string => path.replace(/^\//, "");
+
+  it("TAB_ROUTES 的 tab 列表与 app.json 的 tabBar.list 完全一致（含顺序）", () => {
+    const tabs = routeValues("TAB_ROUTES");
+    /* 防空过：解析失败时两边都是空数组会让断言通过。 */
+    expect(tabs.length).toBe(2);
+    const declared = (appJson.tabBar?.list ?? []).map((item) => item.pagePath);
+    expect(tabs.map(bare)).toEqual(declared);
+  });
+
+  it("PAGE_ROUTES 的每个二级页都在 app.json 的 pages 里", () => {
+    const pages = routeValues("PAGE_ROUTES");
+    expect(pages.length).toBeGreaterThanOrEqual(4);
+    for (const page of pages) {
+      expect(appJson.pages, `${page} 没有出现在 app.json 的 pages 里`).toContain(bare(page));
+    }
+  });
+});
+
 describe("WXML 事件绑定必须在 TS 里有对应方法", () => {
   /** 抓事件绑定：bindtap / catchtap / bind:action / capture-bind:tap 等。 */
   function bindings(src: string): string[] {
@@ -132,7 +173,9 @@ describe("WXML 事件绑定必须在 TS 里有对应方法", () => {
     const labels = pairs().map((pair) => pair.label);
     expect(labels).toContain("pages/home/home.wxml");
     expect(labels).toContain("pages/device/device.wxml");
-    expect(labels).toContain("pages/devices/devices.wxml");
+    expect(labels).toContain("pages/me/me.wxml");
+    expect(labels).toContain("pages/discover/discover.wxml");
+    expect(labels).toContain("pages/strip/strip.wxml");
     expect(labels).toContain("components/nav-bar/nav-bar.wxml");
     expect(labels).toContain("custom-tab-bar/index.wxml");
   });

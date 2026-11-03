@@ -96,7 +96,8 @@ export function overlapError(
       continue;
     }
     if (rangesOverlap({ start, end }, row)) {
-      return `与段 ${row.segId}（${row.start}-${row.end}）重叠`;
+      /* 术语（decisions §12）：界面不出现「段」，统一叫「光区」。 */
+      return `与光区 ${row.segId + 1}（${row.start}-${row.end}）重叠`;
     }
   }
   return null;
@@ -202,10 +203,12 @@ function animatedRow(
  * 否则用户会以为周期设置没生效。
  */
 export function breathingLabel(report: SegmentReport): string {
+  /* v4：呼吸的 p5 是**相对百分比 0-100**（谷底 = 层亮度 × p5%），不再是 0-255。 */
+  const floor = percentOf100(report.p5);
   if (report.periodMs === 0) {
-    return `静止 · 最暗 ${percentOf255(report.p5)}`;
+    return `静止 · 最暗 ${floor}`;
   }
-  return `${waveformName(report.flags)} · ${report.periodMs}ms · 最暗 ${percentOf255(report.p5)}`;
+  return `${waveformName(report.flags)} · ${report.periodMs}ms · 最暗 ${floor}`;
 }
 
 /** flags → 波形名（bits1-2）。 */
@@ -265,9 +268,14 @@ export function directionText(flags: number): string {
   return segmentReverse(flags) ? "反向" : "正向";
 }
 
-/** p5（0-255）→ 百分比文本。 */
+/** p5（0-255，彩虹跨度 / 流光尾长）→ 百分比文本。 */
 export function percentOf255(value: number): string {
   return `${Math.round((value / 255) * 100)}%`;
+}
+
+/** 百分比字段（0-100，v4 的呼吸最低亮）→ 展示文本。 */
+export function percentOf100(value: number): string {
+  return `${Math.round(value)}%`;
 }
 
 /**

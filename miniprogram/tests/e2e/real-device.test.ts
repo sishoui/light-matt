@@ -160,8 +160,8 @@ describe("真机 e2e：协议语义（真 BLE）", () => {
     if (!session) return;
     const { SEGMENT_TYPE, BLEND } = await import("../../utils/protocol/constants");
 
-    const layer0 = { type: SEGMENT_TYPE.STATIC, hue: 12000, sat: 200, periodMs: 0, p5: 0, flags: 0 };
-    const layer1 = { type: SEGMENT_TYPE.BREATHING, hue: 4000, sat: 255, periodMs: 1000, p5: 30, flags: 0 };
+    const layer0 = { type: SEGMENT_TYPE.STATIC, hue: 12000, sat: 200, periodMs: 0, p5: 0, flags: 0, level: 100 };
+    const layer1 = { type: SEGMENT_TYPE.BREATHING, hue: 4000, sat: 255, periodMs: 1000, p5: 30, flags: 0, level: 100 };
     const spec = { stripId: 0, segId: 0, start: 0, end: 9, blend: BLEND.MULTIPLY, layer0, layer1 };
 
     await session.setSegment(spec);
@@ -181,7 +181,7 @@ describe("真机 e2e：协议语义（真 BLE）", () => {
     expect(got.layer1.hue).toBe(4000);
     expect(got.layer1.periodMs).toBe(1000);
 
-    await session.setSegment({ ...spec, layer0: { ...layer0, hue: 0 }, layer1: { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0 }, blend: 0 });
+    await session.setSegment({ ...spec, layer0: { ...layer0, hue: 0 }, layer1: { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 }, blend: 0 });
     await session.clearSegment(0, 0).catch(() => undefined);
   }, 60_000);
 
@@ -190,8 +190,8 @@ describe("真机 e2e：协议语义（真 BLE）", () => {
     const { SEGMENT_TYPE, BLEND } = await import("../../utils/protocol/constants");
     const bad = {
       stripId: 0, segId: 1, start: 10, end: 15, blend: BLEND.ADD,
-      layer0: { type: SEGMENT_TYPE.STATIC, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0 },
-      layer1: { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0 },
+      layer0: { type: SEGMENT_TYPE.STATIC, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0, level: 100 },
+      layer1: { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 },
     };
     /* cmdSetSegment 有本地校验：单层带 blend≠0 直接抛 RangeError，
      * 比「发出去等设备回 InvalidParam」更早、更省一次往返。 */
@@ -205,8 +205,8 @@ describe("真机 e2e：协议语义（真 BLE）", () => {
      * 这正是「客户端无从判断、必须由设备拒绝」的那一类。 */
     const bad = {
       stripId: 0, segId: 2, start: 0, end: 60, blend: 0,
-      layer0: { type: SEGMENT_TYPE.STATIC, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0 },
-      layer1: { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0 },
+      layer0: { type: SEGMENT_TYPE.STATIC, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0, level: 100 },
+      layer1: { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 },
     };
     const ack = await session.setSegment(bad);
     expect(ack.ok).toBe(false);

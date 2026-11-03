@@ -15,11 +15,16 @@ lumen/
 
 ## 从这里开始
 
-**v3 扩展（已实现，待真机验收）**
+**v4（当前，固件侧已实现）**
+
+- **v4 协议契约**：[docs/protocol-v4.md](docs/protocol-v4.md) —— 字节级唯一真相，含分片、两层段与逐层亮度
+- **v4 测试向量**：[docs/protocol-testvectors-v4.json](docs/protocol-testvectors-v4.json) —— 由 `scripts/gen-protocol-testvectors-v4.mjs` 生成
+
+**v3 扩展（已实现，历史）**
 
 - **v3 规格**：[docs/spec-v3.md](docs/spec-v3.md) —— 设备列表 / 多灯带 / 两层灯效 / 分阶段（GitHub [#35](https://github.com/sishoui/light-matt/issues/35)）
-- **v3 协议契约**：[docs/protocol-v3.md](docs/protocol-v3.md) —— 字节级唯一真相，含分片与两层段
-- **v3 测试向量**：[docs/protocol-testvectors-v3.json](docs/protocol-testvectors-v3.json) —— 由 `scripts/gen-protocol-testvectors-v3.mjs` 生成
+- **v3 协议契约（历史）**：[docs/protocol-v3.md](docs/protocol-v3.md) —— 保留供对照
+- **v3 测试向量（历史）**：[docs/protocol-testvectors-v3.json](docs/protocol-testvectors-v3.json)
 - **v3 真机验收**：[docs/acceptance-v3.md](docs/acceptance-v3.md) —— 8 带 / 每带开关 / 两层 / 剧本 / 稳定性清单与记录表（**需硬件，待执行**）
 - **灯效参数表**：[docs/effects-spec.md](docs/effects-spec.md) —— 四种灯效的字节布局与行为公式（v3 未改语义）
 
@@ -34,7 +39,7 @@ lumen/
 
 - **接手/继续开发**：[docs/handoff.md](docs/handoff.md) —— 当前状态、下一步、必须知道的坑
 - **想了解架构**：[docs/wayfinding/architecture-brief.md](docs/wayfinding/architecture-brief.md)（⚠️ v1 历史产物）
-- **想写 codec（v3，当前）**：[docs/protocol-v3.md](docs/protocol-v3.md) —— 字节级协议规格与测试向量
+- **想写 codec（v4，当前）**：[docs/protocol-v4.md](docs/protocol-v4.md) —— 字节级协议规格与测试向量
 - **想写 codec（v2，已作废）**：[docs/protocol.md](docs/protocol.md) —— 保留供对照
 - **想实现 MVP**：[docs/spec.md](docs/spec.md) —— MVP 实现规格（用户故事、实现决策、测试接缝）
 - **想跑真机验收**：[docs/end-to-end-acceptance.md](docs/end-to-end-acceptance.md) —— 7 条清单的操作步骤与记录表
@@ -42,21 +47,24 @@ lumen/
 
 ## 现状
 
-**v3 已实现，待真机验收。** 11 张实现票（#36–#45）全部合入 `integration/lumen-v3`，
-三端测试全绿：
+**UI 重构 + 协议 v4 已实现，待合入 master 与真机验收。** 9 张实现票（#61–#69）都在
+集成分支 `integration/ui-refactor-v4`，三端测试全绿：
 
 | 端 | 规模 |
 |---|---|
-| 固件 host 测试 | **11053 项断言**，58 条 v3 向量（CRC16 / 分片重组 / 两层合成 / blob v4 与 LMS3） |
-| 小程序 | **603 个 vitest 用例**，31 个测试文件，`tsc --noEmit` 干净 |
+| 固件 host 测试 | **11449 项断言**，64 条向量（CRC16 / 分片重组 / 两层合成 / 逐层亮度 / blob v5 与 LMS4） |
+| 小程序 | **1169 个 vitest 用例**，53 个测试文件，`tsc --noEmit` 干净 |
 | 后端 | **140 个 vitest 用例**，6 个测试文件，`tsc --noEmit` 干净 |
 
-v3 带来的变化：8 条灯带成为主界面维度（`PRIMARY_STRIP_ID` 已彻底消除）、同段两层灯效叠加
-（覆盖/相乘/相加）、每条灯带独立开关与 TDM 跳过、剧本两层化 + `ScriptTooLarge` 显式失败、
-设备登记与后端同步、State 14→37 字节、逻辑帧上限 20→240 字节（CRC16 + BLE 分片）。
+本轮带来的变化：底部改为「设备 / 我的」两 tab，发现页降为二级页；设备页瘦身成总闸 +
+全局亮度 + 灯组两列卡片；**新增灯组详情页**（简单档六张成品卡 / 进阶档时间轴 + 光区轴 +
+HSV 效果面板 + 灯珠弹窗）。协议 v4 把层编码从 8 字节扩到 **9 字节**并新增逐光区亮度
+`level`（0–100，`> 100` 拒绝），呼吸的 `p5` 从绝对 0-255 改为**相对百分比**；段载荷
+**23 / 25 / 23**、State blob 版本 **5**、脚本 blob `LMS4`/v3。
 
-**真机验收（#46）尚未执行**——需要 8 条灯带、录像设备与 400s 稳定性长跑，
+**上一轮 v3**（#36–#45）已合入 `master`（PR #51），设备侧验收全部跑完；
 清单与记录表在 [`docs/acceptance-v3.md`](docs/acceptance-v3.md)。
+**本轮的真机验收尚未执行**（逐光区亮度的实际观感、进阶档多步骤播放在真实灯带上的效果）。
 固件需要在 IDF 6.1 下实际编译一次再烧录（本次实现环境无法访问组件仓库）。
 
 

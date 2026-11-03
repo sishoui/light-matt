@@ -288,7 +288,7 @@ describe("MTU 与分片容量", () => {
     fakeWx.writes.length = 0;
 
     /* 21 字节段 → 29 字节帧 → cap 20 → 2 片。 */
-    const payload = hexToBytes("0000000900000000FF00000000FF00000000000000") as Uint8Array;
+    const payload = hexToBytes("0000000900000000FF0000000064FF0000000000000000") as Uint8Array;
     const pending = transport.sendAndWaitAck({ command: 0x10, payload });
     await settle();
     expect(fakeWx.writes).toHaveLength(2);
@@ -308,7 +308,7 @@ describe("MTU 与分片容量", () => {
     await transport.connect(DEVICE_ID);
     fakeWx.writes.length = 0;
 
-    const payload = hexToBytes("0000000900000000FF00000000FF00000000000000") as Uint8Array;
+    const payload = hexToBytes("0000000900000000FF0000000064FF0000000000000000") as Uint8Array;
     const pending = transport.sendAndWaitAck({ command: 0x10, payload });
     await settle();
     expect(fakeWx.writes).toHaveLength(1);

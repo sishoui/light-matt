@@ -6,7 +6,7 @@
  * 用户配好的「彩虹 × 呼吸（相乘）」在点一下颜色后就被静默降级成单层。
  *
  * 本文件的断言一律是**字节级**的：比 `layer1` 的字段更严格，也覆盖 blend
- * 字节与区间。期望值直接取自 docs/protocol-testvectors-v3.json 的
+ * 字节与区间。期望值直接取自 docs/protocol-testvectors-v4.json 的
  * `set_segment_rainbow_plus_breathing_multiply`（21 字节两层定宽）。
  *
  * 只替换传输通道与计时器（spec 允许的两个假件），不 mock 协议字节。
@@ -43,7 +43,7 @@ interface VectorCase {
 }
 
 const vectors = JSON.parse(
-  readFileSync(new URL("../../docs/protocol-testvectors-v3.json", import.meta.url), "utf8"),
+  readFileSync(new URL("../../docs/protocol-testvectors-v4.json", import.meta.url), "utf8"),
 ) as { cases: VectorCase[] };
 
 function vectorHex(name: string): string {
@@ -58,7 +58,7 @@ const TWO_LAYER: SegmentReport = parseSegmentReport(hexToBytes(TWO_LAYER_HEX) as
 
 /** 单层静态段（strip 0 / seg 1 / 10-20 / 纯绿）。 */
 const SINGLE_LAYER: SegmentReport = parseSegmentReport(
-  hexToBytes("00010A1400005555FF00000000FF00000000000000") as Uint8Array,
+  hexToBytes("00010A1400005555FF0000000064FF0000000000000000") as Uint8Array,
 );
 
 const TWO_LAYER_TARGET = { stripId: 0, segId: 3, start: 0, end: 63 };
@@ -217,8 +217,9 @@ async function settle(rounds = 30): Promise<void> {
 }
 
 /** 21 字节载荷的 layer1 区（偏移 13 起 8 字节）。 */
+/** v4：段头 5 字节 + layer0 9 字节 → layer1 从偏移 14 起。 */
 function layer1Hex(payload: Uint8Array): string {
-  return bytesToCompactHex(payload.slice(13));
+  return bytesToCompactHex(payload.slice(14));
 }
 
 describe("#48 改色保留第二层与 blend（字节级）", () => {
@@ -234,7 +235,7 @@ describe("#48 改色保留第二层与 blend（字节级）", () => {
     expect(transport.acks).toHaveLength(1);
 
     const payload = transport.acks[0].payload;
-    expect(bytesToCompactHex(payload)).toBe("0003003F01025555FFA00FFF0001000000DC051400");
+    expect(bytesToCompactHex(payload)).toBe("0003003F01025555FFA00FFF006401000000DC05140064");
     /* blend = 相乘，layer1 原样（不是空层）。 */
     expect(payload[4]).toBe(1);
     expect(layer1Hex(payload)).toBe(layer1Hex(hexToBytes(TWO_LAYER_HEX) as Uint8Array));
@@ -286,7 +287,7 @@ describe("#48 改色保留第二层与 blend（字节级）", () => {
     expect(result.kind).toBe("ok");
     const payload = transport.acks[0].payload;
     expect(payload[4]).toBe(0);
-    expect(layer1Hex(payload)).toBe("FF00000000000000");
+    expect(layer1Hex(payload)).toBe("FF0000000000000000");
     expect(bytesToCompactHex(payload.slice(6, 9))).toBe("0000FF");
   });
 });
