@@ -23,11 +23,20 @@ import {
   ANIMATION_MIN_PERIOD_MS,
   BLEND,
   BREATHING_MIN_PERIOD_MS,
+  COMET_DENSITY_MASK,
+  COMET_DENSITY_SHIFT,
+  COMET_FLAG,
+  COMET_FLAGS_RESERVED,
+  COMET_HEADS_MAX,
+  COMET_HEADS_MIN,
   DEVICE_INFO_BYTES,
+  FLICKER_MIN_PERIOD_MS,
   HEARTBEAT_MAX_PERIOD_MS,
   HEARTBEAT_MIN_PERIOD_MS,
   LAYER_BYTES,
   LAYER_LEVEL_MAX,
+  LOOP,
+  LOOP_MAX,
   MAX_LEDS,
   MAX_SCRIPTS,
   MAX_SEGMENTS,
@@ -37,6 +46,7 @@ import {
   MIN_LEDS,
   NO_EFFECT,
   NO_SCRIPT,
+  PLAYBACK_FLAG,
   SCRIPT_SEGMENT_BYTES,
   SEGMENT_BYTES,
   SEGMENT_HEADER_BYTES,
@@ -46,6 +56,7 @@ import {
   STRIP_CONFIG_BYTES,
   STRIP_CONFIG_RECORD_BYTES,
   WAVEFORM,
+  isKnownEffectType,
 } from "./constants";
 import { isSegmentSpec, toFlat, toSpec } from "./segment-shapes";
 import type {
@@ -147,15 +158,8 @@ function assertSegId(segId: number): number {
 }
 
 function isKnownLayerType(type: number): boolean {
-  return (
-    type === SEGMENT_TYPE.STATIC ||
-    type === SEGMENT_TYPE.BREATHING ||
-    type === SEGMENT_TYPE.RAINBOW ||
-    type === SEGMENT_TYPE.COMET ||
-    type === SEGMENT_TYPE.STROBE ||
-    type === SEGMENT_TYPE.HEARTBEAT ||
-    type === SEGMENT_TYPE.OFF
-  );
+  /* 单一真相是 constants.ts 的 KNOWN_EFFECT_TYPES（#74 的教训：别在这里再抄一份）。 */
+  return isKnownEffectType(type);
 }
 
 /**
@@ -276,10 +280,34 @@ function writeLayer(out: Uint8Array, offset: number, layer: EffectLayer, field: 
     if (hue !== 0 || sat !== 0 || period !== 0 || p5 !== 0 || flags !== 0) {
       throw new RangeError(`${field} 是熄灭层，hue / sat / period / p5 / flags 必须全为 0`);
     }
+  } else if (type === SEGMENT_TYPE.FLICKER) {
+    /* #98 随机闪烁：没有 flags 位；周期 0 或 ≥ 334ms（与呼吸同一条安全线）。 */
+    if (flags !== 0) {
+      throw new RangeError(
+        `${field} 是随机闪烁层，flags 必须为 0，收到 0x${flags.toString(16)}`,
+      );
+    }
+    if (period !== 0 && period < FLICKER_MIN_PERIOD_MS) {
+      throw new RangeError(
+        `随机闪烁周期不能短于 ${FLICKER_MIN_PERIOD_MS}ms（约 3Hz），收到 ${period}`,
+      );
+    }
+  } else if (type === SEGMENT_TYPE.COMET) {
+    /* #98 流光：bit0-3 有含义（反向 / 实色拖尾 / 头数量），只有 bit4-7 保留。 */
+    if ((flags & COMET_FLAGS_RESERVED) !== 0) {
+      throw new RangeError(
+        `${field} 的流光 flags 保留位 bit4-7 必须为 0，收到 0x${flags.toString(16)}`,
+      );
+    }
+    if (period !== 0 && period < ANIMATION_MIN_PERIOD_MS) {
+      throw new RangeError(
+        `流光周期不能短于 ${ANIMATION_MIN_PERIOD_MS}ms（5Hz），收到 ${period}`,
+      );
+    }
   } else {
     if (period !== 0 && period < ANIMATION_MIN_PERIOD_MS) {
       throw new RangeError(
-        `彩虹/流光周期不能短于 ${ANIMATION_MIN_PERIOD_MS}ms（5Hz），收到 ${period}`,
+        `彩虹周期不能短于 ${ANIMATION_MIN_PERIOD_MS}ms（5Hz），收到 ${period}`,
       );
     }
     if ((flags & 0xfe) !== 0) {
@@ -495,6 +523,41 @@ export function rainbowSegment(
   };
 }
 
+/**
+ * 流光的 flags 字节（#98）：把「反向 / 实色拖尾 / 头数量」打包进已有的 1 字节。
+ *
+ * `heads` 是**同时有几个流星头**（1-4）；传错值直接抛错而不是钳位——
+ * 密度是要被用户看见的意图，静默改成 4 个头比报错更难查。
+ */
+export function cometFlags(
+  heads: number,
+  options: { reverse?: boolean; solidTail?: boolean } = {},
+): number {
+  if (!Number.isInteger(heads) || heads < COMET_HEADS_MIN || heads > COMET_HEADS_MAX) {
+    throw new RangeError(
+      `流星头数量必须是 ${COMET_HEADS_MIN}-${COMET_HEADS_MAX} 的整数，收到 ${heads}`,
+    );
+  }
+  let flags = ((heads - 1) << COMET_DENSITY_SHIFT) & COMET_DENSITY_MASK;
+  if (options.reverse) {
+    flags |= COMET_FLAG.REVERSE;
+  }
+  if (options.solidTail) {
+    flags |= COMET_FLAG.SOLID_TAIL;
+  }
+  return flags;
+}
+
+/** 从流光 flags 解出头数量（1-4）。 */
+export function cometHeads(flags: number): number {
+  return ((flags & COMET_DENSITY_MASK) >> COMET_DENSITY_SHIFT) + 1;
+}
+
+/** 流光是否使用实色拖尾（flags bit1；关 = 现有的指数渐隐）。 */
+export function cometSolidTail(flags: number): boolean {
+  return (flags & COMET_FLAG.SOLID_TAIL) !== 0;
+}
+
 /** 构造一个流光段草稿（`tail` 0-255，见 effects-spec §2.4）。 */
 export function cometSegment(
   stripId: number,
@@ -578,16 +641,36 @@ function assertDuration(durationMs: number): number {
 }
 
 /**
+ * 循环模式的线上字节校验（#98）：只接受 0 / 1 / 2。
+ *
+ * 兼容旧的布尔入参（true → 1、false → 0），因为页面在此之前一直传布尔值；
+ * 三值语义是 `LOOP`。**不钳位**：3 会被固件按 InvalidParam 拒，这里先拒。
+ */
+function assertLoopMode(value: number | boolean): number {
+  if (typeof value === "boolean") {
+    return value ? LOOP.ALL : LOOP.NONE;
+  }
+  if (!Number.isInteger(value) || value < 0 || value > LOOP_MAX) {
+    throw new RangeError(`loop 必须是 ${LOOP.NONE}(不循环) / ${LOOP.ALL}(全部循环) / ` +
+      `${LOOP.LAST}(最后一步循环)，收到 ${value}`);
+  }
+  return value;
+}
+
+/**
  * SetPlayback 0x13：载荷 `action, loop`。
  *
  * action：0 stop（播放头回 stage 0）/ 1 play（从当前播放头，暂停后即继续）/
  * 2 pause（冻结播放头与画面）。loop 在三种 action 下都写入。
+ *
+ * loop 是**三值**（#98）：0 不循环 / 1 全部循环 / 2 最后一步循环；也接受旧的
+ * 布尔写法（true = 1、false = 0）。
  */
-export function cmdSetPlayback(action: number, loop: boolean): CommandRequest {
+export function cmdSetPlayback(action: number, loop: number | boolean): CommandRequest {
   if (!Number.isInteger(action) || action < 0 || action > 2) {
     throw new RangeError(`action 必须是 0(stop) / 1(play) / 2(pause)，收到 ${action}`);
   }
-  return { command: 0x13, payload: new Uint8Array([action, loop ? 1 : 0]) };
+  return { command: 0x13, payload: new Uint8Array([action, assertLoopMode(loop)]) };
 }
 
 /**
@@ -680,11 +763,15 @@ export function cmdScriptAbort(scriptId: number): CommandRequest {
   return { command: 0x18, payload: new Uint8Array([assertScriptId(scriptId)]) };
 }
 
-/** ActivateScript 0x19：载荷 `script_id, loop`。 */
-export function cmdActivateScript(scriptId: number, loop: boolean): CommandRequest {
+/**
+ * ActivateScript 0x19：载荷 `script_id, loop`。
+ *
+ * loop 同样是三值（#98），也接受旧的布尔写法。
+ */
+export function cmdActivateScript(scriptId: number, loop: number | boolean): CommandRequest {
   return {
     command: 0x19,
-    payload: new Uint8Array([assertScriptId(scriptId), loop ? 1 : 0]),
+    payload: new Uint8Array([assertScriptId(scriptId), assertLoopMode(loop)]),
   };
 }
 
@@ -708,8 +795,10 @@ export function cmdClearScript(scriptId: number): CommandRequest {
 export interface ScriptSummary {
   scriptId: number;
   stageCount: number;
-  /** bit0 loop（对激活剧本有意义）。 */
+  /** 位表见 §7.5：bit0 循环中、bit2 最后一步循环（只对激活剧本有意义）。 */
   flags: number;
+  /** flags 解出的循环模式（#98）：0/1/2。 */
+  loopMode: number;
   /** 1 = 就是当前激活的剧本。 */
   active: boolean;
 }
@@ -730,6 +819,7 @@ export function parseScriptSummary(payload: Uint8Array): ScriptSummary {
     scriptId: payload[0],
     stageCount: payload[1],
     flags: payload[2],
+    loopMode: loopModeFromFlags(payload[2]),
     active: active === 1,
   };
 }
@@ -845,6 +935,23 @@ export function parseLayer(bytes: Uint8Array, offset = 0): EffectLayer {
     if (layer.hue !== 0 || layer.sat !== 0 || layer.periodMs !== 0 || layer.p5 !== 0 ||
         layer.flags !== 0) {
       throw new RangeError("熄灭层的参数必须全为 0");
+    }
+  } else if (type === SEGMENT_TYPE.FLICKER) {
+    /* #98：flags 必须 0；周期 0 或 ≥ 334ms（与写入侧同一条规则）。 */
+    if (layer.flags !== 0) {
+      throw new RangeError(`随机闪烁层的 flags 必须为 0，收到 0x${layer.flags.toString(16)}`);
+    }
+    if (layer.periodMs !== 0 && layer.periodMs < FLICKER_MIN_PERIOD_MS) {
+      throw new RangeError(
+        `随机闪烁周期不能短于 ${FLICKER_MIN_PERIOD_MS}ms，收到 ${layer.periodMs}`,
+      );
+    }
+  } else if (type === SEGMENT_TYPE.COMET) {
+    /* #98：bit4-7 保留；bit0-3 是反向 / 实色拖尾 / 头数量。 */
+    if ((layer.flags & COMET_FLAGS_RESERVED) !== 0) {
+      throw new RangeError(
+        `流光层的 flags 保留位 bit4-7 必须为 0，收到 0x${layer.flags.toString(16)}`,
+      );
     }
   }
   return layer;
@@ -1026,9 +1133,37 @@ export function stateScriptActive(state: DeviceState): boolean {
   return (state.flags & 0x02) !== 0;
 }
 
-/** State 里的 `loop` 位（bit0）。 */
+/** State 里的 `loop` 位（bit0）：**有循环**（全部或最后一步）。旧语义不变。 */
 export function stateLoop(state: DeviceState): boolean {
-  return (state.flags & 0x01) !== 0;
+  return (state.flags & PLAYBACK_FLAG.LOOP) !== 0;
+}
+
+/**
+ * State 里的循环模式（#98）：0 不循环 / 1 全部循环 / 2 最后一步循环。
+ *
+ * 位表见 §7.5：bit0 = 循环中、bit2 = 最后一步循环。bit2 单独出现（无 bit0）
+ * 是矛盾编码，按不循环处理（与固件 `lumen_loop_from_flags` 一致）。
+ */
+export function stateLoopMode(state: DeviceState): number {
+  return loopModeFromFlags(state.flags);
+}
+
+/** flags → 循环模式（State 与 ScriptSummary 共用同一张位表）。 */
+export function loopModeFromFlags(flags: number): number {
+  if ((flags & PLAYBACK_FLAG.LOOP) === 0) {
+    return LOOP.NONE;
+  }
+  return (flags & PLAYBACK_FLAG.LOOP_LAST) !== 0 ? LOOP.LAST : LOOP.ALL;
+}
+
+/** 循环模式 → flags（State / ScriptSummary / blob 共用一张表）。 */
+export function loopFlags(mode: number): number {
+  if (mode === LOOP.NONE) {
+    return 0;
+  }
+  return mode === LOOP.LAST
+    ? (PLAYBACK_FLAG.LOOP | PLAYBACK_FLAG.LOOP_LAST)
+    : PLAYBACK_FLAG.LOOP;
 }
 
 /** 是否有激活剧本（script_id != 0xFF）。 */

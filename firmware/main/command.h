@@ -88,7 +88,8 @@ typedef struct {
      * 激活由 led_engine 在锁内执行（它持剧本表），这里只交出意图。
      *
      * script_op 取值见 lumen_script_op_t；script_stage_index / script_strip /
-     * script_seg / script_segment / script_loop 按 op 解释。
+     * script_seg / script_segment / script_loop 按 op 解释；script_loop 是
+     * lumen_loop_mode_t 的线上字节，不是布尔（#98）。
      */
     uint8_t script_op;
     uint8_t script_id;
@@ -102,7 +103,12 @@ typedef struct {
     uint8_t script_strip;
     uint8_t script_seg;
     lumen_segment_t script_segment;
-    bool script_loop;
+    /*
+     * 循环模式（#98）：lumen_loop_mode_t 的线上字节（0 不循环 / 1 全部循环 /
+     * 2 最后一步循环），SetPlayback 与 ActivateScript 共用。
+     * 旧固件只接受 0/1，所以 2 会被它按 InvalidParam 拒收（不误改配置）。
+     */
+    uint8_t script_loop;
 
     /*
      * ClearScript 0x1E（#73，docs/protocol-v4.md §6 / §9.6）：清空一个已提交

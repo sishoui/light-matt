@@ -252,7 +252,7 @@ void lumen_state_store_request_save(const lumen_persist_t *snapshot, uint8_t com
 
 bool lumen_state_store_load_scripts(const uint16_t strip_counts[LUMEN_MAX_STRIPS],
                                     lumen_script_store_t *store, uint8_t *active_script_id,
-                                    bool *loop)
+                                    uint8_t *loop)
 {
     if (store == NULL) {
         return false;

@@ -69,11 +69,11 @@ const ENVELOPE_FAILURES: Record<number, string> = {
 };
 
 describe("协议测试向量（v4）", () => {
-  it("向量文件本身是 v4 且包含 78 个用例", () => {
+  it("向量文件本身是 v4 且包含 93 个用例（#98 增加 15 条）", () => {
     expect(vectors.protocol_version).toBe(4);
     expect(vectors.magic).toBe("0xA6");
     expect(vectors.state_bytes).toBe(37);
-    expect(vectors.cases.length).toBe(78);
+    expect(vectors.cases.length).toBe(93);
   });
 
   it("app_to_device 有效帧：encode 逐字节复现 frame_hex", () => {

@@ -344,6 +344,25 @@ describe("演示模式：快捷档写入", () => {
     expect(stopped.kind).toBe("ok");
     expect(session.deviceState?.playbackState).toBe(0);
   });
+
+  it("#98 循环三档在演示传输层也原样生效（最后一步循环 = flags 0x05）", async () => {
+    const { session } = makeSession();
+    await session.connect(A.deviceId, A.broadcastName);
+    /* 三档都发得出去，且 State 的 flags 位按 §7.5 的位表反映出来。 */
+    await session.setPlayback(1, 1);
+    expect(session.deviceState?.flags).toBe(0x01);
+    await session.setPlayback(1, 2);
+    expect(session.deviceState?.flags).toBe(0x05);
+    await session.setPlayback(1, 0);
+    expect(session.deviceState?.flags).toBe(0x00);
+
+    /* 3 越界：构造器抛 RangeError，会话把它包成 error 结果（不发帧）。 */
+    const bad = await session.setPlayback(1, 3);
+    expect(bad.kind).toBe("error");
+    if (bad.kind === "error") {
+      expect(bad.message).toContain("loop 必须是");
+    }
+  });
 });
 
 /**

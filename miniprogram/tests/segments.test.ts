@@ -795,8 +795,12 @@ describe("#31 彩虹 / 流光：flags / 向量 / 行视图", () => {
       cmdSetSegment({ ...rainbowSegment(0, 0, 0, 5, 0, 0xff, 500, 128), flags: 0x02 }),
     ).toThrow(RangeError);
     expect(() =>
-      cmdSetSegment({ ...cometSegment(0, 0, 0, 5, 0, 0xff, 500, 64), flags: 0x08 }),
+      /* #98：流光 bit1-3 有含义（实色拖尾 / 头数量），只有 bit4-7 保留。 */
+      cmdSetSegment({ ...cometSegment(0, 0, 0, 5, 0, 0xff, 500, 64), flags: 0x10 }),
     ).toThrow(RangeError);
+    expect(() =>
+      cmdSetSegment({ ...cometSegment(0, 0, 0, 5, 0, 0xff, 500, 64), flags: 0x08 }),
+    ).not.toThrow();
     expect(() =>
       cmdSetSegment({ ...rainbowSegment(0, 0, 0, 5, 0, 0xff, 500, 128), flags: 0x01 }),
     ).not.toThrow();

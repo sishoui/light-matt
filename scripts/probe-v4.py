@@ -9,7 +9,8 @@
   §4 新灯效的边界：爆闪 <100ms 被拒、心跳 <500ms 被拒
   §5 逐光区亮度：同一带两个 level（100 / 25）分别读回
   §6 ClearScript 0x1E：提交一套方案后清空，摘要回 0 步
-  §7 收尾：把灯珠数与光区恢复成默认（不把测试现场留给用户）
+  §7 #98：流光密度（1/4 个头）、实色拖尾、随机闪烁 0x07 的接受与越界
+  §8 收尾：把灯珠数与光区恢复成默认（不把测试现场留给用户）
 
 用法：
     python scripts/probe-v4.py [--address CC:8D:A2:C2:56:62]
@@ -53,6 +54,7 @@ CMD = {
     "ACTIVATE_SCRIPT": 0x19,
     "QUERY_SCRIPT": 0x1A,
     "CLEAR_SCRIPT": 0x1E,
+    "SET_PLAYBACK": 0x13,
 }
 
 RESULT = {
@@ -239,8 +241,13 @@ def parse_segment_report(payload):
             "level": payload[5 + 8],
             "period": payload[5 + 4] | (payload[5 + 5] << 8),
             "p5": payload[5 + 6],
+            "flags": payload[5 + 7],
         },
-        "layer1": {"type": payload[14], "level": payload[14 + 8]},
+        "layer1": {
+            "type": payload[14],
+            "level": payload[14 + 8],
+            "flags": payload[14 + 7],
+        },
     }
 
 
@@ -368,7 +375,69 @@ async def main():
         code, _ = await dev.send(CMD["CLEAR_SCRIPT"], bytes([script_id]))
         check("ClearScript 幂等（再清一次仍 OK）", code == 0x00, f"result=0x{code:02X}")
 
-        # ---------- §7 收尾 ----------
+        # ---------- §7 #98：流光密度 / 实色拖尾 / 随机闪烁 ----------
+        #
+        # 三个都只碰已存在的字节：密度与拖尾挤在流光的 flags 字节里
+        # （bit1 实色、bit2-3 头数-1），随机闪烁是新的类型值 0x07。
+        # 设备侧的像素数学由 host 测试证明，这里证明「真机接受并读回同样的
+        # 字节」——这正是旧固件与新固件的分界线。
+        await dev.send(CMD["CLEAR_SEGMENT"], bytes([0, 0]))
+        await dev.send(CMD["CLEAR_SEGMENT"], bytes([0, 1]))
+
+        comet_flags = [
+            ("1 个头", 0x00),
+            ("4 个头", 0x0C),
+            ("实色拖尾", 0x02),
+            ("4 头 + 实色 + 反向", 0x0F),
+        ]
+        for label, flags in comet_flags:
+            payload = segment(0, 0, 0, 14, layer_bytes(0x03, period=800, p5=64, flags=flags))
+            code, _ = await dev.send(CMD["SET_SEGMENT"], payload)
+            check(f"流光 {label} 被接受（flags=0x{flags:02X}）", code == 0x00, f"result=0x{code:02X}")
+
+            code, frames = await dev.send_and_collect(CMD["QUERY_STRIP"], bytes([0]))
+            reports = [parse_segment_report(f["payload"]) for f in frames if f["cmd"] == SEGMENT_REPORT]
+            found = [r for r in reports if r["seg"] == 0]
+            got = found[0]["layer0"].get("flags") if found else None
+            check(
+                f"流光 {label} 读回 flags=0x{flags:02X}",
+                bool(found) and got == flags,
+                f"读回={got if got is None else hex(got)}",
+            )
+
+        code, _ = await dev.send(
+            CMD["SET_SEGMENT"], segment(0, 0, 0, 14, layer_bytes(0x03, period=800, flags=0x10))
+        )
+        check("流光 flags bit4 保留位被拒（0x10）", code == 0x01, f"result=0x{code:02X}")
+
+        # 随机闪烁 0x07：p5 = 同时亮着的比例。
+        await dev.send(CMD["CLEAR_SEGMENT"], bytes([0, 0]))
+        for label, duty in (("稀疏", 32), ("密集", 224)):
+            payload = segment(0, 0, 0, 14, layer_bytes(0x07, period=1000, p5=duty))
+            code, _ = await dev.send(CMD["SET_SEGMENT"], payload)
+            check(f"随机闪烁（{label} duty={duty}）被接受", code == 0x00, f"result=0x{code:02X}")
+
+            code, frames = await dev.send_and_collect(CMD["QUERY_STRIP"], bytes([0]))
+            reports = [parse_segment_report(f["payload"]) for f in frames if f["cmd"] == SEGMENT_REPORT]
+            found = [r for r in reports if r["seg"] == 0]
+            check(
+                f"随机闪烁（{label}）读回类型 0x07 与 duty={duty}",
+                bool(found)
+                and found[0]["layer0"]["type"] == 0x07
+                and found[0]["layer0"]["p5"] == duty,
+                f"读回={found[0]['layer0'] if found else None}",
+            )
+
+        code, _ = await dev.send(
+            CMD["SET_SEGMENT"], segment(0, 0, 0, 14, layer_bytes(0x07, period=333))
+        )
+        check("随机闪烁 333ms 被拒（下限 334ms）", code == 0x01, f"result=0x{code:02X}")
+        code, _ = await dev.send(
+            CMD["SET_SEGMENT"], segment(0, 0, 0, 14, layer_bytes(0x07, period=1000, flags=0x01))
+        )
+        check("随机闪烁 flags 非 0 被拒", code == 0x01, f"result=0x{code:02X}")
+
+        # ---------- §8 收尾 ----------
         if not args.skip_restore:
             await dev.send(CMD["CLEAR_SEGMENT"], bytes([0, 0]))
             await dev.send(CMD["CLEAR_SEGMENT"], bytes([0, 1]))

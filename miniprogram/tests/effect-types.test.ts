@@ -35,8 +35,10 @@ describe("灯效类型清单与枚举同步", () => {
     expect(KNOWN_EFFECT_TYPES).not.toContain(NO_EFFECT);
   });
 
-  it("未知值（0x07 / 0x99）不算已知类型", () => {
-    expect(isKnownEffectType(0x07)).toBe(false);
+  it("未知值（0x08 / 0x99）不算已知类型", () => {
+    /* 0x07 在 #98 成为「随机闪烁」，所以「未知」用下一个空洞 0x08。 */
+    expect(isKnownEffectType(0x07)).toBe(true);
+    expect(isKnownEffectType(0x08)).toBe(false);
     expect(isKnownEffectType(0x99)).toBe(false);
   });
 
@@ -49,6 +51,7 @@ describe("灯效类型清单与枚举同步", () => {
     expect(EFFECT_TYPE_NAMES[SEGMENT_TYPE.STROBE]).toBe("爆闪");
     expect(EFFECT_TYPE_NAMES[SEGMENT_TYPE.HEARTBEAT]).toBe("心跳");
     expect(EFFECT_TYPE_NAMES[SEGMENT_TYPE.OFF]).toBe("熄灭");
+    expect(EFFECT_TYPE_NAMES[SEGMENT_TYPE.FLICKER]).toBe("随机闪烁");
   });
 
   it("typeName 与名字表一致（不再自己 switch 四种类型）", () => {

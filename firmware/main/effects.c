@@ -28,6 +28,7 @@ bool lumen_effect_type_known(uint8_t type)
     case LUMEN_EFFECT_STROBE:
     case LUMEN_EFFECT_HEARTBEAT:
     case LUMEN_EFFECT_OFF:
+    case LUMEN_EFFECT_FLICKER:
         return true;
     default:
         return false;
@@ -37,9 +38,9 @@ bool lumen_effect_type_known(uint8_t type)
 bool lumen_effect_type_implemented(uint8_t type)
 {
     /*
-     * 七种类型全部有像素实现（#25 静态 / #30 呼吸 / #31 彩虹+流光 / #74 爆闪+
-     * 心跳+熄灭）。未知类型仍由 lumen_effect_type_known 在命令层拒绝
-     * （InvalidParam），这里不负责区分「已知但未实现」——那个中间态已经不存在。
+     * 八种类型全部有像素实现（#25 静态 / #30 呼吸 / #31 彩虹+流光 / #74 爆闪+
+     * 心跳+熄灭 / #98 随机闪烁）。未知类型仍由 lumen_effect_type_known 在命令层
+     * 拒绝（InvalidParam），这里不负责区分「已知但未实现」——那个中间态已经不存在。
      *
      * **熄灭必须同时出现在 known 与 implemented 里**：作为 layer0 时 §7.1
      * 第 2 步只认同一个都成立的类型，漏掉任一边都会把显式「熄灭」判成非法。
@@ -47,7 +48,7 @@ bool lumen_effect_type_implemented(uint8_t type)
     return type == LUMEN_EFFECT_STATIC || type == LUMEN_EFFECT_BREATHING ||
            type == LUMEN_EFFECT_RAINBOW || type == LUMEN_EFFECT_COMET ||
            type == LUMEN_EFFECT_STROBE || type == LUMEN_EFFECT_HEARTBEAT ||
-           type == LUMEN_EFFECT_OFF;
+           type == LUMEN_EFFECT_OFF || type == LUMEN_EFFECT_FLICKER;
 }
 
 uint8_t lumen_effect_param_len(uint8_t type)
@@ -62,11 +63,12 @@ uint8_t lumen_effect_param_len(uint8_t type)
     case LUMEN_EFFECT_STROBE:
     case LUMEN_EFFECT_HEARTBEAT:
     case LUMEN_EFFECT_OFF:
+    case LUMEN_EFFECT_FLICKER:
         /*
-         * §2.2-§2.7：hue(2) + sat(1) + period(2) + p5(1) + flags(1) = 7。
-         * #74 的三种新类型**复用同一个 7 字节块**，所以层编码宽度、帧长、
-         * 状态 blob 尺寸与协议版本号全都不变。熄灭虽然要求 7 个参数全部为 0
-         * （它一个字节都不解释），但长度仍按 7 报，让两端只有一张长度表——
+         * §2.2-§2.8：hue(2) + sat(1) + period(2) + p5(1) + flags(1) = 7。
+         * #74 的三种与 #98 的随机闪烁**复用同一个 7 字节块**，所以层编码宽度、
+         * 帧长、状态 blob 尺寸与协议版本号全都不变。熄灭虽然要求 7 个参数全部
+         * 为 0（它一个字节都不解释），但长度仍按 7 报，让两端只有一张长度表——
          * 剧本 blob 的记录宽度也因此保持 5/9/13/21 不变。
          */
         return 7;
@@ -93,6 +95,7 @@ bool lumen_effect_is_animated(uint8_t type)
     case LUMEN_EFFECT_COMET:
     case LUMEN_EFFECT_STROBE:
     case LUMEN_EFFECT_HEARTBEAT:
+    case LUMEN_EFFECT_FLICKER:
         return true;
     default:
         /* 未知类型：保守按「非静态」处理（与改动前一致，不影响任何合法配置）。 */
@@ -627,6 +630,59 @@ uint32_t lumen_effect_heartbeat_gain_q16(uint16_t period_ms, uint8_t pulse, bool
     return 0;
 }
 
+/* ---------------- #98 随机闪烁 ---------------- */
+
+uint32_t lumen_effect_flicker_phase_seed(uint16_t index_in_strip, uint16_t n, uint32_t t0_ms)
+{
+    /*
+     * 一次 32 位乘法-异或混淆（MurmurHash 的收尾步骤），只用整数。
+     * 输入里没有 now_ms——**这就是「不能每帧随机」的实现**：种子是这颗灯在
+     * 这份配置下的常量，时间只在下面的相位里推进。
+     *
+     * 加 +1 让 0 号灯也不落在「全 0 输入」这个不动点上；t0_ms 参与是为了
+     * 「重新下发同一份配置 = 换一张新的随机图」，同一份配置期间它不变。
+     */
+    uint32_t x = ((uint32_t)index_in_strip + 1u) * 2654435761u;
+    x ^= ((uint32_t)n << 16) ^ t0_ms;
+    x ^= x >> 15;
+    x *= 2246822519u;
+    x ^= x >> 13;
+    x *= 3266489917u;
+    x ^= x >> 16;
+    return x & 0xFFFFu;
+}
+
+uint32_t lumen_effect_flicker_gain_q16(uint16_t period_ms, uint8_t duty, uint16_t index_in_strip,
+                                       uint16_t n, uint32_t t0_ms, uint32_t now_ms)
+{
+    if (n == 0 || index_in_strip >= n) {
+        return 0;
+    }
+    if (duty == 0) {
+        return 0; /* 占比 0 = 全灭（不是「一个极窄的脉冲」） */
+    }
+    uint32_t seed_q16 = lumen_effect_flicker_phase_seed(index_in_strip, n, t0_ms);
+    uint32_t time_q16 = lumen_effect_breathing_phase_q16(period_ms, t0_ms, now_ms);
+    /* 空间相位（种子）+ 时间相位：每个灯珠的方波彼此错相，所以同一时刻只有一部分亮。 */
+    uint32_t p = (time_q16 + seed_q16) & 0xFFFFu;
+
+    uint32_t hi = (uint32_t)duty * 65536u / 255u;
+    const uint32_t ramp = 3277u; /* 5% = 65536 / 20，与爆闪同一套边沿 */
+    if (hi < ramp * 2u) {
+        hi = ramp * 2u;
+    }
+    if (p < ramp) {
+        return p * 65535u / ramp;
+    }
+    if (p < hi - ramp) {
+        return 65535u;
+    }
+    if (p < hi) {
+        return (hi - p) * 65535u / ramp;
+    }
+    return 0;
+}
+
 uint8_t lumen_effect_apply_gain_q16(uint8_t value, uint32_t gain_q16)
 {
     if (gain_q16 >= 65535u) {
@@ -739,6 +795,45 @@ static uint32_t comet_exp_q16(uint32_t ratio_q16)
     return (uint32_t)interpolated;
 }
 
+/* 单个流星头的权重（p_q16 = 该头相对当前位置的「落后量」，[0,1)）。 */
+static uint32_t comet_head_gain_q16(uint32_t p_q16, uint32_t tail_n_q16, uint16_t n,
+                                    bool solid_tail)
+{
+    /*
+     * 尾部判定 p_i < tail_n/N ⇔ p_i × N < tail_n（两边同乘 N 消掉除法）。
+     * p_i 与 tail_n/N 都是 Q16，乘法后 p ≤ 65535、N ≤ 100 → 6.55e6，uint64 下
+     * 更不会溢出，且保持严格小于（p == tail_n/N 的灯不亮，硬边界）。
+     */
+    if ((uint64_t)p_q16 * (uint64_t)n >= (uint64_t)tail_n_q16) {
+        return 0;
+    }
+    if (solid_tail) {
+        /*
+         * 实色拖尾（flags bit1）：整条尾巴同一个亮度，但**头部一颗必须更亮**，
+         * 否则头与尾糊成一条同亮的块，看不出「流星在往哪儿跑」。
+         *
+         * p_i 是「落后头部多少圈」，所以离头最近的灯是 min(p, 1-p)。
+         * 用**半颗灯**的窗口判定头：任何相位下每个头都恰好只有一颗灯满足，
+         * 头因此不会在帧与帧之间「消失一下」（20fps 下头部每帧跳 1..N 颗，
+         * 用 p < 1/N 的窗口会让大部分帧没有头）。
+         */
+        uint32_t dist_q16 = p_q16 < 32768u ? p_q16 : (65536u - p_q16);
+        if (dist_q16 * 2u < (uint32_t)(65536u / n)) {
+            return 65535u;
+        }
+        return LUMEN_COMET_SOLID_TAIL_GAIN_Q16;
+    }
+    /*
+     * r = p_i / (tail_n/N) = p_i × N / tail_n ∈ [0,1)，Q16。
+     * 指数参数是 3r，而表以 k/64 为步长（k = 64r，这里的 64 是**查表步数**，
+     * 与灯珠上限无关），所以 r 的 Q16 值**直接**就是表的输入
+     * （65536 ↔ k=64）——不需要再乘 3 或除 64。
+     * 中间量 p ≤ 65535、N ≤ 100、65536 → 4.29e11，必须走 uint64。
+     */
+    uint32_t r_q16 = (uint32_t)(((uint64_t)p_q16 * (uint64_t)n * 65536u) / (uint64_t)tail_n_q16);
+    return comet_exp_q16(r_q16);
+}
+
 uint32_t lumen_layer_comet_gain_q16(const lumen_effect_layer_t *layer, uint16_t n, uint16_t i,
                                     uint32_t t0_ms, uint32_t now_ms)
 {
@@ -753,14 +848,22 @@ uint32_t lumen_layer_comet_gain_q16(const lumen_effect_layer_t *layer, uint16_t 
      * reverse（flags bit0）用镜像段内下标实现：头部从高索引走向低索引，
      * 与整条图案反向等价，不需要在公式里改符号。
      */
-    if ((flags & 0x01u) != 0u) {
+    if ((flags & LUMEN_COMET_FLAG_REVERSE) != 0u) {
         i = (uint16_t)(n - 1u - i);
     }
+
+    /*
+     * #98：头数量 = (flags bit2-3) + 1，1..4 个，沿整条**均分**间距。
+     * 每个头都是同一条公式，只是相位偏移 k/d；最终**取最大值**合成，
+     * 绝不相加——两个头的尾巴重叠时相加会让那一小段亮度翻倍。
+     */
+    uint8_t heads = (uint8_t)(((flags & LUMEN_COMET_DENSITY_MASK) >> LUMEN_COMET_DENSITY_SHIFT) +
+                              1u);
+    bool solid_tail = (flags & LUMEN_COMET_FLAG_SOLID_TAIL) != 0u;
 
     /* p_i = ((i/N) - phase) mod 1，Q16。 */
     uint32_t phase_q16 = lumen_effect_breathing_phase_q16(period_ms, t0_ms, now_ms);
     uint32_t pos_q16 = (uint32_t)(((uint64_t)i << 16) / n); /* i/N ∈ [0,1) */
-    uint32_t p_q16 = (pos_q16 + 65536u - phase_q16) & 0xFFFFu;
 
     /*
      * tail_n = 1 + (tail/255) × (N-1)，用 Q16 表示（65536 = 1 颗灯）：
@@ -773,24 +876,26 @@ uint32_t lumen_layer_comet_gain_q16(const lumen_effect_layer_t *layer, uint16_t 
     uint32_t tail_n_q16 =
         65536u + (uint32_t)(((uint64_t)tail * (uint64_t)(n - 1u) * 65536u) / 255u);
 
-    /*
-     * 尾部判定 p_i < tail_n/N ⇔ p_i × N < tail_n（两边同乘 N 消掉除法）。
-     * p_i 与 tail_n/N 都是 Q16，乘法后 p ≤ 65535、N ≤ 100 → 6.55e6，uint64 下
-     * 更不会溢出，且保持严格小于（p == tail_n/N 的灯不亮，硬边界）。
-     */
-    if ((uint64_t)p_q16 * (uint64_t)n >= (uint64_t)tail_n_q16) {
-        return 0;
+    uint32_t best = 0;
+    for (uint8_t k = 0; k < heads; ++k) {
+        /*
+         * 第 k 个头领先相位 k/d 圈，**取整到整颗灯**：
+         *   head_pos = round(k × N / d)     // 0..N-1，间距均分
+         * 不取整的话 N 不能被 d 整除时各头会落在两颗灯之间，峰值亮度互不相同
+         * （一颗满亮、另一颗只有七成），看起来像「几个头不一样亮」。取整后
+         * 所有头在同一时刻的亚像素偏移一致，亮度因此始终对齐。
+         * +2×65536 只保证减法不借位（两项都 < 65536）。
+         */
+        uint32_t head_pos = ((uint32_t)k * (uint32_t)n + (uint32_t)heads / 2u) /
+                            (uint32_t)heads;
+        uint32_t head_off = (uint32_t)(((uint64_t)head_pos << 16) / n);
+        uint32_t p_q16 = (pos_q16 + 2u * 65536u - phase_q16 - head_off) & 0xFFFFu;
+        uint32_t gain = comet_head_gain_q16(p_q16, tail_n_q16, n, solid_tail);
+        if (gain > best) {
+            best = gain;
+        }
     }
-
-    /*
-     * r = p_i / (tail_n/N) = p_i × N / tail_n ∈ [0,1)，Q16。
-     * 指数参数是 3r，而表以 k/64 为步长（k = 64r，这里的 64 是**查表步数**，
-     * 与灯珠上限无关），所以 r 的 Q16 值**直接**就是表的输入
-     * （65536 ↔ k=64）——不需要再乘 3 或除 64。
-     * 中间量 p ≤ 65535、N ≤ 100、65536 → 4.29e11，必须走 uint64。
-     */
-    uint32_t r_q16 = (uint32_t)(((uint64_t)p_q16 * (uint64_t)n * 65536u) / (uint64_t)tail_n_q16);
-    return comet_exp_q16(r_q16);
+    return best;
 }
 
 /* 段 layer[0] 上的便捷包装（旧签名）。 */
@@ -944,6 +1049,23 @@ void lumen_layer_pixel(const lumen_segment_t *seg, uint8_t layer_index,
         bool double_pulse = (lumen_layer_flags(layer) & 0x01u) != 0u;
         uint32_t gain = lumen_effect_heartbeat_gain_q16(
             lumen_layer_period_ms(layer), lumen_layer_p5(layer), double_pulse, seg->t0_ms, now_ms);
+        uint8_t scaled_base[3];
+        scale_pixel_level(base, level, scaled_base);
+        scale_pixel(scaled_base, gain, out_rgb);
+        return;
+    }
+
+    case LUMEN_EFFECT_FLICKER: {
+        /*
+         * 随机闪烁（#98）：基色恒定，每颗灯按自己的哈希相位独立亮灭。
+         * p5 是同时亮着的比例；period 与呼吸同一条下限（334ms）。
+         * 与爆闪一致：先按本层 level 压暗基色，再乘方波增益。
+         */
+        uint8_t base[3];
+        lumen_effect_static_rgb(hue, sat, base);
+        uint32_t gain = lumen_effect_flicker_gain_q16(lumen_layer_period_ms(layer),
+                                                     lumen_layer_p5(layer), i, n, seg->t0_ms,
+                                                     now_ms);
         uint8_t scaled_base[3];
         scale_pixel_level(base, level, scaled_base);
         scale_pixel(scaled_base, gain, out_rgb);

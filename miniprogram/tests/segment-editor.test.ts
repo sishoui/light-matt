@@ -246,7 +246,7 @@ describe("#42 层合法性：层 0 必填、未知类型与保留位一律拒绝
   });
 
   it("未知类型被拦下（不静默降级）", () => {
-    const result = validateDraft(draft({ layer0: layer(0x07) }), CTX);
+    const result = validateDraft(draft({ layer0: layer(0x08) }), CTX);
     expect(result.ok).toBe(false);
     expect(result.issues.some((item) => item.code === "layer-type")).toBe(true);
   });

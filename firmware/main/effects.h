@@ -26,6 +26,8 @@ typedef enum {
     LUMEN_EFFECT_STROBE = 0x04,    /* 爆闪：方波 + 两端斜坡，duty 决定亮的时间占比 */
     LUMEN_EFFECT_HEARTBEAT = 0x05, /* 心跳：一个节拍内一大一小两次脉冲 */
     LUMEN_EFFECT_OFF = 0x06,       /* 熄灭：参数全 0，永不发光（显式的「这里就是黑的」） */
+    /* #98：随机闪烁。每颗灯珠按自己的哈希相位做确定性亮灭方波，p5 = 同时亮的比例。 */
+    LUMEN_EFFECT_FLICKER = 0x07,
 } lumen_effect_type_t;
 
 /* 呼吸波形（flags bit1-2，docs/effects-spec.md §2.2）。 */
@@ -85,6 +87,33 @@ typedef enum {
 #define LUMEN_HEARTBEAT_MAX_PERIOD_MS 1500u
 
 /*
+ * 随机闪烁（#98）的周期下限：334ms 与呼吸同一条光敏性癫痫安全线。
+ *
+ * 它是**亮度闪烁**（每颗灯独立亮灭），不是空间移动，所以不能借用彩虹 / 流光的
+ * 200ms。period_ms == 0 是「静止」——相位冻结在 0，画面仍是一张确定性的
+ * 亮点分布图（不是全亮也不是全灭）。
+ */
+#define LUMEN_FLICKER_MIN_PERIOD_MS 334u
+
+/*
+ * 流光 flags（#98 原地扩展，仍只用已有的 1 字节）：
+ *   bit0       reverse（沿灯带反向）
+ *   bit1       拖尾不衰减（0 = 现有的指数渐隐；1 = 实色块拖尾）
+ *   bit2-3     流星头数量 - 1（0..3 ⇒ 1..4 个，沿整条均分）
+ *   bit4-7     保留 = 0（> 0 一律 InvalidParam）
+ *
+ * 多个头在同一帧**取最大值**合成，绝不相加——否则重叠处亮度翻倍，
+ * 整条会闪出一块比单个流星亮一倍的白斑。
+ */
+#define LUMEN_COMET_FLAG_REVERSE 0x01u
+#define LUMEN_COMET_FLAG_SOLID_TAIL 0x02u
+#define LUMEN_COMET_DENSITY_SHIFT 2u
+#define LUMEN_COMET_DENSITY_MASK 0x0Cu /* 两位 → 0..3 ⇒ 1..4 个头 */
+#define LUMEN_COMET_FLAGS_RESERVED_MASK 0xF0u
+/* 实色拖尾的亮度（约 75%），与头形成一颗灯的亮暗台阶，免得糊成一条。 */
+#define LUMEN_COMET_SOLID_TAIL_GAIN_Q16 49152u
+
+/*
  * 一个灯效层：9 字节定宽（docs/protocol-v4.md §7.1）。
  *
  * param 的语义按 type 解释，沿用 docs/effects-spec.md §2（v4 未改）：
@@ -136,12 +165,12 @@ typedef struct {
  */
 void lumen_effects_init(void);
 
-/* type 是否属于协议定义的七种之一（docs/effects-spec.md §2）。 */
+/* type 是否属于协议定义的八种之一（docs/protocol-v4.md §7.1；#98 起含随机闪烁）。 */
 bool lumen_effect_type_known(uint8_t type);
 
 /*
- * type 是否已经有像素实现。七种类型全部为真（静态 / 呼吸 / 彩虹 / 流光 /
- * 爆闪 / 心跳 / 熄灭）。
+ * type 是否已经有像素实现。八种类型全部为真（静态 / 呼吸 / 彩虹 / 流光 /
+ * 爆闪 / 心跳 / 熄灭 / 随机闪烁）。
  */
 bool lumen_effect_type_implemented(uint8_t type);
 
@@ -355,6 +384,37 @@ uint32_t lumen_effect_strobe_gain_q16(uint16_t period_ms, uint8_t duty, uint32_t
 uint32_t lumen_effect_heartbeat_gain_q16(uint16_t period_ms, uint8_t pulse, bool double_pulse,
                                          uint32_t t0_ms, uint32_t now_ms);
 
+/* ---------------- #98 随机闪烁 ---------------- */
+
+/*
+ * 一颗灯珠的哈希（#98），确定性、无状态：只用段内下标与段几何算出一个
+ * 固定的 16 位相位种子。同一颗灯在任何时刻、任何调用顺序下都得到同一个值
+ * ——这是「不能每帧随机」的硬要求（每帧随机会变成白噪声而不是闪烁）。
+ *
+ * 输入刻意只用 (index_in_strip, n, t0_ms)：t0_ms 提供「换一套配置就换一张图」
+ * 的变化，但同一份配置下它是常量。
+ */
+uint32_t lumen_effect_flicker_phase_seed(uint16_t index_in_strip, uint16_t n, uint32_t t0_ms);
+
+/*
+ * 随机闪烁增益，Q16（0 或 65535 附近的方波），effects-spec §2.8（新增）：
+ *
+ *   seed      = flicker_phase_seed(i, N, t0_ms)
+ *   phase_q16 = (period 的时间相位 + seed/N 的空间相位) mod 1
+ *   duty      = p5 / 255                 // 同时亮着的比例
+ *   on        = phase_q16 < duty × 65536
+ *
+ * 每个灯珠的方波相互错相（seed 均匀撒在 [0,1)），所以同一时刻只有
+ * `p5/255` 比例亮着；时间推进时同一颗灯按 period 反复亮灭。`period_ms == 0`
+ * 让时间相位的增量恒为 0（与呼吸同一条 `lumen_effect_breathing_phase_q16`
+ * 语义），画面停在一张固定分布上。
+ *
+ * 与爆闪一样**两端各留 5% 线性斜坡**，避免 20fps 下方波边沿落在帧边界上
+ * 造成相邻两帧亮度跳变。
+ */
+uint32_t lumen_effect_flicker_gain_q16(uint16_t period_ms, uint8_t duty, uint16_t index_in_strip,
+                                       uint16_t n, uint32_t t0_ms, uint32_t now_ms);
+
 /* ---------------- #31 彩虹 / 流光 ---------------- */
 
 /*
@@ -381,6 +441,12 @@ uint16_t lumen_layer_rainbow_hue(const lumen_effect_layer_t *layer, uint16_t n, 
  *
  * 指数用初始化时建的 65 点表 + 线性插值（沿用 gamma.c / 正弦表的先例），
  * 运行时零浮点。reverse 由调用方在传 i 时镜像（见 lumen_layer_pixel）。
+ *
+ * #98 起同一层可以同时有 1-4 个头（flags bit2-3）：
+ *   - 头沿整条**均分**，第 k 个头位于 k/N_head 的相位偏移处；
+ *   - 多个头的权重**取最大值**合成，绝不相加（重叠处不会亮度翻倍）；
+ *   - flags bit1 = 拖尾不衰减：拖尾是实色块（约 75%），头部之后一颗立刻降到
+ *     该台阶，避免和头糊成一片；衰减拖尾仍走上面的 exp 表。
  */
 uint32_t lumen_layer_comet_gain_q16(const lumen_effect_layer_t *layer, uint16_t n, uint16_t i,
                                     uint32_t t0_ms, uint32_t now_ms);
