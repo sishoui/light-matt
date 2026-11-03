@@ -42,7 +42,7 @@ import {
 } from "../../utils/control/plan-drafts";
 import { ControlSession } from "../../utils/control/session";
 import { getSession } from "../../utils/control/session-singleton";
-import { loadTheme, themeClass } from "../../utils/control/theme";
+import { pageThemeData } from "../../utils/control/page-theme";
 import { zonesFromReports } from "../../utils/control/zone-editor";
 import { MAX_LEDS, MIN_LEDS, MAX_STRIPS } from "../../utils/protocol/constants";
 import type { DeviceInfo, DeviceState, SegmentSpec, StripConfig } from "../../utils/protocol/types";
@@ -63,6 +63,10 @@ interface StripInfoRow {
 Page({
   data: {
     themeClass: "",
+    /** 实际深色（含「跟随系统」解析）。 */
+    dark: false,
+    /** 原生 slider / switch 的激活色（不读 CSS 变量）。 */
+    accentColor: "",
     ready: false,
     deviceName: "",
     deviceId: "",
@@ -108,13 +112,13 @@ Page({
     this.session = getSession();
     this.sync = new DeviceSync({ api: syncApiOf(getDeviceApi()), storage: createWxStorage() });
     this.reloadRegistry();
-    this.setData({ themeClass: themeClass(loadTheme(createWxStorage())) });
+    this.setData({ ...pageThemeData(createWxStorage()) });
     void this.reload();
   },
 
   onShow() {
     this.reloadRegistry();
-    this.setData({ themeClass: themeClass(loadTheme(createWxStorage())) });
+    this.setData({ ...pageThemeData(createWxStorage()) });
     void this.reload();
   },
 

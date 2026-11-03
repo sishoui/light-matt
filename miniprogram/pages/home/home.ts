@@ -39,7 +39,8 @@ import {
   type DevicePhotoMap,
 } from "../../utils/control/device-photo";
 import { getSession } from "../../utils/control/session-singleton";
-import { loadTheme, themeClass, type ThemeMode } from "../../utils/control/theme";
+import type { ThemeMode } from "../../utils/control/theme";
+import { pageThemeData, syncTabBarTheme } from "../../utils/control/page-theme";
 import type { ControlSession } from "../../utils/control/session";
 import { PAGE_ROUTES, pushTo } from "../../utils/control/routes";
 import { statusView } from "../../utils/control/status-view";
@@ -53,6 +54,10 @@ interface CardView extends DeviceCard {
 Page({
   data: {
     themeClass: "",
+    /** 实际深色（含「跟随系统」解析）。 */
+    dark: false,
+    /** 原生 slider / switch 的激活色（不读 CSS 变量）。 */
+    accentColor: "",
     mock: false,
 
     // 连接状态条
@@ -93,13 +98,14 @@ Page({
     this.registry = null;
 
     const storage = createWxStorage();
-    this.themeMode = loadTheme(storage);
+    const theme = pageThemeData(storage);
+    this.themeMode = theme.themeClass === "theme-dark" ? "dark" : theme.themeClass === "theme-light" ? "light" : "system";
 
     this.session = getSession();
     this.registry = loadRegistry(storage);
     this.photos = loadDevicePhotos(storage);
     this.setData({
-      themeClass: themeClass(this.themeMode),
+      ...theme,
       mock: isMockSession(),
     });
     this.refresh();
@@ -120,9 +126,16 @@ Page({
      * 登记表也要重读（备注名可能改了）。 */
     this.registry = loadRegistry(createWxStorage());
     this.photos = loadDevicePhotos(createWxStorage());
-    const expectedTheme = themeClass(this.themeMode);
-    if (this.data.themeClass !== expectedTheme) {
-      this.setData({ themeClass: expectedTheme });
+    /* **显示时**重读主题：在「我的」页切完后回到本页必须已经是新色
+     * （onLoad 缓存的模式值永远不会更新——#90 的断点之一）。 */
+    const theme = pageThemeData(createWxStorage());
+    this.themeMode = theme.themeClass === "theme-dark" ? "dark" : theme.themeClass === "theme-light" ? "light" : "system";
+    if (
+      this.data.themeClass !== theme.themeClass ||
+      this.data.dark !== theme.dark ||
+      this.data.accentColor !== theme.accentColor
+    ) {
+      this.setData({ ...theme });
     }
     /* 演示模式在「我的」页切换（会话重建），提示条也要跟着走。 */
     if (this.data.mock !== isMockSession()) {
@@ -163,11 +176,12 @@ Page({
     this.unsubscribers = [];
   },
 
-  /** 自定义 tabBar 的选中态（索引与 app.json 顺序一致）。 */
+  /** 自定义 tabBar 的选中态 + 主题（索引与 app.json 顺序一致）。 */
   syncTabBar() {
     const tabBar = this.getTabBar?.();
     if (tabBar !== undefined && tabBar !== null) {
       tabBar.setData({ selected: 0 });
+      syncTabBarTheme(tabBar, this.themeMode);
     }
   },
 

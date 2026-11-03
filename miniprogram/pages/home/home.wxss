@@ -179,13 +179,14 @@
 /*
  * 大卡上的状态点是**压在图片/压暗层之上**的固定亮色，不跟随主题：
  * 这里的两处 hex 是有意保留的（背景恒定偏暗，浅色主题变量会看不清）。
+ * 取值与雾蓝主题同族——关灯态用浅雾蓝而不是旧的暖橙。
  */
 .tone-on .hero-dot {
-  background: #4dd17a;
+  background: #7fd39a;
 }
 
 .tone-off .hero-dot {
-  background: #ffb478;
+  background: #a8c0d8;
 }
 
 .hero-status-text {
@@ -210,7 +211,7 @@
 }
 
 .hero-power.on {
-  background: rgba(255, 149, 0, 0.92);
+  background: rgba(107, 140, 174, 0.94);
   border-color: rgba(255, 255, 255, 0.4);
 }
 

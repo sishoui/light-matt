@@ -30,7 +30,7 @@ import { TAB_ROUTES, switchTabTo } from "../../utils/control/routes";
 import type { ControlSession } from "../../utils/control/session";
 import { getSession } from "../../utils/control/session-singleton";
 import { statusView } from "../../utils/control/status-view";
-import { loadTheme, themeClass } from "../../utils/control/theme";
+import { pageThemeData } from "../../utils/control/page-theme";
 import type { DeviceState, DiscoveredDevice, LinkState } from "../../utils/protocol/types";
 
 /** 扫描结果行（`buildScanRows` 的展示投影）。 */
@@ -47,6 +47,10 @@ interface ScanRowView {
 Page({
   data: {
     themeClass: "",
+    /** 实际深色（含「跟随系统」解析）。 */
+    dark: false,
+    /** 原生 slider / switch 的激活色（不读 CSS 变量）。 */
+    accentColor: "",
 
     /* 一行连接状态（文案由 statusView 给；唯一的动作按钮在下面）。 */
     statusText: "未连接",
@@ -80,7 +84,7 @@ Page({
 
     this.session = getSession();
     this.registry = this.loadRegistry();
-    this.setData({ themeClass: themeClass(loadTheme(createWxStorage())) });
+    this.setData({ ...pageThemeData(createWxStorage()) });
     this.applyLink(this.session.linkState);
   },
 
@@ -94,10 +98,7 @@ Page({
     }
     this.subscribe();
     this.registry = this.loadRegistry();
-    const expected = themeClass(loadTheme(createWxStorage()));
-    if (this.data.themeClass !== expected) {
-      this.setData({ themeClass: expected });
-    }
+    this.setData({ ...pageThemeData(createWxStorage()) });
     const session = this.session;
     if (session !== null) {
       this.applyLink(session.linkState);

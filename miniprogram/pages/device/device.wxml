@@ -79,7 +79,7 @@
         step="1"
         value="{{brightness}}"
         disabled="{{!ready}}"
-        activeColor="#ff9500"
+        activeColor="{{accentColor}}"
         backgroundColor="rgba(120, 120, 128, 0.2)"
         block-size="26"
         bindchanging="onBrightnessChanging"
@@ -117,7 +117,7 @@
           <view class="strip-switch" catchtap="onStripSwitchBlock">
             <switch
               checked="{{item.on}}"
-              color="#ff9500"
+              color="{{accentColor}}"
               disabled="{{!ready || item.busy}}"
               data-strip-id="{{item.stripId}}"
               bindchange="onStripPowerChange"

@@ -22,6 +22,38 @@
 import { loadTheme, type ThemeMode } from "../../utils/control/theme";
 import { createWxStorage } from "../../utils/control/device-cache";
 
+/** 还活着的导航栏实例（模块级：一个页面一个，最多三四层栈）。 */
+interface NavBarInstance {
+  applyTheme(): void;
+  data: { themeSwitchClass: string };
+  setData(patch: Record<string, unknown>): void;
+}
+
+const liveNavBars = new Set<NavBarInstance>();
+let themeHookInstalled = false;
+
+/**
+ * 系统主题变化时重算所有活着的导航栏。
+ *
+ * 只在第一次挂载时装一次：`wx.onThemeChange` 是全局事件，每个实例各注册一份
+ * 会在页面栈里叠加出重复回调。
+ */
+function installThemeHook(): void {
+  if (themeHookInstalled) {
+    return;
+  }
+  themeHookInstalled = true;
+  try {
+    wx.onThemeChange?.(() => {
+      for (const bar of liveNavBars) {
+        bar.applyTheme();
+      }
+    });
+  } catch {
+    /* 旧基础库没有该事件：pageLifetimes.show 仍会兜住页面级切换。 */
+  }
+}
+
 Component({
   properties: {
     /** 大标题；为空时不渲染标题行（详情页用设备名做标题时也走这里）。 */
@@ -50,6 +82,27 @@ Component({
   lifetimes: {
     attached() {
       this.measure();
+      this.applyTheme();
+      /*
+       * 组件挂在页面根节点之外，只在 attached 读一次主题的话，用户在「我的」
+       * 页切主题后回到别的页面，导航栏仍是旧色（这正是 #90 要修的断点）。
+       * 所以显示时与系统主题变化时都重算一次。
+       *
+       * 监听挂在模块级而不是实例字段：`Component()` 同样不保证对象字面量上
+       * 的非 data 字段会落到实例上（与页面私有字段是同一个陷阱）。用
+       * 一个模块级集合跟踪还活着的导航栏，事件回调再逐个通知。
+       */
+      liveNavBars.add(this as unknown as NavBarInstance);
+      installThemeHook();
+    },
+    detached() {
+      liveNavBars.delete(this as unknown as NavBarInstance);
+    },
+  },
+
+  /* 页面每次显示都重算：切主题是「改存储 + 回上一页」，没有事件可依赖。 */
+  pageLifetimes: {
+    show() {
       this.applyTheme();
     },
   },

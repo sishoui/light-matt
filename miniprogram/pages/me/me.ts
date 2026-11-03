@@ -49,10 +49,10 @@ import { getSession, isMockSession, reloadSession } from "../../utils/control/se
 import {
   loadTheme,
   saveTheme,
-  themeClass,
   THEME_OPTIONS,
   type ThemeMode,
 } from "../../utils/control/theme";
+import { pageThemeData, syncTabBarTheme } from "../../utils/control/page-theme";
 import type { DeviceState } from "../../utils/protocol/types";
 
 /** 「我的设备」的展示行：名称 + 最近使用时间 + 是否当前连接。 */
@@ -69,6 +69,10 @@ interface DeviceRowView {
 Page({
   data: {
     themeClass: "",
+    /** 实际深色（含「跟随系统」解析）。 */
+    dark: false,
+    /** 原生 slider / switch 的激活色（不读 CSS 变量）。 */
+    accentColor: "",
 
     /* 本机身份（只写本机存储，不上传）。 */
     avatarFile: "",
@@ -124,7 +128,7 @@ Page({
     });
     const mode = loadTheme(storage);
     this.setData({
-      themeClass: themeClass(mode),
+      ...pageThemeData(storage),
       themeMode: mode,
       mock: isMockSession(),
       avatarFile: this.profile.avatarFile ?? "",
@@ -154,7 +158,7 @@ Page({
      * 不该把他刚敲的字冲掉。 */
     const pending = this.data.nicknameInput !== this.data.nickname;
     this.setData({
-      themeClass: themeClass(mode),
+      ...pageThemeData(createWxStorage()),
       themeMode: mode,
       mock: isMockSession(),
       avatarFile: this.profile.avatarFile ?? "",
@@ -277,18 +281,16 @@ Page({
 
   /** 主题：页面根节点的 class + 选择器选中态 + 通知 tabBar 重算。 */
   applyThemeView() {
-    const mode = loadTheme(createWxStorage());
+    const storage = createWxStorage();
+    const mode = loadTheme(storage);
     this.setData({
-      themeClass: themeClass(mode),
+      ...pageThemeData(storage),
       themeMode: mode,
       mock: isMockSession(),
     });
-    /* tabBar 自己监听主题（它在页面外层），这里只需让它重算一次。
-     * 「跟随系统」时传空串，让它回落到系统判断。 */
-    const tabBar = this.getTabBar?.();
-    if (tabBar !== undefined && tabBar !== null) {
-      tabBar.setData({ themeClass: themeClass(mode) });
-    }
+    /* tabBar 在页面外层，是全局单例，attached 只跑一次：切完主题必须主动
+     * 让它重算（`refreshTheme` 会自己解析「跟随系统」）。 */
+    syncTabBarTheme(this.getTabBar?.(), mode);
   },
 
   // ---------------- 演示设备 ----------------

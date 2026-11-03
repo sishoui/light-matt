@@ -144,7 +144,8 @@ import {
   satFromPercent,
   type SimpleParamView,
 } from "../../utils/control/strip-simple";
-import { loadTheme, themeClass, type ThemeMode } from "../../utils/control/theme";
+import type { ThemeMode } from "../../utils/control/theme";
+import { pageThemeData } from "../../utils/control/page-theme";
 import {
   chooseGap,
   clampDuration,
@@ -260,6 +261,10 @@ function overlayPanelSliders(draft: OverlayDraft): PanelSliderView[] {
 Page({
   data: {
     themeClass: "",
+    /** 实际深色（含「跟随系统」解析）。 */
+    dark: false,
+    /** 原生 slider / switch 的激活色（不读 CSS 变量）。 */
+    accentColor: "",
     mock: false,
 
     /* ---- 连接 ---- */
@@ -581,12 +586,14 @@ Page({
 
     const storage = createWxStorage();
     this.storage = storage;
-    this.themeMode = loadTheme(storage);
+    const theme = pageThemeData(storage);
+    this.themeMode =
+      theme.themeClass === "theme-dark" ? "dark" : theme.themeClass === "theme-light" ? "light" : "system";
     this.session = getSession();
 
     const stripId = queryInt(options, "strip", 0);
     this.setData({
-      themeClass: themeClass(this.themeMode),
+      ...theme,
       mock: isMockSession(),
       stripId,
       title: `灯组 ${stripId + 1}`,
@@ -600,10 +607,7 @@ Page({
   },
 
   onShow() {
-    const expected = themeClass(loadTheme(createWxStorage()));
-    if (this.data.themeClass !== expected) {
-      this.setData({ themeClass: expected });
-    }
+    this.setData({ ...pageThemeData(createWxStorage()) });
     this.subscribe();
     this.syncFromSession();
     /* 回到本页时设备身份可能已经补齐（0x88 是异步的）：补读一次草稿。 */
