@@ -286,10 +286,11 @@ describe("方案界面不出现协议词", () => {
     }
   });
 
-  it("方案 tab 用的是圈码与「空白 / n 步」这两个字段", () => {
+  it("方案按钮用的是数字与摘要这两个字段（#95 起固定三个圆形按钮）", () => {
     expect(source).toContain("{{item.label}}");
-    expect(source).toContain("{{item.summary}}");
-    expect(source).toContain("+ 新建");
+    expect(source).toContain("{{planCircles[planSlot].summary}}");
+    /* #95：没有新增 / 删除入口。 */
+    expect(source).not.toContain("+ 新建");
   });
 });
 

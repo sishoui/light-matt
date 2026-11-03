@@ -88,19 +88,9 @@ import {
 import { ledCountResultHint } from "../../utils/control/ledCount";
 import { loadPlanDrafts, removePlanDraft, savePlanDraft } from "../../utils/control/plan-drafts";
 import {
-  addPlan,
-  buildPlanTabs,
   createEmptyPlanDraft,
-  deletePlan,
-  initialPlanIds,
   planDeviceSummary,
-  planIdsFromSources,
-  planIsPlaying,
   planTabSummary,
-  plansFull,
-  selectionAfterDelete,
-  visiblePlanIds,
-  type PlanTabView,
 } from "../../utils/control/plan-slots";
 import { zonesFromReports } from "../../utils/control/zone-editor";
 import { checkScriptBlobBytes } from "../../utils/control/script-plan";
@@ -145,6 +135,20 @@ import {
   type SimpleParamView,
 } from "../../utils/control/strip-simple";
 import type { ThemeMode } from "../../utils/control/theme";
+import {
+  DROPPED_PLAN_ID,
+  angleOfPoint,
+  buildDialTicks,
+  buildPlanCircles,
+  clampDialValue,
+  dialValueFromAngle,
+  ledCapsuleText,
+  visiblePlanIds,
+  willTrimZones,
+  type DialTick,
+  type PlanCircleView,
+} from "../../utils/control/strip-head";
+import { resolveStripMeta } from "../../utils/control/strip-meta";
 import { pageThemeData } from "../../utils/control/page-theme";
 import {
   chooseGap,
@@ -180,7 +184,15 @@ import {
 } from "../../utils/control/zone-axis";
 import type { ScriptDraft } from "../../utils/control/script-view";
 import { layerFromFlat } from "../../utils/control/segment-model";
-import { MAX_LEDS, MAX_SCRIPTS, MIN_LEDS, NO_EFFECT, SEGMENT_TYPE } from "../../utils/protocol/constants";
+import {
+  LOOP,
+  MAX_LEDS,
+  MAX_SCRIPTS,
+  MIN_LEDS,
+  NO_EFFECT,
+  SEGMENT_TYPE,
+} from "../../utils/protocol/constants";
+import { stateLoopMode } from "../../utils/protocol/commands";
 import type {
   DeviceState,
   EffectLayer,
@@ -292,16 +304,27 @@ Page({
     ledHint: "",
     /* 只读的诊断行：滑块值与设备值的差别（拖动中 / 下发失败后）。 */
     ledPending: false,
-    /* 方案（#83）：按需增长的 tab 行，默认只有一套（①）。 */
+    /* 方案（#95）：固定三套圆形数字，没有新增 / 删除入口。 */
     planSlot: 0,
-    /** 当前显示 / 编辑的方案编号（设备上的编号，页面内部用）。 */
-    planTabs: [] as PlanTabView[],
-    /** 「+ 新建方案」是否可用（四套都在用时禁用）。 */
-    planCanAdd: false,
-    /** 删除中的方案编号（-1 = 没有进行中的删除）；按钮据此转圈并防重入。 */
-    planDeleting: -1,
-    /** 方案操作的就地反馈（删除被拒的原因 / 满四套的提示）；空串 = 不显示。 */
+    /** 三个圆形方案按钮（数字 1/2/3 + 选中态 + 是否有内容）。 */
+    planCircles: [] as PlanCircleView[],
+    /** 方案操作的就地反馈（写入失败 / 空方案不写设备）；空串 = 不显示。 */
     planHint: "",
+
+    /* ---- 灯珠数胶囊与圆盘（#95） ---- */
+    /** 胶囊文案（「64 颗」）。 */
+    ledCapsule: "— 颗",
+    /** 圆盘是否打开。 */
+    dialOpen: false,
+    /** 圆盘刻度（1..100，每 10 颗一条长刻度）。 */
+    dialTicks: [] as DialTick[],
+    /** 圆盘中间的大数字（拖动中实时跟随）。 */
+    dialValue: 1,
+    /** 圆盘的值是否与设备一致（拖动中为 false：还没下发）。 */
+    dialPending: false,
+    /** 圆盘中心点（px，屏幕坐标），按角度算转动量用。 */
+    dialCenterX: 0,
+    dialCenterY: 0,
 
     /* ---- 简单 / 进阶 ---- */
     mode: "simple" as StripMode,
@@ -419,6 +442,10 @@ Page({
   levelDraft: LEVEL_DEFAULT,
   /** 参数松手后的防抖定时器（只发最后一次）。 */
   quickTimer: null as ReturnType<typeof setTimeout> | null,
+  /** 圆盘拖动状态：按下时的角度 / 值（null = 没在拖）。 */
+  dialDrag: null as { startAngle: number; startValue: number } | null,
+  /** 灯组名（#95：读灯组元数据，不是固定的「灯组 N」）。 */
+  stripTitle: "",
   /** 写入期间又点过卡片：本轮写完补一次（#91，不丢弃点击）。 */
   quickQueued: false,
   /** 防抖代次：旧一轮在 await 后静默退出。 */
@@ -558,7 +585,7 @@ Page({
     this.dirty = false;
     this.planStepCounts = null;
     this.planEpoch = 0;
-    this.planIds = initialPlanIds();
+    this.planIds = visiblePlanIds();
     this.planPlayingId = -1;
     this.drafts = createAdvancedDrafts();
     this.draftOwned = [false, false, false, false];
@@ -586,6 +613,8 @@ Page({
     this.panelOverlay = emptyOverlayDraft();
     this.ledDraft = null;
     this.ledCountSeen = 0;
+    this.dialDrag = null;
+    this.stripTitle = "";
 
     const storage = createWxStorage();
     this.storage = storage;
@@ -602,7 +631,18 @@ Page({
       title: `灯组 ${stripId + 1}`,
       quickCards: buildQuickCardViews(null),
       durationTicks: durationTicks(),
+      /* #95：固定三套方案 + 圆盘刻度（一次算好，不每次点开重算）。 */
+      planCircles: buildPlanCircles({
+        selectedId: 0,
+        summaries: {},
+        withContent: [],
+        playingId: null,
+      }),
+      dialTicks: buildDialTicks(),
+      ledCapsule: ledCapsuleText(0),
     });
+    /* #95：第四个槽位的旧草稿直接清掉（当前测试阶段不做兼容迁移）。 */
+    this.dropFourthPlanDraft();
     this.renderPlans();
     this.renderTimeline();
     /* 草稿落盘：设备身份已知时把上次的编排读回来（冷启动不丢）。 */
@@ -651,6 +691,7 @@ Page({
        * 草稿的存储键从 deviceId 升级到 hardwareId（iOS 换 UUID 后的稳定键）。 */
       session.onDeviceConfig(() => {
         this.applyDeviceName();
+    this.applyStripTitle();
         this.ensureDraftsLoaded();
       }),
     ];
@@ -709,6 +750,7 @@ Page({
         await session.connect(target.deviceId, target.name);
       }
       this.applyDeviceName();
+    this.applyStripTitle();
     } catch (err) {
       if (err instanceof ConnectCancelledError) {
         return;
@@ -768,6 +810,7 @@ Page({
       return;
     }
     this.applyDeviceName();
+    this.applyStripTitle();
     const current = session?.deviceState;
     if (current !== null && current !== undefined) {
       this.applyDeviceState(current);
@@ -799,15 +842,19 @@ Page({
      * 拖动期间设备每帧上报旧值，跟着它走滑块就会在手指下跳。
      * 滑块下界是 1，所以「还没读到」时显示 1 而不是 0（0 在滑块上没有位置）。 */
     const sliderValue = Math.max(1, this.ledDraft ?? ledCount);
-    if (changed || sliderValue !== this.data.ledSliderValue) {
+    const capsule = ledCapsuleText(ledCount);
+    if (changed || sliderValue !== this.data.ledSliderValue || capsule !== this.data.ledCapsule) {
       this.setData({
         ledCount,
         ledSliderValue: sliderValue,
         ledPending: this.ledDraft !== null && this.ledDraft !== ledCount,
         ledText: ledCount > 0 ? `${ledCount} 颗灯珠` : "还没读到灯珠数量",
+        /* #95：标题右侧的胶囊跟着设备权威值走。 */
+        ledCapsule: capsule,
       });
     }
     this.applyDeviceName();
+    this.applyStripTitle();
     /* State 事件是 20Hz 的（拖全局亮度时每帧都来）：只有灯珠数变化才重算
      * 卡片 / 参数区，否则每帧重建数组会让本页滑块拖动发卡。 */
     if (changed) {
@@ -871,7 +918,7 @@ Page({
     this.drafts = createAdvancedDrafts();
     this.draftOwned = [false, false, false, false];
     this.draftsKey = "";
-    this.planIds = initialPlanIds();
+    this.planIds = visiblePlanIds();
     this.planPlayingId = -1;
     this.timelineIndex = 0;
     this.pickedSegId = -1;
@@ -880,6 +927,7 @@ Page({
     this.setData({
       ledCount: 0,
       ledSliderValue: 1,
+      ledCapsule: ledCapsuleText(0),
       ledPending: false,
       ledHint: "",
       ledText: "连接后显示灯珠数",
@@ -1145,7 +1193,7 @@ Page({
     const stored = loadPlanDrafts(storage, key);
     if (stored === null) {
       /* 新键没有历史：保留内存里的（迁移上来的部分），其余仍是默认草稿。 */
-      this.planIds = visiblePlanIds(this.planIds, null, this.localPlanIds());
+      this.planIds = visiblePlanIds();
       if (!this.planIds.includes(this.data.planSlot)) {
         this.setData({ planSlot: this.planIds[0] ?? 0 });
       }
@@ -1162,7 +1210,7 @@ Page({
       return loaded;
     });
     /* 落盘里有几套方案，tab 行就该有几套（设备摘要还没读回来时也成立）。 */
-    this.planIds = visiblePlanIds(this.planIds, this.planStepCountsRecord(), this.localPlanIds());
+    this.planIds = visiblePlanIds();
     if (!this.planIds.includes(this.data.planSlot)) {
       this.setData({ planSlot: this.planIds[0] ?? 0 });
     }
@@ -1320,6 +1368,7 @@ Page({
           ledSliderValue: applied,
           ledPending: false,
           ledCount: applied,
+          ledCapsule: ledCapsuleText(applied),
           ledText: applied > 0 ? `${applied} 颗灯珠` : "还没读到灯珠数量",
           ledHint: `已设为 ${applied} 颗`,
         });
@@ -2366,34 +2415,74 @@ Page({
    * State（不是本地猜的）：删除正在播的方案时要靠它决定先停播。
    */
   renderPlans(patch: Record<string, unknown> = {}): void {
-    if (this.planIds.length === 0) {
-      this.planIds = initialPlanIds();
-    }
+    /* #95：界面固定三套，`planIds` 恒为 [0,1,2]。 */
+    this.planIds = visiblePlanIds();
     const summaries: Record<number, string> = {};
+    const withContent: number[] = [];
     for (const id of this.planIds) {
       summaries[id] = this.planSummaryOf(id);
+      if (this.planHasContent(id)) {
+        withContent.push(id);
+      }
     }
     const state = this.session?.deviceState ?? null;
     const playingId =
       state !== null && state.playbackState !== 0 && state.scriptId < MAX_SCRIPTS ? state.scriptId : null;
     this.setData({
-      planTabs: buildPlanTabs(this.planIds, this.data.planSlot, summaries, playingId),
-      /*
-       * 新建要求**已经读到设备摘要**（`planStepCounts !== null`）：否则不知道
-       * 哪些槽位被占，新建会覆盖设备上已有的方案（见 onPlanAdd）。
-       */
-      planCanAdd: this.data.ready && this.planStepCounts !== null && !plansFull(this.planIds),
+      planCircles: buildPlanCircles({
+        selectedId: this.data.planSlot,
+        summaries,
+        withContent,
+        playingId,
+      }),
       ...patch,
     });
+  },
+
+  /**
+   * 这套方案是否有内容（决定点击时要不要写设备）。
+   *
+   * 「有内容」= 本机草稿非空，或设备摘要里这一套的步骤数 > 0。空方案点了
+   * **不写设备**——否则会把它刷成一片空白（票面明确要求）。
+   */
+  planHasContent(id: number): boolean {
+    if (this.draftOwned[id] === true) {
+      const draft = this.drafts[id];
+      if (draft !== undefined && !planIsEmpty(draft)) {
+        return true;
+      }
+    }
+    if (this.planStepCounts !== null) {
+      return (this.planStepCounts[id] ?? 0) > 0;
+    }
+    return false;
+  },
+
+  /** #95：第四个槽位的旧草稿直接清掉（不做兼容迁移）。 */
+  dropFourthPlanDraft(): void {
+    const storage = this.storage;
+    if (storage === null) {
+      return;
+    }
+    const key = this.draftsKey.length > 0 ? this.draftsKey : this.deviceKeyForDrafts();
+    if (key.length > 0) {
+      removePlanDraft(storage, key, DROPPED_PLAN_ID);
+    }
+    this.draftOwned[DROPPED_PLAN_ID] = false;
+    if (this.drafts[DROPPED_PLAN_ID] !== undefined) {
+      this.drafts = this.drafts.map((draft, index) =>
+        index === DROPPED_PLAN_ID ? createEmptyPlanDraft(DROPPED_PLAN_ID) : draft,
+      );
+    }
   },
 
   /** 切到某一套方案（顶部 tab）：时间轴 / 光区轴 / 效果面板整体跟着换。 */
   onPlanTap(e: WechatMiniprogram.TouchEvent) {
     const id = Number(e.currentTarget.dataset.planId);
-    if (!Number.isInteger(id) || id === this.data.planSlot || this.data.planDeleting >= 0) {
+    if (!Number.isInteger(id) || id === this.data.planSlot) {
       return;
     }
-    if (!this.planIds.includes(id)) {
+    if (!visiblePlanIds().includes(id)) {
       return;
     }
     this.setData({ planSlot: id, planHint: "" });
@@ -2405,161 +2494,48 @@ Page({
     if (this.data.mode === "advanced") {
       this.renderTimeline();
     }
-  },
-
-  /**
-   * 「+ 新建方案」：占用当前未被使用的最小方案编号，建一份空草稿并选中它。
-   *
-   * 「未使用」要同时算上**设备上已有的方案**：本机没草稿时设备方案不显示，
-   * 但它们确实占着编号，拿它当空位会覆盖别人下发过的内容。所以分配用并集
-   * （`planIdsFromSources`，把当前 tab 表也算进去）。
-   *
-   * **必须先读到设备摘要**：`planStepCounts === null` 表示还没连上灯控（或读
-   * 失败），此时"哪些槽位被占"完全未知。`planIdsFromSources` 只能看到本机
-   * 草稿，会把一个上一台/上一次会话下发过方案的槽位当成空位发出去，
-   * 随后的「应用并播放」就**覆盖掉设备上已有的方案**——用户没打算删的东西
-   * 就没了。所以这里直接拦住，而不是猜一个空位。
-   *
-   * 四套都在用时按钮是禁用的；这里再兜一次（防重入 / 事件漏判），并就地提示。
-   */
-  onPlanAdd() {
-    if (this.data.planDeleting >= 0) {
-      return;
-    }
-    if (!this.data.ready || this.planStepCounts === null) {
-      this.setData({ planHint: "先连上灯控读取方案，再新建" });
-      return;
-    }
-    const reserved = planIdsFromSources(this.planStepCountsRecord(), this.planIds);
-    const added = addPlan(reserved);
-    if (added === null) {
-      this.setData({ planHint: "最多四套方案；先删掉一套再新建" });
-      return;
-    }
-    const draft = createEmptyPlanDraft(added.id);
-    this.drafts = this.drafts.map((item, index) => (index === added.id ? draft : item));
-    this.draftOwned[added.id] = true;
-    this.saveDraft(added.id, draft);
-    this.planIds = visiblePlanIds(this.planIds, this.planStepCountsRecord(), this.localPlanIds());
-    this.timelineIndex = 0;
-    this.pickedSegId = -1;
-    this.panelKey = "";
-    this.setData({ planSlot: added.id, planHint: "" });
-    this.renderPlans();
-    if (this.data.mode === "advanced") {
-      this.renderTimeline();
+    /* #95：有内容的方案立刻启用并播放；空方案不写设备（避免刷成空白）。 */
+    if (this.planHasContent(id)) {
+      void this.activatePlan(id);
+    } else {
+      this.setData({ planHint: "这套方案还是空的，先编排再应用" });
     }
   },
 
   /**
-   * 删除当前正在显示的那套方案（先二次确认）。
+   * 点一个**有内容**的方案：立即启用并播放（#95 / #96）。
    *
-   * 顺序是票面要求的：
-   *  1. 二次确认（用户点「取消」什么都不动）；
-   *  2. **设备先清**：`ClearScript` 失败就**保留本机草稿**并就地显示原因——
-   *     绝不出现「本机没了但设备还在」的静默不一致；
-   *  3. 设备清成功后才删本机草稿与 tab，并重读摘要。
-   *
-   * 删的正是正在播放的那套时，设备侧清空会同时停播（协议语义），这里也
-   * 主动停一次兜底：旧固件不认识 0x1E 时会回 UnknownCommand，此时若已经
-   * 在播，停播仍然是对的（用户删的就是这套）。
+   * 只发两帧：`activateScript`（选中 + 循环标志）+ `setPlayback(play)`。
+   * 内容已经在设备上（或者来自本机草稿，需要先下发整份方案——那一步由
+   * `downloadCurrentPlan` 完成）。
    */
-  async onPlanDelete() {
-    const target = this.data.planSlot;
-    if (this.data.planDeleting >= 0) {
+  async activatePlan(id: number): Promise<void> {
+    const session = this.session;
+    if (session === null || !this.data.ready) {
       return;
     }
-    const confirmed = await showModal(
-      `删除方案 ${this.planTabLabel(target)}？`,
-      "方案会从灯控上一起清掉，这个操作不能撤销。",
-      "删除",
-    );
-    if (!confirmed) {
-      return;
-    }
-    this.setData({ planDeleting: target, planHint: "" });
+    const state = session.deviceState;
+    const loopMode = state === null ? LOOP.NONE : stateLoopMode(state);
+    this.setData({ planHint: "" });
     try {
-      const session = this.session;
-      if (session === null || !this.data.ready) {
-        /* 未连接时不能清设备：**本机草稿保留**，如实说清原因。
-         * 这条与「设备拒绝」同一口径——绝不出现「本机没了但设备还在」。 */
-        this.setData({ planHint: "未连接灯控，暂时不能删除（设备上的方案清不掉）" });
+      const activated = await session.activateScript(id, loopMode);
+      if (activated.kind === "ack-error") {
+        this.setData({ planHint: `没法启用方案 ${id + 1}（${resultText(activated.ack.resultCode)}）` });
         return;
       }
-      {
-        /* 删除正在播放的这套：先停下，避免设备停在一个不存在的方案上。 */
-        const state = session.deviceState;
-        if (state !== null && planIsPlaying(state, target)) {
-          await session.setPlayback(0, (state.flags & 0x01) === 1);
-        }
-        const cleared = await session.clearScript(target);
-        if (cleared.kind === "ack-error") {
-          this.setData({
-            planHint: `没能从灯控上清掉（${resultText(cleared.ack.resultCode)}）；本机编排已保留`,
-          });
-          return;
-        }
-        if (cleared.kind === "error") {
-          this.setData({ planHint: `没能从灯控上清掉（${cleared.message}）；本机编排已保留` });
-          return;
-        }
-        if (cleared.kind === "stale") {
-          this.setData({ planHint: "连接已经切换，这次删除的结果已放弃；本机编排已保留" });
-          return;
-        }
-        if (cleared.state !== undefined && cleared.state !== null) {
-          this.applyDeviceState(cleared.state);
-        }
+      if (activated.kind === "error") {
+        this.setData({ planHint: `没法启用方案 ${id + 1}（${activated.message}）` });
+        return;
       }
-
-      /* 设备已清：本机草稿与 tab 一起撤掉。 */
-      const before = this.planIds;
-      const nextSelection = selectionAfterDelete(before, target, target);
-      this.removeLocalPlan(target);
-      this.planIds = deletePlan(before, target);
-      if (this.planIds.length === 0) {
-        /* 删光了：补一套空白方案，页面永远有东西可编辑。 */
-        const empty = createEmptyPlanDraft(0);
-        this.drafts = this.drafts.map((item, index) => (index === 0 ? empty : item));
-        this.draftOwned[0] = true;
-        this.saveDraft(0, empty);
-        this.planIds = initialPlanIds();
-        this.setData({ planSlot: 0 });
-      } else if (nextSelection !== null) {
-        this.setData({ planSlot: nextSelection });
+      const played = await session.setPlayback(1, loopMode);
+      if (played.kind === "ok" && played.state !== undefined && played.state !== null) {
+        this.applyDeviceState(played.state);
       }
-      this.timelineIndex = 0;
-      this.pickedSegId = -1;
-      this.panelKey = "";
+      this.setData({ planHint: `方案 ${id + 1} 正在播放` });
       this.renderPlans();
-      if (this.data.mode === "advanced") {
-        this.renderTimeline();
-      }
-      if (this.data.ready) {
-        await this.refreshPlanSlots();
-      }
-    } finally {
-      this.setData({ planDeleting: -1 });
+    } catch (err) {
+      this.setData({ planHint: `没法启用方案 ${id + 1}（${errorText(err)}）` });
     }
-  },
-
-  /** 删除本机这一套草稿（内存镜像 + 落盘），别的方案与编号原样保留。 */
-  removeLocalPlan(slot: number): void {
-    this.draftOwned[slot] = false;
-    this.drafts = this.drafts.map((draft, index) =>
-      index === slot ? createEmptyPlanDraft(slot) : draft,
-    );
-    const storage = this.storage;
-    const key = this.draftsKey.length > 0 ? this.draftsKey : this.deviceKeyForDrafts();
-    if (storage !== null && key.length > 0) {
-      removePlanDraft(storage, key, slot);
-    }
-  },
-
-  /** 方案 tab 的圈码（确认框标题用；界面上的 tab 文案在 `buildPlanTabs`）。 */
-  planTabLabel(id: number): string {
-    const tab = this.data.planTabs.find((item) => item.id === id);
-    return tab === undefined ? "" : tab.label;
   },
 
   /** 读回 4 个方案编号的步骤数（QueryScript 只回摘要，内容无法读回）。 */
@@ -2582,8 +2558,8 @@ Page({
         }
       }
       this.planStepCounts = counts;
-      /* 设备上有的方案（哪怕本机没草稿）也要出现在 tab 上才能删得掉。 */
-    this.planIds = visiblePlanIds(this.planIds, this.planStepCountsRecord(), this.localPlanIds());
+      /* #95：界面固定三套，不需要再从设备摘要推导 tab 表。 */
+      this.planIds = visiblePlanIds();
       if (!this.planIds.includes(this.data.planSlot)) {
         this.setData({ planSlot: this.planIds[0] ?? 0 });
       }
@@ -2591,6 +2567,185 @@ Page({
       this.planStepCounts = null;
     }
     this.renderPlans();
+  },
+
+  // ---------------- 灯珠数胶囊与圆盘（#95） ----------------
+
+  /**
+   * 灯组标题（#95）：读灯组元数据，不再固定写「灯组 N」。
+   *
+   * 设备页卡片、本页标题、设备信息页三处必须一致，所以都走
+   * `resolveStripMeta`（同一个存储键）。
+   */
+  applyStripTitle(): void {
+    const storage = this.storage;
+    const stripId = this.data.stripId;
+    if (storage === null) {
+      return;
+    }
+    const key = this.deviceKeyForDrafts();
+    const meta =
+      key.length > 0
+        ? resolveStripMeta(storage, key, stripId)
+        : { name: `灯组 ${stripId + 1}` };
+    this.stripTitle = meta.name;
+    this.setData({ title: meta.name });
+  },
+
+  /** 长按胶囊：打开圆盘（点击**不**做事，避免误触）。 */
+  onLedCapsuleLongPress() {
+    if (this.disabledReason() !== "") {
+      return;
+    }
+    const current = this.stripLedCount();
+    wx.vibrateShort?.({ type: "light", fail: () => undefined });
+    this.setData({
+      dialOpen: true,
+      dialValue: current,
+      dialPending: false,
+    });
+    /* 量圆盘中心（按角度算转动量要用屏幕坐标）。 */
+    this.measureDialCenter();
+  },
+
+  /** 量圆盘中心点（px）。取不到时退回 0，角度算法会退化到「转不动」。 */
+  measureDialCenter(): void {
+    try {
+      const query = wx.createSelectorQuery();
+      query
+        .select(".dial-face")
+        .boundingClientRect((rect) => {
+          const box = rect as { left: number; top: number; width: number; height: number } | null;
+          if (box === undefined || box === null) {
+            return;
+          }
+          this.setData({
+            dialCenterX: box.left + box.width / 2,
+            dialCenterY: box.top + box.height / 2,
+          });
+        })
+        .exec();
+    } catch {
+      /* 量不到就不按角度算（拖动退化为无效），比抛错中断页面好。 */
+    }
+  },
+
+  onDialClose() {
+    if (!this.data.dialOpen) {
+      return;
+    }
+    this.dialDrag = null;
+    this.setData({ dialOpen: false, dialPending: false });
+  },
+
+  onDialStopPropagation() {
+    /* catchtap：点弹层本体不关。 */
+  },
+
+  /** 圆盘按下：记起点角度与起点值。 */
+  onDialTouchStart(e: WechatMiniprogram.TouchEvent) {
+    const touch = e.touches?.[0];
+    if (touch === undefined) {
+      return;
+    }
+    const angle = angleOfPoint({
+      x: touch.clientX,
+      y: touch.clientY,
+      centerX: this.data.dialCenterX,
+      centerY: this.data.dialCenterY,
+    });
+    this.dialDrag = { startAngle: angle, startValue: this.data.dialValue };
+  },
+
+  /** 圆盘拖动：**只改本地显示**（松手才下发）。 */
+  onDialTouchMove(e: WechatMiniprogram.TouchEvent) {
+    const drag = this.dialDrag;
+    const touch = e.touches?.[0];
+    if (drag === null || touch === undefined) {
+      return;
+    }
+    const angle = angleOfPoint({
+      x: touch.clientX,
+      y: touch.clientY,
+      centerX: this.data.dialCenterX,
+      centerY: this.data.dialCenterY,
+    });
+    const value = dialValueFromAngle({
+      startAngleDeg: drag.startAngle,
+      currentAngleDeg: angle,
+      startValue: drag.startValue,
+    });
+    if (value === this.data.dialValue) {
+      return;
+    }
+    this.setData({ dialValue: value, dialPending: true });
+    /* 触感反馈（每转 1 颗抖一下；不支持时静默）。 */
+    wx.vibrateShort?.({ type: "light", fail: () => undefined });
+  },
+
+  /** 圆盘松手：先确认（缩小会裁分区时），再下发。 */
+  async onDialTouchEnd() {
+    const drag = this.dialDrag;
+    if (drag === null) {
+      return;
+    }
+    this.dialDrag = null;
+    const next = clampDialValue(this.data.dialValue);
+    const current = this.stripLedCount();
+    if (next === current) {
+      this.setData({ dialOpen: false, dialPending: false });
+      return;
+    }
+    /* 缩小到会裁掉已有分区时先问一句（复用既有的越界检查与文案）。 */
+    if (next < current) {
+      const grouped = draftZoneRanges(this.drafts, this.data.stripId);
+      const zones = grouped.flat();
+      if (willTrimZones(zones, next)) {
+        const confirmed = await new Promise<boolean>((resolve) => {
+          wx.showModal({
+            title: "缩小灯珠数？",
+            content: `还有分区落在第 ${next} 颗之后，缩小会裁掉它们。`,
+            confirmText: "缩小",
+            cancelText: "取消",
+            success: (res) => resolve(res.confirm),
+            fail: () => resolve(false),
+          });
+        });
+        if (!confirmed) {
+          this.setData({ dialValue: current, dialOpen: false, dialPending: false });
+          return;
+        }
+      }
+    }
+    this.setData({ dialOpen: false, dialPending: false });
+    await this.commitLedCount(next);
+  },
+
+  /**
+   * 下发灯珠数（与旧滑块同一条路径：`applyLedCount`）。
+   *
+   * 复用而不是重写：截断草稿、回写越界光区、失败保留原值这些规则只能有一份。
+   * 设备光区**现读一次**（不只用缓存），这样截断的是设备上真实存在的段。
+   */
+  async commitLedCount(next: number): Promise<void> {
+    const session = this.session;
+    const stripId = this.data.stripId;
+    if (session === null || this.disabledReason() !== "") {
+      return;
+    }
+    const current = this.stripLedCount();
+    let deviceZones = zonesFromReports(
+      this.segmentReports.filter((report) => report.stripId === stripId),
+    );
+    const fresh = await session.queryStrip(stripId);
+    if (fresh.kind === "ok") {
+      deviceZones = zonesFromReports(
+        fresh.reports.filter((report) => report.stripId === stripId),
+      );
+    }
+    await this.applyLedCount(next, current, deviceZones);
+    this.ledCountSeen = next;
+    this.setData({ dialValue: next, ledCapsule: ledCapsuleText(next) });
   },
 
   // ---------------- 简单档：读取与派生 ----------------

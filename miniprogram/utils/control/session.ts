@@ -1077,7 +1077,7 @@ export class ControlSession {
    *
    * `loop` 三种 action 下都会写入（设备侧持久化，§10.5）。
    */
-  async setPlayback(action: PlaybackAction, loop: boolean): Promise<ScriptResult> {
+  async setPlayback(action: PlaybackAction, loop: number | boolean): Promise<ScriptResult> {
     const epoch = this.reconnect.epoch;
     try {
       const ack = await this.sendCommand(cmdSetPlayback(action, loop));
@@ -1095,8 +1095,13 @@ export class ControlSession {
     }
   }
 
-  /** 切换到另一套已提交剧本（ActivateScript 0x19）；不自动播放。 */
-  async activateScript(scriptId: number, loop: boolean): Promise<ScriptResult> {
+  /**
+   * 切换到另一套已提交剧本（ActivateScript 0x19）；不自动播放。
+   *
+   * `loop` 是**三值**（#98）：0 不循环 / 1 全部循环 / 2 最后一步循环；
+   * 旧的布尔写法仍然接受（true = 1、false = 0）。
+   */
+  async activateScript(scriptId: number, loop: number | boolean): Promise<ScriptResult> {
     const epoch = this.reconnect.epoch;
     try {
       const ack = await this.sendCommand(cmdActivateScript(scriptId, loop));

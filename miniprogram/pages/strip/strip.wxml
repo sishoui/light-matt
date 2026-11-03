@@ -19,74 +19,44 @@
     >重连</text>
   </view>
 
-  <!-- ---------------- 顶部：灯组名 / 灯珠数 ---------------- -->
+  <!--
+    顶部（#95）：标题 = 灯组自定义名（不再重复一行标题块）。
+    右侧是灯珠数胶囊（**长按**弹圆盘）与三个圆形方案按钮；灯的开关在设备页。
+  -->
   <view class="strip-head">
     <view class="strip-head-main">
       <text class="strip-name">{{title}}</text>
       <text class="strip-meta">{{ledText}}</text>
     </view>
+    <view
+      class="led-capsule {{ledBusy ? 'busy' : ''}}"
+      bindlongpress="onLedCapsuleLongPress"
+      hover-class="led-capsule-hover"
+    >
+      <text class="led-capsule-text mono">{{ledCapsule}}</text>
+    </view>
   </view>
 
   <!--
-    方案 tab 行（#83）：按需增长，不再固定四个坑。
-    每套显示自己的圈码与「空白 / n 步」；「+ 新建」占用当前最小的空位，
-    四套都在用时禁用。删除前有二次确认，且会真的从灯控上清掉。
-    界面上只出现圈码与步数，不出现任何协议词或内部编号。
+    方案按钮（#95）：固定三个圆形数字，没有新增 / 删除入口。
+    有内容的方案点了立即启用并播放；空方案不写设备（避免刷成空白）。
   -->
   <view class="plan-bar">
-    <view class="plan-tabs">
+    <view class="plan-circles">
       <view
-        wx:for="{{planTabs}}"
+        wx:for="{{planCircles}}"
         wx:key="id"
-        class="plan-tab {{item.selected ? 'on' : ''}} {{item.playing ? 'playing' : ''}}"
+        class="plan-circle {{item.selected ? 'on' : ''}} {{item.hasContent ? '' : 'empty'}}"
         data-plan-id="{{item.id}}"
         bindtap="onPlanTap"
-        hover-class="plan-tab-hover"
+        hover-class="plan-circle-hover"
       >
-        <text class="plan-tab-label">{{item.label}}</text>
-        <text class="plan-tab-sub">{{item.summary}}</text>
-        <view wx:if="{{item.playing}}" class="plan-tab-dot"></view>
+        <text class="plan-circle-label">{{item.label}}</text>
+        <view wx:if="{{item.playing}}" class="plan-circle-dot"></view>
       </view>
     </view>
-    <view class="plan-actions">
-      <view
-        class="plan-action {{planCanAdd ? '' : 'disabled'}}"
-        hover-class="{{planCanAdd ? 'plan-action-hover' : ''}}"
-        bindtap="onPlanAdd"
-      >+ 新建</view>
-      <view
-        class="plan-action danger {{planDeleting >= 0 ? 'disabled' : ''}}"
-        hover-class="{{planDeleting >= 0 ? '' : 'plan-action-hover'}}"
-        bindtap="onPlanDelete"
-      >{{planDeleting >= 0 ? '删除中…' : '删除'}}</view>
-    </view>
+    <text class="plan-summary">{{planCircles[planSlot].summary}}</text>
     <text wx:if="{{planHint}}" class="plan-hint">{{planHint}}</text>
-  </view>
-
-  <!--
-    灯珠数滑块（#79）：拖动只改本地值，松手（bindchange）才下发。缩小且这条
-    灯组有越界光区时先弹二次确认；下发失败就地显示原因并保留原数量。
-    这里只改**当前这一组**，不影响其它灯组。
-  -->
-  <view class="led-count-bar">
-    <view class="led-count-head">
-      <text class="led-count-label">灯珠数</text>
-      <text class="led-count-value mono">{{ledSliderValue}} 颗{{ledPending ? ' · 未应用' : ''}}</text>
-    </view>
-    <slider
-      class="led-count-slider"
-      min="{{ledMin}}"
-      max="{{ledMax}}"
-      step="1"
-      value="{{ledSliderValue}}"
-      disabled="{{!ready || ledBusy}}"
-      activeColor="{{accentColor}}"
-      backgroundColor="rgba(120, 120, 128, 0.2)"
-      block-size="22"
-      bindchanging="onLedCountChanging"
-      bindchange="onLedCountChange"
-    />
-    <text wx:if="{{ledHint}}" class="led-count-hint">{{ledHint}}</text>
   </view>
 
   <!-- ---------------- 简单 / 进阶 ---------------- -->
@@ -518,6 +488,36 @@
   </block>
 
   <!-- ---------------- 灯珠弹窗（#66）：不进主界面，只在新增 / 改范围时出现 ---------------- -->
+  <!-- ============ 灯珠数圆盘（#95）：长按胶囊打开，转动调整，松手下发 ============ -->
+  <view wx:if="{{dialOpen}}" class="dial-mask" bindtap="onDialClose">
+    <view class="dial-sheet" catchtap="onDialStopPropagation">
+      <view class="sheet-grabber"></view>
+      <view class="dial-head">
+        <text class="dial-title">灯珠数</text>
+        <text class="dial-sub">{{dialPending ? '松手后生效' : '转动圆盘调整'}}</text>
+      </view>
+      <view
+        class="dial-face"
+        bindtouchstart="onDialTouchStart"
+        catchtouchmove="onDialTouchMove"
+        bindtouchend="onDialTouchEnd"
+        bindtouchcancel="onDialTouchEnd"
+      >
+        <view class="dial-ring"></view>
+        <view wx:for="{{dialTicks}}" wx:key="value" class="dial-tick {{item.major ? 'major' : ''}}" style="transform: rotate({{(item.value - 1) * 3.6}}deg);">
+          <view class="dial-tick-line"></view>
+          <text wx:if="{{item.label}}" class="dial-tick-label">{{item.label}}</text>
+        </view>
+        <view class="dial-center">
+          <text class="dial-value mono">{{dialValue}}</text>
+          <text class="dial-unit">颗</text>
+        </view>
+      </view>
+      <text class="dial-hint">范围 1–100；缩小到会裁掉分区时会先问你</text>
+      <view class="dial-cancel" bindtap="onDialClose">取消</view>
+    </view>
+  </view>
+
   <view wx:if="{{pickerOpen}}" class="picker-mask" bindtap="onPickerMaskTap">
     <view class="picker-sheet" catchtap="onPickerStopPropagation">
       <view class="picker-head">

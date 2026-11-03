@@ -61,160 +61,261 @@
   color: var(--text-2);
 }
 
-/* ---------------- 灯珠数滑块（#79） ---------------- */
-
-.led-count-bar {
-  display: flex;
-  flex-direction: column;
-  gap: 4rpx;
-  margin-top: 12rpx;
-  padding: 14rpx 20rpx 10rpx;
-  border-radius: var(--radius-md);
-  background: var(--card-2);
-  box-shadow: inset 0 0 0 1rpx var(--border);
-}
-
-.led-count-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12rpx;
-}
-
-.led-count-label {
-  font-size: 23rpx;
-  color: var(--text-2);
-}
-
-.led-count-value {
-  font-size: 25rpx;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.led-count-slider {
-  width: 100%;
-  margin: 0;
-}
-
-.led-count-hint {
-  font-size: 21rpx;
-  color: var(--text-2);
-  line-height: 1.4;
-}
-
-/* ---------------- 方案 tab 行（#83） ----------------
- * 按需增长：每套一个 tab，显示自己的圈码与「空白 / n 步」。
- * 选中态用主题色描边 + 淡底（不换文字颜色，深色主题下也可读）；
- * 正在播放的那套右上角一个小圆点。
+/* ---------------- 灯珠数胶囊（#95） ----------------
+ *
+ * 不再是独立滑块区块：标题右侧一个胶囊，长按弹圆盘。点击刻意不做事，
+ * 免得滑动页面时误触。
  */
-
-.plan-bar {
-  display: flex;
-  flex-direction: column;
-  gap: 10rpx;
-  margin-top: 12rpx;
-}
-
-.plan-tabs {
-  display: flex;
-  align-items: stretch;
-  gap: 8rpx;
-}
-
-.plan-tab {
-  position: relative;
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4rpx;
-  padding: 12rpx 8rpx;
-  border-radius: var(--radius-md);
-  background: var(--card-2);
-  box-shadow: inset 0 0 0 1rpx var(--border);
-  transition: background 160ms ease, box-shadow 160ms ease;
-}
-
-.plan-tab.on {
-  background: var(--accent-soft);
-  box-shadow: inset 0 0 0 2rpx var(--accent);
-}
-
-.plan-tab-hover {
-  background: var(--card-press);
-}
-
-.plan-tab-label {
-  font-size: 25rpx;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.plan-tab-sub {
-  font-size: 20rpx;
-  color: var(--text-3);
-  max-width: 100%;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.plan-tab.on .plan-tab-sub {
-  color: var(--text-2);
-}
-
-/* 正在播放：一个小圆点，不抢文字的位置（绝对定位在右上角）。 */
-.plan-tab-dot {
-  position: absolute;
-  top: 8rpx;
-  right: 8rpx;
-  width: 10rpx;
-  height: 10rpx;
-  border-radius: 50%;
-  background: var(--accent);
-}
-
-.plan-actions {
-  display: flex;
-  align-items: center;
-  gap: 8rpx;
-}
-
-.plan-action {
-  flex: 1;
+.led-capsule {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 12rpx 8rpx;
-  border-radius: var(--radius-md);
-  font-size: 23rpx;
-  font-weight: 600;
-  color: var(--text);
-  background: var(--card-2);
-  box-shadow: inset 0 0 0 1rpx var(--border);
+  padding: 10rpx 22rpx;
+  border-radius: 999rpx;
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1rpx var(--accent);
+  transition: background 160ms ease;
 }
 
-.plan-action.danger {
-  color: var(--danger);
-  background: var(--danger-soft);
-  box-shadow: none;
-}
-
-.plan-action-hover {
+.led-capsule-hover {
   background: var(--card-press);
 }
 
-.plan-action.disabled {
-  color: var(--text-3);
+.led-capsule.busy {
   opacity: 0.55;
 }
 
+.led-capsule-text {
+  font-size: 24rpx;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+/* ---------------- 三套方案（#95） ----------------
+ *
+ * 固定三个圆形数字，没有新增 / 删除。选中：主题色实底；空方案：虚线描边。
+ * 正在播放的那套右上角一个小圆点。
+ */
+.plan-bar {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 14rpx;
+  margin-top: 4rpx;
+  flex-wrap: wrap;
+}
+
+.plan-circles {
+  display: flex;
+  align-items: center;
+  gap: 14rpx;
+  flex-shrink: 0;
+}
+
+.plan-circle {
+  position: relative;
+  width: 64rpx;
+  height: 64rpx;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 2rpx var(--border);
+  transition: background 160ms ease, box-shadow 160ms ease;
+}
+
+.plan-circle.on {
+  background: var(--accent);
+  box-shadow: none;
+}
+
+.plan-circle.empty {
+  box-shadow: inset 0 0 0 2rpx var(--border);
+  background: transparent;
+}
+
+.plan-circle-hover {
+  opacity: 0.75;
+}
+
+.plan-circle-label {
+  font-size: 26rpx;
+  font-weight: 700;
+  color: var(--text-2);
+}
+
+.plan-circle.on .plan-circle-label {
+  color: var(--accent-ink);
+}
+
+/* 正在播放：一个小圆点，绝对定位在右上角。 */
+.plan-circle-dot {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 14rpx;
+  height: 14rpx;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 0 3rpx var(--card);
+}
+
+.plan-summary {
+  font-size: 22rpx;
+  color: var(--text-3);
+}
+
 .plan-hint {
+  flex-basis: 100%;
   font-size: 21rpx;
-  color: var(--danger);
-  line-height: 1.4;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+
+/* ---------------- 灯珠数圆盘（#95） ---------------- */
+
+.dial-mask {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 130;
+  background: rgba(0, 0, 0, 0.44);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.dial-sheet {
+  background: var(--bg-elevated);
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  padding: 16rpx 32rpx calc(32rpx + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20rpx;
+  box-sizing: border-box;
+}
+
+.sheet-grabber {
+  width: 72rpx;
+  height: 8rpx;
+  border-radius: 4rpx;
+  background: var(--card-press);
+  align-self: center;
+}
+
+.dial-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4rpx;
+}
+
+.dial-title {
+  font-size: 30rpx;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.dial-sub {
+  font-size: 21rpx;
+  color: var(--text-3);
+}
+
+/* 圆盘本体：360rpx 直径，刻度沿圆周铺开。 */
+.dial-face {
+  position: relative;
+  width: 380rpx;
+  height: 380rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dial-ring {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 380rpx;
+  height: 380rpx;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 2rpx var(--border);
+}
+
+.dial-tick {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+}
+
+/* 短刻度：从外圈向内 10rpx。 */
+.dial-tick-line {
+  position: absolute;
+  left: -1rpx;
+  top: -178rpx;
+  width: 2rpx;
+  height: 10rpx;
+  background: var(--text-3);
+  border-radius: 2rpx;
+}
+
+.dial-tick.major .dial-tick-line {
+  height: 18rpx;
+  width: 3rpx;
+  left: -1.5rpx;
+  background: var(--text-2);
+}
+
+.dial-tick-label {
+  position: absolute;
+  left: -40rpx;
+  top: -152rpx;
+  width: 80rpx;
+  text-align: center;
+  font-size: 17rpx;
+  color: var(--text-3);
+}
+
+.dial-center {
+  display: flex;
+  align-items: baseline;
+  gap: 6rpx;
+}
+
+.dial-value {
+  font-size: 76rpx;
+  font-weight: 700;
+  letter-spacing: -2rpx;
+  color: var(--text);
+}
+
+.dial-unit {
+  font-size: 24rpx;
+  color: var(--text-2);
+}
+
+.dial-hint {
+  font-size: 21rpx;
+  color: var(--text-3);
+  text-align: center;
+  line-height: 1.6;
+}
+
+.dial-cancel {
+  width: 100%;
+  height: 84rpx;
+  line-height: 84rpx;
+  text-align: center;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  font-size: 27rpx;
+  color: var(--text-2);
 }
 
 /* ---------------- 简单 / 进阶 分段控件 ---------------- */

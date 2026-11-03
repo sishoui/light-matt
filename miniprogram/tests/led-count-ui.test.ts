@@ -83,44 +83,58 @@ describe("设备信息页：每组一条滑块 + 只读总数", () => {
   });
 });
 
-describe("灯组详情页：顶部当前组滑块", () => {
+describe("灯组详情页：标题右侧的灯珠数胶囊 + 圆盘（#95）", () => {
   const wxml = src("pages/strip/strip.wxml");
   const ts = src("pages/strip/strip.ts");
 
-  it("滑块在页面顶部（灯组名之后、简单/进阶切换之前）", () => {
-    const sliderAt = wxml.indexOf('class="led-count-slider"');
-    expect(sliderAt).toBeGreaterThan(0);
-    expect(sliderAt).toBeGreaterThan(wxml.indexOf('class="strip-head"'));
-    expect(sliderAt).toBeLessThan(wxml.indexOf('class="mode-switch"'));
+  it("灯珠数不再是独立滑块区块（页面里找不到 led-count-slider）", () => {
+    expect(wxml).not.toContain('class="led-count-slider"');
+    expect(wxml).not.toContain("led-count-bar");
   });
 
-  it("1–100、松手才下发", () => {
-    expect(wxml).toContain('min="{{ledMin}}"');
-    expect(wxml).toContain('max="{{ledMax}}"');
-    expect(wxml).toContain('step="1"');
-    expect(wxml).toContain('value="{{ledSliderValue}}"');
-    expect(wxml).toContain('bindchanging="onLedCountChanging"');
-    expect(wxml).toContain('bindchange="onLedCountChange"');
+  it("胶囊在标题行右侧，并且是**长按**打开（点击不做事）", () => {
+    const head = wxml.slice(wxml.indexOf('class="strip-head"'), wxml.indexOf('class="plan-bar"'));
+    expect(head).toContain('class="led-capsule');
+    expect(head).toContain("{{ledCapsule}}");
+    expect(head).toContain('bindlongpress="onLedCapsuleLongPress"');
+    expect(head).not.toContain('bindtap="onLedCapsule');
+  });
+
+  it("圆盘有长刻度、中间大数字与松手才下发", () => {
+    expect(wxml).toContain('class="dial-face"');
+    expect(wxml).toContain("{{dialTicks}}");
+    expect(wxml).toContain("{{dialValue}}");
+    expect(wxml).toContain('bindtouchstart="onDialTouchStart"');
+    expect(wxml).toContain('bindtouchend="onDialTouchEnd"');
+  });
+
+  it("拖动中只改本地值（dialValue），不逐帧下发", () => {
+    const move = handlerBody(ts, "onDialTouchMove");
+    expect(move).toContain("dialValue: value");
+    expect(move).not.toContain("setLedCount");
+  });
+
+  it("1–100 的钳位来自协议常量（clampDialValue 默认 MIN_LEDS/MAX_LEDS）", () => {
+    const start = handlerBody(ts, "onDialTouchStart");
+    expect(start.length).toBeGreaterThan(0);
+    expect(ts).toContain("clampDialValue");
+    expect(ts).toContain("buildDialTicks");
+  });
+
+  it("松手才下发，且缩小会裁分区时先确认", () => {
+    const end = handlerBody(ts, "onDialTouchEnd");
+    expect(end).toContain("willTrimZones");
+    expect(end).toContain("showModal(");
+    const confirmAt = end.indexOf("showModal(");
+    const commitAt = end.indexOf("this.commitLedCount(");
+    expect(confirmAt).toBeGreaterThan(0);
+    expect(commitAt).toBeGreaterThan(confirmAt);
+    /* 取消分支必须 return，不提交。 */
+    expect(end.slice(confirmAt, commitAt)).toContain("return;");
   });
 
   it("只改当前组：下发时显式传 stripId", () => {
     expect(ts).toContain("session.setLedCount(value, stripId)");
-  });
-
-  it("拖动中只改本地值（ledDraft），不逐帧下发", () => {
-    const changing = handlerBody(ts, "onLedCountChanging");
-    expect(changing).toContain("this.ledDraft = value");
-    expect(changing).not.toContain("setLedCount");
-  });
-
-  it("缩小前确认，取消回到设备值且不动草稿", () => {
-    const change = handlerBody(ts, "onLedCountChange");
-    const confirmAt = change.indexOf("showModal(");
-    expect(confirmAt).toBeGreaterThan(0);
-    expect(change).toContain("shrinkConfirmText(affected, value)");
-    const cancel = change.slice(confirmAt, change.indexOf("this.applyLedCount(", confirmAt));
-    expect(cancel).toContain("this.backToDeviceLedCount();");
-    expect(cancel).toContain("return;");
   });
 
   it("确认后草稿同步清理（shrinkDraft），只碰当前灯组", () => {
@@ -136,6 +150,11 @@ describe("灯组详情页：顶部当前组滑块", () => {
     const fail = handlerBody(ts, "failLedCount");
     expect(fail).toContain("ledSliderValue: current");
     expect(fail).toContain("ledHint: hint");
+  });
+
+  it("胶囊文案跟着设备权威值更新（applyDeviceState 里同步）", () => {
+    const apply = handlerBody(ts, "applyDeviceState");
+    expect(apply).toContain("ledCapsuleText(ledCount)");
   });
 });
 
