@@ -122,6 +122,8 @@
           <text class="hero-meta">{{current.metaText}}</text>
           <text wx:if="{{current.brightnessPercent !== null}}" class="hero-brightness">{{brightnessPercent}}%</text>
         </view>
+        <!-- 电源键的就地反馈（#91）：连接中 / 读状态 / 失败原因都在这里，不再静默 -->
+        <text wx:if="{{powerHint}}" class="hero-power-hint">{{powerHint}}</text>
         <!-- 亮度滑条：可拖，松手才下发（catchtap 不冒泡，否则会进详情） -->
         <view
           wx:if="{{current.brightnessPercent !== null}}"

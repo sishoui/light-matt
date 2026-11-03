@@ -419,6 +419,8 @@ Page({
   levelDraft: LEVEL_DEFAULT,
   /** 参数松手后的防抖定时器（只发最后一次）。 */
   quickTimer: null as ReturnType<typeof setTimeout> | null,
+  /** 写入期间又点过卡片：本轮写完补一次（#91，不丢弃点击）。 */
+  quickQueued: false,
   /** 防抖代次：旧一轮在 await 后静默退出。 */
   quickEpoch: 0,
   /** 有改动还没成功写进设备（写失败 / 拖动中）。 */
@@ -551,6 +553,7 @@ Page({
     this.quickParams = {};
     this.levelDraft = LEVEL_DEFAULT;
     this.quickTimer = null;
+    this.quickQueued = false;
     this.quickEpoch = 0;
     this.dirty = false;
     this.planStepCounts = null;
@@ -2648,9 +2651,19 @@ Page({
   onQuickCardTap(e: WechatMiniprogram.TouchEvent) {
     const cardId = String(e.currentTarget.dataset.cardId ?? "");
     const card = quickCardOf(cardId);
-    if (card === null || this.disabledReason() !== "" || this.data.quickBusy) {
+    if (card === null || this.disabledReason() !== "") {
       return;
     }
+    /*
+     * #91：写设备期间**不再丢弃点击**。
+     *
+     * 以前这里 `if (quickBusy) return`：用户快速连点不同卡片时，后面的点击
+     * 被静默吞掉，界面上却已经高亮到新的那张（因为高亮在写入前就变了），
+     * 于是「我明明点了」却停在旧的灯效上。
+     *
+     * 现在改成：**选中立刻生效并保持权威**（写入后不再拿设备回读覆盖它），
+     * 写入中再点则只记下最后一张，等本轮写完再补一次。
+     */
     this.quickCardId = card.id;
     /* 换卡时参数回到该卡默认值（把呼吸的最暗档带进流光没有意义）。
      * 亮度草稿保留用户值；只有设备上读回过 0（熄灭卡）时才回到默认满亮，
@@ -2706,6 +2719,7 @@ Page({
     if (this.quickTimer !== null) {
       clearTimeout(this.quickTimer);
       this.quickTimer = null;
+    this.quickQueued = false;
     }
   },
 
@@ -2716,6 +2730,7 @@ Page({
     this.clearQuickTimer();
     const fire = () => {
       this.quickTimer = null;
+    this.quickQueued = false;
       if (epoch !== this.quickEpoch) {
         return;
       }
@@ -2745,10 +2760,12 @@ Page({
       return;
     }
     if (this.data.quickBusy) {
-      /* 正在写：让本轮防抖再来一次（不并发发帧）。 */
-      this.scheduleQuickWrite(false);
+      /* 正在写：只记「写完要补一次」，不并发发帧。补写由 finally 触发，
+       * 且只补最后一次选中的卡片（中间的点击没有意义）。 */
+      this.quickQueued = true;
       return;
     }
+    this.quickQueued = false;
     this.setData({ quickBusy: true, applyError: "" });
     try {
       /* 播放中设备按方案渲染，实时光区看不见：先停，再写入。 */
@@ -2758,16 +2775,30 @@ Page({
         this.setData({ quickHint: "已停止播放，改为实时灯效" });
       }
 
-      const current = await session.queryStrip(stripId);
-      if (current.kind === "ok") {
-        this.segmentReports = current.reports.filter((report) => report.stripId === stripId);
-      }
-
-      const others = this.segmentReports.filter((report) => report.segId !== 0);
-      for (const report of others) {
-        const cleared = await session.clearSegment(stripId, report.segId);
-        if (!cleared.ok) {
-          throw new Error(resultText(cleared.resultCode));
+      /*
+       * #91：单光区灯组**跳过预读 / 清空 / 回读**。
+       *
+       * 协议要求同组光区不重叠，所以整组改写要想安全，通常得先读回、把槽位
+       * 1..N 清掉、再写槽位 0——一次点击变成十来个来回，用户看到的就是
+       * 「高亮过一两秒才定下来」。但只有槽位 0 有内容时，写槽位 0 覆盖的是
+       * 同一个区间，不可能与别的槽位重叠：清空这一步可以整段省掉。
+       *
+       * `singleZone` 用本地镜像判断（上一次 queryStrip 的结果）；镜像为空时
+       * 保守走完整路径——宁可慢一点，也不能把多光区写坏。
+       */
+      const singleZone =
+        this.segmentReports.length === 1 && this.segmentReports[0].segId === 0;
+      if (!singleZone) {
+        const current = await session.queryStrip(stripId);
+        if (current.kind === "ok") {
+          this.segmentReports = current.reports.filter((report) => report.stripId === stripId);
+        }
+        const others = this.segmentReports.filter((report) => report.segId !== 0);
+        for (const report of others) {
+          const cleared = await session.clearSegment(stripId, report.segId);
+          if (!cleared.ok) {
+            throw new Error(resultText(cleared.resultCode));
+          }
         }
       }
 
@@ -2780,15 +2811,31 @@ Page({
       }
 
       this.dirty = false;
+      /*
+       * #91：成功后**用刚发出的内容渲染**，不再额外读回。
+       *
+       * 回读是「迟到的覆盖」的根源：它按设备真实状态重算选中项，用户在一次
+       * 往返里已经点了别的卡，回读结果就把那张新卡覆盖回去。写入是绝对值
+       * 命令（SetSegment 覆盖同一个区间），成功即等于设备现在就是这个值。
+       */
+      this.segmentReports = [
+        { ...spec, stripId, segId: 0 } as unknown as (typeof this.segmentReports)[number],
+      ];
       this.setData({ quickHint: `${card.name} 已生效` });
-      await this.refreshSegments();
+      this.renderQuick();
     } catch (err) {
       const message = errorText(err);
       this.dirty = true;
       this.setData({ quickHint: `写入失败：${message}` });
+      /* 失败才回读：设备上的真实配置是唯一能解释失败的东西。 */
       await this.refreshSegments();
     } finally {
       this.setData({ quickBusy: false });
+      /* 写入期间又点过卡片：补写一次最后那张（不丢弃用户的操作）。 */
+      if (this.quickQueued) {
+        this.quickQueued = false;
+        this.scheduleQuickWrite(true);
+      }
     }
   },
 

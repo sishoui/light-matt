@@ -99,6 +99,9 @@ Page({
     brightnessDraggable: false,
     brightnessHint: "连接后可调节",
 
+    /** 电源键的就地反馈（#91）：不再静默返回。 */
+    powerHint: "",
+
     // 长按菜单
     menuOpen: false,
     menuItems: [] as HomeMenuItem[],
@@ -376,13 +379,22 @@ Page({
   async onPowerTap() {
     const card = this.data.current;
     const session = this.session;
-    if (card === null || session === null || this.data.busy || card.deviceId.length === 0) {
+    if (card === null || session === null || this.data.busy) {
       return;
     }
-    this.setData({ busy: true });
+    /* #91 第一条静默返回：只有云端记录的设备本机没有连接标识，点电源键
+     * 以前什么都不发生。现在明确说清楚该怎么办。 */
+    if (card.deviceId.length === 0) {
+      this.setData({ powerHint: "这台设备只有云端记录，需要先扫描添加后才能直接开关" });
+      wx.showToast({ title: "需要先扫描添加这台设备", icon: "none" });
+      return;
+    }
+    this.setData({ busy: true, powerHint: "" });
     try {
       if (!card.connected) {
         const switching = session.linkState === "ready";
+        /* #91 第二条静默返回：连接的几秒里没有任何提示。 */
+        this.setData({ powerHint: switching ? `正在切换到 ${card.name}…` : `正在连接 ${card.name}…` });
         if (switching) {
           await session.switchTo(card.deviceId, card.name);
         } else {
@@ -391,31 +403,76 @@ Page({
         this.refresh();
       }
       const state = session.deviceState;
+      /* #91 第三条静默返回：刚连上、State 还没到时直接 return。 */
       if (state === null) {
+        this.setData({ powerHint: "已连上，正在读取设备状态…" });
+        /* 等第一帧 State 到位（最多 3 秒），再决定开还是关。 */
+        const ready = await this.waitForDeviceState(3000);
+        if (!ready) {
+          this.setData({ powerHint: "读不到设备状态，请稍后再点一次" });
+          return;
+        }
+      }
+      const latest = session.deviceState;
+      if (latest === null) {
+        this.setData({ powerHint: "读不到设备状态，请稍后再点一次" });
         return;
       }
-      const result = await session.setPower(state.power !== 1);
+      this.setData({ powerHint: latest.power === 1 ? "正在关灯…" : "正在开灯…" });
+      const result = await session.setPower(latest.power !== 1);
       if (result.kind === "ok") {
         this.refresh();
+        this.setData({ powerHint: result.state.power === 1 ? "灯光已打开" : "灯光已关闭" });
         /* 触感反馈（不支持时静默）。 */
         wx.vibrateShort?.({ type: "light", fail: () => undefined });
         return;
       }
       if (result.kind === "ack-error") {
+        this.setData({ powerHint: `切换失败：${resultText(result.ack.resultCode)}` });
         wx.showToast({ title: resultText(result.ack.resultCode), icon: "none" });
         return;
       }
       if (result.kind === "error") {
+        this.setData({ powerHint: `切换失败：${result.message}` });
         wx.showToast({ title: result.message, icon: "none" });
       }
     } catch (err) {
       if (err instanceof ConnectCancelledError) {
+        this.setData({ powerHint: "已取消连接" });
         return;
       }
+      this.setData({ powerHint: `连接失败：${errorText(err)}` });
       wx.showToast({ title: errorText(err), icon: "none" });
     } finally {
       this.setData({ busy: false });
     }
+  },
+
+  /**
+   * 等第一帧设备状态到位（电源键的第三条静默返回）。
+   *
+   * 返回 false 表示超时。期间订阅 `onState`，拿到就 resolve，立刻退订。
+   */
+  waitForDeviceState(timeoutMs: number): Promise<boolean> {
+    const session = this.session;
+    if (session === null) {
+      return Promise.resolve(false);
+    }
+    if (session.deviceState !== null) {
+      return Promise.resolve(true);
+    }
+    return new Promise((resolve) => {
+      let off: (() => void) | null = null;
+      const timer = setTimeout(() => {
+        off?.();
+        resolve(false);
+      }, timeoutMs);
+      off = session.onState(() => {
+        clearTimeout(timer);
+        off?.();
+        resolve(true);
+      });
+    });
   },
 
   // ---------------- 搜索（#93） ----------------
