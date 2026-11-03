@@ -382,12 +382,13 @@
 
       <text class="picker-range">{{pickerRangeText}}</text>
 
-      <!-- 灯珠网格：一次渲染该灯组全部灯珠（有几颗画几颗）。 -->
+      <!-- 灯珠网格：一次渲染该灯组全部灯珠（有几颗画几颗）。
+           起点 = 实心圆点 + 加粗数字，终点 = 空心圆环，区间内填半透明主题底色（#78）。 -->
       <view class="picker-grid" style="grid-template-columns: repeat({{pickerColumns}}, 1fr);">
         <view
           wx:for="{{pickerCells}}"
           wx:key="index"
-          class="picker-cell {{item.disabled ? 'disabled' : ''}} {{item.selected ? 'selected' : ''}} {{item.anchor ? 'anchor' : ''}} {{item.conflict ? 'conflict' : ''}}"
+          class="picker-cell {{item.disabled ? 'disabled' : ''}} {{item.selected ? 'selected' : ''}} {{item.anchor ? 'anchor' : ''}} {{item.start ? 'start' : ''}} {{item.end ? 'end' : ''}} {{item.conflict ? 'conflict' : ''}}"
           data-index="{{item.index}}"
           bindtap="onPickerCellTap"
         >
@@ -398,6 +399,46 @@
             class="picker-owner-dot"
             style="background: {{item.ownerHex}}"
           ></view>
+        </view>
+      </view>
+
+      <!-- 两个数字滚轮（#78）：值域只含与锚点连通的连续空闲灯珠，
+           被别的光区占着的序号根本不出现在候选里，所以非法区间选不出来。 -->
+      <view class="picker-wheels">
+        <view class="picker-wheel">
+          <text class="picker-wheel-tag">起点</text>
+          <picker
+            wx:if="{{pickerStartLabels.length > 0}}"
+            class="picker-wheel-picker"
+            mode="selector"
+            range="{{pickerStartLabels}}"
+            value="{{pickerStartIndex}}"
+            bindchange="onPickerStartChange"
+          >
+            <view class="picker-wheel-value">
+              <text class="picker-wheel-text">{{pickerStartText}}</text>
+              <text class="picker-wheel-arrow">▾</text>
+            </view>
+          </picker>
+          <text wx:else class="picker-wheel-empty">{{pickerStartHint}}</text>
+        </view>
+
+        <view class="picker-wheel {{pickerEndDisabled ? 'disabled' : ''}}">
+          <text class="picker-wheel-tag">终点</text>
+          <picker
+            wx:if="{{!pickerEndDisabled && pickerEndLabels.length > 0}}"
+            class="picker-wheel-picker"
+            mode="selector"
+            range="{{pickerEndLabels}}"
+            value="{{pickerEndIndex}}"
+            bindchange="onPickerEndChange"
+          >
+            <view class="picker-wheel-value">
+              <text class="picker-wheel-text">{{pickerEndText}}</text>
+              <text class="picker-wheel-arrow">▾</text>
+            </view>
+          </picker>
+          <text wx:else class="picker-wheel-empty">{{pickerEndHint}}</text>
         </view>
       </view>
 

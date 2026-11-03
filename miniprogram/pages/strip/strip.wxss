@@ -804,10 +804,16 @@
   color: var(--text-2);
 }
 
-/* 12 列网格：列数由页面写进 style，这里只管间距与格子。 */
+/* 12 列网格：列数由页面写进 style，这里只管间距与格子。
+   100 颗时是 9 行，加上底部两个滚轮会超过 86vh 的弹窗高度——网格自己滚，
+   标题、区间文字、滚轮与按钮都留在视野里（滚轮不能跟着一起滚走）。 */
 .picker-grid {
   display: grid;
   gap: 8rpx;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2rpx;
 }
 
 /*
@@ -847,16 +853,63 @@
   pointer-events: none;
 }
 
-/* 选中的灯珠：描边 + 提亮（选中不是颜色变化，与光区轴同一套语义）。 */
+/* 选中的灯珠：半透明主题底色（区间整体一眼可见，不盖住格子上的数字）。 */
 .picker-cell.selected {
-  box-shadow: 0 0 0 2px var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1rpx var(--accent);
 }
 
 .picker-cell.selected .picker-cell-no {
   color: var(--text);
 }
 
-/* 锚点（第一次点的那一颗）：实心小点，告诉用户「起点在这里」。 */
+/*
+ * 起点 / 终点（#78）：区间两端各画一个圆，靠「实心 / 空心」而不是颜色区分。
+ *  - 起点：实心圆点 + 加粗数字（数字压在圆点上，颜色用 accent-ink 保证对比）；
+ *  - 终点：空心圆环（只有描边，格子底色透出来）。
+ *
+ * 两条规则各写一份几何属性：多选择器共用块会让「起点实心 / 终点空心」这两条
+ * 差异被藏在第二个块里，渲染层测试也就只能读到空声明（见 led-picker.test.ts）。
+ */
+.picker-cell.start::before {
+  content: "";
+  position: absolute;
+  width: 26rpx;
+  height: 26rpx;
+  border-radius: 50%;
+  box-sizing: border-box;
+  background: var(--accent);
+}
+
+.picker-cell.end::before {
+  content: "";
+  position: absolute;
+  width: 26rpx;
+  height: 26rpx;
+  border-radius: 50%;
+  box-sizing: border-box;
+  border: 3rpx solid var(--accent);
+  background: transparent;
+}
+
+.picker-cell.start .picker-cell-no,
+.picker-cell.end .picker-cell-no {
+  position: relative;
+  z-index: 1;
+}
+
+.picker-cell.start .picker-cell-no {
+  font-weight: 700;
+  color: var(--accent-ink);
+}
+
+.picker-cell.end .picker-cell-no {
+  font-weight: 700;
+  color: var(--accent);
+}
+
+/* 锚点（第一次点、还没定区间的那一颗）：实心小点，告诉用户「起点在这里」。
+   一旦有了区间就由 start / end 表达两端，不再叠一个点（会盖住数字）。 */
 .picker-cell.anchor::after {
   content: "";
   position: absolute;
@@ -866,8 +919,65 @@
   background: var(--accent-ink);
 }
 
+.picker-cell.anchor.start::after,
+.picker-cell.anchor.end::after {
+  display: none;
+}
+
 .picker-cell.conflict {
   box-shadow: 0 0 0 2px var(--danger);
+}
+
+/* 起点 / 终点两个数字滚轮（#78）。 */
+.picker-wheels {
+  display: flex;
+  flex-shrink: 0;
+  gap: 12rpx;
+}
+
+.picker-wheel {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6rpx;
+  padding: 12rpx 16rpx;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+.picker-wheel-tag {
+  font-size: 20rpx;
+  color: var(--text-3);
+}
+
+.picker-wheel-value {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8rpx;
+}
+
+.picker-wheel-text {
+  font-size: 26rpx;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.picker-wheel-arrow {
+  font-size: 20rpx;
+  color: var(--text-3);
+}
+
+.picker-wheel-empty {
+  font-size: 22rpx;
+  color: var(--text-3);
+}
+
+/* 终点滚轮在锚点未定 / 没有空闲灯珠时不可用：整块降透明度。 */
+.picker-wheel.disabled {
+  opacity: 0.5;
 }
 
 .picker-error {
@@ -878,6 +988,7 @@
 
 .picker-foot {
   display: flex;
+  flex-shrink: 0;
   gap: 12rpx;
 }
 

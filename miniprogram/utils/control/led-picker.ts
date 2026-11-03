@@ -168,6 +168,10 @@ export interface LedPickerCell {
   selected: boolean;
   /** 是这次点击的锚点。 */
   anchor: boolean;
+  /** 是当前区间的起点（实心圆点 + 加粗数字）。 */
+  start: boolean;
+  /** 是当前区间的终点（空心圆环）；区间只剩一颗时为 false。 */
+  end: boolean;
   /** 落在区间里、但被别的光区占着（冲突必须当场标出来）。 */
   conflict: boolean;
 }
@@ -177,6 +181,10 @@ export interface LedPickerCell {
  *
  * 页面不需要自己判断「哪颗被占」：`disabled` / `conflict` 都在这里算好，
  * 渲染层只负责画。
+ *
+ * `start` / `end` 按**区间的两端**标注（与点击顺序无关）：反向选择时起点仍
+ * 是编号小的那一颗。只剩一颗时有 `start` 而没有 `end`——一个空心环叠在实心
+ * 点上只会让人误以为「区间还没结束」。
  */
 export function buildPickerCells(
   state: PickerState,
@@ -201,6 +209,8 @@ export function buildPickerCells(
       ownerHex: ownerSegId >= 0 ? colors.get(ownerSegId) ?? "" : "",
       selected,
       anchor: index === state.anchor,
+      start: range !== null && index === range.start,
+      end: range !== null && index === range.end && range.end > range.start,
       conflict: selected && ownerSegId >= 0,
     });
   }
@@ -212,6 +222,242 @@ export interface PickerCheck {
   ok: boolean;
   /** 不可确定时的原因（就地显示在弹窗里）。 */
   message: string;
+}
+
+/** 一段连续的灯珠（闭区间，0 基）。 */
+export interface FreeRun {
+  start: number;
+  end: number;
+}
+
+/** 灯珠数按协议上限截断（负数 / 小数 / 超限一律归一）。 */
+function clampLedCount(ledCount: number): number {
+  return Math.max(0, Math.min(MAX_LEDS, Math.floor(ledCount)));
+}
+
+/** 某颗灯珠能不能选：在范围内且不属于别的光区。 */
+function selectable(
+  led: number,
+  ctx: { ledCount: number; others: ReadonlyArray<{ segId: number; start: number; end: number }> },
+): boolean {
+  return (
+    Number.isInteger(led) &&
+    led >= 0 &&
+    led < clampLedCount(ctx.ledCount) &&
+    ownerOf(led, ctx.others) < 0
+  );
+}
+
+/**
+ * 与 `anchor` 连通的那一段连续空闲灯珠（#78 的滚轮值域）。
+ *
+ * 从锚点向左右各走一步，**遇到属于其它光区的序号就停**——所以返回的区间里
+ * 没有任何一颗会与别人重叠，滚轮因此不可能给出非法值。锚点本身被占 / 越界
+ * / 没有空闲时返回 `null`。
+ */
+export function freeRunAround(
+  anchor: number,
+  ledCount: number,
+  others: ReadonlyArray<{ segId: number; start: number; end: number }>,
+): FreeRun | null {
+  const count = clampLedCount(ledCount);
+  if (!Number.isInteger(anchor) || anchor < 0 || anchor >= count) {
+    return null;
+  }
+  if (ownerOf(anchor, others) >= 0) {
+    return null;
+  }
+  let start = anchor;
+  while (start > 0 && ownerOf(start - 1, others) < 0) {
+    start -= 1;
+  }
+  let end = anchor;
+  while (end < count - 1 && ownerOf(end + 1, others) < 0) {
+    end += 1;
+  }
+  return { start, end };
+}
+
+/**
+ * 整条灯带上**最左边**的那一段连续空闲（锚点还没定时的起点滚轮值域）。
+ *
+ * 用最左而不是最长的一段：用户从左边开始选是阅读顺序，而且确定性的选择比
+ * 「猜哪个区间更好」更容易解释。没有空闲灯珠时返回 `null`。
+ */
+export function firstFreeRun(
+  ledCount: number,
+  others: ReadonlyArray<{ segId: number; start: number; end: number }>,
+): FreeRun | null {
+  const count = clampLedCount(ledCount);
+  let index = 0;
+  while (index < count && ownerOf(index, others) >= 0) {
+    index += 1;
+  }
+  if (index >= count) {
+    return null;
+  }
+  return freeRunAround(index, count, others);
+}
+
+/** 两个滚轮的候选（灯珠下标 + 显示文案）。 */
+export interface PickerOptions {
+  /** 起点滚轮的候选灯珠（0 基、升序）。 */
+  startLeds: number[];
+  /** 起点滚轮的显示文案（「第 N 颗」，1 基）。 */
+  startLabels: string[];
+  /** 起点滚轮回显的候选下标；`-1` = 当前起点不在候选里（见 `startText`）。 */
+  startIndex: number;
+  /** 起点滚轮当前显示的文案（始终是**真实**的那一端）。 */
+  startText: string;
+  /** 终点滚轮的候选灯珠（0 基、升序）。 */
+  endLeds: number[];
+  /** 终点滚轮的显示文案。 */
+  endLabels: string[];
+  /** 终点滚轮回显的候选下标；`-1` = 当前终点不在候选里。 */
+  endIndex: number;
+  /** 终点滚轮当前显示的文案。 */
+  endText: string;
+  /** 终点滚轮不可用（锚点还没定 / 没有空闲灯珠）。 */
+  endDisabled: boolean;
+  /** 锚点所在的连续空闲段；`null` = 没有可选的空闲段。 */
+  run: FreeRun | null;
+}
+
+/** 闭区间展开成下标数组。 */
+function expandLeds(start: number, end: number): number[] {
+  const out: number[] = [];
+  for (let index = start; index <= end; index += 1) {
+    out.push(index);
+  }
+  return out;
+}
+
+/** 0 基灯珠下标 → 「第 N 颗」；界面从 1 起算。 */
+export function ledOptionLabel(led: number): string {
+  return `第 ${led + 1} 颗`;
+}
+
+/**
+ * 两个数字滚轮的值域（#78）。
+ *
+ * 硬约束：候选**只**来自与锚点连通的连续空闲段——
+ *  - 起点滚轮 = 「空闲段左端 → 锚点」；
+ *  - 终点滚轮 = 「锚点 → 空闲段右端」；
+ *  - 锚点未定：起点滚轮给出整段空闲（最左的一段），终点滚轮禁用。
+ *
+ * 被别的光区占着的序号根本不出现在候选里，所以用户选不出非法区间。
+ *
+ * 回显（`startText` / `endText`）用的是**真实**的当前端点，不是候选里的第一个：
+ * 用户点格子跨过别人的光区时，那一端本就不在合法候选里，滚轮必须如实显示它
+ * （同时确定按钮是灰的、错误也在弹窗里），而不是假装用户选了别处。
+ */
+export function pickerOptions(
+  state: PickerState,
+  ctx: { ledCount: number; others: ReadonlyArray<{ segId: number; start: number; end: number }> },
+): PickerOptions {
+  /* 「锚点」在这里指**区间的起点**（`range.start`），不是 `state.anchor`：
+   * 反向点选（先点 9 再点 3）时 anchor 在高处，但起点滚轮必须从 3 往前给。 */
+  const range = pickerRange(state);
+  const startLed = range === null ? state.anchor : range.start;
+  const endLed = range === null ? null : range.end;
+  const run =
+    startLed === null
+      ? firstFreeRun(ctx.ledCount, ctx.others)
+      : freeRunAround(startLed, ctx.ledCount, ctx.others);
+  if (run === null) {
+    return {
+      startLeds: [],
+      startLabels: [],
+      startIndex: -1,
+      startText: startLed === null ? "" : ledOptionLabel(startLed),
+      endLeds: [],
+      endLabels: [],
+      endIndex: -1,
+      endText: endLed === null ? "" : ledOptionLabel(endLed),
+      endDisabled: true,
+      run: null,
+    };
+  }
+  const startLeds = expandLeds(run.start, startLed === null ? run.end : startLed);
+  /* 终点滚轮 = 「起点 → 空闲段右端」；锚点未定时没有可用区间。 */
+  const endLeds = startLed === null ? [] : expandLeds(startLed, run.end);
+  const startLabels = startLeds.map(ledOptionLabel);
+  const endLabels = endLeds.map(ledOptionLabel);
+  const startIndex = startLed === null ? 0 : Math.max(0, startLeds.indexOf(startLed));
+  const endIndex = endLed === null ? 0 : Math.max(0, endLeds.indexOf(endLed));
+  return {
+    startLeds,
+    startLabels,
+    startIndex,
+    startText: startLed === null ? startLabels[startIndex] ?? "" : ledOptionLabel(startLed),
+    endLeds,
+    endLabels,
+    endIndex,
+    endText: endLed === null ? endLabels[endIndex] ?? "" : ledOptionLabel(endLed),
+    endDisabled: startLed === null,
+    run,
+  };
+}
+
+/** 滚轮下标 → 灯珠下标；越界返回 -1（调用方据此忽略这次事件）。 */
+export function pickerOptionLed(leds: readonly number[], option: number): number {
+  if (!Number.isInteger(option) || option < 0 || option >= leds.length) {
+    return -1;
+  }
+  return leds[option];
+}
+
+/**
+ * 用起点滚轮设起点（#78）。
+ *
+ * 只改**起点这一端**：已选的终点原样保留，所以「先选终点再改起点」不会把
+ * 终点拉回锚点。还没有区间时，锚点就是另一端：刚打开时两端都落在这一颗
+ * （网格只剩一颗、确定仍不可用——与「同一颗点两次」同一条规则）。
+ *
+ * 落在别人的格子上 / 越界 → 状态不变（滚轮值域里本来也不会有它）。
+ */
+export function applyPickerStart(
+  state: PickerState,
+  led: number,
+  ctx: { ledCount: number; others: ReadonlyArray<{ segId: number; start: number; end: number }> },
+): PickerState {
+  if (!selectable(led, ctx)) {
+    return state;
+  }
+  const range = pickerRange(state);
+  const cursor = range === null ? state.anchor ?? led : range.end;
+  return { segId: state.segId, anchor: led, cursor };
+}
+
+/**
+ * 用终点滚轮设终点（#78）。
+ *
+ * 锚点未定时终点滚轮是禁用的：直接返回原状态。起点原样保留（反向选择过的
+ * 区间先归一成「起点 → 终点」，再只动终点）。
+ */
+export function applyPickerEnd(
+  state: PickerState,
+  led: number,
+  ctx: { ledCount: number; others: ReadonlyArray<{ segId: number; start: number; end: number }> },
+): PickerState {
+  if (state.anchor === null || !selectable(led, ctx)) {
+    return state;
+  }
+  const range = pickerRange(state);
+  const anchor = range === null ? state.anchor : range.start;
+  return { segId: state.segId, anchor, cursor: led };
+}
+
+/** 「确定」是否可用（与 `pickerCheck` 同一条判定，页面只读这个布尔值）。 */
+export function pickerCanConfirm(
+  state: PickerState,
+  ctx: {
+    ledCount: number;
+    others: ReadonlyArray<{ segId: number; start: number; end: number }>;
+    zoneCount: number;
+  },
+): boolean {
+  return pickerCheck(state, ctx).ok;
 }
 
 /**

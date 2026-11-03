@@ -70,6 +70,8 @@ import { loadPlanDrafts, savePlanDraft } from "../../utils/control/plan-drafts";
 import { checkScriptBlobBytes } from "../../utils/control/script-plan";
 import { draftCapacityBytes, draftToScriptConfig } from "../../utils/control/script-view";
 import {
+  applyPickerEnd,
+  applyPickerStart,
   buildPickerCells,
   commitPicker,
   createPickerState,
@@ -77,6 +79,8 @@ import {
   otherZones,
   PICKER_COLUMNS,
   pickerCheck,
+  pickerOptionLed,
+  pickerOptions,
   pickerRangeText,
   pickerTap,
   type LedPickerCell,
@@ -249,6 +253,16 @@ Page({
     pickerEditing: false,
     pickerTitle: "选一段灯珠",
     pickerLedText: "",
+    /* 起点 / 终点两个数字滚轮（#78）：候选只来自与锚点连通的连续空闲段。 */
+    pickerStartLabels: [] as string[],
+    pickerStartIndex: 0,
+    pickerStartText: "",
+    pickerStartHint: "",
+    pickerEndLabels: [] as string[],
+    pickerEndIndex: 0,
+    pickerEndText: "",
+    pickerEndDisabled: true,
+    pickerEndHint: "",
 
     /* ---- 简单档：六张成品卡 ---- */
     quickCards: [] as QuickCardView[],
@@ -1431,7 +1445,7 @@ Page({
     this.renderPicker({ pickerError: "", pickerOpen: true });
   },
 
-  /** 重画弹窗（唯一派生入口：格子、区间文字、能否确定、标题）。 */
+  /** 重画弹窗（唯一派生入口：格子、区间文字、滚轮、能否确定、标题）。 */
   renderPicker(patch: Record<string, unknown> = {}): void {
     const ledCount = this.currentLedCount();
     const zones = this.currentZones();
@@ -1442,6 +1456,10 @@ Page({
       others,
       zoneCount: zones.length,
     });
+    /* 滚轮值域只来自与锚点连通的连续空闲段（#78）：被别的光区占着的序号
+     * 根本不在候选里，所以选不出非法区间。回显文案由纯函数给出——点格子
+     * 跨过别人的光区时那一端不在候选里，滚轮仍如实显示它（同时确定是灰的）。 */
+    const options = pickerOptions(this.picker, { ledCount, others });
     /* 冲突在弹窗里**当场**显示：用户划到别人的格子上时立刻看到原因，
      * 而不是按了确定才被拒。`patch` 放在后面，提交失败的专门文案可以覆盖它。 */
     this.setData({
@@ -1454,8 +1472,51 @@ Page({
       pickerEditing: this.picker.segId !== null,
       pickerTitle: this.picker.segId === null ? "新增光区" : "改光区范围",
       pickerLedText: `这组一共 ${ledCount} 颗灯珠`,
+      pickerStartLabels: options.startLabels,
+      pickerStartIndex: options.startIndex,
+      pickerStartText: options.startText,
+      pickerStartHint: options.startLeds.length > 0 ? "" : "没有空闲灯珠",
+      pickerEndLabels: options.endLabels,
+      pickerEndIndex: options.endIndex,
+      pickerEndText: options.endText,
+      pickerEndDisabled: options.endDisabled,
+      pickerEndHint: options.run === null ? "没有空闲灯珠" : "先点一颗灯珠做起点",
       ...patch,
     });
+  },
+
+  /** 起点滚轮：把选中的候选映射回灯珠下标，再交给纯函数改状态。 */
+  onPickerStartChange(e: WechatMiniprogram.PickerChange) {
+    const option = Number(e.detail.value);
+    const ledCount = this.currentLedCount();
+    const others = otherZones(this.currentZones(), this.picker.segId);
+    const led = pickerOptionLed(pickerOptions(this.picker, { ledCount, others }).startLeds, option);
+    if (led < 0) {
+      return;
+    }
+    const next = applyPickerStart(this.picker, led, { ledCount, others });
+    if (next === this.picker) {
+      return;
+    }
+    this.picker = next;
+    this.renderPicker();
+  },
+
+  /** 终点滚轮：锚点未定时不可用（`applyPickerEnd` 会原样返回状态）。 */
+  onPickerEndChange(e: WechatMiniprogram.PickerChange) {
+    const option = Number(e.detail.value);
+    const ledCount = this.currentLedCount();
+    const others = otherZones(this.currentZones(), this.picker.segId);
+    const led = pickerOptionLed(pickerOptions(this.picker, { ledCount, others }).endLeds, option);
+    if (led < 0) {
+      return;
+    }
+    const next = applyPickerEnd(this.picker, led, { ledCount, others });
+    if (next === this.picker) {
+      return;
+    }
+    this.picker = next;
+    this.renderPicker();
   },
 
   /** 点弹窗里的一颗灯珠（第一次设锚点、第二次定区间、同一颗两次取消）。 */
@@ -1538,7 +1599,18 @@ Page({
   /** 关掉弹窗并重画两条轴。 */
   closePicker(patch: Record<string, unknown> = {}): void {
     this.picker = createPickerState(null);
-    this.setData({ pickerOpen: false, pickerError: "", pickerCells: [] });
+    this.setData({
+      pickerOpen: false,
+      pickerError: "",
+      pickerCells: [],
+      pickerStartLabels: [],
+      pickerStartText: "",
+      pickerStartHint: "",
+      pickerEndLabels: [],
+      pickerEndText: "",
+      pickerEndDisabled: true,
+      pickerEndHint: "",
+    });
     this.renderTimeline(patch);
   },
 
