@@ -16,7 +16,7 @@ static const char *TAG = "lumen_engine";
  * 上一次真正写进灯带的像素。状态未变时跳过 set_pixel + refresh。
  *
  * v2 起按整条像素缓冲逐字节比较（docs/v2-effects-engine.md §3.2）：分段后
- * 一帧最多 64 × 3 = 192 字节，比 v1 的单色三元组更细，且自然覆盖
+ * 一帧最多 100 × 3 = 300 字节（#72 从 64 抬高），比 v1 的单色三元组更细，且自然覆盖
  * 「一段动画 + 一段静态」时静态段不变的情况。
  */
 static bool s_rendered_valid;

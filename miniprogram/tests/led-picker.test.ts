@@ -67,7 +67,7 @@ describe("弹窗打开时的状态", () => {
     expect(pickerRange(state)).toEqual({ start: 5, end: 12 });
   });
 
-  it("列数是 12（64 颗正好 6 行）", () => {
+  it("列数是 12（100 颗时 8 行余 4 格）", () => {
     expect(PICKER_COLUMNS).toBe(12);
     expect(MAX_LEDS % PICKER_COLUMNS).toBe(4);
   });
@@ -299,9 +299,12 @@ describe("校验与提交", () => {
     expect(buildPickerCells(createPickerState(null), { ledCount: 0, others: [] })).toEqual([]);
   });
 
-  it("超过 64 颗被截断（协议上限）", () => {
+  it("超过 100 颗被截断（#72 协议上限）", () => {
     expect(buildPickerCells(createPickerState(null), { ledCount: 200, others: [] })).toHaveLength(
       MAX_LEDS,
+    );
+    expect(buildPickerCells(createPickerState(null), { ledCount: 100, others: [] })).toHaveLength(
+      100,
     );
   });
 

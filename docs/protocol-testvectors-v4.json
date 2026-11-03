@@ -138,6 +138,23 @@
       "result_code": 0
     },
     {
+      "name": "set_led_count_strip0_100",
+      "direction": "app_to_device",
+      "command": 6,
+      "command_name": "SetLedCount",
+      "seq": 61,
+      "payload_hex": "006400",
+      "payload_len": 3,
+      "frame_hex": "A604063D03000064000FBC",
+      "frame_len": 11,
+      "chunks_hex": [
+        "C0A604063D03000064000FBC"
+      ],
+      "frame_valid": true,
+      "result_code": 0,
+      "note": "#72：上限抬到 100，线上仍是 3 字节载荷（strip_id + u16 LE）"
+    },
+    {
       "name": "set_led_count_strip7_1",
       "direction": "app_to_device",
       "command": 6,
@@ -1086,12 +1103,12 @@
       "command": 136,
       "command_name": "DeviceInfoReport",
       "seq": 54,
-      "payload_hex": "0400AABBCCDDEEFF40080808040100",
+      "payload_hex": "0400AABBCCDDEEFF64080808040100",
       "payload_len": 15,
-      "frame_hex": "A60488360F000400AABBCCDDEEFF400808080401001235",
+      "frame_hex": "A60488360F000400AABBCCDDEEFF64080808040100229A",
       "frame_len": 23,
       "chunks_hex": [
-        "C0A60488360F000400AABBCCDDEEFF400808080401001235"
+        "C0A60488360F000400AABBCCDDEEFF64080808040100229A"
       ],
       "frame_valid": true,
       "result_code": 0,

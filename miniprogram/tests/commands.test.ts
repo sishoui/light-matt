@@ -55,14 +55,15 @@ describe("命令构造器", () => {
     expect(cmdQueryDeviceInfo().payload.length).toBe(0);
   });
 
-  it("SetLedCount 载荷 strip_id + 小端 2 字节数量，数量 1-64", () => {
+  it("SetLedCount 载荷 strip_id + 小端 2 字节数量，数量 1-100（#72）", () => {
     expect(bytesToCompactHex(cmdSetLedCount(0, 30).payload)).toBe("001E00");
     expect(bytesToCompactHex(cmdSetLedCount(0, 64).payload)).toBe("004000");
+    expect(bytesToCompactHex(cmdSetLedCount(0, 100).payload)).toBe("006400");
     expect(bytesToCompactHex(cmdSetLedCount(7, 1).payload)).toBe("070100");
     expect(cmdSetLedCount(0, 30).command).toBe(0x06);
     /* 数量越界 / 非整数 / strip_id 越界都直接抛错，不发帧。 */
     expect(() => cmdSetLedCount(0, 0)).toThrow(RangeError);
-    expect(() => cmdSetLedCount(0, 65)).toThrow(RangeError);
+    expect(() => cmdSetLedCount(0, 101)).toThrow(RangeError);
     expect(() => cmdSetLedCount(0, 1.2)).toThrow(RangeError);
     expect(() => cmdSetLedCount(-1, 30)).toThrow(RangeError);
     expect(() => cmdSetLedCount(8, 30)).toThrow(RangeError);
@@ -388,13 +389,14 @@ describe("StripConfigReport 0x87 / DeviceInfoReport 0x88", () => {
   });
 
   it("解析 15 字节设备信息（版本 / MAC / 能力）", () => {
-    const payload = hexToBytes("0300AABBCCDDEEFF40080808040100") as Uint8Array;
+    /* #72：max_leds 字节（偏移 8）现在是 0x64 = 100。 */
+    const payload = hexToBytes("0300AABBCCDDEEFF64080808040100") as Uint8Array;
     const info = parseDeviceInfoReport(payload);
     expect(info.firmwareMajor).toBe(3);
     expect(info.firmwareMinor).toBe(0);
     expect(info.firmwareVersion).toBe(0x0300);
     expect(info.hwId).toBe("AA:BB:CC:DD:EE:FF");
-    expect(info.maxLeds).toBe(64);
+    expect(info.maxLeds).toBe(100);
     expect(info.maxStrips).toBe(8);
     expect(info.maxSegments).toBe(8);
     expect(info.maxStages).toBe(8);

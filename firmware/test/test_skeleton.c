@@ -2191,9 +2191,9 @@ static void test_set_led_count_reducer(void)
     frame.seq = 10;
     frame.payload_len = 3;
 
-    /* 合法：1、30（与当前相同）、64 —— 都标记重建，都不动状态。
+    /* 合法：1、30（与当前相同）、64、100（#72 的新上限）—— 都标记重建，都不动状态。
      * v2 载荷：strip_id(0), count_lo, count_hi。 */
-    const uint16_t accepted[] = {1, 30, 64};
+    const uint16_t accepted[] = {1, 30, 64, 100};
     for (size_t i = 0; i < sizeof(accepted) / sizeof(accepted[0]); ++i) {
         frame.payload[0] = 0;
         frame.payload[1] = (uint8_t)(accepted[i] & 0xFF);
@@ -2212,8 +2212,9 @@ static void test_set_led_count_reducer(void)
         CHECK(outcome.next.led_count == state.led_count);
     }
 
-    /* 越界：0 与 65 → 0x01，不请求重建、不改状态（协议 §6）。 */
-    const uint16_t rejected[] = {0, 65, 0xFFFF};
+    /* 越界：0 与 101（#72 上限抬到 100，101 是新拒绝边界）→ 0x01，
+     * 不请求重建、不改状态（协议 §6）。 */
+    const uint16_t rejected[] = {0, 101, 0xFFFF};
     for (size_t i = 0; i < sizeof(rejected) / sizeof(rejected[0]); ++i) {
         frame.payload[0] = 0;
         frame.payload[1] = (uint8_t)(rejected[i] & 0xFF);
@@ -2253,6 +2254,24 @@ static void test_set_led_count_reducer(void)
     CHECK(outcome.result_code == LUMEN_RESULT_OK);
     CHECK(outcome.led_count_rebuild);
     CHECK(outcome.led_count == 64);
+
+    /* strip 0 + 100（#72 的新上限）也合法，线上仍是 3 字节载荷。 */
+    frame.payload[0] = 0;
+    frame.payload[1] = 0x64;
+    frame.payload[2] = 0x00;
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(outcome.led_count_rebuild);
+    CHECK(outcome.led_count == 100);
+    CHECK(!outcome.state_changed);
+
+    /* strip 0 + 101 → 0x01：新上限之外的第一颗。 */
+    frame.payload[0] = 0;
+    frame.payload[1] = 0x65;
+    frame.payload[2] = 0x00;
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(!outcome.led_count_rebuild);
 
     /* 载荷长度 2（v1 形状）/ 1 / 4 → 0x04，不请求重建。 */
     frame.payload_len = 2;
@@ -2360,7 +2379,8 @@ static void test_led_count_job(void)
 
     /* 8. 越界防御：直接调 request 也不破坏状态机（仍处于 pending）。 */
     CHECK(lumen_led_count_job_request(&job, 0, 12, 0x29) == LUMEN_LED_COUNT_BUSY);
-    CHECK(lumen_led_count_job_request(&job, 65, 12, 0x2A) == LUMEN_LED_COUNT_BUSY);
+    CHECK(lumen_led_count_job_request(&job, LUMEN_MAX_LEDS + 1, 12, 0x2A) ==
+          LUMEN_LED_COUNT_BUSY);
     CHECK(lumen_led_count_job_target(&job) == 20);
 
     /* 9. complete 需要 running：pending 状态直接 complete 无效。 */
@@ -2611,13 +2631,13 @@ static void test_state_blob(void)
     bad[6] = 0xFF;
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
 
-    /* 6. led_count 越界：0 与 65；strip_count 越界：0 与 9。 */
+    /* 6. led_count 越界：0 与 101（#72 上限 100）；strip_count 越界：0 与 9。 */
     memcpy(bad, blob, sizeof(bad));
     bad[11] = 0x00;
     bad[12] = 0x00;
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
     memcpy(bad, blob, sizeof(bad));
-    bad[11] = 0x41;
+    bad[11] = 0x65; /* 101 */
     bad[12] = 0x00;
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
     memcpy(bad, blob, sizeof(bad));
@@ -3488,6 +3508,26 @@ static void test_effects_rainbow_hue(void)
     CHECK(lumen_effect_rainbow_hue(NULL, 0, 0) == 0);
     CHECK(lumen_effect_rainbow_hue(&full, 16, 0) == 0);
     CHECK(lumen_effect_rainbow_hue(&full, 0, 0) == 0); /* 边界：段首合法 */
+
+    /*
+     * #72：N = 100（新上限）下的最坏角。空间项的 pos_q16 = (99<<16)/100 = 64880，
+     * 与 span=255 相乘是 4.25e9——32 位两段式写法只剩 1% 余量，64 位参考值
+     * 必须逐像素吻合。这里把「上限抬到 100」的数学本身钉住。
+     */
+    lumen_segment_t wide =
+        make_animated(LUMEN_EFFECT_RAINBOW, 0, 99, 0xFFFF, 255, 65535, 255, 0, 0);
+    for (uint16_t i = 0; i < 100; ++i) {
+        int64_t ref = (int64_t)0xFFFF +
+                      (int64_t)(((uint64_t)i * 255u * 65536u) / (100u * 255u));
+        ref %= 65536;
+        if (ref < 0) {
+            ref += 65536;
+        }
+        CHECK(lumen_effect_rainbow_hue(&wide, i, 0) == (uint16_t)ref);
+    }
+    /* 段末端（i = 99）的空间项 = 99/100 × 65536 = 64880；叠上基准 hue 0xFFFF
+     * 再对 65536 取模 = (65535 + 64880) % 65536 = 64879 = 0xFD6F。 */
+    CHECK(lumen_effect_rainbow_hue(&wide, 99, 0) == 0xFD6Fu);
 }
 
 static void test_effects_rainbow_pixel(void)
@@ -3623,6 +3663,22 @@ static void test_effects_comet_gain(void)
     CHECK(lumen_effect_comet_gain_q16(&off, 0, 0) == 0);
     CHECK(lumen_effect_comet_gain_q16(NULL, 0, 0) == 0);
     CHECK(lumen_effect_comet_gain_q16(&seg, 16, 0) == 0);
+
+    /*
+     * #72：N = 100（新上限）时 tail_n_q16 与 p×N 都在 uint32/uint64 内，
+     * 且整条尾的单调性不破。tail = 255 时 tail_n_q16 = 100 × 65536 = 6.55e6。
+     */
+    lumen_segment_t wide_tail =
+        make_animated(LUMEN_EFFECT_COMET, 0, 99, 0, 255, 1000, 255, 0, 0);
+    uint32_t last_gain = 0;
+    for (uint16_t i = 0; i < 100; ++i) {
+        uint32_t gain = lumen_effect_comet_gain_q16(&wide_tail, i, 0);
+        if (i > 0) {
+            CHECK(gain < last_gain); /* 严格递减 */
+        }
+        CHECK(gain > 0); /* 100 颗的长尾也不提前截断 */
+        last_gain = gain;
+    }
 }
 
 /*
@@ -4357,7 +4413,7 @@ static void test_encode_device_info_report(void)
     size_t len = lumen_protocol_encode_device_info_report(0x36, 0x0400, hw, LUMEN_CAP_TWO_LAYERS,
                                                           out, sizeof(out));
     CHECK(len == 15 + LUMEN_FRAME_OVERHEAD);
-    CHECK_BYTES(out, "A60488360F000004AABBCCDDEEFF400808080401000553", len);
+    CHECK_BYTES(out, "A60488360F000004AABBCCDDEEFF6408080804010035FC", len);
 
     /* 偏移核对：0..1 version，2..7 hw_id，8..12 上限，13 caps，14 保留 0。 */
     CHECK(out[6] == 0x00 && out[7] == 0x04);
@@ -4458,11 +4514,12 @@ static void test_planar_init_validation(void)
 {
     lumen_planar_t planar;
     uint8_t pins[LUMEN_MAX_STRIPS] = {3, 4, 5, 6, 7, 10, 20, 21};
-    uint16_t counts[LUMEN_MAX_STRIPS] = {64, 30, 30, 30, 30, 30, 30, 30};
+    /* #72：100 是新上限，作为首条的最大值同时锁住 Kconfig/planar 的接受边界。 */
+    uint16_t counts[LUMEN_MAX_STRIPS] = {100, 30, 30, 30, 30, 30, 30, 30};
 
     CHECK(lumen_planar_init(&planar, pins, counts, 8));
     CHECK(planar.strip_count == 8);
-    CHECK(planar.max_count == 64);
+    CHECK(planar.max_count == 100);
     CHECK(lumen_planar_active_count(&planar) == 8);
 
     /* 灯珠数越界：整份拒绝，planar 保持上一次的合法内容。 */
@@ -4546,20 +4603,22 @@ static void test_planar_set_count(void)
 {
     lumen_planar_t planar;
     uint8_t pins[2] = {3, 4};
-    uint16_t counts[2] = {64, 30};
+    uint16_t counts[2] = {100, 30};
     CHECK(lumen_planar_init(&planar, pins, counts, 2));
-    CHECK(planar.max_count == 64);
+    CHECK(planar.max_count == 100);
 
-    /* 把最大的那条调小：max_count 必须重算，否则句柄白白按 64 建。 */
+    /* 把最大的那条调小：max_count 必须重算，否则句柄白白按 100 建。 */
     CHECK(lumen_planar_set_count(&planar, 0, 20));
     CHECK(planar.max_count == 30);
     CHECK(lumen_planar_get(&planar, 0)->count == 20);
 
-    /* 越界一律拒绝，且不改值。 */
+    /* 越界一律拒绝，且不改值。#72：100 合法、101 拒绝。 */
     CHECK(!lumen_planar_set_count(&planar, 0, 0));
+    CHECK(lumen_planar_set_count(&planar, 0, LUMEN_MAX_LEDS));
+    CHECK(lumen_planar_get(&planar, 0)->count == LUMEN_MAX_LEDS);
     CHECK(!lumen_planar_set_count(&planar, 0, LUMEN_MAX_LEDS + 1));
     CHECK(!lumen_planar_set_count(&planar, 2, 10)); /* 不存在的条 */
-    CHECK(lumen_planar_get(&planar, 0)->count == 20);
+    CHECK(lumen_planar_get(&planar, 0)->count == LUMEN_MAX_LEDS);
 
     /* 取不存在的条返回 NULL。 */
     CHECK(lumen_planar_get(&planar, 2) == NULL);
@@ -4816,6 +4875,106 @@ static void test_per_strip_led_counts_30_60_10(void)
     CHECK(lumen_command_strip_count(&state, counts, 0) == 30);
     CHECK(lumen_command_strip_count(&state, counts, 1) == 60);
     CHECK(lumen_command_strip_count(&state, counts, 2) == 10);
+}
+
+/*
+ * #72：上限抬到 100 后，同一条设备上两条灯带可以不等长（100 与 24）。
+ *
+ * 验收点「同一台设备上两条灯组可以是不同长度，互不影响」的 host 证据：
+ * 100 灯的条接受 end=99，24 灯的条拒绝 end=99、接受 end=23；
+ * 两边段表独立，写一条不影响另一条。
+ */
+static void test_per_strip_led_counts_100_24(void)
+{
+    lumen_state_t state;
+    lumen_state_defaults(&state, 100);
+    state.strip_count = 2;
+    state.led_count = 100;
+
+    uint16_t counts[LUMEN_MAX_STRIPS] = {100, 24, 0, 0, 0, 0, 0, 0};
+    lumen_segment_store_t store;
+    lumen_segment_store_init(&store);
+
+    uint8_t layer[9];
+    fill_static_layer(layer, 0, 255);
+    lumen_command_outcome_t out;
+
+    struct {
+        uint8_t strip;
+        uint8_t seg;
+        uint8_t start;
+        uint8_t end;
+        uint8_t expect_ok;
+    } cases[] = {
+        {0, 0, 0, 49, 1},   /* 100 灯：前半段 */
+        {1, 0, 0, 99, 0},   /* 24 灯：99 越界 */
+        {1, 0, 0, 23, 1},   /* 24 灯：23 是最后一颗 */
+        {0, 1, 50, 99, 1},  /* 100 灯：后半段（与前半段相邻不重叠） */
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        lumen_frame_t f = {0};
+        f.command = LUMEN_CMD_SET_SEGMENT;
+        f.seq = (uint8_t)(i + 1);
+        f.payload_len = 23;
+        fill_segment_payload(f.payload, cases[i].strip, cases[i].seg, cases[i].start, cases[i].end,
+                             0, layer, NULL);
+        lumen_command_dispatch(&f, &state, &store, counts, 255, &out);
+        if (cases[i].expect_ok) {
+            CHECK(out.result_code == LUMEN_RESULT_OK);
+            CHECK(out.segment_op);
+            /* 命令层只给意图；真正的写入由调用方按落库时的灯珠数提交。 */
+            CHECK(lumen_segment_store_set(&store, cases[i].strip, state.strip_count, cases[i].seg,
+                                          counts[cases[i].strip], &out.segment) ==
+                  LUMEN_RESULT_OK);
+        } else {
+            CHECK(out.result_code == LUMEN_RESULT_INVALID_PARAM);
+            CHECK(!out.segment_op);
+        }
+    }
+
+    /* 两条各自独立的段：0 号带 2 段、1 号带 1 段，互不干扰。 */
+    CHECK(lumen_segment_store_count(&store, 0) == 2);
+    CHECK(lumen_segment_store_count(&store, 1) == 1);
+    CHECK(lumen_segment_store_get(&store, 1, 0)->end == 23);
+    CHECK(lumen_segment_store_get(&store, 0, 1)->start == 50);
+
+    /* helper 也按各自带的数字返回。 */
+    CHECK(lumen_command_strip_count(&state, counts, 0) == 100);
+    CHECK(lumen_command_strip_count(&state, counts, 1) == 24);
+}
+
+/*
+ * #72：100 颗的合成路径。整条 [0-99] 必须全部出光、没有越界写。
+ * 这也证明 compose 的 `led_count > LUMEN_MAX_LEDS` 校验已经跟着上限走。
+ */
+static void test_segment_store_compose_100(void)
+{
+    lumen_segment_store_t store;
+    lumen_segment_store_init(&store);
+
+    const uint8_t led_count = LUMEN_MAX_LEDS;
+    CHECK(led_count == 100);
+
+    /* 前 50 颗蓝、51-99 颗红（两个不重叠的段覆盖整条）。 */
+    lumen_segment_t blue = make_static(0, 49, 43690, 255);
+    lumen_segment_t red = make_static(50, 99, 0, 255);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, led_count, &blue) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 1, led_count, &red) == LUMEN_RESULT_OK);
+
+    uint8_t buf[LUMEN_MAX_LEDS * 3];
+    memset(buf, 0x5A, sizeof(buf));
+    CHECK(lumen_segment_store_compose(&store, 0, buf, led_count, 0) == led_count);
+
+    for (uint16_t i = 0; i < 50; ++i) {
+        CHECK(buf[i * 3 + 0] == 0 && buf[i * 3 + 1] == 0 && buf[i * 3 + 2] == 255);
+    }
+    for (uint16_t i = 50; i < led_count; ++i) {
+        CHECK(buf[i * 3 + 0] == 255 && buf[i * 3 + 1] == 0 && buf[i * 3 + 2] == 0);
+    }
+
+    /* 101 颗的缓冲请求仍被拒（上限就是 100）。 */
+    uint8_t over[LUMEN_MAX_LEDS * 3 + 3];
+    CHECK(lumen_segment_store_compose(&store, 0, over, LUMEN_MAX_LEDS + 1, 0) == 0);
 }
 
 /*
@@ -5221,6 +5380,56 @@ static void test_blob_strip_counts(void)
     memcpy(bad, blob, sizeof(bad));
     bad[11] = 30; /* led_count 改成 30，但 strip_counts[0] 仍是 64 */
     bad[12] = 0;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+}
+
+/*
+ * #72 验收：100 颗时 blob 长度**不变**（1440），重启后逐组灯珠数正确恢复。
+ *
+ * 灯珠数只进 strip_counts（u16 每条约），段记录宽度与灯珠数无关，所以
+ * 上限从 64 抬到 100 不应改变 blob 尺寸——这条把「线上/存储布局不变」
+ * 钉在 host 测试里。
+ */
+static void test_state_blob_100_leds(void)
+{
+    lumen_persist_t in;
+    memset(&in, 0, sizeof(in));
+    lumen_state_defaults(&in.state, 100);
+    lumen_segment_store_init(&in.segments);
+    in.state.power = 1;
+    in.state.strip_count = 3;
+    in.state.led_count = 100;
+    /* 三条不同长度：100 / 24 / 1，全部 ≤ 新上限。 */
+    in.strip_counts[0] = 100;
+    in.strip_counts[1] = 24;
+    in.strip_counts[2] = 1;
+    /* strip 0 的两段覆盖整条 [0-99]。 */
+    in.segments.slot[0][0] = seg_single(LUMEN_EFFECT_STATIC, 0, 49, 0, 255, 0, 0, 0, 0);
+    in.segments.slot[0][1] = seg_single(LUMEN_EFFECT_STATIC, 50, 99, 43690, 255, 0, 0, 0, 0);
+    in.state.seg_count = 2;
+
+    uint8_t blob[LUMEN_STATE_BLOB_SIZE];
+    CHECK(LUMEN_STATE_BLOB_SIZE == 1440); /* #72：与灯珠数无关 */
+    CHECK(lumen_state_blob_encode(&in, blob) == LUMEN_STATE_BLOB_SIZE);
+
+    lumen_persist_t out;
+    memset(&out, 0, sizeof(out));
+    CHECK(lumen_state_blob_decode(blob, sizeof(blob), &out));
+    CHECK(out.state.led_count == 100);
+    CHECK(out.strip_counts[0] == 100);
+    CHECK(out.strip_counts[1] == 24);
+    CHECK(out.strip_counts[2] == 1);
+    CHECK(out.segments.slot[0][1].end == 99);
+
+    /* 101 越界 → 整份视为损坏（与命令层同一上限）。 */
+    uint8_t bad[LUMEN_STATE_BLOB_SIZE];
+    memcpy(bad, blob, sizeof(bad));
+    bad[11] = 101;
+    bad[12] = 0;
+    CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
+    memcpy(bad, blob, sizeof(bad));
+    bad[LUMEN_STRIP_COUNTS_OFFSET + 2] = 101; /* strip 1 = 101 */
+    bad[LUMEN_STRIP_COUNTS_OFFSET + 3] = 0;
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
 }
 
@@ -7169,6 +7378,7 @@ int main(int argc, char **argv)
     test_effects_comet_gain();
     test_effects_rainbow_comet_coexist();
     test_blob_strip_counts();
+    test_state_blob_100_leds();
     test_set_segment_uses_own_strip_count();
     test_state_blob_per_strip_bounds();
     test_state_blob_v4_two_layers();
@@ -7179,6 +7389,8 @@ int main(int argc, char **argv)
     test_strip_anim_mask();
     test_strip_tdm_plan();
     test_per_strip_led_counts_30_60_10();
+    test_per_strip_led_counts_100_24();
+    test_segment_store_compose_100();
     test_reasm_single_chunk();
     test_reasm_multi_chunk();
     test_reasm_first_reentry();

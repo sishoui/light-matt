@@ -165,9 +165,9 @@ describe("整组 spec（快捷档的语义）", () => {
     expect(spec.end).toBe(0);
   });
 
-  it("超过 64 颗按协议上限截断", () => {
+  it("超过 100 颗按协议上限截断（#72）", () => {
     const spec = buildQuickSpec(card, {}, 0, 200);
-    expect(spec.end).toBe(63);
+    expect(spec.end).toBe(99);
   });
 });
 

@@ -86,7 +86,7 @@ export function cmdQueryState(): CommandRequest {
 }
 
 /**
- * 灯珠数量：载荷 `strip_id, count_lo, count_hi`，数量 1-64。
+ * 灯珠数量：载荷 `strip_id, count_lo, count_hi`，数量 1-100（#72）。
  *
  * strip_id 必须先确认（0-7），数量再校验；非整数或越界直接抛错，不发帧。
  */
@@ -113,7 +113,7 @@ function assertHue(value: number): number {
   return value;
 }
 
-/** 灯珠下标（0-63 协议上限内，且必须 ≤ 255 才能进 1 字节字段）。 */
+/** 灯珠下标（0-99 协议上限内，#72；且必须 ≤ 255 才能进 1 字节字段）。 */
 function assertLedIndex(value: number, field: string): number {
   if (!Number.isInteger(value) || value < 0 || value > MAX_LEDS - 1) {
     throw new RangeError(`${field} 必须是 0-${MAX_LEDS - 1} 的整数，收到 ${value}`);

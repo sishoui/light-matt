@@ -240,7 +240,7 @@ rx_access → handle_frame
 | `0x03` SetColor | **#10 已实现**：3 字节 RGB 全合法，只写颜色，回 `0x00` |
 | `0x04` SetAll | **#10 已实现**：5 字段原子生效；power 非 0/1 → `0x01` 且整帧不写；亮度按 §11.4 钳位 |
 | `0x05` QueryState | **已实现**：回 `0x00` 并置 `state_report`，由 `ble_link` 在 ACK 后紧跟一条 StateReport `0x82`（§6.1）；不改共享状态、不取消自检 |
-| `0x06` SetLedCount | **#12 已实现**：2 字节小端 1-64，越界 → `0x01`；合法只标记 `led_count_rebuild`，真正的句柄重建在渲染任务，ACK 等重建结果（§11.3） |
+| `0x06` SetLedCount | **#12 已实现**：`strip_id` + 2 字节小端，范围 1-100（#72），越界 → `0x01`；合法只标记 `led_count_rebuild`，真正的句柄重建在渲染任务，ACK 等重建结果（§11.3） |
 | `0x07` SelfTest | **#13 已实现**：立即回 `0x00` 并启动自检覆盖，不改共享状态（见 §13） |
 | `0x08`-`0xFF`（含小程序写 0x80） | `0x02` |
 
@@ -393,7 +393,7 @@ issue #12 让灯珠数量可在运行时修改并掉电保持。两条链路最�
 ```
 NimBLE RX 回调（主机任务）
   lumen_protocol_decode
-  → lumen_command_dispatch            # command.c：校验 1-64，置 led_count_rebuild
+  → lumen_command_dispatch            # command.c：校验 1-100（#72），置 led_count_rebuild
   → lumen_led_engine_set_led_count    # 只判忙 / 判相同 + 登记 pending，绝不碰 led_strip
        ├─ UNCHANGED → 立即回 ACK 0x00
        ├─ BUSY      → 立即回 ACK 0x05
@@ -433,7 +433,7 @@ NimBLE RX 回调（主机任务）
 |---|---|---|
 | pending 或 running | 任意（含与旧数量相同） | `BUSY` → ACK 0x05，不排队 |
 | 空闲 | 与当前数量相同 | `UNCHANGED` → ACK 0x00，不重建、不写 NVS |
-| 空闲 | 1-64 且不同 | `ACCEPTED` → 排队，ACK 延迟 |
+| 空闲 | 1-100 且不同 | `ACCEPTED` → 排队，ACK 延迟 |
 | 空闲 | 越界 | 命令层已拦成 0x01；这里防御性回 `BUSY` |
 
 先判忙的原因：重建期间共享状态里仍是旧数量，用旧值判「相同」没有意义。
@@ -464,7 +464,7 @@ NimBLE RX 回调（主机任务）
 | 11..12 | 2 | led_count（小端） |
 
 解码拒绝：长度 ≠ 13、magic 不符、version ≠ 1、`power > 1`、`led_count` 不在
-1-64。任一失败都不写 `out`，调用方保留协议默认值（`state_store_load` 返回 false，
+1-100（#72）。任一失败都不写 `out`，调用方保留协议默认值（`state_store_load` 返回 false，
 `led_engine_init` 继续用 Kconfig 默认的灯珠数）。旧固件留下的 8 字节或别的布局
 一律视为损坏并按默认值启动，不做「尽量解析」。
 

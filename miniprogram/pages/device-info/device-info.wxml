@@ -86,8 +86,8 @@
         class="range-input"
         type="number"
         value="{{ledCountInput}}"
-        maxlength="2"
-        placeholder="1-64"
+        maxlength="3"
+        placeholder="1-100"
         disabled="{{!ready || ledCountBusy}}"
         bindinput="onLedCountInput"
       />

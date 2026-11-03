@@ -882,7 +882,7 @@ export class ControlSession {
    *  - 不重传：重建是重操作，超时重发只会撞上 0x05 Busy；超时按断线处理；
    *  - 成功才更新本地 ledCount（设备权威），失败保留旧值并给出具体提示。
    *
-   * 输入校验（1-64、纯整数）在页面层用 parseLedCountInput 先做，这里再兜一次：
+   * 输入校验（1-100、纯整数）在页面层用 parseLedCountInput 先做，这里再兜一次：
    * 非法值不发帧，直接返回错误，绝不「尽量发送」。
    */
   async setLedCount(count: number, stripId = this.activeStrip): Promise<CommandResult> {

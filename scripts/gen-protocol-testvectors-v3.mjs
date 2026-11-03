@@ -156,6 +156,11 @@ addApp({
 });
 addApp({ name: 'query_state', command: 0x05, commandName: 'QueryState', seq: 6, payload: [] });
 addApp({ name: 'set_led_count_strip0_64', command: 0x06, commandName: 'SetLedCount', seq: 7, payload: [0, 64, 0] });
+addApp({
+  name: 'set_led_count_strip0_100', command: 0x06, commandName: 'SetLedCount', seq: 61,
+  payload: [0, 100, 0],
+  note: '#72：上限抬到 100，线上仍是 3 字节载荷（strip_id + u16 LE）',
+});
 addApp({ name: 'set_led_count_strip7_1', command: 0x06, commandName: 'SetLedCount', seq: 8, payload: [7, 1, 0] });
 addApp({ name: 'self_test', command: 0x07, commandName: 'SelfTest', seq: 9, payload: [] });
 addApp({
@@ -492,7 +497,7 @@ addDevice({
   });
 }
 {
-  const info = [0x03, 0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 64, 8, 8, 8, 4, 0x01, 0x00];
+  const info = [0x03, 0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 100, 8, 8, 8, 4, 0x01, 0x00];
   if (info.length !== 15) throw new Error('DeviceInfoReport must be 15 bytes');
   addDevice({
     name: 'device_info_report', command: 0x88, commandName: 'DeviceInfoReport', seq: 54,

@@ -114,8 +114,8 @@ SHA-256 索引、配置丢失记录。
 ## 测试基线（改代码后必须保持）
 
 ```bash
-cmd.exe //c "firmware\\test\\run-tests.cmd"   # 11449 项断言 + 64 条 v4 向量
-cd miniprogram && npx vitest run              # 1169 用例 / 53 文件（不含 e2e）
+cmd.exe //c "firmware\\test\\run-tests.cmd"   # 11927 项断言 + 65 条 v4 向量
+cd miniprogram && npx vitest run              # 1170 用例 / 53 文件（不含 e2e）
 cd miniprogram && npm run test:ble            # 8 项真机 e2e（无设备自动 skip）
 cd miniprogram && npx tsc --noEmit            # 必须干净
 cd server && npm test                         # 140 用例

@@ -226,8 +226,8 @@ describe("逐灯珠归属", () => {
     expect(cells[20].conflict).toBe(false);
   });
 
-  it("灯珠数超过协议上限（64）时截断", () => {
-    expect(buildZoneCells(200, zones(), new Map(), null)).toHaveLength(64);
+  it("灯珠数超过协议上限（100，#72）时截断", () => {
+    expect(buildZoneCells(200, zones(), new Map(), null)).toHaveLength(100);
   });
 });
 
@@ -300,9 +300,9 @@ describe("#53 文本区间解析（parseRangeText）", () => {
     }
   });
 
-  it("上限按 min(ledCount, 64) 取（不能越过协议上限）", () => {
-    expect(parseRangeText("0", "63", 200).ok).toBe(true);
-    expect(parseRangeText("0", "64", 200).ok).toBe(false);
+  it("上限按 min(ledCount, 100) 取（不能越过协议上限）", () => {
+    expect(parseRangeText("0", "99", 200).ok).toBe(true);
+    expect(parseRangeText("0", "100", 200).ok).toBe(false);
   });
 });
 
@@ -366,8 +366,8 @@ describe("#53 逐灯珠归属（scanLedOwnership）", () => {
     expect(scan.conflicts.every((flag) => flag === false)).toBe(true);
   });
 
-  it("灯珠数超过 64 时截断；0 时返回空数组", () => {
-    expect(scanLedOwnership(200, [], null).owners).toHaveLength(64);
+  it("灯珠数超过 100 时截断；0 时返回空数组", () => {
+    expect(scanLedOwnership(200, [], null).owners).toHaveLength(100);
     expect(scanLedOwnership(0, [], null).owners).toEqual([]);
   });
 
@@ -439,8 +439,8 @@ describe("#66 未覆盖区间（uncoveredRanges）", () => {
     }
   });
 
-  it("超过协议上限（64）按 64 颗算", () => {
-    expect(uncoveredRanges([], 200)).toEqual([{ start: 0, end: 63 }]);
+  it("超过协议上限（100）按 100 颗算", () => {
+    expect(uncoveredRanges([], 200)).toEqual([{ start: 0, end: 99 }]);
   });
 
   it("与 uncoveredCount 的颗数一致（两套实现的交叉校验）", () => {

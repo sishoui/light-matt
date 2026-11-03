@@ -28,14 +28,14 @@ typedef enum {
 typedef struct {
     bool pending;    /* 已排队，等渲染任务开始 */
     bool running;    /* 渲染任务正在重建句柄 */
-    uint16_t target; /* 目标数量（1-64） */
+    uint16_t target; /* 目标数量（1-100，#72） */
     uint8_t seq;     /* 请求的 seq，用于延迟 ACK 回显 */
 } lumen_led_count_job_t;
 
 void lumen_led_count_job_init(lumen_led_count_job_t *job);
 
 /*
- * 请求把数量改为 count（调用方保证 1-64 已校验）。
+ * 请求把数量改为 count（调用方保证 1-100 已校验）。
  * 顺序很重要：先判忙（即使 count 与当前值相同也回 Busy），再判无变化。
  */
 lumen_led_count_request_t lumen_led_count_job_request(lumen_led_count_job_t *job, uint16_t count,

@@ -138,7 +138,7 @@ esp_err_t lumen_led_strip_owner_push_pixels_n(led_strip_handle_t strip, const ui
      * TDM 路径：句柄按「所有条里最大的灯珠数」建，但每条灯带只点亮自己那 n 颗。
      *
      * refresh 会把句柄的整个 max_leds 缓冲都发出去，所以 n..handle_max 必须
-     * 显式写 0——否则一条 30 灯的灯带在 64 灯句柄下会多收到 34 颗旧像素，
+     * 显式写 0——否则一条 30 灯的灯带在 100 灯句柄下会多收到 70 颗旧像素，
      * 表现为尾巴上多出几个不该亮的灯珠。这一条不能省。
      */
     if (n > handle_max) {

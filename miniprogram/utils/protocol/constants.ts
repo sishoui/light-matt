@@ -36,8 +36,9 @@ export const CHUNK_INDEX_MASK = 0x3f;
 /** 重组超时（自上一個分片起算，§3.2）。 */
 export const ASSEMBLY_TIMEOUT_MS = 1000;
 
-/** 协议常量，两端硬编码（不进 State）。 */
-export const MAX_LEDS = 64;
+/** 协议常量，两端硬编码（不进 State）。
+ * 单条灯带的灯珠上限：#72 从 64 抬到 100，线上布局不变。 */
+export const MAX_LEDS = 100;
 export const MIN_LEDS = 1;
 export const MAX_STRIPS = 8;
 export const MAX_SEGMENTS = 8; // 每条灯带

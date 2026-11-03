@@ -174,7 +174,7 @@ bool lumen_command_changes_state(uint8_t command)
 }
 
 /*
- * SetLedCount 0x06：v2 载荷 3 字节 strip_id, count_lo, count_hi，合法数量 1-64（§6）。
+ * SetLedCount 0x06：载荷 3 字节 strip_id, count_lo, count_hi，合法数量 1-100（§6，#72）。
  *
  * 关键语义（§11.3）：
  *  - 这里只校验并标记「需要重建」。数量必须在渲染任务重建 led_strip 成功后
@@ -183,7 +183,7 @@ bool lumen_command_changes_state(uint8_t command)
  *  - strip_id 必须先落在 0 ≤ strip_id < strip_count 内（#29 之后多条灯带各自
  *    独立设置灯珠数）。先校验 strip_id 再校验数量，保证「这条命令到底改
  *    哪条灯带」先被确认。
- *  - 越界（0、>64、小端读出的 65535 等）→ 0x01，不请求重建、不改状态。
+ *  - 越界（0、>100、小端读出的 65535 等）→ 0x01，不请求重建、不改状态。
  */
 static void dispatch_set_led_count(const lumen_frame_t *frame, const lumen_state_t *current,
                                    lumen_command_outcome_t *outcome)

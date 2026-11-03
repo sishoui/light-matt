@@ -29,7 +29,7 @@ import { findConflict, type ZoneRange } from "./effect-layout";
 import { addZone, removeZone } from "./zone-editor";
 import { buildZoneSpec } from "./zone-model";
 
-/** 灯珠格子的列数（12 列；64 颗时是 6 行）。 */
+/** 灯珠格子的列数（12 列；100 颗时是 8 行余 4 格）。 */
 export const PICKER_COLUMNS = 12;
 
 /**
@@ -173,7 +173,7 @@ export interface LedPickerCell {
 }
 
 /**
- * 逐颗生成弹窗格子（一共 `ledCount` 颗，最多 64）。
+ * 逐颗生成弹窗格子（一共 `ledCount` 颗，最多 100，见 #72）。
  *
  * 页面不需要自己判断「哪颗被占」：`disabled` / `conflict` 都在这里算好，
  * 渲染层只负责画。

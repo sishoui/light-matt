@@ -2,7 +2,7 @@
 
 **状态**：**已实现（2026-11-03，分支 `feat/68-protocol-v4`）**。本文件取代 `docs/protocol-v3.md`
 （v3 保留为历史参考，不再维护）。
-固件 host 测试 11449 项断言与 `docs/protocol-testvectors-v4.json`（64 条向量）
+固件 host 测试 11927 项断言与 `docs/protocol-testvectors-v4.json`（65 条向量）
 都对着本文件跑。
 **适用范围**：微信小程序 ↔ ESP32-C3 固件之间的 BLE 协议。
 **唯一真相**：本文件定义字节级契约，`docs/protocol-testvectors-v4.json` 是它的可执行副本。
@@ -46,7 +46,7 @@
 
 | 常量 | 值 | 说明 |
 |---|---|---|
-| `MAX_LEDS` | 64 | 单条灯带的灯珠上限 |
+| `MAX_LEDS` | 100 | 单条灯带的灯珠上限（#72 从 64 抬高） |
 | `MAX_STRIPS` | 8 | 灯带数（8 个引脚，TDM 轮询） |
 | `MAX_SEGMENTS` | 8 | **每条灯带**的段数 |
 | `MAX_STAGES` | 8 | **每套剧本**的阶段数 |
@@ -671,7 +671,7 @@ level 字节）。对应 `LUMEN_SCRIPT_SEGMENT_MIN = 3`（记录头）与
 
 ## 11. 测试向量
 
-`docs/protocol-testvectors-v4.json` 是本文的可执行副本（64 条用例），字段：
+`docs/protocol-testvectors-v4.json` 是本文的可执行副本（65 条用例），字段：
 
 ```jsonc
 {

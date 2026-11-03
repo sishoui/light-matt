@@ -90,7 +90,7 @@ uint8_t lumen_led_engine_segment_mask(uint8_t strip_id);
 void lumen_led_engine_set_store_event_cb(lumen_store_event_cb cb);
 
 /*
- * 请求把灯珠数量改为 count（调用方保证 1-64 已由命令层校验）。
+ * 请求把灯珠数量改为 count（调用方保证 1-100 已由命令层校验）。
  *
  * 返回：
  *   LUMEN_RESULT_OK            与当前数量相同，无需重建；调用方立即回 ACK 0x00；

@@ -115,10 +115,11 @@ function stateWith(ledCount: number): DeviceState {
 }
 
 describe("parseLedCountInput", () => {
-  it("接受 1-64 的十进制整数", () => {
+  it("接受 1-100 的十进制整数", () => {
     expect(parseLedCountInput("1")).toEqual({ ok: true, value: 1 });
     expect(parseLedCountInput("30")).toEqual({ ok: true, value: 30 });
     expect(parseLedCountInput("64")).toEqual({ ok: true, value: 64 });
+    expect(parseLedCountInput("100")).toEqual({ ok: true, value: 100 });
     expect(parseLedCountInput("  12  ")).toEqual({ ok: true, value: 12 });
     expect(parseLedCountInput(7)).toEqual({ ok: true, value: 7 });
   });
@@ -129,8 +130,8 @@ describe("parseLedCountInput", () => {
     if (!result.ok) expect(result.message).toContain("至少");
   });
 
-  it("拒绝 65（上界外）", () => {
-    const result = parseLedCountInput("65");
+  it("拒绝 101（#72 的新上界之外）", () => {
+    const result = parseLedCountInput("101");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.message).toContain("最多");
   });
@@ -157,7 +158,7 @@ describe("parseLedCountInput", () => {
 
   it("小于下界与大于上界的数字都给出行界提示", () => {
     const low = parseLedCountInput(-3);
-    const high = parseLedCountInput(100);
+    const high = parseLedCountInput(101);
     expect(low.ok).toBe(false);
     expect(high.ok).toBe(false);
     if (!low.ok) expect(low.message).toContain("至少");
@@ -268,11 +269,24 @@ describe("ControlSession.setLedCount", () => {
     const transport = new FakeTransport();
     const session = sessionWith(transport);
 
-    for (const bad of [0, 65, 1.5, Number.NaN]) {
+    for (const bad of [0, 101, 1.5, Number.NaN]) {
       const result = await session.setLedCount(bad);
       expect(result.kind, `count=${bad}`).toBe("error");
     }
     expect(transport.writes).toHaveLength(0);
+  });
+
+  it("100 是合法上界（#72）：真发 0x06，载荷 0x64", async () => {
+    const transport = new FakeTransport();
+    const session = sessionWith(transport);
+    transport.emitState(stateWith(30));
+
+    transport.ackQueue.push(ack(0x06, 0x00));
+    const result = await session.setLedCount(100);
+
+    expect(result.kind).toBe("ok");
+    expect(Array.from(transport.writes[0].payload)).toEqual([0x00, 0x64, 0x00]);
+    expect(session.deviceState?.ledCount).toBe(100);
   });
 
   it("未连接时不发帧", async () => {

@@ -25,7 +25,7 @@ typedef struct {
     uint8_t r;
     uint8_t g;
     uint8_t b;
-    uint16_t led_count; /* 1-64，strip 0 的灯珠数 */
+    uint16_t led_count; /* 1-100，strip 0 的灯珠数（#72） */
 
     /* 摘要字段（State 字节 6-12）。 */
     uint8_t strip_count;    /* 1-8，当前配置的灯带数 */

@@ -171,7 +171,7 @@ bool lumen_state_blob_decode(const uint8_t *blob, size_t len, lumen_persist_t *o
     uint8_t active_counts[LUMEN_MAX_STRIPS] = {0};
     for (uint8_t strip = 0; strip < LUMEN_MAX_STRIPS; ++strip) {
         /*
-         * 按**各自灯带**的灯珠数校验段区间：strip 3 只有 10 灯、strip 0 有 64 灯时，
+         * 按**各自灯带**的灯珠数校验段区间：strip 3 只有 10 灯、strip 0 有 100 灯时，
          * 一份 [0-40] 打到 strip 3 的 blob 必须被拒，否则加载后渲染越界。
          */
         uint16_t strip_leds = decoded.strip_counts[strip];

@@ -27,7 +27,7 @@
 
 typedef struct {
     uint8_t gpio;     /* 数据脚 */
-    uint16_t count;   /* 该条灯珠数，1-64 */
+    uint16_t count;   /* 该条灯珠数，1-100（#72） */
     bool enabled;     /* 参与轮询 */
     bool degraded;    /* 已判为不可用，暂不轮询 */
     bool warned;      /* 已打印过降级警告，避免每帧刷屏 */
