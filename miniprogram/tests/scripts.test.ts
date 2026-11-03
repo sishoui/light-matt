@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 import { bytesToCompactHex, hexToBytes } from "../utils/protocol/hex";
 import {
   cmdActivateScript,
+  cmdClearScript,
   cmdQueryScript,
   cmdScriptAbort,
   cmdScriptBegin,
@@ -38,6 +39,7 @@ import {
 import { encodeFrame } from "../utils/protocol/frame";
 import {
   BLEND,
+  CMD,
   MAX_SCRIPTS,
   MAX_STAGES,
   SCRIPT_SEGMENT_BYTES,
@@ -172,6 +174,31 @@ describe("#32 剧本命令构造器与 v3 向量逐字节一致", () => {
     expect(req.payload[2 + 14]).toBe(0xff); /* layer1 空 */
     /* layer0 的 level 在段体偏移 13（→ 载荷偏移 15）。 */
     expect(req.payload[2 + 13]).toBe(100);
+  });
+
+  it("清空方案 ClearScript 0x1E 与向量逐字节一致（#73）", () => {
+    /* v4 向量里的三条：正常清空 / 最后一个合法槽位 / id 越界。 */
+    const clear = vector("clear_script");
+    const last = vector("clear_script_last_slot");
+    const bad = vector("clear_script_bad_id");
+
+    for (const [vectorCase, scriptId] of [
+      [clear, 0],
+      [last, MAX_SCRIPTS - 1],
+    ] as const) {
+      const req = cmdClearScript(scriptId);
+      expect(req.command).toBe(CMD.CLEAR_SCRIPT);
+      expect(req.command).toBe(0x1e);
+      expect(bytesToCompactHex(req.payload)).toBe(vectorCase.payload_hex);
+      expect(
+        bytesToCompactHex(encodeFrame(req.command, vectorCase.seq as number, req.payload)),
+      ).toBe(vectorCase.frame_hex);
+    }
+    expect(bad.result_code).toBe(0x01);
+    expect(() => cmdClearScript(MAX_SCRIPTS)).toThrow(RangeError);
+    expect(describeCommand(CMD.CLEAR_SCRIPT, cmdClearScript(2).payload)).toBe(
+      "ClearScript script=2",
+    );
   });
 
   it("构造器拒绝越界参数（不猜、不静默截断）", () => {

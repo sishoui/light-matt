@@ -154,6 +154,16 @@ uint8_t lumen_led_engine_script_segment(uint8_t script_id, uint8_t stage_index, 
                                         uint16_t *frames_written);
 uint8_t lumen_led_engine_script_commit(uint8_t script_id);
 uint8_t lumen_led_engine_script_abort(uint8_t script_id);
+
+/*
+ * ClearScript 0x1E（#73）：真正删掉一套已提交剧本。
+ *
+ * 未提交即成功（幂等）；清掉的正是激活剧本时停止播放并退回「无激活剧本」。
+ * 落盘预检失败回 LUMEN_RESULT_STORAGE_FAILED，且 RAM 里的剧本**原样保留**
+ * （不出现「本机看着删了、断电又回来」的半套状态）。
+ */
+uint8_t lumen_led_engine_clear_script(uint8_t script_id);
+
 uint8_t lumen_led_engine_activate_script(uint8_t script_id, bool loop);
 
 /* ScriptSummary 0x85 的数据源：stage_count / flags(bit0 loop) / active(bit1)。

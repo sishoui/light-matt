@@ -1580,6 +1580,76 @@ uint8_t lumen_led_engine_script_abort(uint8_t script_id)
     return LUMEN_RESULT_OK;
 }
 
+/*
+ * ClearScript 0x1E（#73）：真正从设备上删掉一套已提交剧本。
+ *
+ * 顺序刻意与 ScriptCommit 一致：**先确认能落盘，再改 RAM**。
+ *
+ *  1. 持锁，用 script_blob 的「把该槽位当成未提交」编码做预检；
+ *     预检失败时一个字节都不改，直接回 StorageFailed——原剧本继续可用。
+ *  2. 预检通过才 memset 槽位（未提交即成功，幂等）。
+ *  3. 清掉的正是激活剧本时退回「无激活剧本」并**停止播放**：
+ *     select(LUMEN_NO_SCRIPT) 已经把播放头/状态归零，画面随即交回静态配置。
+ *     「谁算命中」的判定是 script_store 里的纯函数，host 有独立测试。
+ *  4. 同步 State 镜像、重算摘要、置邮箱 dirty、排队写 NVS。
+ *
+ * 为什么不做「清空后再试编码、失败再回滚」：剧本表 ~70KB，没有廉价快照，
+ * 而清空只会让 blob 变短，预检几乎不可能失败——但顺序摆在这里，将来
+ * 格式变化也不会退化成「RAM 改了、flash 没写」。
+ */
+uint8_t lumen_led_engine_clear_script(uint8_t script_id)
+{
+    if (script_id >= LUMEN_MAX_SCRIPTS) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+
+    /*
+     * 激活 id 按**清空后**的状态写：命中的话就是「没有激活剧本」。
+     * loop 是播放属性而不是剧本属性（§12），清空剧本不该顺手把它复位，
+     * 所以无论是否命中都沿用当前值。
+     */
+    bool deactivate = lumen_script_should_deactivate(s_playback.script_id, script_id);
+    uint8_t active_after = deactivate ? LUMEN_NO_SCRIPT : s_playback.script_id;
+
+    size_t len = lumen_script_blob_encode_with_cleared(&s_scripts, script_id, active_after,
+                                                       s_playback.loop, s_script_persist_blob,
+                                                       sizeof(s_script_persist_blob));
+    if (len == 0) {
+        xSemaphoreGive(s_state_lock);
+        ESP_LOGW(TAG, "ClearScript id=%u 持久化预检失败：回 StorageFailed，剧本保持可用",
+                 script_id);
+        return LUMEN_RESULT_STORAGE_FAILED;
+    }
+
+    /* 预检通过：真正抹掉该槽位（同时丢弃同 id 的暂存）。 */
+    (void)lumen_script_store_clear(&s_scripts, script_id);
+
+    if (deactivate) {
+        /*
+         * 停播 + 退回无激活剧本：select(LUMEN_NO_SCRIPT) 把播放头与时间量归零、
+         * 状态置 STOPPED，画面随即交回静态段配置（s_stage_valid 置 false 让
+         * 渲染任务重建）。loop 原样保留（它不是剧本属性）。
+         */
+        lumen_script_playback_select(&s_playback, LUMEN_NO_SCRIPT, s_playback.loop, now_ms());
+        s_stage_valid = false;
+        ESP_LOGI(TAG, "ClearScript id=%u 是激活剧本：已停止播放并退回无激活剧本", script_id);
+    }
+
+    sync_script_state_locked();
+    refresh_state_summary_from_active_locked();
+    s_mailbox = s_state;
+    s_mailbox_dirty = true;
+    /* 清空是持久化内容的变化：把预检时编码好的快照排队写入（500ms debounce）。 */
+    lumen_state_store_request_script_save(s_script_persist_blob, len);
+    xSemaphoreGive(s_state_lock);
+
+    xSemaphoreGive(s_render_signal);
+    ESP_LOGI(TAG, "ClearScript id=%u 已清空（未提交即成功）", script_id);
+    return LUMEN_RESULT_OK;
+}
+
 uint8_t lumen_led_engine_activate_script(uint8_t script_id, bool loop)
 {
     if (script_id >= LUMEN_MAX_SCRIPTS) {

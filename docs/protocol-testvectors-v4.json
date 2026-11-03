@@ -936,6 +936,57 @@
       "result_code": 0
     },
     {
+      "name": "clear_script",
+      "direction": "app_to_device",
+      "command": 30,
+      "command_name": "ClearScript",
+      "seq": 62,
+      "payload_hex": "00",
+      "payload_len": 1,
+      "frame_hex": "A6041E3E01000034E1",
+      "frame_len": 9,
+      "chunks_hex": [
+        "C0A6041E3E01000034E1"
+      ],
+      "frame_valid": true,
+      "result_code": 0,
+      "note": "清空 0 号剧本：未提交即成功（幂等）；清的是激活剧本则停播并退回无激活"
+    },
+    {
+      "name": "clear_script_last_slot",
+      "direction": "app_to_device",
+      "command": 30,
+      "command_name": "ClearScript",
+      "seq": 63,
+      "payload_hex": "03",
+      "payload_len": 1,
+      "frame_hex": "A6041E3F010003E3A7",
+      "frame_len": 9,
+      "chunks_hex": [
+        "C0A6041E3F010003E3A7"
+      ],
+      "frame_valid": true,
+      "result_code": 0,
+      "note": "边界：最后一个合法 script_id（MAX_SCRIPTS-1 = 3）"
+    },
+    {
+      "name": "clear_script_bad_id",
+      "direction": "app_to_device",
+      "command": 30,
+      "command_name": "ClearScript",
+      "seq": 64,
+      "payload_hex": "04",
+      "payload_len": 1,
+      "frame_hex": "A6041E400100049F41",
+      "frame_len": 9,
+      "chunks_hex": [
+        "C0A6041E400100049F41"
+      ],
+      "frame_valid": false,
+      "result_code": 1,
+      "note": "script_id = MAX_SCRIPTS → InvalidParam（越界不对应任何槽位）"
+    },
+    {
       "name": "bad_magic",
       "direction": "app_to_device",
       "command": 1,

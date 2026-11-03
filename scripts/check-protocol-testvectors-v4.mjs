@@ -36,7 +36,7 @@ const EXPECTED_PAYLOAD = new Map([
   [0x10, SEGMENT_PAYLOAD], [0x11, 2], [0x12, 1], [0x13, 2],
   [0x14, 3], [0x15, 6], [0x16, SCRIPT_SEGMENT_PAYLOAD],
   [0x17, 1], [0x18, 1], [0x19, 2], [0x1A, 1],
-  [0x1B, 2], [0x1C, 0], [0x1D, 0],
+  [0x1B, 2], [0x1C, 0], [0x1D, 0], [0x1E, 1],
 ]);
 
 // 设备 → 小程序报告（§7.4）
@@ -121,6 +121,8 @@ const INVALID_EXPECT = {
   set_segment_bad_level_101: 0x01,
   set_segment_bad_empty_level: 0x01,
   script_segment_clear_level_nonzero: 0x01,
+  // #73 ClearScript：越界 script_id
+  clear_script_bad_id: 0x01,
 };
 for (const [name, code] of Object.entries(INVALID_EXPECT)) {
   const c = cases.find((x) => x.name === name);

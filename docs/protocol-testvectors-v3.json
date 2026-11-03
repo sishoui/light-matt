@@ -834,6 +834,23 @@
       "result_code": 0
     },
     {
+      "name": "clear_script_unsupported_v3",
+      "direction": "app_to_device",
+      "command": 30,
+      "command_name": "ClearScript",
+      "seq": 62,
+      "payload_hex": "00",
+      "payload_len": 1,
+      "frame_hex": "A6031E3E0100007529",
+      "frame_len": 9,
+      "chunks_hex": [
+        "C0A6031E3E0100007529"
+      ],
+      "frame_valid": false,
+      "result_code": 2,
+      "note": "v3 未实现 ClearScript → UnknownCommand，配置不变（#73）"
+    },
+    {
       "name": "bad_magic",
       "direction": "app_to_device",
       "command": 1,

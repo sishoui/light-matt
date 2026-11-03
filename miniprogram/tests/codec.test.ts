@@ -3,7 +3,7 @@
  *
  * 不复制向量、不伪造期望值：任何协议字节变化都会让这里失败。
  *
- * v4 覆盖：65 条向量（编码 / 解码两个方向）、CRC16 标准校验值、分片重组、
+ * v4 覆盖：68 条向量（编码 / 解码两个方向）、CRC16 标准校验值、分片重组、
  * 层亮度三档（0 / 50 / 100）与越界用例，以及 232/240 的帧长上限。
  *
  * **这是跨端契约**：固件 host 测试跑同一份 JSON。这里红了就说明小程序与固件
@@ -69,11 +69,11 @@ const ENVELOPE_FAILURES: Record<number, string> = {
 };
 
 describe("协议测试向量（v4）", () => {
-  it("向量文件本身是 v4 且包含 65 个用例", () => {
+  it("向量文件本身是 v4 且包含 68 个用例", () => {
     expect(vectors.protocol_version).toBe(4);
     expect(vectors.magic).toBe("0xA6");
     expect(vectors.state_bytes).toBe(37);
-    expect(vectors.cases.length).toBe(65);
+    expect(vectors.cases.length).toBe(68);
   });
 
   it("app_to_device 有效帧：encode 逐字节复现 frame_hex", () => {

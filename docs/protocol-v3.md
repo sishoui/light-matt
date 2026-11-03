@@ -222,9 +222,14 @@ export function crc16(bytes: Uint8Array): number {
 | `0x1B` | **SetStripPower** | `strip_id, on` | 2 |
 | `0x1C` | **QueryStripConfig** | — | 0 |
 | `0x1D` | **QueryDeviceInfo** | — | 0 |
+| `0x1E` | **ClearScript**（v4 新增，v3 固件回 `0x02`） | `script_id` | 1 |
 
-- `0x08-0x0F`、`0x1E-0x7F` 保留；设备收到回 `0x02`。
+- `0x08-0x0F`、`0x1F-0x7F` 保留；设备收到回 `0x02`。
 - 小程序写入 `0x80-0xFF`（设备→小程序方向）→ `0x02`。
+- `0x1E ClearScript` 是 **v4 原地新增**的命令（v4 文档 §6.1）。v3 固件的命令表里
+  没有它，按 §5 的固定顺序在「命令已知」这一步回 `0x02 UnknownCommand`，
+  **不误改任何配置并继续正常服务后续帧**。向量 `clear_script_unsupported_v3`
+  锁住这条行为。协议版本号因此没有变化（新增命令不影响旧固件的安全拒绝）。
 
 ---
 
@@ -435,6 +440,9 @@ ActivateScript(script_id, loop)                       → ACK 0x00
 - `fade_ms` 当前**恒为 0**；非 0 值先**接受并存储**，但播放行为仍是硬切（格式预留，
   见 `docs/spec-v3.md` 的取舍记录）。
 - 失败回滚：`ScriptCommit` 失败只丢暂存区，已提交的那一套不动。
+- **删除一套方案**：v3 没有这个能力（`ScriptBegin` 要求 `stage_count ∈ 1..8`，
+  下发不了「空剧本」）。v4 新增 `0x1E ClearScript`（§6 / v4 文档 §6.1）；
+  v3 固件收到它回 `0x02`，配置不变——这也是「新增命令不必升协议版本」的依据。
 
 ### 9.7 自检
 

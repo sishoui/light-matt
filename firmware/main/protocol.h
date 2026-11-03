@@ -78,6 +78,12 @@ typedef enum {
     LUMEN_CMD_SET_STRIP_POWER = 0x1B,
     LUMEN_CMD_QUERY_STRIP_CONFIG = 0x1C,
     LUMEN_CMD_QUERY_DEVICE_INFO = 0x1D,
+    /*
+     * #73：原保留区 0x1E-0x7F 的最低一位，用来真正删掉一套已提交剧本
+     * （docs/protocol-v4.md §6 / §9.6）。**协议版本号不变**：旧固件收到 0x1E
+     * 按未知命令回 0x02，不会误改任何东西，因此不需要升版本。
+     */
+    LUMEN_CMD_CLEAR_SCRIPT = 0x1E,
 
     LUMEN_CMD_ACK = 0x80,
     LUMEN_CMD_EVENT = 0x81,

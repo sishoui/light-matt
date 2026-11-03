@@ -93,6 +93,20 @@ size_t lumen_script_blob_encode_with_override(const lumen_script_store_t *store,
                                               size_t out_cap);
 
 /*
+ * 把 `cleared_slot` **当成未提交**来编码（ClearScript 0x1E 的落盘前预检，#73）。
+ *
+ * store 里的剧本还没动：调用方先编一遍「清空后」的快照，编得出来才真的
+ * memset 槽位并排队写 NVS。这样「存不下」不会留下 RAM 已清、flash 还有的
+ * 撕裂状态（此时回 StorageFailed，原剧本保持可用）。
+ *
+ * 成功时写入的 active_script_id / loop 由调用方给（清空的正是激活剧本时传
+ * LUMEN_NO_SCRIPT / false）。cleared_slot 越界返回 0。
+ */
+size_t lumen_script_blob_encode_with_cleared(const lumen_script_store_t *store,
+                                             uint8_t cleared_slot, uint8_t active_script_id,
+                                             bool loop, uint8_t *out, size_t out_cap);
+
+/*
  * 解码并整份校验。strip_counts 是每条灯带自己的灯珠数（与 commit 同一份规则）。
  *
  * **就地解码**：结果直接写进 store（一套剧本表约 41KB，不做临时副本，否则

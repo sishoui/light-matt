@@ -104,6 +104,17 @@ typedef struct {
     lumen_segment_t script_segment;
     bool script_loop;
 
+    /*
+     * ClearScript 0x1E（#73，docs/protocol-v4.md §6 / §9.6）：清空一个已提交
+     * 剧本。命令层只校验 script_id 范围（未提交即成功是设备侧语义，命令层
+     * 看不到剧本表），真正的清空 + 激活态回退 + 持久化在 led_engine 锁内。
+     *
+     * 不复用 script_op：清空不是 §9.6 下发流程的一环，它有独立的失败语义
+     * （StorageFailed），单独一对字段让 ble_link 的分支不会被误归到剧本流程。
+     */
+    bool clear_script;
+    uint8_t clear_script_id;
+
     lumen_state_t next;    /* 命令生效后的完整状态（未生效时等于 current） */
 } lumen_command_outcome_t;
 
@@ -159,8 +170,12 @@ bool lumen_command_is_known(uint8_t command);
 
 /*
  * 协议 §11.2 第 5 条：该命令是否属于「改变状态」的类别
- * （SetPower / SetBrightness / SetLedCount / SetSegment / ClearSegment）。
+ * （SetPower / SetBrightness / SetLedCount / SetSegment / ClearSegment /
+ *  剧本类 / SetStripPower / ClearScript）。
  * QueryState、SelfTest、QueryStrip 不算；v2 退役的 0x03 / 0x04 也不算。
+ *
+ * ClearScript 算在内：它改变持久化的剧本内容（清掉的正是激活剧本时还会
+ * 停播），与 ScriptCommit / ScriptAbort 同类。
  *
  * 取消规则在 dispatch 的统一收尾里执行，因此任何新增的「改变状态」命令只要
  * 加进本函数就会自动取消自检——不需要再去改 ble_link 或 led_engine。

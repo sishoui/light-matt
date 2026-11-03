@@ -654,6 +654,17 @@ export function cmdQueryScript(scriptId: number): CommandRequest {
   return { command: 0x1a, payload: new Uint8Array([assertScriptId(scriptId)]) };
 }
 
+/**
+ * ClearScript 0x1E（#73）：载荷 `script_id`，真正从设备上删掉这套已提交剧本。
+ *
+ * 未提交即成功（幂等）；清掉的正是激活剧本时设备停播并退回「无激活剧本」。
+ * 设备回 `0x00` 成功 / `0x01` id 越界 / `0x06` 存储失败（此时原剧本仍可用）/
+ * `0x02` 旧固件不认识。**协议版本号不变**，旧固件按未知命令安全拒绝。
+ */
+export function cmdClearScript(scriptId: number): CommandRequest {
+  return { command: 0x1e, payload: new Uint8Array([assertScriptId(scriptId)]) };
+}
+
 /** 一条 ScriptSummary 0x85（QueryScript 的响应）。 */
 export interface ScriptSummary {
   scriptId: number;

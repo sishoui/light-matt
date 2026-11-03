@@ -340,6 +340,47 @@ void lumen_script_abort(lumen_script_store_t *store, uint8_t script_id)
     }
 }
 
+/*
+ * ClearScript 0x1E（#73）：真正抹掉一个槽位。
+ *
+ * 用 memset 把整个 lumen_script_t 归零（committed / stage_count / strip_count /
+ * 所有阶段的段都一起清掉），而不是只置 committed = false：这样
+ *  - `lumen_script_stage_count()` 自然回 0（get 返回 NULL）；
+ *  - 摘要显示空白，不会露出一套「未提交但仍有内容」的残影；
+ *  - 将来任何直接读 committed[] 的代码也不会读到旧数据。
+ *
+ * 暂存区同 id 也要清：用户刚 Begin 还没 Commit 就清空时，暂存里留着半套内容
+ * 只会让随后的 Clear → Abort 序列落到一个说不清的状态；用户的意图既然是
+ * 「这套方案没有内容了」，暂存也不该继续存在。
+ */
+bool lumen_script_store_clear(lumen_script_store_t *store, uint8_t script_id)
+{
+    if (store == NULL || script_id >= LUMEN_MAX_SCRIPTS) {
+        return false;
+    }
+    memset(&store->committed[script_id], 0, sizeof(store->committed[script_id]));
+    if (store->staging_active && script_id == store->staging_script_id) {
+        memset(&store->staging, 0, sizeof(store->staging));
+        store->staging_active = false;
+        store->staging_script_id = LUMEN_NO_SCRIPT;
+        store->frames_written = 0;
+    }
+    return true;
+}
+
+bool lumen_script_should_deactivate(uint8_t active_script_id, uint8_t cleared_script_id)
+{
+    /*
+     * 只有「清掉的正是当前激活的那套」才需要停播并退回无激活剧本。
+     * 越界的 cleared id 先被拒：它不可能是一个已提交剧本，装成「命中」
+     * 会让非法参数静默停掉正在播的方案。
+     */
+    if (cleared_script_id >= LUMEN_MAX_SCRIPTS) {
+        return false;
+    }
+    return active_script_id == cleared_script_id;
+}
+
 const lumen_script_t *lumen_script_get(const lumen_script_store_t *store, uint8_t script_id)
 {
     if (store == NULL || script_id >= LUMEN_MAX_SCRIPTS) {

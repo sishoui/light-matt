@@ -2,7 +2,7 @@
 
 **状态**：**已实现（2026-11-03，分支 `feat/68-protocol-v4`）**。本文件取代 `docs/protocol-v3.md`
 （v3 保留为历史参考，不再维护）。
-固件 host 测试 11927 项断言与 `docs/protocol-testvectors-v4.json`（65 条向量）
+固件 host 测试 12098 项断言与 `docs/protocol-testvectors-v4.json`（68 条向量）
 都对着本文件跑。
 **适用范围**：微信小程序 ↔ ESP32-C3 固件之间的 BLE 协议。
 **唯一真相**：本文件定义字节级契约，`docs/protocol-testvectors-v4.json` 是它的可执行副本。
@@ -242,9 +242,53 @@ export function crc16(bytes: Uint8Array): number {
 | `0x1B` | SetStripPower | `strip_id, on` | 2 |
 | `0x1C` | QueryStripConfig | — | 0 |
 | `0x1D` | QueryDeviceInfo | — | 0 |
+| `0x1E` | ClearScript | `script_id` | 1 |
 
-- `0x08-0x0F`、`0x1E-0x7F` 保留；设备收到回 `0x02`。
+- `0x08-0x0F`、`0x1F-0x7F` 保留；设备收到回 `0x02`。
 - 小程序写入 `0x80-0xFF`（设备→小程序方向）→ `0x02`。
+
+### 6.1 ClearScript（`0x1E`，v4 原地新增）
+
+真正从设备上**删掉**一套已提交剧本，而不是只删小程序本机的草稿。
+
+| 结果码 | 触发条件 |
+|---|---|
+| `0x00` OK | 已清空；**该 id 本来就没有已提交剧本也算成功**（幂等） |
+| `0x01` InvalidParam | `script_id >= 4`（`LUMEN_MAX_SCRIPTS`） |
+| `0x04` BadLength | 载荷长度 ≠ 1 |
+| `0x02` UnknownCommand | 旧固件（不认识 `0x1E`）；**它不会误改任何东西** |
+| `0x06` StorageFailed | 落盘预检失败；RAM 里的剧本**原样保留**，仍可用 |
+
+语义：
+
+- 清空后该 id 的 `stage_count` 回 **0**，`QueryScript` 的 `ScriptSummary` 给出
+  `stage_count = 0 / flags = 0 / active = 0`（与查询一个从未提交的 id 完全一致），
+  State 里若它是激活剧本则 `script_id = 0xFF`、`stage_index = 0`、`playback_state = 0`、
+  `flags.bit1 = 0`。
+- **清空正在播放（或暂停 / 播完停住）的那套**：播放停止、设备退回「无激活剧本」，
+  画面交回静态段配置。判定是「当前激活 id == 被清 id」，越界 id 永远不算命中。
+- **未提交即成功**：对一个从未提交过的 id 发清空也回 `0x00`。理由与 `ClearSegment`
+  相同——它是绝对值语义（「让这个槽位为空」），让用户处理「本来就没有」这种无害情况
+  只会制造需要重试的错误。
+- **不影响其它 id**：只有目标槽位被抹掉，其它剧本、段配置与播放状态原样。
+- 若该 id 正在暂存（`ScriptBegin` 之后还没 `Commit`），暂存也一并丢弃——否则
+  「清空 → Abort」会留下不可预期的中间态。
+- 失败时**什么都不改**：先按「清空后」的状态编码一遍持久化快照，编得出来才改 RAM。
+  因此 `StorageFailed` 之后原剧本仍可正常播。
+- **落盘的异步失败**（NVS 在 500ms debounce 后真正写入时失败）无法再改 ACK——ACK
+  已经发出。这条路径与 `ScriptCommit` 共用，按 §10.3 的异步语义上报 `Event 0x81`
+  （`event_code = 0x01 StorageFailed`），App 应在收到后重试或提示。也就是说 `0x06`
+  只覆盖「预检时就知道存不下」的同步失败。
+
+**为什么不是 `script_id` 换成 `ScriptBegin(0 阶段)` 或 `ScriptCommit` 一个空剧本**：
+两条路径都要求 `stage_count ∈ 1..8`（§9.6），表达不了「这套方案不存在」。
+用一条显式命令，语义与失败语义都能单独定义。
+
+**为什么协议版本号不变**：`0x1E` 原来落在保留区，旧固件的命令表里没有它，
+按 §5 的固定顺序在「命令已知」这一步就回 `0x02 UnknownCommand` 并**继续正常服务
+后续帧**（不会把连接搞坏，也不会误改配置）。新增一条命令因此不需要两端同时升级，
+也就不需要升 `0x04` ——升版本会让所有旧固件对全部帧回 `0x07`，代价远大于收益。
+这条取舍只对「新增命令」成立：**任何已存在命令的载荷或语义变化仍然必须升版本**。
 
 ---
 
@@ -520,8 +564,12 @@ ScriptStage(script_id, stage, duration_ms, fade_ms)   × stage_count → ACK
 ScriptSegment(script_id, stage, ...)                  × 每个有内容的段 → ACK
 ScriptCommit(script_id)                               → ACK 0x00 / 0x01 / 0x0A
 ActivateScript(script_id, loop)                       → ACK 0x00
+ClearScript(script_id)                                → ACK 0x00 / 0x01 / 0x06
 ```
 
+- **删掉一套方案用 `ClearScript 0x1E`**（§6.1），不是「下发一套空剧本」：
+  `ScriptBegin` 要求 `stage_count ∈ 1..8`，表达不了「这套不存在」。清空是幂等的，
+  清掉的正是激活剧本时停播并退回无激活。
 - **段的清空**：`ScriptSegment` 的两层都写 `0xFF` 表示「该槽位为空」，效果等同于不下发该段。
   **两层的 `level` 都必须为 0**，否则 `InvalidParam`（这条路径绕过形状校验，必须在命令层
   与剧本层各自显式判一次）。
@@ -671,7 +719,7 @@ level 字节）。对应 `LUMEN_SCRIPT_SEGMENT_MIN = 3`（记录头）与
 
 ## 11. 测试向量
 
-`docs/protocol-testvectors-v4.json` 是本文的可执行副本（65 条用例），字段：
+`docs/protocol-testvectors-v4.json` 是本文的可执行副本（68 条用例），字段：
 
 ```jsonc
 {
@@ -708,6 +756,14 @@ level 字节）。对应 `LUMEN_SCRIPT_SEGMENT_MIN = 3`（记录头）与
 | `set_segment_bad_empty_level` | `0x01`（空层带 level 50） |
 | `script_segment_clear_level_nonzero` | `0x01`（清槽旁路 + level 30） |
 
+**`0x1E ClearScript`（#73）的向量**：
+
+| 用例 | 期望 |
+|---|---|
+| `clear_script` | OK（seq 62，`script_id = 0`） |
+| `clear_script_last_slot` | OK（seq 63，`script_id = 3`，最后一个合法槽位） |
+| `clear_script_bad_id` | `0x01` InvalidParam（`script_id = 4`） |
+
 生成器：`scripts/gen-protocol-testvectors-v4.mjs`（层构造器默认 `level = 100`，
 断言 23 / 25 字节）。
 独立校验器：`scripts/check-protocol-testvectors-v4.mjs`（只读 JSON，不信任生成器；
@@ -736,11 +792,28 @@ level 字节）。对应 `LUMEN_SCRIPT_SEGMENT_MIN = 3`（记录头）与
 | 小程序 | `utils/protocol/*` | 层 9 字节、段 23 / 25、`PROTOCOL_VERSION = 0x04`、逐层 level（票 #69） |
 | 后端 | — | **无影响**（`server/` 不持有任何 wire 常量） |
 
+**v4 内的增量改动（#73，ClearScript 0x1E）**——协议版本号**不变**，所以不是迁移项，
+但改动的落点是固定的：
+
+| 端 | 文件 | 改什么 |
+|---|---|---|
+| 固件 | `main/protocol.h` | `LUMEN_CMD_CLEAR_SCRIPT = 0x1E` |
+| 固件 | `main/command.c/h` | `is_known` / `payload_len` / dispatch；outcome 加 `clear_script` + `clear_script_id` |
+| 固件 | `main/script_store.c/h` | `lumen_script_store_clear`、`lumen_script_should_deactivate`（纯逻辑，host 可测） |
+| 固件 | `main/script_blob.c/h` | `lumen_script_blob_encode_with_cleared`（落盘前容量预检） |
+| 固件 | `main/led_engine.c/h` | `lumen_led_engine_clear_script`（锁内清空 + 激活态回退 + 持久化） |
+| 固件 | `main/ble_link.c` | `outcome.clear_script` 分支 |
+| 固件 | `test/test_skeleton.c` | 清空 / 幂等 / 越界 / 激活回退判定 / 预检编码 |
+| 向量 | `scripts/gen-*.mjs` / `check-*.mjs` | v4 三条用例；v3 一条「未知命令」用例 |
+| 小程序 | `utils/protocol/*` | `CMD.CLEAR_SCRIPT = 0x1E` + `cmdClearScript`（调用方是 #83） |
+
 ---
 
 ## 13. 变更规则
 
 - 改任何字节布局 = 本文件 + 测试向量 + 两端实现同一个 commit。
 - **新增命令字必须同时更新对应的报告与 ACK 语义**，不允许「只发不收」。
+  **例外（唯一）**：v4 原地新增的 `0x1E ClearScript` 不需要报告帧——它的结果完全由
+  ACK 承载，而清空后的状态用已有的 `QueryScript` / State 即可读到（§6.1）。
 - 预留位（flags 的保留位、`caps` 的保留位、`fade_ms`）**只能由本文件授权后启用**。
 - `level` 的取值范围（0-100）与空层规则是本契约的一部分，**不要**在实现里放宽成 0-255。

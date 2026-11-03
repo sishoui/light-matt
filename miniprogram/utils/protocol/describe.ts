@@ -196,6 +196,7 @@ export function describeCommand(command: number, payload: Uint8Array): string {
     case CMD.SCRIPT_COMMIT:
     case CMD.SCRIPT_ABORT:
     case CMD.QUERY_SCRIPT:
+    case CMD.CLEAR_SCRIPT:
       return payload.length === 1 ? `${name} script=${payload[0]}` : `${name} ${bytesToHex(payload)}`;
     case CMD.ACTIVATE_SCRIPT:
       return payload.length === 2

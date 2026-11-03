@@ -316,6 +316,17 @@ addApp({ name: 'set_playback_play', command: 0x13, commandName: 'SetPlayback', s
 addApp({ name: 'set_playback_pause', command: 0x13, commandName: 'SetPlayback', seq: 47, payload: [2, 1] });
 addApp({ name: 'set_playback_stop', command: 0x13, commandName: 'SetPlayback', seq: 48, payload: [0, 0] });
 
+/*
+ * ClearScript 0x1E（#73，v4 新增）。v3 固件不认识它，按未知命令回 0x02，
+ * 且**不改变任何状态**——这正是「旧固件收到新命令安全拒绝」的向量。
+ * 载荷宽度与 v4 一致（1 字节 script_id），所以这里也按 1 字节构造。
+ */
+addApp({
+  name: 'clear_script_unsupported_v3', command: 0x1e, commandName: 'ClearScript', seq: 62,
+  payload: [0], result: 0x02,
+  note: 'v3 未实现 ClearScript → UnknownCommand，配置不变（#73）',
+});
+
 // 信封层非法帧：直接给出字节，不走构造器
 function rawCase(c) {
   cases.push({

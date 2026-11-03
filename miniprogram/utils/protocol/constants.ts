@@ -80,7 +80,8 @@ export const PLAYBACK = {
  * 小程序 → 设备命令字，docs/protocol-v3.md §6。
  *
  * v2 退役了 v1 的 0x03 SetColor / 0x04 SetAll：0x03 / 0x04 两个值不再出现在
- * 本表里（设备收到回 0x02 未知命令）。v3 新增 0x1B/0x1C/0x1D。
+ * 本表里（设备收到回 0x02 未知命令）。v3 新增 0x1B/0x1C/0x1D；
+ * v4 原地新增 0x1E ClearScript（#73，协议版本号不变）。
  */
 export const CMD = {
   SET_POWER: 0x01,
@@ -100,6 +101,7 @@ export const CMD = {
   SCRIPT_ABORT: 0x18,
   ACTIVATE_SCRIPT: 0x19,
   QUERY_SCRIPT: 0x1a,
+  CLEAR_SCRIPT: 0x1e,
 
   SET_STRIP_POWER: 0x1b,
   QUERY_STRIP_CONFIG: 0x1c,
@@ -212,6 +214,7 @@ export const COMMAND_NAMES: Record<number, string> = {
   [CMD.SCRIPT_ABORT]: "ScriptAbort",
   [CMD.ACTIVATE_SCRIPT]: "ActivateScript",
   [CMD.QUERY_SCRIPT]: "QueryScript",
+  [CMD.CLEAR_SCRIPT]: "ClearScript",
   [CMD.SET_STRIP_POWER]: "SetStripPower",
   [CMD.QUERY_STRIP_CONFIG]: "QueryStripConfig",
   [CMD.QUERY_DEVICE_INFO]: "QueryDeviceInfo",

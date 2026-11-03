@@ -388,6 +388,23 @@ addApp({ name: 'set_playback_play', command: 0x13, commandName: 'SetPlayback', s
 addApp({ name: 'set_playback_pause', command: 0x13, commandName: 'SetPlayback', seq: 47, payload: [2, 1] });
 addApp({ name: 'set_playback_stop', command: 0x13, commandName: 'SetPlayback', seq: 48, payload: [0, 0] });
 
+// ClearScript 0x1E（#73）：真正清空一套已提交剧本。
+addApp({
+  name: 'clear_script', command: 0x1e, commandName: 'ClearScript', seq: 62,
+  payload: [0],
+  note: '清空 0 号剧本：未提交即成功（幂等）；清的是激活剧本则停播并退回无激活',
+});
+addApp({
+  name: 'clear_script_last_slot', command: 0x1e, commandName: 'ClearScript', seq: 63,
+  payload: [3],
+  note: '边界：最后一个合法 script_id（MAX_SCRIPTS-1 = 3）',
+});
+addApp({
+  name: 'clear_script_bad_id', command: 0x1e, commandName: 'ClearScript', seq: 64,
+  payload: [4], result: 0x01,
+  note: 'script_id = MAX_SCRIPTS → InvalidParam（越界不对应任何槽位）',
+});
+
 // 信封层非法帧：直接给出字节，不走构造器
 function rawCase(c) {
   cases.push({

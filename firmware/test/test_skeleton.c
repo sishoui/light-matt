@@ -989,6 +989,20 @@ static void run_app_case(const vector_case_t *c)
             CHECK(lumen_script_is_committed(&scripts, keep_id));
             CHECK(lumen_script_stage_count(&scripts, keep_id) == keep_count);
         }
+    } else if (frame.command == LUMEN_CMD_CLEAR_SCRIPT) {
+        /* #73：只校验并登记 clear_script 意图；真正的清空在 led_engine 锁内
+         * （host 侧由 test_script_store_clear 覆盖）。 */
+        CHECK(!outcome.state_changed);
+        CHECK(!outcome.led_count_rebuild);
+        CHECK(outcome.script_op == LUMEN_SCRIPT_OP_NONE);
+        if (outcome.result_code == LUMEN_RESULT_OK) {
+            CHECK(outcome.clear_script);
+            CHECK(outcome.clear_script_id == frame.payload[0]);
+            CHECK(outcome.cancels_selftest);
+        } else {
+            CHECK(!outcome.clear_script);
+            CHECK(!outcome.cancels_selftest);
+        }
     } else {
         /* 退役 / 保留 / 未知命令：一律 0x02，状态不动。 */
         CHECK(outcome.result_code == LUMEN_RESULT_UNKNOWN_COMMAND);
@@ -1262,9 +1276,9 @@ static void test_set_power_reducer(void)
 
     /* 保留 / 未知 / 退役 / 设备→小程序命令字：0x02。
      * v2 退役的 0x03 SetColor / 0x04 SetAll 走这里。
-     * 0x10 / 0x11 / 0x12 / 0x13–0x1A / 0x1B / 0x1C / 0x1D 都已实现，
-     * 都不再属于未知命令；0x1E 起才是保留字。 */
-    const uint8_t unknown[] = {0x00, 0x03, 0x04, 0x08, 0x09, 0x0F, 0x1E, 0x7F,
+     * 0x10 / 0x11 / 0x12 / 0x13–0x1A / 0x1B / 0x1C / 0x1D / 0x1E(ClearScript) 都已实现，
+     * 都不再属于未知命令；0x1F 起才是保留字。 */
+    const uint8_t unknown[] = {0x00, 0x03, 0x04, 0x08, 0x09, 0x0F, 0x1F, 0x7F,
                                0x80, 0x81, 0x82, 0xFF};
     for (size_t i = 0; i < sizeof(unknown); ++i) {
         lumen_frame_t f = {0};
@@ -1493,8 +1507,8 @@ static void test_retired_commands(void)
         CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
     }
 
-    /* 0x1E 起的保留字仍回 0x02；设备→小程序方向亦然。 */
-    const uint8_t reserved[] = {0x1E, 0x20, 0x7F, 0x87, 0x88, 0xFF};
+    /* 0x1F 起的保留字仍回 0x02；设备→小程序方向亦然。 */
+    const uint8_t reserved[] = {0x1F, 0x20, 0x7F, 0x87, 0x88, 0xFF};
     for (size_t i = 0; i < sizeof(reserved); ++i) {
         CHECK(!lumen_command_is_known(reserved[i]));
         lumen_frame_t f = {0};
@@ -6050,6 +6064,206 @@ static void test_script_clear_slot(void)
     }
 }
 
+/* ---------------- #73 ClearScript 0x1E ---------------- */
+
+/*
+ * 清空一套已提交剧本（script_store 的纯逻辑，host 可测）：
+ *  - 清空后未提交、阶段数回 0、内容全空；
+ *  - 未提交即成功（幂等）；
+ *  - id 越界 / store 为 NULL 被拒；
+ *  - 只动目标 id，其它 id 完整保留；
+ *  - 目标 id 正在暂存时一并丢弃暂存（否则 Abort 会留下不可预期的中间态）。
+ */
+static void test_script_store_clear(void)
+{
+    lumen_script_store_t store;
+    lumen_script_store_init(&store);
+
+    CHECK(script_download(&store, 0, 3, 700));
+    CHECK(script_download(&store, 1, 2, 400));
+    CHECK(lumen_script_is_committed(&store, 0));
+    CHECK(lumen_script_stage_count(&store, 0) == 3);
+    const lumen_script_t *before1 = lumen_script_get(&store, 1);
+    CHECK(before1 != NULL);
+    const uint16_t hue1 = before1 != NULL ? layer_hue(&before1->stages[1].segments[0][0].layer[0])
+                                           : 0;
+
+    /* (a) 正常清空：阶段数回 0、摘要为空、get 返回 NULL。 */
+    CHECK(lumen_script_store_clear(&store, 0));
+    CHECK(!lumen_script_is_committed(&store, 0));
+    CHECK(lumen_script_stage_count(&store, 0) == 0);
+    CHECK(lumen_script_get(&store, 0) == NULL);
+    CHECK(store.committed[0].stage_count == 0);
+    CHECK(store.committed[0].strip_count == 0);
+    CHECK(!store.committed[0].stages[0].segments[0][0].active);
+
+    /* (b) 其它 id 完全不受影响。 */
+    CHECK(lumen_script_is_committed(&store, 1));
+    CHECK(lumen_script_stage_count(&store, 1) == 2);
+    const lumen_script_t *after1 = lumen_script_get(&store, 1);
+    CHECK(after1 != NULL && layer_hue(&after1->stages[1].segments[0][0].layer[0]) == hue1);
+
+    /* (c) 幂等：清一个本来就没有内容的编号仍算成功。 */
+    CHECK(lumen_script_store_clear(&store, 3));
+    CHECK(lumen_script_store_clear(&store, 3));
+    CHECK(!lumen_script_is_committed(&store, 3));
+
+    /* (d) 越界被拒（LUMEN_MAX_SCRIPTS 本身已越界）。 */
+    CHECK(!lumen_script_store_clear(&store, LUMEN_MAX_SCRIPTS));
+    CHECK(!lumen_script_store_clear(&store, 0xFF));
+    CHECK(!lumen_script_store_clear(NULL, 0));
+
+    /* (e) 目标 id 正在暂存：清空它必须同时丢掉暂存。 */
+    CHECK(lumen_script_begin(&store, 2, 2, 1));
+    lumen_segment_t seg = make_static(0, 9, 0, 255);
+    CHECK(lumen_script_stage(&store, 2, 0, 500, 0));
+    CHECK(lumen_script_segment(&store, 2, 0, 0, 0, &seg, NULL));
+    CHECK(store.staging_active);
+    CHECK(store.frames_written == 1);
+    CHECK(lumen_script_store_clear(&store, 2));
+    CHECK(!store.staging_active);
+    CHECK(store.staging_script_id == LUMEN_NO_SCRIPT);
+    CHECK(store.frames_written == 0);
+    CHECK(!lumen_script_is_committed(&store, 2));
+
+    /* 清空 1 号后，之前暂存的是 2 号：1 号的清空不碰暂存。 */
+    CHECK(lumen_script_begin(&store, 2, 1, 1));
+    CHECK(lumen_script_store_clear(&store, 1));
+    CHECK(store.staging_active);
+    CHECK(store.staging_script_id == 2);
+    CHECK(!lumen_script_is_committed(&store, 1));
+}
+
+/*
+ * 「清空这个 id 后是否必须退回无激活剧本」——纯判定，led_engine 与 host 共用。
+ * id 越界时不能把它算成「正好命中激活剧本」。
+ */
+static void test_script_should_deactivate(void)
+{
+    CHECK(lumen_script_should_deactivate(2, 2));
+    CHECK(!lumen_script_should_deactivate(2, 3));
+    CHECK(!lumen_script_should_deactivate(3, 2));
+    /* 没有激活剧本时，清任何 id 都不需要回退。 */
+    CHECK(!lumen_script_should_deactivate(LUMEN_NO_SCRIPT, 0));
+    CHECK(!lumen_script_should_deactivate(LUMEN_NO_SCRIPT, LUMEN_NO_SCRIPT));
+    /* 越界的「被清 id」不是合法剧本，永远不算命中。 */
+    CHECK(!lumen_script_should_deactivate(LUMEN_NO_SCRIPT, LUMEN_MAX_SCRIPTS));
+    CHECK(!lumen_script_should_deactivate(LUMEN_MAX_SCRIPTS, LUMEN_MAX_SCRIPTS));
+}
+
+/*
+ * 命令层 0x1E：载荷 1 字节 script_id。
+ * 合法 → OK + clear_script 意图；越界 → InvalidParam；长度不符 → BadLength。
+ */
+static void test_clear_script_command(void)
+{
+    lumen_state_t state;
+    lumen_state_defaults(&state, 30);
+    lumen_command_outcome_t outcome;
+
+    CHECK(lumen_command_is_known(LUMEN_CMD_CLEAR_SCRIPT));
+    CHECK(lumen_command_payload_len(LUMEN_CMD_CLEAR_SCRIPT) == 1);
+
+    lumen_frame_t frame = {0};
+    frame.command = LUMEN_CMD_CLEAR_SCRIPT;
+    frame.seq = 0x20;
+    frame.payload_len = 1;
+    frame.payload[0] = 2;
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(outcome.clear_script);
+    CHECK(outcome.clear_script_id == 2);
+    CHECK(!outcome.state_changed);
+    CHECK(outcome.script_op == LUMEN_SCRIPT_OP_NONE);
+    /* 清空剧本改变持久化内容，属于「改变状态」类别（§11.2 第 5 条）。 */
+    CHECK(outcome.cancels_selftest);
+    CHECK(memcmp(&outcome.next, &state, sizeof(state)) == 0);
+
+    /* 幂等语义在命令层不区分「有没有提交过」：命令层只看 id 范围。 */
+    frame.payload[0] = 3;
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_OK);
+    CHECK(outcome.clear_script);
+    CHECK(outcome.clear_script_id == 3);
+
+    /* 越界 → InvalidParam，不登记意图、不取消自检。 */
+    frame.payload[0] = LUMEN_MAX_SCRIPTS;
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(!outcome.clear_script);
+    CHECK(!outcome.cancels_selftest);
+
+    frame.payload[0] = 0xFF;
+    lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(!outcome.clear_script);
+
+    /* 载荷长度 0 / 2 → BadLength。 */
+    const uint8_t bad_lens[] = {0, 2, 3};
+    for (size_t i = 0; i < sizeof(bad_lens); ++i) {
+        frame.payload_len = bad_lens[i];
+        lumen_command_dispatch(&frame, &state, NULL, NULL, 255, &outcome);
+        CHECK(outcome.result_code == LUMEN_RESULT_BAD_LENGTH);
+        CHECK(!outcome.clear_script);
+    }
+}
+
+/*
+ * 清空命令的持久化预检：编码一份「目标槽位视为未提交」的快照。
+ *
+ * led_engine 用它实现「存不下就什么都不改」（StorageFailed 且原剧本仍可用）。
+ * host 侧验证：
+ *  - 正常剧本：清空后的快照比现在小，且解码回来该槽位确实未提交、其它槽位完好；
+ *  - 缓冲不足 / 参数非法：返回 0（调用方据此回 StorageFailed，不落盘也不改 RAM）。
+ */
+static void test_script_blob_encode_with_cleared(void)
+{
+    static uint8_t blob[LUMEN_SCRIPT_BLOB_MAX];
+    lumen_script_store_t store;
+    lumen_script_store_init(&store);
+    CHECK(script_download(&store, 0, 2, 500));
+    CHECK(script_download(&store, 2, 3, 800));
+
+    size_t full = lumen_script_blob_encode(&store, 2, true, blob, sizeof(blob));
+    CHECK(full > 0);
+    size_t cleared = lumen_script_blob_encode_with_cleared(&store, 2, LUMEN_NO_SCRIPT, false,
+                                                           blob, sizeof(blob));
+    CHECK(cleared > 0);
+    CHECK(cleared < full);
+
+    /* 激活 id 与 flags 按清空后的状态写（这里：无激活、非循环）。 */
+    CHECK(blob[6] == LUMEN_NO_SCRIPT);
+    CHECK(blob[7] == 0x00);
+
+    lumen_script_store_t decoded;
+    uint8_t active = 0xFF;
+    bool loop = true;
+    uint16_t counts[LUMEN_MAX_STRIPS] = {30, 0, 0, 0, 0, 0, 0, 0};
+    CHECK(lumen_script_blob_decode(blob, cleared, counts, &decoded, &active, &loop));
+    CHECK(!lumen_script_is_committed(&decoded, 2));
+    CHECK(lumen_script_is_committed(&decoded, 0));
+    CHECK(lumen_script_stage_count(&decoded, 0) == 2);
+    CHECK(active == LUMEN_NO_SCRIPT);
+
+    /* 参数非法（无 store / 空缓冲）→ 0。 */
+    CHECK(lumen_script_blob_encode_with_cleared(NULL, 0, LUMEN_NO_SCRIPT, false, blob,
+                                               sizeof(blob)) == 0);
+    CHECK(lumen_script_blob_encode_with_cleared(&store, 5, LUMEN_NO_SCRIPT, false, blob,
+                                               sizeof(blob)) == 0);
+
+    /*
+     * 「存不下」→ 0：led_engine 据此回 StorageFailed 且**一个字节都不改**
+     * （原剧本保持可用）。清空只会让 blob 变短，所以这条路径在当前格式下是
+     * 防御性的；用一个装不下结果的小缓冲把它显式跑一遍。
+     */
+    uint8_t tiny[8];
+    CHECK(lumen_script_blob_encode_with_cleared(&store, 2, LUMEN_NO_SCRIPT, false, tiny,
+                                                sizeof(tiny)) == 0);
+    /* 失败不修改 store：原剧本仍可读。 */
+    CHECK(lumen_script_is_committed(&store, 2));
+    CHECK(lumen_script_stage_count(&store, 2) == 3);
+}
+
 /*
  * 容量预检：构造 8 带 × 8 阶段 × 8 段 × 两层动画的剧本（理论最坏），
  * 断言 commit 回 TOO_LARGE、**不提交**、已提交的上一套原样保留、
@@ -7354,6 +7568,7 @@ int main(int argc, char **argv)
     test_two_layer_shared_phase();
     test_two_layer_ram_sizes();
     test_two_layer_needs_frames();
+    test_clear_script_command();
     test_set_led_count_reducer();
     test_led_count_job();
     test_save_scheduler();
@@ -7407,6 +7622,9 @@ int main(int argc, char **argv)
     test_script_fade_roundtrip();
     test_script_two_layer_persist();
     test_script_clear_slot();
+    test_script_store_clear();
+    test_script_should_deactivate();
+    test_script_blob_encode_with_cleared();
     test_script_commit_too_large();
     test_script_commit_implies_persistable();
     test_planar_parse_list();
