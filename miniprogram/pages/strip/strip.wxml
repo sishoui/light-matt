@@ -147,10 +147,36 @@
 
   <!-- ---------------- 进阶档：时间轴 + 时长（#65） ---------------- -->
   <block wx:if="{{mode === 'advanced'}}">
-    <view class="section timeline-section">
-      <view class="section-head">
-        <text class="section-title">时间轴</text>
-        <text class="section-value">{{timelineSummary}}</text>
+    <view class="timeline-section">
+      <!--
+        #99：时间轴是页面结构，不包在卡片里。标题放大，步骤数与总秒数降为副标题；
+        「加步骤」在标题右侧；没有「删步骤」按钮。循环是方案级设置，也放这一行。
+      -->
+      <view class="timeline-head">
+        <view class="timeline-head-main">
+          <text class="timeline-title">时间轴</text>
+          <text class="timeline-sub">{{timelineSummary}}</text>
+        </view>
+        <view class="timeline-head-right">
+          <view class="loop-control">
+            <text class="loop-caption">循环</text>
+            <view class="loop-options">
+              <view
+                wx:for="{{loopChoices}}"
+                wx:key="value"
+                class="loop-option {{item.selected ? 'on' : ''}} {{item.disabled ? 'disabled' : ''}}"
+                data-value="{{item.value}}"
+                bindtap="onLoopTap"
+                hover-class="{{item.disabled ? 'none' : 'loop-option-hover'}}"
+              >{{item.label}}</view>
+            </view>
+          </view>
+          <view
+            class="timeline-add {{stepCanAdd ? '' : 'disabled'}}"
+            hover-class="{{stepCanAdd ? 'timeline-add-hover' : ''}}"
+            bindtap="onStepAdd"
+          >+ 步骤</view>
+        </view>
       </view>
 
       <!--
@@ -184,51 +210,66 @@
         </view>
       </view>
 
-      <view class="timeline-actions">
-        <text class="section-hint">长按步骤可拖动换位置</text>
-        <view class="timeline-actions-right">
-          <view
-            class="timeline-add ghost {{stepCount <= 1 ? 'disabled' : ''}}"
-            hover-class="{{stepCount > 1 ? 'timeline-add-hover' : ''}}"
-            bindtap="onStepRemove"
-          >删步骤</view>
-          <view
-            class="timeline-add {{stepCanAdd ? '' : 'disabled'}}"
-            hover-class="{{stepCanAdd ? 'timeline-add-hover' : ''}}"
-            bindtap="onStepAdd"
-          >+ 加步骤</view>
-        </view>
-      </view>
+      <text class="timeline-hint">点一块选中，长按可拖动换位置</text>
 
-      <!-- 时长：拖动时上方块宽实时变化，最小单位 0.5 秒 -->
-      <view class="duration-block">
-        <view class="duration-head">
-          <text class="duration-label">这一步时长</text>
-          <text class="duration-value mono">{{stepDurationText}}</text>
+      <!--
+        #99 步骤气泡：选中步骤后出现在时间轴下方，箭头对准选中块正中。
+        自上而下：步骤名（长按可改）→ 副标题（时长 · 分区数）→ 时长滑轴 → 分区列表。
+      -->
+      <view wx:if="{{bubble.visible}}" class="step-bubble">
+        <view class="bubble-arrow" style="left: {{bubble.arrowPercent}}%"></view>
+        <view class="bubble-name-row">
+          <text class="bubble-name" bindlongpress="onStepRename">{{bubble.name}}</text>
+          <text class="bubble-sub">{{bubble.subtitle}}</text>
         </view>
-        <slider
-          class="duration-slider"
-          min="0.5"
-          max="30"
-          step="0.5"
-          value="{{stepDurationSeconds}}"
-          disabled="{{stepCount === 0}}"
-          activeColor="{{accentColor}}"
-          backgroundColor="rgba(120, 120, 128, 0.2)"
-          block-size="24"
-          bindchanging="onDurationChanging"
-          bindchange="onDurationChange"
-        />
-        <view class="duration-ticks">
-          <text
-            wx:for="{{durationTicks}}"
-            wx:key="key"
-            class="duration-tick tick-{{item.align}}"
-            style="left: {{item.percent}}%"
-            data-ms="{{item.durationMs}}"
-            bindtap="onDurationTickTap"
-          >{{item.label}}</text>
+
+        <view class="duration-block">
+          <view class="duration-head">
+            <text class="duration-label">这一步时长</text>
+            <text class="duration-value mono">{{stepDurationText}}</text>
+          </view>
+          <slider
+            class="duration-slider"
+            min="0.5"
+            max="30"
+            step="0.5"
+            value="{{stepDurationSeconds}}"
+            disabled="{{stepCount === 0}}"
+            activeColor="{{accentColor}}"
+            backgroundColor="rgba(120, 120, 128, 0.2)"
+            block-size="24"
+            bindchanging="onDurationChanging"
+            bindchange="onDurationChange"
+          />
+          <view class="duration-ticks">
+            <text
+              wx:for="{{durationTicks}}"
+              wx:key="key"
+              class="duration-tick tick-{{item.align}}"
+              style="left: {{item.percent}}%"
+              data-ms="{{item.durationMs}}"
+              bindtap="onDurationTickTap"
+            >{{item.label}}</text>
+          </view>
         </view>
+
+        <!-- 分区列表：点一行展开该分区的背景层与特效层（两层编辑在下面）。 -->
+        <view wx:if="{{bubble.zones.length > 0}}" class="bubble-zones">
+          <view
+            wx:for="{{bubble.zones}}"
+            wx:key="segId"
+            class="bubble-zone-row {{item.expanded ? 'expanded' : ''}}"
+            data-seg-id="{{item.segId}}"
+            bindtap="onBubbleZoneTap"
+            hover-class="bubble-zone-hover"
+          >
+            <view class="bubble-zone-dot" style="background: {{item.hex}}"></view>
+            <text class="bubble-zone-range mono">{{item.rangeText}}</text>
+            <text class="bubble-zone-effect">{{item.effectText}}</text>
+            <view class="bubble-zone-chevron"></view>
+          </view>
+        </view>
+        <text wx:else class="bubble-empty">这一步还没有分区</text>
       </view>
 
       <text wx:if="{{stepHint}}" class="section-hint">{{stepHint}}</text>
@@ -320,10 +361,12 @@
       <text wx:if="{{zoneHint}}" class="section-hint">{{zoneHint}}</text>
     </view>
 
-    <!-- ---------------- 进阶档：效果面板（#67） ---------------- -->
+    <!-- ---------------- 进阶档：两层效果（#100） ----------------
+         每个分区两个平级槽位：背景层（铺底）与特效层（流动）。
+         「叠加效果」这一整块已经不存在——两层本身就是叠加。 -->
     <view class="section panel-section">
       <view class="section-head">
-        <text class="section-title">效果</text>
+        <text class="section-title">背景层</text>
         <view class="panel-head-right">
           <text class="section-value">{{panelSummary}}</text>
           <view wx:if="{{panelColorHex}}" class="param-preview" style="background: {{panelColorHex}}"></view>
@@ -410,13 +453,13 @@
 
         <text wx:if="{{panelHint}}" class="section-hint">{{panelHint}}</text>
 
-        <!-- ---------------- 叠加层（#71 US49 / US50） ----------------
-             主效果之上可以再叠一层：爆闪 / 心跳这类短促效果叠在底色上就是「闪光」。
-             选项里没有「熄灭」（叠一层黑等于没做事，US50）。 -->
+        <!-- ---------------- 特效层（#100） ----------------
+             与背景层平级的第二个槽位：流星 / 随机闪烁这类流动的效果放在这里。
+             两层本身即叠加，界面不再有「叠加效果」这一层概念。 -->
         <view class="overlay-block">
           <view class="section-head overlay-head">
-            <text class="section-title">叠加效果</text>
-            <text class="section-value">{{overlayEnabled ? overlaySummary : '关闭'}}</text>
+            <text class="section-title">特效层</text>
+            <text class="section-value">{{overlayEnabled ? overlaySummary : '空'}}</text>
           </view>
 
           <view class="overlay-types">
@@ -432,7 +475,7 @@
           <block wx:if="{{overlayEnabled}}">
             <!-- 叠加方式：只在真有叠加层时出现（关闭时问「怎么叠」没有意义） -->
             <view class="panel-choice overlay-blend">
-              <text class="param-label">叠加方式</text>
+              <text class="param-label">混合方式</text>
               <view class="panel-choice-row">
                 <view
                   wx:for="{{overlayBlendOptions}}"

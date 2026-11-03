@@ -104,15 +104,16 @@ function zone(segId: number, overrides: Partial<SegmentSpec> = {}): SegmentSpec 
 }
 
 describe("效果类型行", () => {
-  it("七个等宽按钮的顺序是 静态 / 呼吸 / 彩虹 / 流光 / 爆闪 / 心跳 / 熄灭", () => {
+  it("类型按钮的名字不带颜色，「熄灭」显示为「空」（#100）", () => {
     expect(PANEL_TYPE_OPTIONS.map((option) => option.name)).toEqual([
-      "静态",
+      "常亮",
       "呼吸",
       "彩虹",
-      "流光",
+      "流星",
       "爆闪",
       "心跳",
-      "熄灭",
+      "随机闪烁",
+      "空",
     ]);
     expect(PANEL_TYPE_OPTIONS.map((option) => option.type)).toEqual([
       "static",
@@ -121,14 +122,20 @@ describe("效果类型行", () => {
       "comet",
       "strobe",
       "heartbeat",
+      "flicker",
       "off",
     ]);
+    /* 界面上不出现「熄灭」「静态」「流光」这几个旧词。 */
+    const names = PANEL_TYPE_OPTIONS.map((option) => option.name);
+    expect(names).not.toContain("熄灭");
+    expect(names).not.toContain("静态");
+    expect(names).not.toContain("流光");
   });
 
   it("只有当前类型是高亮的", () => {
     const views = buildTypeViews("rainbow");
     expect(views.filter((view) => view.selected).map((view) => view.type)).toEqual(["rainbow"]);
-    expect(views).toHaveLength(7);
+    expect(views).toHaveLength(8);
   });
 
   it("类型与协议枚举一一对应（空层按静态、未知按静态）", () => {
@@ -255,6 +262,7 @@ describe("参数区按类型整体替换", () => {
       comet: ["hue", "sat", "level", "period", "tail"],
       strobe: ["hue", "sat", "frequency", "level"],
       heartbeat: ["hue", "sat", "bpm", "level"],
+      flicker: ["hue", "sat", "level", "period"],
       off: [],
     };
     for (const type of PANEL_TYPE_OPTIONS.map((option) => option.type)) {
@@ -348,7 +356,7 @@ describe("切换类型：保留颜色，其余按新类型默认值", () => {
 });
 
 describe("叠加层可选类型", () => {
-  it("六个选项：静态 / 呼吸 / 彩虹 / 流光 / 爆闪 / 心跳", () => {
+  it("七个选项：常亮 / 呼吸 / 彩虹 / 流星 / 爆闪 / 心跳 / 随机闪烁", () => {
     expect(PANEL_OVERLAY_TYPE_OPTIONS.map((option) => option.type)).toEqual([
       "static",
       "breathing",
@@ -356,14 +364,16 @@ describe("叠加层可选类型", () => {
       "comet",
       "strobe",
       "heartbeat",
+      "flicker",
     ]);
     expect(PANEL_OVERLAY_TYPE_OPTIONS.map((option) => option.name)).toEqual([
-      "静态",
+      "常亮",
       "呼吸",
       "彩虹",
-      "流光",
+      "流星",
       "爆闪",
       "心跳",
+      "随机闪烁",
     ]);
   });
 
@@ -822,7 +832,7 @@ describe("选择控件", () => {
 
 describe("摘要与两条事实", () => {
   it("摘要是人话，不含协议词", () => {
-    expect(panelSummary("static", params())).toContain("静态");
+    expect(panelSummary("static", params())).toContain("常亮");
     const breathing = panelSummary("breathing", params({ periodMs: 2000, minLevel: 102 }));
     expect(breathing).toContain("2 秒");
     expect(breathing).toContain("正弦");
@@ -897,22 +907,21 @@ describe("摘要与两条事实", () => {
 /* ================= 叠加层（#71 US49 / US50） ================= */
 
 describe("叠加层：选项、草稿与装配", () => {
-  it("叠加层选项是「关闭」+ 六种类型，且不含熄灭", () => {
+  it("叠加层选项是「关闭」+ 七种类型，且不含熄灭", () => {
     const values = OVERLAY_CHOICE_OPTIONS.map((option) => option.value);
     expect(values[0]).toBe("none");
     expect(values).toContain("strobe");
     expect(values).toContain("heartbeat");
     /* US50：叠加层里没有「熄灭」——叠一层黑等于没做事。 */
     expect(values).not.toContain("off");
-    expect(OVERLAY_CHOICE_OPTIONS).toHaveLength(7);
+    expect(OVERLAY_CHOICE_OPTIONS).toHaveLength(8);
   });
 
-  it("叠加方式只有覆盖 / 相乘 / 相加三种", () => {
-    expect(OVERLAY_BLEND_OPTIONS.map((option) => option.value)).toEqual([
-      BLEND.OVER,
-      BLEND.MULTIPLY,
-      BLEND.ADD,
-    ]);
+  it("混合方式只剩相加 / 覆盖两种（#100 移除了相乘）", () => {
+    expect(OVERLAY_BLEND_OPTIONS.map((option) => option.value)).toEqual([BLEND.ADD, BLEND.OVER]);
+    expect(OVERLAY_BLEND_OPTIONS.map((option) => option.name)).toEqual(["相加", "覆盖"]);
+    /* 界面上再也找不到「相乘」。 */
+    expect(OVERLAY_BLEND_OPTIONS.map((option) => option.name)).not.toContain("相乘");
   });
 
   it("默认草稿是关闭状态，且不产出任何叠加层", () => {

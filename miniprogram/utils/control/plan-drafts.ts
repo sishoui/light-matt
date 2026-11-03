@@ -153,8 +153,11 @@ function parseStage(value: unknown): ScriptStageDraft | null {
   }
   const raw = value as Record<string, unknown>;
   const input = typeof raw.durationInput === "string" ? raw.durationInput : "";
+  /* #99：步骤名是可选字段；空白视为「没起名」，界面回落到「第 N 步」。 */
+  const rawName = typeof raw.name === "string" ? raw.name.trim() : "";
+  const name = rawName.length > 0 ? rawName : undefined;
   if (!Array.isArray(raw.segments)) {
-    return { durationInput: input, segments: [] };
+    return { durationInput: input, ...(name === undefined ? {} : { name }), segments: [] };
   }
   const segments: ScriptSegment[] = [];
   for (const item of raw.segments) {
@@ -163,7 +166,7 @@ function parseStage(value: unknown): ScriptStageDraft | null {
       segments.push(segment);
     }
   }
-  return { durationInput: input, segments };
+  return { durationInput: input, ...(name === undefined ? {} : { name }), segments };
 }
 
 /**
@@ -188,7 +191,16 @@ export function parseScriptDraft(value: unknown, scriptId = 0): ScriptDraft | nu
     }
     stages.push(stage);
   }
-  return { scriptId: Math.max(0, Math.floor(scriptId)), stages };
+  /* #99：循环模式是方案级设置；坏值交给页面钳到「不循环」（这里不抛错）。 */
+  const loop =
+    typeof raw.loop === "number" && Number.isInteger(raw.loop) && raw.loop >= 0 && raw.loop <= 2
+      ? raw.loop
+      : undefined;
+  return {
+    scriptId: Math.max(0, Math.floor(scriptId)),
+    stages,
+    ...(loop === undefined ? {} : { loop }),
+  };
 }
 
 /** 读整张表（损坏的 JSON / 非对象一律当空表）。 */

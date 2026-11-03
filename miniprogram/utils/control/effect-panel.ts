@@ -64,17 +64,43 @@ import {
 } from "./strip-simple";
 
 /** 面板上的七种效果类型（与协议类型一一对应）。 */
-export type PanelType = "static" | "breathing" | "rainbow" | "comet" | "strobe" | "heartbeat" | "off";
+export type PanelType =
+  | "static"
+  | "breathing"
+  | "rainbow"
+  | "comet"
+  | "strobe"
+  | "heartbeat"
+  | "flicker"
+  | "off";
+
+/**
+ * 界面上的八个灯效（#100）：空 / 常亮 / 呼吸 / 彩虹 / 流星 / 爆闪 / 心跳 / 随机闪烁。
+ *
+ * 名字里不带颜色——用户是来选效果的，不是来选颜色的（只有「彩虹」例外，
+ * 它本身就是彩色的）。「熄灭」这一项不再出现在清单里：不亮就是「空」。
+ */
+export const PANEL_EFFECT_OPTIONS: ReadonlyArray<{ type: PanelType; name: string; hint: string }> = [
+  { type: "static", name: "常亮", hint: "整段一个颜色" },
+  { type: "breathing", name: "呼吸", hint: "缓亮缓暗" },
+  { type: "rainbow", name: "彩虹", hint: "颜色沿灯组铺开并流动" },
+  { type: "comet", name: "流星", hint: "亮点拖着尾巴跑动" },
+  { type: "strobe", name: "爆闪", hint: "高频闪烁" },
+  { type: "heartbeat", name: "心跳", hint: "一明一暗像心跳" },
+  { type: "flicker", name: "随机闪烁", hint: "零星亮点随机亮灭" },
+];
 
 /** 类型 → 界面文案（七个等宽按钮，顺序即票面顺序）。 */
 export const PANEL_TYPE_OPTIONS: ReadonlyArray<{ type: PanelType; name: string }> = [
-  { type: "static", name: "静态" },
+  { type: "static", name: "常亮" },
   { type: "breathing", name: "呼吸" },
   { type: "rainbow", name: "彩虹" },
-  { type: "comet", name: "流光" },
+  { type: "comet", name: "流星" },
   { type: "strobe", name: "爆闪" },
   { type: "heartbeat", name: "心跳" },
-  { type: "off", name: "熄灭" },
+  { type: "flicker", name: "随机闪烁" },
+  /* 「空」在编码上写成熄灭类型；界面文案是「空」，不出现「熄灭」。 */
+  { type: "off", name: "空" },
 ];
 
 /**
@@ -97,7 +123,8 @@ export const PANEL_OVERLAY_TYPE_OPTIONS: ReadonlyArray<{ type: PanelType; name: 
 export type OverlayChoice = PanelType | "none";
 
 export const OVERLAY_CHOICE_OPTIONS: ReadonlyArray<{ value: OverlayChoice; name: string }> = [
-  { value: "none", name: "关闭" },
+  /* #100：特效层的「无」叫「空」（不亮就是空，不需要「关闭」这个动词）。 */
+  { value: "none", name: "空" },
   ...PANEL_OVERLAY_TYPE_OPTIONS.map((option) => ({ value: option.type, name: option.name })),
 ];
 
@@ -112,9 +139,8 @@ export const OVERLAY_BLEND_OPTIONS: ReadonlyArray<{
   name: string;
   hint: string;
 }> = [
-  { value: BLEND.OVER, name: "覆盖", hint: "叠加效果直接替换主效果" },
-  { value: BLEND.MULTIPLY, name: "相乘", hint: "两者相乘：明暗叠加、颜色不变形" },
-  { value: BLEND.ADD, name: "相加", hint: "两者相加，更亮（可能过曝到白）" },
+  { value: BLEND.ADD, name: "相加", hint: "特效层透明地叠在背景层上" },
+  { value: BLEND.OVER, name: "覆盖", hint: "特效层有颜色时盖住背景层" },
 ];
 
 /** 一个分区的叠加层草稿：没有叠加层时 `type = "none"`。 */
@@ -206,6 +232,7 @@ const TYPE_VALUE: Record<PanelType, number> = {
   comet: SEGMENT_TYPE.COMET,
   strobe: SEGMENT_TYPE.STROBE,
   heartbeat: SEGMENT_TYPE.HEARTBEAT,
+  flicker: SEGMENT_TYPE.FLICKER,
   off: SEGMENT_TYPE.OFF,
 };
 
@@ -222,6 +249,8 @@ export function panelTypeOf(type: number): PanelType {
       return "strobe";
     case SEGMENT_TYPE.HEARTBEAT:
       return "heartbeat";
+    case SEGMENT_TYPE.FLICKER:
+      return "flicker";
     case SEGMENT_TYPE.OFF:
       return "off";
     default:
@@ -490,6 +519,8 @@ export const SLIDER_KEYS: Record<PanelType, readonly PanelSliderKey[]> = {
   comet: ["hue", "sat", "level", "period", "tail"],
   strobe: ["hue", "sat", "frequency", "level"],
   heartbeat: ["hue", "sat", "bpm", "level"],
+  /* #100 随机闪烁：密度（p5）控制同时亮着的比例。 */
+  flicker: ["hue", "sat", "level", "period"],
   off: [],
 };
 
@@ -519,6 +550,7 @@ export const CHOICE_KEYS: Record<PanelType, readonly PanelChoiceKey[]> = {
   comet: ["direction"],
   strobe: ["duty"],
   heartbeat: [],
+  flicker: [],
   off: [],
 };
 

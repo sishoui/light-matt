@@ -36,7 +36,6 @@ import {
   canAddStepStage,
   createAdvancedDrafts,
   moveStepStage,
-  removeStepStage,
   seedStepFromReports,
   setStageDurationMs,
   stageDurationMs,
@@ -93,11 +92,27 @@ import {
   planTabSummary,
 } from "../../utils/control/plan-slots";
 import { zonesFromReports } from "../../utils/control/zone-editor";
+import { layerModeNameOf } from "../../utils/control/effect-view";
 import {
   buildPreviewLeds,
   previewAvailable,
   type PreviewLed,
 } from "../../utils/control/zone-preview";
+import {
+  arrowPercentOf,
+  bubbleSubtitle,
+  buildLoopChoices,
+  defaultStepName,
+  draftLoop,
+  stepNameOf,
+  timelineSubtitle,
+  withDraftLoop,
+  zoneRangeText,
+  EMPTY_BUBBLE,
+  type BubbleZoneRow,
+  type StepBubbleView,
+} from "../../utils/control/step-bubble";
+import { LOOP_MODE, clampLoopMode, type LoopMode } from "../../utils/control/advanced-layers";
 import { checkScriptBlobBytes } from "../../utils/control/script-plan";
 import { draftCapacityBytes, draftToScriptConfig } from "../../utils/control/script-view";
 import {
@@ -340,6 +355,12 @@ Page({
 
     /* ---- 简单 / 进阶 ---- */
     mode: "simple" as StripMode,
+
+    /* ---- 进阶档：步骤气泡（#99） ---- */
+    bubble: EMPTY_BUBBLE,
+
+    /* ---- 进阶档：循环三档（#99） ---- */
+    loopChoices: buildLoopChoices(LOOP_MODE.NONE),
 
     /* ---- 进阶档：时间轴 + 时长（#65） ---- */
     steps: [] as TimelineBlockView[],
@@ -1109,10 +1130,11 @@ Page({
       timelineCompact: gapPx === COMPACT_BLOCK_GAP_PX,
       /* 默认恢复过渡；只有提交重排那一帧由 `patch` 临时关掉（#82）。 */
       timelineSettling: false,
-      timelineSummary:
-        timelineSteps.length === 0
-          ? "还没有步骤"
-          : `${timelineSteps.length} 个步骤 · 共 ${durationText(totalMs)}`,
+      timelineSummary: timelineSubtitle(timelineSteps.length, totalMs),
+      /* #99：循环三档是方案级设置，选中态跟着当前草稿走。 */
+      loopChoices: buildLoopChoices(draftLoop(draft), { thirdDisabled: false }),
+      /* #99：步骤气泡（名字 / 副标题 / 时长 / 分区列表 / 箭头位置）。 */
+      bubble: this.bubbleView(timelineSteps.length === 0),
       stepDurationSeconds: durationMs / 1000,
       stepDurationText: durationText(durationMs),
       zoneSummary: zoneAxisSummary(axisZones, ledCount),
@@ -2071,20 +2093,6 @@ Page({
     this.pickedSegId = -1;
     this.renderTimeline({ stepHint: "" });
   },
-
-  /** 删掉当前步骤（至少留一个）。 */
-  onStepRemove() {
-    const draft = this.currentDraft();
-    const next = removeStepStage(draft, this.timelineIndex);
-    if (next === draft) {
-      this.renderTimeline({ stepHint: "至少要留一个步骤" });
-      return;
-    }
-    this.setDraft(next);
-    this.timelineIndex = Math.max(0, Math.min(next.stages.length - 1, this.timelineIndex));
-    this.pickedSegId = -1;
-    this.renderTimeline({ stepHint: "" });
-  },
   /** 拖时长条：块宽实时跟着变（拖动中也走 `renderTimeline`，只是不写设备）。 */
   onDurationChanging(e: WechatMiniprogram.SliderChanging) {
     this.applyDuration(Number(e.detail.value));
@@ -2120,6 +2128,159 @@ Page({
       return;
     }
     this.applyDuration(ms / 1000);
+  },
+
+  /**
+   * 步骤气泡的视图（#99）。
+   *
+   * 选中一个步骤时出现：名字（默认「第 N 步」）、副标题（时长 · 分区数）、
+   * 分区列表（颜色点 + 区间 + 效果摘要），以及指向选中块正中的箭头位置。
+   */
+  bubbleView(noSteps: boolean): StepBubbleView {
+    if (noSteps) {
+      return EMPTY_BUBBLE;
+    }
+    const draft = this.currentDraft();
+    const stripId = this.data.stripId;
+    const index = this.timelineIndex;
+    const stage = draft.stages[index];
+    const zones = stepZonesOf(draft, index, stripId);
+    const axisZones = axisZonesOf(zones);
+    const zonesBySeg = new Map(axisZones.map((zone) => [zone.segId, zone]));
+
+    const rows: BubbleZoneRow[] = zones.map((zone) => {
+      const axis = zonesBySeg.get(zone.segId);
+      const layer0Name = layerModeNameOf(zone.layer0.type);
+      const effectText =
+        zone.layer1 === null || zone.layer1 === undefined || zone.layer1.type === NO_EFFECT
+          ? layer0Name
+          : `${layer0Name} + ${layerModeNameOf(zone.layer1.type)}`;
+      return {
+        segId: zone.segId,
+        hex: axis?.hex ?? "",
+        rangeText: zoneRangeText(zone.start, zone.end),
+        effectText,
+        expanded: zone.segId === this.pickedSegId,
+      };
+    });
+
+    /* 箭头位置：选中块在整行里的中点百分比。 */
+    const timelineSteps = timelineStepsOf(draft, stripId);
+    const { blocks } = this.timelineBlocksOf(timelineSteps);
+    const percentBlocks = blocks.map((block) => ({
+      leftPercent: parseFloat(String(block.style.match(/left:\s*([\d.]+)%/)?.[1] ?? "0")),
+      widthPercent: parseFloat(String(block.style.match(/width:\s*([\d.]+)%/)?.[1] ?? "0")),
+    }));
+
+    return {
+      visible: true,
+      name: stepNameOf(stage, index),
+      subtitle: bubbleSubtitle(this.currentDurationMs(), zones.length),
+      seconds: this.currentDurationMs() / 1000,
+      zoneCount: zones.length,
+      zones: rows,
+      arrowPercent: arrowPercentOf(percentBlocks, index),
+    };
+  },
+
+  /** 长按气泡里的步骤名：改名（默认「第 N 步」，改完摘要同步）。 */
+  async onStepRename() {
+    const index = this.timelineIndex;
+    const draft = this.currentDraft();
+    const stage = draft.stages[index];
+    if (stage === undefined) {
+      return;
+    }
+    const current = stepNameOf(stage, index);
+    const name = await this.promptText({
+      title: "步骤名称",
+      value: current,
+      placeholder: defaultStepName(index),
+      maxlength: 12,
+    });
+    if (name === null) {
+      return;
+    }
+    const next: ScriptDraft = {
+      ...draft,
+      stages: draft.stages.map((item, i) =>
+        i === index ? { ...item, ...(name.length > 0 ? { name } : { name: undefined }) } : item,
+      ),
+    };
+    /* 清空等于「恢复默认名」：删掉字段，而不是存空串。 */
+    if (name.length === 0) {
+      next.stages[index] = { ...stage };
+      delete next.stages[index].name;
+    }
+    this.setDraft(next);
+    this.renderTimeline({ stepHint: name.length > 0 ? "步骤名已更新" : "已恢复默认名" });
+  },
+
+  /** 点气泡里的分区行：展开 / 收起该分区两层（两层编辑在下方效果面板）。 */
+  onBubbleZoneTap(e: WechatMiniprogram.TouchEvent) {
+    const segId = Number(e.currentTarget.dataset.segId);
+    if (!Number.isInteger(segId) || segId < 0) {
+      return;
+    }
+    this.pickedSegId = segId;
+    this.panelKey = "";
+    this.renderTimeline();
+  },
+
+  /** 循环三档（#99）：写进当前方案的草稿并立即下发。 */
+  onLoopTap(e: WechatMiniprogram.TouchEvent) {
+    const raw = Number(e.currentTarget.dataset.value);
+    const mode: LoopMode = clampLoopMode(raw);
+    const draft = this.currentDraft();
+    if (draftLoop(draft) === mode) {
+      return;
+    }
+    this.setDraft(withDraftLoop(draft, mode));
+    this.renderTimeline();
+    /* 立即生效：循环是方案级设置，改完就下发给设备（#96 的立即生效语义）。 */
+    void this.applyAdvanced({ silent: true });
+  },
+
+  /** 文本输入框（步骤改名用，与首页 / 设备页同一套兜底）。 */
+  promptText(input: {
+    title: string;
+    value: string;
+    placeholder: string;
+    maxlength: number;
+  }): Promise<string | null> {
+    return new Promise((resolve) => {
+      type EditableModal = (options: {
+        title: string;
+        editable?: boolean;
+        placeholderText?: string;
+        content?: string;
+        confirmText?: string;
+        cancelText?: string;
+        success?: (res: { confirm: boolean; content?: string }) => void;
+        fail?: () => void;
+      }) => void;
+      const modal = wx.showModal as unknown as EditableModal;
+      try {
+        modal({
+          title: input.title,
+          editable: true,
+          placeholderText: input.placeholder,
+          content: input.value,
+          confirmText: "保存",
+          cancelText: "取消",
+          success: (res) => {
+            if (!res.confirm) {
+              resolve(null);
+              return;
+            }
+            resolve(String(res.content ?? "").slice(0, input.maxlength).trim());
+          },
+          fail: () => resolve(null),
+        });
+      } catch {
+        resolve(null);
+      }
+    });
   },
 
   // ---------------- 进阶档：分区轴（#66） ----------------
@@ -3328,7 +3489,7 @@ Page({
    * 方案写入失败时**不还原**实时分区：那一步已经成功，用户想要的画面已经写进去了，
    * 只把「方案没提交」这个原因如实说出来。
    */
-  async applyAdvanced(): Promise<void> {
+  async applyAdvanced(_opts: { silent?: boolean } = {}): Promise<void> {
     const session = this.session;
     if (session === null) {
       return;
