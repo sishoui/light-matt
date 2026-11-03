@@ -1,6 +1,6 @@
 # 交接：lumen 当前状态与下一步
 
-**最后更新**：2026-11-03　**分支**：`integration/ui-refactor-v4`（UI 重构 + 协议 v4 已完成，
+**最后更新**：2026-11-03　**分支**：`feat/strip-editor-polish`（灯组进阶编辑器打磨已完成，
 待合入 `master`）
 
 这份文件是给**新会话**的入口。它只写「新会话必须知道、但代码和文档里读不到」的东西；
@@ -8,7 +8,56 @@
 
 ---
 
-## 0. 2026-11-03 第五轮：UI 重构 + 协议 v4（**已完成**，集成分支 `integration/ui-refactor-v4`）
+## 0. 2026-11-03 第六轮：灯组进阶编辑器打磨（**已完成**，分支 `feat/strip-editor-polish`）
+
+**规格 [#71](https://github.com/sishoui/light-matt/issues/71) + 12 张实现票 `#72`–`#83` 全部关闭。**
+基线 `integration/ui-refactor-v4`；本地副本 `.scratch/strip-editor-polish-spec.md`、
+`.scratch/strip-editor-polish-tickets/`。分支已推送，**尚未合入 master**。
+
+### 交付了什么
+
+| 层 | 变化 |
+|---|---|
+| 灯珠上限 | `LUMEN_MAX_LEDS` **64 → 100**；线上字节不变（`start`/`end` 仍 1 字节，State blob 仍 **1440**） |
+| 灯珠数界面 | 设备信息页每组一条 1–100 滑块 + 只读总灯珠数；灯组页顶部也有当前组滑块；缩小先确认再截断 |
+| 时间轴 | **固定宽度、永不横向滚动**；块宽按比例但保底 **24px**，不够时间隙 8→4，再不够均分；窄块不画时长文字 |
+| 拖拽 | 长按 **300ms** 抬起（scale 1.06 + 阴影）、跟手、邻块平移让位；纯 `transform`，位移由纯函数算 |
+| 光区 | 选中块两端**圆形手柄** + 轴下「第 x–y 颗 · n 颗」；弹窗起点实心点 / 终点空心环 + **两个数字滚轮**（值域只含连续空闲段） |
+| 方案 | **设备级**（键 `deviceKey#slot`，修掉两条灯组同槽位互相覆盖）；**默认 1 套、上限 4**；新建/删除，删除**不重排编号** |
+| 协议 | 新增 `0x1E ClearScript`（清空已提交剧本，幂等，激活态回退）；**版本号仍是 v4，不升版** |
+| 灯效 | 新增 **爆闪 0x04 / 心跳 0x05 / 熄灭 0x06**，复用 7 字节参数块（层宽、帧长、blob 全不变）；进阶档 7 类，简单档 9 张卡三列 |
+
+### 两个已修的数据丢失缺陷（评审发现，值得记住）
+
+1. **改小灯珠数会让四套方案全部消失**：固件原先只裁剪实时段配置，从不校验**已提交剧本**。
+   重启时方案解码遇到越界段就整体拒绝、静默回退空配置。修复：`lumen_script_store_prune_strip()`
+   在三条 `SetLedCount` 路径全部调用（实时段 + 阶段缓冲 + 全部已提交槽 + 暂存区），并补持久化。
+2. **非 0 号灯组改灯珠数不持久化**：那条分支既不裁剪也不写 NVS，重启回退且删掉的光区复活。已修。
+
+第三条（本轮收尾补的）：**跨页草稿陈旧** —— 设备信息页改小灯珠数只写存储，灯组页在栈上
+不重读，内存草稿仍越界，「应用并播放」被预检拒绝。现按 `ledCountSeen` 检测变小并重载 + 裁剪。
+
+### 本轮仍未验证 / 未完成（**不要当成已完成**）
+
+- **真机**：没有烧录、没有连设备。固件改动只有 host 单测（12701 项）与 IDF 编译把关。
+  重点待测：8×100 的 TDM 时序余量、爆闪在 20fps 下 10Hz 的观感、清空正在播放的方案是否真停。
+- **`.auto` 渲染脚本**：`verify-effect-editor.mjs` / `verify-deep.mjs` / `verify-redesign.mjs`
+  面向旧的六卡 + 方案轮换，已被九卡 / 方案 tab 改动作废，**需要按新结构重写**。
+- **叠加层编辑器没做**：`PANEL_OVERLAY_TYPE_OPTIONS` 只在测试里被引用，页面没有叠加层 UI。
+  规格 #71 的 User Story 49（「把爆闪/心跳当叠加层用」）**未落地**。
+- 死代码：`segment-editor.isKnownType`（4 类型）、`script-view.typeName`、`timeline` 若干未用导出。
+
+### 本轮基线
+
+```bash
+cmd.exe //c "firmware\\test\\run-tests.cmd"   # 12701 项断言 + 78 条 v4 向量（v3 62 条）
+cd miniprogram && npx vitest run              # 1464 用例 / 56 文件
+cd server && npm test                         # 140 用例
+```
+
+---
+
+## 0.1 2026-11-03 第五轮：UI 重构 + 协议 v4（**已完成**，集成分支 `integration/ui-refactor-v4`）
 
 **规格 [#60](https://github.com/sishoui/light-matt/issues/60) + 9 张实现票 `#61`–`#69` 全部落地。**
 本地副本：`.scratch/ui-refactor-v4-spec.md`、`.scratch/ui-refactor-tickets/`、裁决在
