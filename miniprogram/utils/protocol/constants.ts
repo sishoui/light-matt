@@ -148,6 +148,12 @@ export const SEGMENT_TYPE = {
   BREATHING: 0x01,
   RAINBOW: 0x02,
   COMET: 0x03,
+  /** #74 爆闪：方波 + 两端斜坡；p5 是占空比，周期下限 100ms。 */
+  STROBE: 0x04,
+  /** #74 心跳：一个节拍内一大一小两次脉冲；flags bit0 = 双脉冲，周期 500-1500ms。 */
+  HEARTBEAT: 0x05,
+  /** #74 熄灭：参数全 0，永不发光（显式的「这里就是黑的」）。 */
+  OFF: 0x06,
   /** 空层（只有 type 合法）。 */
   EMPTY: 0xff,
 } as const;
@@ -189,6 +195,21 @@ export const BREATHING_MIN_PERIOD_MS = 334;
  * 这两类是空间移动而不是亮度闪烁，所以比呼吸宽松；彩虹与流光共用同一条规则。
  */
 export const ANIMATION_MIN_PERIOD_MS = 200;
+
+/**
+ * 爆闪周期下限（effects-spec §2.5）：100ms = 10Hz。
+ *
+ * 这是**固件能表现的上界**（默认 20fps，每帧 50ms），不是安全线；#74 不提高帧率。
+ * period_ms == 0 是「静止不出光」，不受此限。
+ */
+export const STROBE_MIN_PERIOD_MS = 100;
+
+/**
+ * 心跳周期区间（effects-spec §2.6）：500-1500ms = 40-120 BPM。
+ * period_ms == 0 同样是「静止」。
+ */
+export const HEARTBEAT_MIN_PERIOD_MS = 500;
+export const HEARTBEAT_MAX_PERIOD_MS = 1500;
 
 /** 周期字段是 2 字节小端（D3）。 */
 export const MAX_PERIOD_MS = 0xffff;

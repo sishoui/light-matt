@@ -102,8 +102,114 @@ describe("命令构造器", () => {
     expect(layerParamLength(SEGMENT_TYPE.BREATHING)).toBe(7);
     expect(layerParamLength(SEGMENT_TYPE.RAINBOW)).toBe(7);
     expect(layerParamLength(SEGMENT_TYPE.COMET)).toBe(7);
+    /* #74：三种新类型复用同一个 7 字节块。 */
+    expect(layerParamLength(SEGMENT_TYPE.STROBE)).toBe(7);
+    expect(layerParamLength(SEGMENT_TYPE.HEARTBEAT)).toBe(7);
+    expect(layerParamLength(SEGMENT_TYPE.OFF)).toBe(7);
     expect(layerParamLength(SEGMENT_TYPE.EMPTY)).toBe(0);
     expect(layerParamLength(0x42)).toBe(0);
+  });
+});
+
+/**
+ * #74：爆闪 / 心跳 / 熄灭的编码与解析。
+ *
+ * 段载荷骨架：strip(1) seg(1) start(1) end(1) blend(1) layer0(9) layer1(9)。
+ * 这三个类型的参数块都是 7 字节，所以段宽仍是 23。
+ */
+describe("v4 新灯效类型（#74）", () => {
+  const build = (
+    type: number,
+    hue: number,
+    sat: number,
+    periodMs: number,
+    p5: number,
+    flags: number,
+  ): Uint8Array => {
+    const payload = new Uint8Array(23);
+    payload[3] = 9; /* end = 9 */
+    payload[5] = type;
+    payload[6] = hue & 0xff;
+    payload[7] = (hue >> 8) & 0xff;
+    payload[8] = sat;
+    payload[9] = periodMs & 0xff;
+    payload[10] = (periodMs >> 8) & 0xff;
+    payload[11] = p5; /* 层内 param[5] → 段内偏移 5 + 6 = 11 */
+    payload[12] = flags;
+    payload[13] = 100; /* level */
+    payload[14] = 0xff; /* layer1 空 */
+    return payload;
+  };
+
+  it("三种类型的层编码逐字节往返（段宽仍是 23）", () => {
+    const cases: Array<[number, number, number, number, number, number]> = [
+      [SEGMENT_TYPE.STROBE, 0, 255, 100, 90, 0],
+      [SEGMENT_TYPE.HEARTBEAT, 0, 255, 1000, 60, 0x01],
+      [SEGMENT_TYPE.OFF, 0, 0, 0, 0, 0],
+    ];
+    for (const [type, hue, sat, periodMs, p5, flags] of cases) {
+      const spec = parseSegmentPayload(build(type, hue, sat, periodMs, p5, flags));
+      expect(spec.layer0.type, `type ${type}`).toBe(type);
+      expect(spec.layer0.hue).toBe(hue);
+      expect(spec.layer0.sat).toBe(sat);
+      expect(spec.layer0.periodMs).toBe(periodMs);
+      expect(spec.layer0.p5).toBe(p5);
+      expect(spec.layer0.flags).toBe(flags);
+      expect(spec.layer0.level).toBe(100);
+      expect(spec.layer1.type).toBe(0xff);
+    }
+  });
+
+  it("爆闪：周期 100ms 接受、99ms 拒绝；flags 必须为 0", () => {
+    expect(() =>
+      parseSegmentPayload(build(SEGMENT_TYPE.STROBE, 0, 255, 100, 90, 0)),
+    ).not.toThrow();
+    expect(() =>
+      parseSegmentPayload(build(SEGMENT_TYPE.STROBE, 0, 255, 99, 90, 0)),
+    ).toThrow(RangeError);
+    expect(() =>
+      parseSegmentPayload(build(SEGMENT_TYPE.STROBE, 0, 255, 100, 90, 0x01)),
+    ).toThrow(RangeError);
+    /* period = 0 是「静止不出光」，不受下限约束。 */
+    expect(() =>
+      parseSegmentPayload(build(SEGMENT_TYPE.STROBE, 0, 255, 0, 90, 0)),
+    ).not.toThrow();
+  });
+
+  it("心跳：500 / 1500 接受、499 / 1501 拒绝；flags bit1-7 保留", () => {
+    for (const period of [500, 1000, 1500]) {
+      expect(() =>
+        parseSegmentPayload(build(SEGMENT_TYPE.HEARTBEAT, 0, 255, period, 60, 0x01)),
+        String(period),
+      ).not.toThrow();
+    }
+    expect(() =>
+      parseSegmentPayload(build(SEGMENT_TYPE.HEARTBEAT, 0, 255, 499, 60, 0x01)),
+    ).toThrow(RangeError);
+    expect(() =>
+      parseSegmentPayload(build(SEGMENT_TYPE.HEARTBEAT, 0, 255, 1501, 60, 0x01)),
+    ).toThrow(RangeError);
+    expect(() =>
+      parseSegmentPayload(build(SEGMENT_TYPE.HEARTBEAT, 0, 255, 1000, 60, 0x02)),
+    ).toThrow(RangeError);
+    /* bit0 关闭（单脉冲）合法。 */
+    expect(() =>
+      parseSegmentPayload(build(SEGMENT_TYPE.HEARTBEAT, 0, 255, 1000, 60, 0x00)),
+    ).not.toThrow();
+    /* period = 0 静止合法。 */
+    expect(() =>
+      parseSegmentPayload(build(SEGMENT_TYPE.HEARTBEAT, 0, 255, 0, 60, 0x01)),
+    ).not.toThrow();
+  });
+
+  it("熄灭：参数全 0 才接受，任一非 0 都拒绝", () => {
+    expect(() => parseSegmentPayload(build(SEGMENT_TYPE.OFF, 0, 0, 0, 0, 0))).not.toThrow();
+    /* hue / sat / period / p5 / flags 各自非 0。 */
+    expect(() => parseSegmentPayload(build(SEGMENT_TYPE.OFF, 1, 0, 0, 0, 0))).toThrow(RangeError);
+    expect(() => parseSegmentPayload(build(SEGMENT_TYPE.OFF, 0, 1, 0, 0, 0))).toThrow(RangeError);
+    expect(() => parseSegmentPayload(build(SEGMENT_TYPE.OFF, 0, 0, 1, 0, 0))).toThrow(RangeError);
+    expect(() => parseSegmentPayload(build(SEGMENT_TYPE.OFF, 0, 0, 0, 1, 0))).toThrow(RangeError);
+    expect(() => parseSegmentPayload(build(SEGMENT_TYPE.OFF, 0, 0, 0, 0, 1))).toThrow(RangeError);
   });
 });
 

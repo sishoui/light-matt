@@ -345,6 +345,68 @@ addApp({
   note: '清槽旁路：两层都空但 layer0.level = 30 → InvalidParam（不是清槽）',
 });
 
+/*
+ * #74 新增：爆闪 0x04 / 心跳 0x05 / 熄灭 0x06。
+ *
+ * 三种类型**复用现有 7 字节参数块**，所以层仍是 9 字节、段载荷仍是 23 / 25。
+ * 这里各给一条合法的单层段 + 一条双层（证明新类型能作叠加层），
+ * 再补各自的边界拒绝。
+ */
+addApp({
+  name: 'set_segment_single_strobe', command: 0x10, commandName: 'SetSegment', seq: 65,
+  payload: segment(0, 5, 0, 9, 0x00, layerAnim(0x04, 0, 255, 100, 90, 0), layerEmpty()),
+  note: '爆闪：period=100ms（10Hz 下限）、duty=90（中档）、flags=0',
+});
+addApp({
+  name: 'set_segment_single_heartbeat', command: 0x10, commandName: 'SetSegment', seq: 66,
+  payload: segment(1, 0, 0, 29, 0x00, layerAnim(0x05, 0, 255, 1000, 60, 0x01), layerEmpty()),
+  note: '心跳：period=1000ms（60 BPM）、pulse=60、双脉冲开',
+});
+addApp({
+  name: 'set_segment_single_off', command: 0x10, commandName: 'SetSegment', seq: 67,
+  payload: segment(2, 0, 0, 15, 0x00, layerAnim(0x06, 0, 0, 0, 0, 0), layerEmpty()),
+  note: '熄灭：参数全 0，永不发光',
+});
+addApp({
+  name: 'set_segment_strobe_plus_heartbeat', command: 0x10, commandName: 'SetSegment', seq: 68,
+  payload: segment(
+    0, 6, 0, 15, 0x01,
+    layerAnim(0x04, 0, 255, 200, 128, 0),
+    layerAnim(0x05, 0, 255, 1500, 60, 0x01),
+  ),
+  note: '#74 叠加：爆闪打底 + 心跳相乘（新类型可作 layer1）',
+});
+addApp({
+  name: 'set_segment_bad_strobe_period', command: 0x10, commandName: 'SetSegment', seq: 69,
+  payload: segment(0, 0, 0, 9, 0x00, layerAnim(0x04, 0, 255, 99, 90, 0), layerEmpty()),
+  result: 0x01, note: '爆闪周期 99ms < 100ms 下限',
+});
+addApp({
+  name: 'set_segment_bad_strobe_flags', command: 0x10, commandName: 'SetSegment', seq: 70,
+  payload: segment(0, 0, 0, 9, 0x00, layerAnim(0x04, 0, 255, 100, 90, 0x01), layerEmpty()),
+  result: 0x01, note: '爆闪 flags 必须为 0（没有方向 / 波形位）',
+});
+addApp({
+  name: 'set_segment_bad_heartbeat_period_low', command: 0x10, commandName: 'SetSegment', seq: 71,
+  payload: segment(0, 0, 0, 9, 0x00, layerAnim(0x05, 0, 255, 499, 60, 0x01), layerEmpty()),
+  result: 0x01, note: '心跳周期 499ms < 500ms 下限（40 BPM）',
+});
+addApp({
+  name: 'set_segment_bad_heartbeat_period_high', command: 0x10, commandName: 'SetSegment', seq: 72,
+  payload: segment(0, 0, 0, 9, 0x00, layerAnim(0x05, 0, 255, 1501, 60, 0x01), layerEmpty()),
+  result: 0x01, note: '心跳周期 1501ms > 1500ms 上限（120 BPM）',
+});
+addApp({
+  name: 'set_segment_bad_heartbeat_flags', command: 0x10, commandName: 'SetSegment', seq: 73,
+  payload: segment(0, 0, 0, 9, 0x00, layerAnim(0x05, 0, 255, 1000, 60, 0x02), layerEmpty()),
+  result: 0x01, note: '心跳 flags bit1-7 保留位必须为 0（bit0 才是双脉冲）',
+});
+addApp({
+  name: 'set_segment_bad_off_params', command: 0x10, commandName: 'SetSegment', seq: 74,
+  payload: segment(0, 0, 0, 9, 0x00, layerAnim(0x06, 1000, 0, 0, 0, 0), layerEmpty()),
+  result: 0x01, note: '熄灭层的 hue 必须为 0（参数全零）',
+});
+
 // 段查询 / 清段
 addApp({ name: 'clear_segment', command: 0x11, commandName: 'ClearSegment', seq: 33, payload: [0, 3] });
 addApp({ name: 'query_strip_0', command: 0x12, commandName: 'QueryStrip', seq: 34, payload: [0] });

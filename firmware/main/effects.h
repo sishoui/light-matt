@@ -22,6 +22,10 @@ typedef enum {
     LUMEN_EFFECT_BREATHING = 0x01,
     LUMEN_EFFECT_RAINBOW = 0x02,
     LUMEN_EFFECT_COMET = 0x03,
+    /* #74：三种新类型，参数块仍是 7 字节，层编码 / 帧长 / 状态存储都不变。 */
+    LUMEN_EFFECT_STROBE = 0x04,    /* 爆闪：方波 + 两端斜坡，duty 决定亮的时间占比 */
+    LUMEN_EFFECT_HEARTBEAT = 0x05, /* 心跳：一个节拍内一大一小两次脉冲 */
+    LUMEN_EFFECT_OFF = 0x06,       /* 熄灭：参数全 0，永不发光（显式的「这里就是黑的」） */
 } lumen_effect_type_t;
 
 /* 呼吸波形（flags bit1-2，docs/effects-spec.md §2.2）。 */
@@ -62,6 +66,23 @@ typedef enum {
  * period_ms == 0 同样是「静止」。
  */
 #define LUMEN_RAINBOW_MIN_PERIOD_MS 200u
+
+/*
+ * 爆闪周期下限（effects-spec §2.5）：100ms = 10Hz。
+ *
+ * 这是**亮度闪烁**的上界，不是安全线：固件默认 20fps（每帧 50ms），
+ * 一个 100ms 周期只有 2 帧，已经到能表现的上限。**本票不提高帧率**——
+ * 8 条满 100 颗时提高帧率会掉帧，那种掉帧比低频更糟（#74）。
+ * period_ms == 0 是「静止不出光」，不受此限。
+ */
+#define LUMEN_STROBE_MIN_PERIOD_MS 100u
+
+/*
+ * 心跳周期区间（effects-spec §2.6）：500-1500ms = 40-120 BPM。
+ * period_ms == 0 同样是「静止」（谷底，不出光）。
+ */
+#define LUMEN_HEARTBEAT_MIN_PERIOD_MS 500u
+#define LUMEN_HEARTBEAT_MAX_PERIOD_MS 1500u
 
 /*
  * 一个灯效层：9 字节定宽（docs/protocol-v4.md §7.1）。
@@ -115,16 +136,29 @@ typedef struct {
  */
 void lumen_effects_init(void);
 
-/* type 是否属于协议定义的四种之一（docs/effects-spec.md §2）。 */
+/* type 是否属于协议定义的七种之一（docs/effects-spec.md §2）。 */
 bool lumen_effect_type_known(uint8_t type);
 
-/* type 是否已经有像素实现。四种类型全部为真（静态 / 呼吸 / 彩虹 / 流光）。 */
+/*
+ * type 是否已经有像素实现。七种类型全部为真（静态 / 呼吸 / 彩虹 / 流光 /
+ * 爆闪 / 心跳 / 熄灭）。
+ */
 bool lumen_effect_type_implemented(uint8_t type);
 
-/* 该类型的参数块长度：静态 3，动画 7，未知 / 空层 0（effects-spec §2.5）。 */
+/*
+ * 该类型的参数块长度（effects-spec §2.5）：静态 3，其余已知类型 7
+ * （爆闪 / 心跳 / 熄灭同样复用 7 字节，所以层编码宽度不变），未知 / 空层 0。
+ */
 uint8_t lumen_effect_param_len(uint8_t type);
 
-/* type != 0x00（不含空层 0xFF：空层不是动画）。 */
+/*
+ * 该类型是否需要逐帧重绘（effects-spec §2.7 的「熄灭不是动画」）。
+ *
+ * **显式枚举，不是 `type != STATIC`**：熄灭（OFF）虽然类型值非 0，但它的
+ * 输出恒为黑，把静态画面也拖进帧循环是纯浪费（8 条带满 100 颗时尤其明显）。
+ * 空层同样返回 false（空层不是动画）；未知类型保守返回 true（在命令层已被拒，
+ * 这里不影响任何合法配置）。
+ */
 bool lumen_effect_is_animated(uint8_t type);
 
 /* ---------------- 层编解码（与 §7.1 的 9 字节定宽编码一一对应） ---------------- */
@@ -172,8 +206,8 @@ uint16_t lumen_effect_segment_length(const lumen_segment_t *seg);
 uint16_t lumen_effect_index_in_segment(const lumen_segment_t *seg, uint16_t index_in_strip);
 
 /*
- * 段是否需要帧循环：任一层是动画类（type != 0x00 且非空层）。
- * 静态双层（例如静态 + 静态相乘）不需要逐帧重画。
+ * 段是否需要帧循环：任一层是动画类（见 lumen_effect_is_animated：静态与熄灭
+ * 都不算，空层也不算）。静态双层与「静态 + 熄灭」都是常量画面。
  */
 bool lumen_segment_is_animated(const lumen_segment_t *seg);
 
@@ -273,7 +307,6 @@ uint32_t lumen_effect_breathing_gain_pct_q16(uint16_t period_ms, uint8_t min_pct
 
 /* 用 Q16 增益缩放一个用户空间通道（四舍五入），0..255 输入输出。 */
 uint8_t lumen_effect_apply_gain_q16(uint8_t value, uint32_t gain_q16);
-
 /*
  * 按层的亮度档位缩放一个用户空间通道（纯函数，v4 §9.3 第 1 步）：
  *   out = round(value × level / 100)
@@ -282,6 +315,45 @@ uint8_t lumen_effect_apply_gain_q16(uint8_t value, uint32_t gain_q16);
  * 已拒绝，这里只是防御）。用于 lumen_layer_pixel 返回前给整层压暗。
  */
 uint8_t lumen_effect_apply_level_q8(uint8_t value, uint8_t level);
+
+/* ---------------- #74 爆闪 / 心跳 ---------------- */
+
+/*
+ * 爆闪增益，Q16（0..65535），effects-spec §2.5：
+ *
+ *   p    = phase_q16（与呼吸共用同一个 helper）
+ *   hi   = duty/255 × 65536                     // 高电平结束位置
+ *   p < 5%          → 线性上升到 1（上升沿）
+ *   5% ≤ p < hi-5%  → 1（高电平）
+ *   hi-5% ≤ p < hi  → 线性下降到 0（下降沿）
+ *   p ≥ hi          → 0（低电平）
+ *
+ * `period_ms == 0` 返回 0：静止 = **不出光**（不是停在亮端）。
+ * duty = 0 时 hi 被抬到 10%，仍是「几乎全黑」；duty = 255 时几乎常亮。
+ *
+ * 5% 斜坡（Q16 = 3277）是为了避免硬切：20fps 下方波的边沿本来就落在
+ * 帧边界上，加一段斜坡能让相邻两帧的亮度差更均匀。
+ */
+uint32_t lumen_effect_strobe_gain_q16(uint16_t period_ms, uint8_t duty, uint32_t t0_ms,
+                                      uint32_t now_ms);
+
+/*
+ * 心跳增益，Q16（0..65535），effects-spec §2.6：
+ *
+ *   w = pulse/255 × 65536（至少 1% 周期，免得看不见）
+ *   p < w             → 线性上升到 1（第一次脉冲，峰值 1）
+ *   w ≤ p < 2w        → 0（间歇，谷底）
+ *   2w ≤ p < 3w       → 线性上升到 0.6（第二次脉冲，峰值 39321）
+ *   p ≥ 3w            → 0
+ *
+ * `double_pulse == false` 时第二次脉冲恒 0（单脉冲）。`period_ms == 0`
+ * 返回 0：静止在谷底，不出光。
+ *
+ * 这是「一大一小两次脉冲」的线性三角近似，不是心电图的精确形状；
+ * 验收只看得到两次幅度不同的脉冲（#74）。
+ */
+uint32_t lumen_effect_heartbeat_gain_q16(uint16_t period_ms, uint8_t pulse, bool double_pulse,
+                                         uint32_t t0_ms, uint32_t now_ms);
 
 /* ---------------- #31 彩虹 / 流光 ---------------- */
 

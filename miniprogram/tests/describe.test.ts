@@ -81,6 +81,41 @@ describe("describeCommand", () => {
     );
   });
 
+  it("v4 新灯效类型（#74）：名称与各自专属字段", () => {
+    /* 23 字节单层段：爆闪 period=100 duty=90。 */
+    expect(
+      describeCommand(
+        CMD.SET_SEGMENT,
+        hexToBytes("0000000900040000FF64005A0064FF0000000000000000") as Uint8Array,
+      ),
+    ).toBe(
+      "SetSegment strip=0 seg=0 range=0-9 blend=over " +
+        "layer0=strobe(hue=0 sat=255 level=100 period=100 duty=90) layer1=empty",
+    );
+
+    /* 心跳 period=1000 pulse=60 双脉冲开。 */
+    expect(
+      describeCommand(
+        CMD.SET_SEGMENT,
+        hexToBytes("0000000900050000FFE8033C0164FF0000000000000000") as Uint8Array,
+      ),
+    ).toBe(
+      "SetSegment strip=0 seg=0 range=0-9 blend=over " +
+        "layer0=heartbeat(hue=0 sat=255 level=100 period=1000 pulse=60 double=1) layer1=empty",
+    );
+
+    /* 熄灭：参数全 0。 */
+    expect(
+      describeCommand(
+        CMD.SET_SEGMENT,
+        hexToBytes("0000000900060000000000000064FF0000000000000000") as Uint8Array,
+      ),
+    ).toBe(
+      "SetSegment strip=0 seg=0 range=0-9 blend=over " +
+        "layer0=off(hue=0 sat=0 level=100) layer1=empty",
+    );
+  });
+
   it("段命令长度不符 / 解析失败时保留 hex，不猜半截参数", () => {
     expect(describeCommand(CMD.SET_SEGMENT, new Uint8Array(0))).toBe("SetSegment");
     expect(describeCommand(CMD.SET_SEGMENT, new Uint8Array([1, 2]))).toBe("SetSegment 01 02");

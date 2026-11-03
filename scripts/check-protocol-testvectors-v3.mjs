@@ -113,6 +113,10 @@ const INVALID_EXPECT = {
   bad_crc: 0x03,
   bad_length_overflow: 0x04,
   script_commit_too_large: 0x0a,
+  /* #74：爆闪 / 心跳 / 熄灭是 v4 新增类型，v3 固件按未知类型拒绝（D7）。 */
+  set_segment_bad_strobe_type_unsupported: 0x01,
+  set_segment_bad_heartbeat_type_unsupported: 0x01,
+  set_segment_bad_off_type_unsupported: 0x01,
 };
 for (const [name, code] of Object.entries(INVALID_EXPECT)) {
   const c = cases.find((x) => x.name === name);
@@ -159,6 +163,25 @@ for (const b of [0x00, 0x01, 0x02]) {
 // 分片用例必须真的跨多片
 const multiChunk = cases.filter((c) => (c.chunk_count ?? c.chunks_hex.length) > 1);
 check(multiChunk.length >= 1, 'has at least one multi-chunk vector');
+
+/*
+ * #74：三条拒绝用例的字节里必须真的是 0x04 / 0x05 / 0x06（而不是生成器写错成
+ * 已有类型）。v3 的 layer0 type 在载荷偏移 5。
+ */
+for (const [name, wantType] of Object.entries({
+  set_segment_bad_strobe_type_unsupported: 0x04,
+  set_segment_bad_heartbeat_type_unsupported: 0x05,
+  set_segment_bad_off_type_unsupported: 0x06,
+})) {
+  const c = cases.find((x) => x.name === name);
+  check(!!c, `missing v3 rejection case: ${name}`);
+  if (c) {
+    const type = parseInt(c.payload_hex.slice(10, 12), 16); /* 偏移 5 → hex 10..12 */
+    check(type === wantType,
+      `${name}: layer0 type 0x${type.toString(16)} != 0x${wantType.toString(16)}`);
+    check(c.frame_valid === false, `${name}: must be marked invalid`);
+  }
+}
 
 if (failures === 0) {
   console.log(`OK: ${cases.length} vectors consistent with docs/protocol-v3.md`);

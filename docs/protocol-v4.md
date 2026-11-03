@@ -320,7 +320,8 @@ export function crc16(bytes: Uint8Array): number {
 
 ```
 偏移  宽  字段
-0     1   type        0x00 静态 / 0x01 呼吸 / 0x02 彩虹 / 0x03 流光 / 0xFF 空层
+0     1   type        0x00 静态 / 0x01 呼吸 / 0x02 彩虹 / 0x03 流光 /
+                      0x04 爆闪 / 0x05 心跳 / 0x06 熄灭 / 0xFF 空层
 1..7  7   param       参数块右对齐填满 7 字节，未用字节必须为 0
 8     1   level       v4 新增：本层亮度档位 0-100（100 满亮，0 不出光）
 ```
@@ -334,7 +335,14 @@ v4 下呼吸的 `p5` 是**相对百分比 0-100**（见下方 `level` 语义与 
 | `0x01` 呼吸 | 7 | `hue(2 LE), sat(1), period_ms(2 LE), p5(minLevel **%), flags(波形)` |
 | `0x02` 彩虹 | 7 | `hue(2 LE), sat(1), period_ms(2 LE), p5(span), flags(bit0 reverse)` |
 | `0x03` 流光 | 7 | `hue(2 LE), sat(1), period_ms(2 LE), p5(tail), flags(bit0 reverse)` |
+| `0x04` 爆闪 | 7 | `hue(2 LE), sat(1), period_ms(2 LE), p5(duty), flags(必须 0)` |
+| `0x05` 心跳 | 7 | `hue(2 LE), sat(1), period_ms(2 LE), p5(pulse), flags(bit0 双脉冲)` |
+| `0x06` 熄灭 | 7 | 全部 0（`hue/sat/p5/period/flags` 任一非 0 → `InvalidParam`） |
 | `0xFF` 空层 | 0 | 其余 8 字节（param 7 + level 1）全为 0 |
+
+> **#74 的三种新类型复用同一个 7 字节参数块**，所以层编码仍是 9 字节、
+> 段载荷仍是 23 / 25、报告仍是 23、状态 blob 仍是 1440、**协议版本号仍是 4**。
+> 它们没有吃掉 effects-spec §2.8 记录的「动画类只剩 2 字节余量」——余量原封不动。
 
 **`level` 的语义**：
 
@@ -356,7 +364,24 @@ v4 下呼吸的 `p5` 是**相对百分比 0-100**（见下方 `level` 语义与 
 5. `layer1.type == 0xFF` 时 `blend` 必须为 0。
 6. `blend ≤ 0x02`。
 7. 静态层的 `param[3..6]` 必须全为 0（保留位，对两层都生效）。
-8. 各层按 type 做参数校验（周期下限、flags 保留位、**呼吸 `p5 ≤ 100`**，见 §11.3）。
+8. 各层按 type 做参数校验（周期下限、flags 保留位、**呼吸 `p5 ≤ 100`**，见 §11.3）：
+   - `0x00` 静态：`flags == 0`；
+   - `0x01` 呼吸：`flags & 0xF8 == 0`，`p5 ≤ 100`，`period == 0` 或 `≥ 334`；
+   - `0x02` 彩虹 / `0x03` 流光：`flags & 0xFE == 0`，`period == 0` 或 `≥ 200`；
+   - **`0x04` 爆闪（#74）**：`flags == 0`，`period == 0` 或 `≥ 100`（10Hz 上界）；
+   - **`0x05` 心跳（#74）**：`flags & 0xFE == 0`（bit0 = 双脉冲），`period == 0` 或 `500-1500`（40-120 BPM）；
+   - **`0x06` 熄灭（#74）**：`hue / sat / p5 / flags / period_ms` 全部为 0。
+9. 熄灭层的 `level` **不参与**上述参数校验（熄灭本来就是黑的），但 `level ≤ 100` 仍由第 4 步统一约束。
+
+> **熄灭必须同时出现在 `lumen_effect_type_known` 与 `lumen_effect_type_implemented` 里**，
+> 否则第 2 步（只认「已知且已实现」）会把它作为 layer0 拒绝。
+>
+> **熄灭不算动画类型**（`lumen_effect_is_animated` 显式枚举：静态与熄灭为 false）。
+> 这不影响协议字节，只影响渲染层是否为「一整组只有熄灭」的配置启动帧循环。
+>
+> **熄灭作为 layer1（叠加层）**：协议层不额外拒绝——语义就是「黑色叠加」
+> （覆盖 / 相乘都会把整段变黑）。界面层不提供这个选项（#80 / #81），
+> 协议层不必为它写特例：语义明确，且 `blend` 的既有规则已经覆盖。
 
 **ScriptSegment 的清槽旁路**：两层都 `0xFF` 表示「清空该槽位」（§9.6）。这条路径
 **绕过**上面的形状校验（它会把 layer0 = 0xFF 判成非法），所以必须**单独**要求两层的
@@ -540,6 +565,25 @@ gain  = floor + (level - floor) × e // e = 波形包络 0-1
 - `level = 50, p5 = 0` → 0..50%（峰值半亮）。
 - `level = 50, p5 = 100` → 恒 50%（完全不呼吸）。
 
+#### 9.3.4 爆闪 / 心跳 / 熄灭的合成（#74）
+
+三种新类型与呼吸一样是**整段同色同步**（包络只与时间有关，与段内位置无关），
+所以每颗灯的求值都是 `static_rgb(hue, sat) × level/100 × envelope(t)`：
+
+| 类型 | 包络（0-1） | 说明 |
+|---|---|---|
+| `0x04` 爆闪 | 方波 + 两端 5% 线性斜坡，高电平占比 `p5(duty)/255` | `period == 0` → 0（不出光） |
+| `0x05` 心跳 | 0..w 升到 1；2w..3w 升到 0.6；其余 0（`w = max(pulse/255, 1%)`） | `flags` bit0 = 双脉冲；`period == 0` → 0 |
+| `0x06` 熄灭 | 恒 0（直接返回全黑，不读任何参数） | 不受 `level` 影响 |
+
+完整公式与相位推导见 `docs/effects-spec.md` §2.5-§2.7。
+
+> **帧率上界**：默认 20fps（每帧 50ms），所以 10Hz 是爆闪能表现的上界。
+> 本票**不提高帧率**——8 条满 100 颗时提高帧率会掉帧，那种掉帧比低频更糟。
+
+> **熄灭不是动画类型**：`lumen_effect_is_animated` 只对静态与熄灭返回 false。
+> 协议层不影响字节语义，但决定渲染任务是否为「一整组只有熄灭」的配置启动帧循环。
+
 ### 9.4 相位与 t0
 
 - 每个**段**持有 `t0_ms`（两层共享一个时间原点），`SetSegment` / `ScriptSegment` 写入时置为当前时刻。
@@ -719,7 +763,7 @@ level 字节）。对应 `LUMEN_SCRIPT_SEGMENT_MIN = 3`（记录头）与
 
 ## 11. 测试向量
 
-`docs/protocol-testvectors-v4.json` 是本文的可执行副本（68 条用例），字段：
+`docs/protocol-testvectors-v4.json` 是本文的可执行副本（78 条用例），字段：
 
 ```jsonc
 {
@@ -756,6 +800,24 @@ level 字节）。对应 `LUMEN_SCRIPT_SEGMENT_MIN = 3`（记录头）与
 | `set_segment_bad_empty_level` | `0x01`（空层带 level 50） |
 | `script_segment_clear_level_nonzero` | `0x01`（清槽旁路 + level 30） |
 
+**`#74` 三种新灯效的向量**（爆闪 / 心跳 / 熄灭）：
+
+| 用例 | 期望 |
+|---|---|
+| `set_segment_single_strobe` | OK（爆闪，period 100ms、duty 90、level 100） |
+| `set_segment_single_heartbeat` | OK（心跳，period 1000ms、pulse 60、双脉冲） |
+| `set_segment_single_off` | OK（熄灭，参数全 0） |
+| `set_segment_strobe_plus_heartbeat` | OK（爆闪打底 + 心跳相乘，证明两种新类型都能作叠加层） |
+| `set_segment_bad_strobe_period` | `0x01`（period 99ms < 100ms 下限） |
+| `set_segment_bad_strobe_flags` | `0x01`（爆闪 flags 非 0） |
+| `set_segment_bad_heartbeat_period_low` | `0x01`（499ms < 500ms） |
+| `set_segment_bad_heartbeat_period_high` | `0x01`（1501ms > 1500ms） |
+| `set_segment_bad_heartbeat_flags` | `0x01`（心跳 flags bit1 非 0） |
+| `set_segment_bad_off_params` | `0x01`（熄灭带 hue） |
+
+v3 向量里对应加一条 `set_segment_bad_strobe_type_unsupported` / 同类用例：
+v3 固件不认识 `0x04`-`0x06`，按未知类型回 `InvalidParam`（**不静默降级**）。
+
 **`0x1E ClearScript`（#73）的向量**：
 
 | 用例 | 期望 |
@@ -767,7 +829,9 @@ level 字节）。对应 `LUMEN_SCRIPT_SEGMENT_MIN = 3`（记录头）与
 生成器：`scripts/gen-protocol-testvectors-v4.mjs`（层构造器默认 `level = 100`，
 断言 23 / 25 字节）。
 独立校验器：`scripts/check-protocol-testvectors-v4.mjs`（只读 JSON，不信任生成器；
-另外校验「合法帧里每层 level ≤ 100」「空层 level 必须 0」「三档都有向量」）。
+另外校验「合法帧里每层 level ≤ 100」「空层 level 必须 0」「三档都有向量」，
+以及 **#74 的类型规则**：已知七种类型、各类型的 flags 保留位与周期区间、
+熄灭层参数全 0、三种新类型的编码用例与边界拒绝用例）。
 
 ---
 

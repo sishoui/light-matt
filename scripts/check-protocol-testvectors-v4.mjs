@@ -39,6 +39,28 @@ const EXPECTED_PAYLOAD = new Map([
   [0x1B, 2], [0x1C, 0], [0x1D, 0], [0x1E, 1],
 ]);
 
+/*
+ * #74：灯效类型的参数规则（契约 §7.1 第 8 步）。
+ *
+ * 这里只校验**向量自身的字节与预期结果一致**，不实现完整校验器：
+ *   - 合法帧里出现的 type 必须是已知七种之一；
+ *   - 已知类型的 flags 保留位 / 周期区间必须落在契约内；
+ *   - 熄灭层的 hue / sat / p5 / period / flags 必须全 0。
+ */
+const KNOWN_TYPES = new Set([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+const TYPE_STATIC = 0x00;
+const TYPE_BREATHING = 0x01;
+const TYPE_RAINBOW = 0x02;
+const TYPE_COMET = 0x03;
+const TYPE_STROBE = 0x04;
+const TYPE_HEARTBEAT = 0x05;
+const TYPE_OFF = 0x06;
+const STROBE_MIN_PERIOD_MS = 100;
+const HEARTBEAT_MIN_PERIOD_MS = 500;
+const HEARTBEAT_MAX_PERIOD_MS = 1500;
+const BREATHING_MIN_PERIOD_MS = 334;
+const ANIMATION_MIN_PERIOD_MS = 200;
+
 // 设备 → 小程序报告（§7.4）
 const EXPECTED_REPORT = new Map([
   [0x82, STATE_BYTES], [0x87, 24], [0x88, 15],
@@ -123,6 +145,13 @@ const INVALID_EXPECT = {
   script_segment_clear_level_nonzero: 0x01,
   // #73 ClearScript：越界 script_id
   clear_script_bad_id: 0x01,
+  // #74 三种新灯效的边界拒绝
+  set_segment_bad_strobe_period: 0x01,
+  set_segment_bad_strobe_flags: 0x01,
+  set_segment_bad_heartbeat_period_low: 0x01,
+  set_segment_bad_heartbeat_period_high: 0x01,
+  set_segment_bad_heartbeat_flags: 0x01,
+  set_segment_bad_off_params: 0x01,
 };
 for (const [name, code] of Object.entries(INVALID_EXPECT)) {
   const c = cases.find((x) => x.name === name);
@@ -184,6 +213,23 @@ function layerType(payloadHex, base, layerIndex) {
   return parseInt(payloadHex.slice(off * 2, off * 2 + 2), 16);
 }
 
+/** 一层的 7 字节参数（param[0..6]），按小端给出多字节字段的便捷视图。 */
+function layerParams(payloadHex, base, layerIndex) {
+  const off = base + 5 + layerIndex * 9 + 1; // 跳过 type
+  const bytes = [];
+  for (let i = 0; i < 7; i += 1) {
+    bytes.push(parseInt(payloadHex.slice((off + i) * 2, (off + i) * 2 + 2), 16));
+  }
+  return {
+    bytes,
+    hue: bytes[0] | (bytes[1] << 8),
+    sat: bytes[2],
+    period: bytes[3] | (bytes[4] << 8),
+    p5: bytes[5],
+    flags: bytes[6],
+  };
+}
+
 for (const c of cases) {
   if (!c.frame_valid) {
     continue;
@@ -206,6 +252,47 @@ for (const c of cases) {
         `${c.name}: layer${li} level ${level} exceeds ${LAYER_LEVEL_MAX} on a valid frame`);
       if (type === EMPTY_LAYER) {
         check(level === 0, `${c.name}: empty layer${li} must have level 0, got ${level}`);
+      }
+    }
+  }
+
+  // #74：合法帧里的类型必须已知，且各类型的参数规则必须在契约内。
+  if (c.command === 0x10 || c.command === 0x16) {
+    const base = c.command === 0x10 ? 0 : 2;
+    for (const li of [0, 1]) {
+      const type = layerType(c.payload_hex, base, li);
+      if (type === EMPTY_LAYER) {
+        continue; /* 空层另由上面的 level 规则覆盖 */
+      }
+      check(KNOWN_TYPES.has(type),
+        `${c.name}: layer${li} type 0x${type.toString(16)} is not a known effect type`);
+      if (type === TYPE_STATIC) {
+        continue; /* 静态层的保留位由生成器保证，checker 不重复实现 */
+      }
+      const p = layerParams(c.payload_hex, base, li);
+      if (type === TYPE_BREATHING) {
+        check((p.flags & 0xf8) === 0, `${c.name}: layer${li} breathing flags reserved bits set`);
+        check(p.period === 0 || p.period >= BREATHING_MIN_PERIOD_MS,
+          `${c.name}: layer${li} breathing period ${p.period} < ${BREATHING_MIN_PERIOD_MS}`);
+      } else if (type === TYPE_RAINBOW || type === TYPE_COMET) {
+        check((p.flags & 0xfe) === 0, `${c.name}: layer${li} animation flags reserved bits set`);
+        check(p.period === 0 || p.period >= ANIMATION_MIN_PERIOD_MS,
+          `${c.name}: layer${li} period ${p.period} < ${ANIMATION_MIN_PERIOD_MS}`);
+      } else if (type === TYPE_STROBE) {
+        check(p.flags === 0, `${c.name}: layer${li} strobe flags must be 0, got ${p.flags}`);
+        check(p.period === 0 || p.period >= STROBE_MIN_PERIOD_MS,
+          `${c.name}: layer${li} strobe period ${p.period} < ${STROBE_MIN_PERIOD_MS}`);
+      } else if (type === TYPE_HEARTBEAT) {
+        check((p.flags & 0xfe) === 0, `${c.name}: layer${li} heartbeat flags reserved bits set`);
+        check(
+          p.period === 0 ||
+            (p.period >= HEARTBEAT_MIN_PERIOD_MS && p.period <= HEARTBEAT_MAX_PERIOD_MS),
+          `${c.name}: layer${li} heartbeat period ${p.period} outside ` +
+            `${HEARTBEAT_MIN_PERIOD_MS}-${HEARTBEAT_MAX_PERIOD_MS}`,
+        );
+      } else if (type === TYPE_OFF) {
+        const allZero = p.bytes.every((b) => b === 0);
+        check(allZero, `${c.name}: layer${li} OFF params must all be 0`);
       }
     }
   }
@@ -247,6 +334,77 @@ for (const [level, name] of Object.entries(levelCases)) {
 // 分片用例必须真的跨多片
 const multiChunk = cases.filter((c) => (c.chunk_count ?? c.chunks_hex.length) > 1);
 check(multiChunk.length >= 1, 'has at least one multi-chunk vector');
+
+/*
+ * #74：三种新类型必须各有合法编码用例，且字节里真的是那个类型。
+ * 合法用例同时证明「新类型没有扩宽层编码」——载荷仍是 23 字节。
+ */
+const newTypeCases = {
+  set_segment_single_strobe: { type: TYPE_STROBE, period: 100 },
+  set_segment_single_heartbeat: { type: TYPE_HEARTBEAT, period: 1000 },
+  set_segment_single_off: { type: TYPE_OFF, period: 0 },
+};
+for (const [name, want] of Object.entries(newTypeCases)) {
+  const c = cases.find((x) => x.name === name);
+  check(!!c, `missing new-type case: ${name}`);
+  if (!c) {
+    continue;
+  }
+  check(c.frame_valid, `${name}: must be a valid frame`);
+  check(c.payload_len === SEGMENT_PAYLOAD,
+    `${name}: payload ${c.payload_len}B != ${SEGMENT_PAYLOAD}B (new types must not widen the layer)`);
+  check(layerType(c.payload_hex, 0, 0) === want.type,
+    `${name}: layer0 type 0x${layerType(c.payload_hex, 0, 0).toString(16)} != 0x${want.type.toString(16)}`);
+  check(layerLevel(c.payload_hex, 0, 0) === LAYER_LEVEL_MAX,
+    `${name}: layer0 level should default to ${LAYER_LEVEL_MAX}`);
+  const p = layerParams(c.payload_hex, 0, 0);
+  check(p.period === want.period, `${name}: period ${p.period} != ${want.period}`);
+  if (want.type === TYPE_OFF) {
+    check(p.bytes.every((b) => b === 0), `${name}: OFF params must all be 0`);
+  }
+}
+
+/* 叠加用例：两种新类型同段（爆闪打底 + 心跳相乘），证明它们都能作 layer1。 */
+{
+  const c = cases.find((x) => x.name === 'set_segment_strobe_plus_heartbeat');
+  check(!!c, 'missing set_segment_strobe_plus_heartbeat');
+  if (c) {
+    check(c.frame_valid, 'set_segment_strobe_plus_heartbeat: must be a valid frame');
+    check(layerType(c.payload_hex, 0, 0) === TYPE_STROBE,
+      'set_segment_strobe_plus_heartbeat: layer0 must be strobe');
+    check(layerType(c.payload_hex, 0, 1) === TYPE_HEARTBEAT,
+      'set_segment_strobe_plus_heartbeat: layer1 must be heartbeat');
+    check(parseInt(c.payload_hex.slice(8, 10), 16) === 0x01,
+      'set_segment_strobe_plus_heartbeat: blend must be multiply');
+  }
+}
+
+/* 非法用例的字节必须真的越界（防止生成器把它们写成合法值）。 */
+{
+  const c = cases.find((x) => x.name === 'set_segment_bad_strobe_period');
+  check(!!c && layerParams(c.payload_hex, 0, 0).period === 99,
+    'set_segment_bad_strobe_period: period must be 99');
+}
+{
+  const c = cases.find((x) => x.name === 'set_segment_bad_strobe_flags');
+  check(!!c && layerParams(c.payload_hex, 0, 0).flags !== 0,
+    'set_segment_bad_strobe_flags: flags must be nonzero');
+}
+{
+  const c = cases.find((x) => x.name === 'set_segment_bad_heartbeat_period_low');
+  check(!!c && layerParams(c.payload_hex, 0, 0).period === 499,
+    'set_segment_bad_heartbeat_period_low: period must be 499');
+}
+{
+  const c = cases.find((x) => x.name === 'set_segment_bad_heartbeat_period_high');
+  check(!!c && layerParams(c.payload_hex, 0, 0).period === 1501,
+    'set_segment_bad_heartbeat_period_high: period must be 1501');
+}
+{
+  const c = cases.find((x) => x.name === 'set_segment_bad_off_params');
+  check(!!c && layerParams(c.payload_hex, 0, 0).hue !== 0,
+    'set_segment_bad_off_params: OFF hue must be nonzero');
+}
 
 if (failures === 0) {
   console.log(`OK: ${cases.length} vectors consistent with docs/protocol-v4.md`);

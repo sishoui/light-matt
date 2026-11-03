@@ -317,6 +317,34 @@ addApp({ name: 'set_playback_pause', command: 0x13, commandName: 'SetPlayback', 
 addApp({ name: 'set_playback_stop', command: 0x13, commandName: 'SetPlayback', seq: 48, payload: [0, 0] });
 
 /*
+ * #74：爆闪 0x04 / 心跳 0x05 / 熄灭 0x06 是 **v4 原地新增**的类型。
+ *
+ * v3 固件的类型表冻结在 0x00-0x03，所以这三条在 v3 上一律走「未知类型」路径回
+ * `InvalidParam`——这正是「旧固件按未知类型拒绝，不静默降级成别的效果」的证据。
+ * 这里只给拒绝用例，不给编码用例：v3 固件不该接受它们。
+ *
+ * 载荷宽度仍是 21 字节（层 8 字节），所以按 v3 的构造器写就好。
+ */
+addApp({
+  name: 'set_segment_bad_strobe_type_unsupported', command: 0x10, commandName: 'SetSegment',
+  seq: 65,
+  payload: segment(0, 0, 0, 9, 0x00, layerAnim(0x04, 0, 255, 100, 90, 0), layerEmpty()),
+  result: 0x01, note: '爆闪 0x04 是 v4 新增类型 → v3 固件按未知类型拒绝（D7）',
+});
+addApp({
+  name: 'set_segment_bad_heartbeat_type_unsupported', command: 0x10, commandName: 'SetSegment',
+  seq: 66,
+  payload: segment(1, 0, 0, 29, 0x00, layerAnim(0x05, 0, 255, 1000, 60, 0x01), layerEmpty()),
+  result: 0x01, note: '心跳 0x05 是 v4 新增类型 → v3 固件按未知类型拒绝（D7）',
+});
+addApp({
+  name: 'set_segment_bad_off_type_unsupported', command: 0x10, commandName: 'SetSegment',
+  seq: 67,
+  payload: segment(2, 0, 0, 15, 0x00, layerAnim(0x06, 0, 0, 0, 0, 0), layerEmpty()),
+  result: 0x01, note: '熄灭 0x06 是 v4 新增类型 → v3 固件按未知类型拒绝（D7）',
+});
+
+/*
  * ClearScript 0x1E（#73，v4 新增）。v3 固件不认识它，按未知命令回 0x02，
  * 且**不改变任何状态**——这正是「旧固件收到新命令安全拒绝」的向量。
  * 载荷宽度与 v4 一致（1 字节 script_id），所以这里也按 1 字节构造。

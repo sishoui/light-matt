@@ -2774,31 +2774,46 @@ static void test_effects_static_rgb(void)
 
 static void test_effects_dispatch(void)
 {
-    /* 类型分类：四种已知，其余未知。 */
+    /* 类型分类：#74 起七种已知，其余未知。 */
     CHECK(lumen_effect_type_known(LUMEN_EFFECT_STATIC));
     CHECK(lumen_effect_type_known(LUMEN_EFFECT_BREATHING));
     CHECK(lumen_effect_type_known(LUMEN_EFFECT_RAINBOW));
     CHECK(lumen_effect_type_known(LUMEN_EFFECT_COMET));
-    CHECK(!lumen_effect_type_known(0x04));
+    CHECK(lumen_effect_type_known(LUMEN_EFFECT_STROBE));
+    CHECK(lumen_effect_type_known(LUMEN_EFFECT_HEARTBEAT));
+    CHECK(lumen_effect_type_known(LUMEN_EFFECT_OFF));
+    CHECK(!lumen_effect_type_known(0x07));
     CHECK(!lumen_effect_type_known(0xFF));
 
-    /* 四种类型的像素实现全部就绪（#25 静态 / #30 呼吸 / #31 彩虹+流光）。 */
+    /* 七种类型的像素实现全部就绪（#25 / #30 / #31 / #74）。 */
     CHECK(lumen_effect_type_implemented(LUMEN_EFFECT_STATIC));
     CHECK(lumen_effect_type_implemented(LUMEN_EFFECT_BREATHING));
     CHECK(lumen_effect_type_implemented(LUMEN_EFFECT_RAINBOW));
     CHECK(lumen_effect_type_implemented(LUMEN_EFFECT_COMET));
-    CHECK(!lumen_effect_type_implemented(0x04));
+    CHECK(lumen_effect_type_implemented(LUMEN_EFFECT_STROBE));
+    CHECK(lumen_effect_type_implemented(LUMEN_EFFECT_HEARTBEAT));
+    CHECK(lumen_effect_type_implemented(LUMEN_EFFECT_OFF));
+    CHECK(!lumen_effect_type_implemented(0x07));
 
-    /* 参数块长度（effects-spec §2.5）。 */
+    /* 参数块长度（effects-spec §2.8）：三种新类型都复用 7 字节。 */
     CHECK(lumen_effect_param_len(LUMEN_EFFECT_STATIC) == 3);
     CHECK(lumen_effect_param_len(LUMEN_EFFECT_BREATHING) == 7);
     CHECK(lumen_effect_param_len(LUMEN_EFFECT_RAINBOW) == 7);
     CHECK(lumen_effect_param_len(LUMEN_EFFECT_COMET) == 7);
+    CHECK(lumen_effect_param_len(LUMEN_EFFECT_STROBE) == 7);
+    CHECK(lumen_effect_param_len(LUMEN_EFFECT_HEARTBEAT) == 7);
+    CHECK(lumen_effect_param_len(LUMEN_EFFECT_OFF) == 7);
     CHECK(lumen_effect_param_len(0x07) == 0);
 
-    /* 静态不是动画；其余是。 */
+    /* 静态与熄灭不是动画（熄灭是常量黑，不该逼渲染层逐帧重画）；其余是。 */
     CHECK(!lumen_effect_is_animated(LUMEN_EFFECT_STATIC));
+    CHECK(!lumen_effect_is_animated(LUMEN_EFFECT_OFF));
     CHECK(lumen_effect_is_animated(LUMEN_EFFECT_BREATHING));
+    CHECK(lumen_effect_is_animated(LUMEN_EFFECT_RAINBOW));
+    CHECK(lumen_effect_is_animated(LUMEN_EFFECT_COMET));
+    CHECK(lumen_effect_is_animated(LUMEN_EFFECT_STROBE));
+    CHECK(lumen_effect_is_animated(LUMEN_EFFECT_HEARTBEAT));
+    CHECK(!lumen_effect_is_animated(LUMEN_LAYER_EMPTY));
 
     lumen_segment_t seg = seg_single(LUMEN_EFFECT_STATIC, 10, 19, 0, 255, 0, 0, 0, 0);
     CHECK(lumen_effect_segment_length(&seg) == 10);
@@ -3693,6 +3708,323 @@ static void test_effects_comet_gain(void)
         CHECK(gain > 0); /* 100 颗的长尾也不提前截断 */
         last_gain = gain;
     }
+}
+
+/*
+ * #74：爆闪 STROBE 0x04。
+ *
+ * 包络是方波 + 两端 5% 线性斜坡；duty 决定高电平占多少（0 = 永不亮，
+ * 255 = 几乎常亮）。period_ms == 0 表示静止不出光。
+ */
+static void test_effects_strobe(void)
+{
+    const uint16_t period = 100; /* 10Hz：本帧率下的闪烁上界 */
+
+    /* 中点占空比：前半亮、后半灭，两端各 5% 斜坡。 */
+    CHECK(lumen_effect_strobe_gain_q16(period, 128, 0, 0) == 0); /* 相位 0 在斜坡起点 */
+    uint32_t at_20 = lumen_effect_strobe_gain_q16(period, 128, 0, 20); /* 20% 位置 */
+    CHECK(at_20 == 65535);
+    CHECK(lumen_effect_strobe_gain_q16(period, 128, 0, 60) == 0); /* 60% 位置已在低电平 */
+    /* 中点之后（duty 128 → hi ≈ 50.2%）已经开始下降，但还没到 0。 */
+    uint32_t just_past = lumen_effect_strobe_gain_q16(period, 128, 0, 50);
+    CHECK(just_past > 0 && just_past < 5000);
+
+    /* duty = 0：恒 GND（不是「一个很窄的脉冲」）。 */
+    for (uint32_t now = 0; now <= period; now += 5) {
+        CHECK(lumen_effect_strobe_gain_q16(period, 0, 0, now) == 0);
+    }
+
+    /* duty = 255：近乎常亮（除去末尾 5% 的下降沿）。 */
+    for (uint32_t now = 10; now <= 90; now += 10) {
+        CHECK(lumen_effect_strobe_gain_q16(period, 255, 0, now) == 65535);
+    }
+    /* 末尾斜坡：99% 处只剩 1/5 斜坡的高度（≈20% 满值），且比 97% 处更暗。 */
+    uint32_t tail = lumen_effect_strobe_gain_q16(period, 255, 0, 99);
+    uint32_t tail_earlier = lumen_effect_strobe_gain_q16(period, 255, 0, 97);
+    CHECK(tail > 0 && tail < 15000);
+    CHECK(tail_earlier > tail);
+
+    /* duty 越大，亮的时间越长：20% 处窄占空比已经灭了，宽占空比还满亮。 */
+    CHECK(lumen_effect_strobe_gain_q16(period, 40, 0, 20) == 0);
+    CHECK(lumen_effect_strobe_gain_q16(period, 153, 0, 20) == 65535);
+
+    /* period = 0：静止不出光（不是停在亮端）。 */
+    for (uint32_t now = 0; now <= 1000; now += 250) {
+        CHECK(lumen_effect_strobe_gain_q16(0, 128, 0, now) == 0);
+    }
+
+    /* 周期回绕：now = t0 + k × period 与 now = t0 完全相同。 */
+    for (uint32_t phase = 0; phase < 100; phase += 7) {
+        CHECK(lumen_effect_strobe_gain_q16(period, 90, 500, 500 + phase) ==
+              lumen_effect_strobe_gain_q16(period, 90, 500, 500 + phase + period * 3u));
+    }
+
+    /* 像素层：纯红爆闪，亮时满值、灭时全黑。 */
+    lumen_segment_t seg =
+        seg_single(LUMEN_EFFECT_STROBE, 0, 9, 0, 255, 100, 128, 0, 0);
+    uint8_t rgb[3];
+    lumen_effect_pixel(&seg, 3, 20, rgb);
+    CHECK(rgb[0] == 255 && rgb[1] == 0 && rgb[2] == 0);
+    lumen_effect_pixel(&seg, 3, 60, rgb);
+    CHECK(rgb[0] == 0 && rgb[1] == 0 && rgb[2] == 0);
+
+    /* 段内每颗灯同步（包络只与时间有关，与位置无关）。 */
+    uint8_t first[3];
+    lumen_effect_pixel(&seg, 0, 30, first);
+    for (uint16_t i = 1; i <= 9; ++i) {
+        uint8_t other[3];
+        lumen_effect_pixel(&seg, i, 30, other);
+        CHECK(memcmp(first, other, 3) == 0);
+    }
+}
+
+/*
+ * #74：心跳 HEARTBEAT 0x05。
+ *
+ * 一个节拍内一大一小两次脉冲（flags bit0 = 双脉冲，默认开），其余时间谷底。
+ * 周期 500-1500ms（40-120 BPM）。
+ */
+static void test_effects_heartbeat(void)
+{
+    const uint16_t period = 1000; /* 60 BPM */
+    const uint8_t pulse = 60;     /* 界面固定中等：w ≈ 23.5% 周期 */
+
+    /* 节拍起点与脉冲之间是谷底。 */
+    CHECK(lumen_effect_heartbeat_gain_q16(period, pulse, true, 0, 0) == 0);
+    CHECK(lumen_effect_heartbeat_gain_q16(period, pulse, true, 0, 240) == 0); /* 两次脉冲之间 */
+    CHECK(lumen_effect_heartbeat_gain_q16(period, pulse, true, 0, 720) == 0); /* 第二次之后 */
+
+    /* 第一次脉冲：上升并在 w 前达到满值。 */
+    uint32_t g100 = lumen_effect_heartbeat_gain_q16(period, pulse, true, 0, 100);
+    uint32_t g230 = lumen_effect_heartbeat_gain_q16(period, pulse, true, 0, 230);
+    CHECK(g100 > 20000 && g100 < 35000);
+    CHECK(g230 > 60000);
+
+    /* 第二次脉冲：峰值约为第一次的 0.6（一大一小）。 */
+    uint32_t g500 = lumen_effect_heartbeat_gain_q16(period, pulse, true, 0, 500);
+    uint32_t g700 = lumen_effect_heartbeat_gain_q16(period, pulse, true, 0, 700);
+    CHECK(g500 > 0 && g500 < 8000); /* 刚开始起升 */
+    CHECK(g700 > 35000 && g700 < 41000);
+
+    /* 双脉冲关闭（flags bit0 = 0）：第二次脉冲消失。 */
+    CHECK(lumen_effect_heartbeat_gain_q16(period, pulse, false, 0, 500) == 0);
+    CHECK(lumen_effect_heartbeat_gain_q16(period, pulse, false, 0, 700) == 0);
+    /* 第一次脉冲不受开关影响。 */
+    CHECK(lumen_effect_heartbeat_gain_q16(period, pulse, false, 0, 230) == g230);
+
+    /* 周期只缩放时间轴：500ms 周期在 now = 115 处与 1000ms 在 230 处同相。 */
+    CHECK(lumen_effect_heartbeat_gain_q16(500, pulse, true, 0, 115) == g230);
+    CHECK(lumen_effect_heartbeat_gain_q16(1500, pulse, true, 0, 345) == g230);
+
+    /* period = 0：静止不出光（谷底）。 */
+    for (uint32_t now = 0; now <= 2000; now += 500) {
+        CHECK(lumen_effect_heartbeat_gain_q16(0, pulse, true, 0, now) == 0);
+    }
+
+    /* 极窄脉冲仍有可见宽度（w 至少 1% 周期，不会整拍都是黑的）。 */
+    uint32_t narrow = 0;
+    for (uint32_t now = 0; now < 50; ++now) {
+        uint32_t g = lumen_effect_heartbeat_gain_q16(period, 0, true, 0, now);
+        if (g > narrow) {
+            narrow = g;
+        }
+    }
+    CHECK(narrow > 0);
+
+    /* 像素层：纯红心跳，谷底全黑、峰值满值。 */
+    lumen_segment_t seg =
+        seg_single(LUMEN_EFFECT_HEARTBEAT, 0, 9, 0, 255, 1000, 60, 0x01, 0);
+    uint8_t rgb[3];
+    lumen_effect_pixel(&seg, 3, 0, rgb);
+    CHECK(rgb[0] == 0 && rgb[1] == 0 && rgb[2] == 0);
+    lumen_effect_pixel(&seg, 3, 230, rgb);
+    CHECK(rgb[0] >= 240);
+    /* 段内每颗灯同步。 */
+    uint8_t first[3];
+    lumen_effect_pixel(&seg, 0, 500, first);
+    for (uint16_t i = 1; i <= 9; ++i) {
+        uint8_t other[3];
+        lumen_effect_pixel(&seg, i, 500, other);
+        CHECK(memcmp(first, other, 3) == 0);
+    }
+}
+
+/*
+ * #74：熄灭 OFF 0x06。参数全 0，永不发光；level 与时刻都不改变结果。
+ */
+static void test_effects_off(void)
+{
+    lumen_segment_t seg = seg_single(LUMEN_EFFECT_OFF, 0, 9, 0, 0, 0, 0, 0, 0);
+    uint8_t rgb[3] = {1, 2, 3};
+    for (uint32_t now = 0; now <= 5000; now += 250) {
+        lumen_effect_pixel(&seg, 3, now, rgb);
+        CHECK(rgb[0] == 0 && rgb[1] == 0 && rgb[2] == 0);
+    }
+    /* level 任意值仍是全黑（熄灭没有亮度可言）。 */
+    for (uint8_t level = 0; level <= 100; level += 50) {
+        layer_set_level(&seg.layer[0], level);
+        lumen_effect_pixel(&seg, 3, 1000, rgb);
+        CHECK(rgb[0] == 0 && rgb[1] == 0 && rgb[2] == 0);
+    }
+    layer_set_level(&seg.layer[0], LUMEN_LAYER_LEVEL_MAX);
+
+    /* 熄灭是常量画面：段不需要帧循环，灯带也不算「有动画」。 */
+    CHECK(!lumen_segment_is_animated(&seg));
+    lumen_segment_store_t store;
+    lumen_segment_store_init(&store);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, 64, &seg) == LUMEN_RESULT_OK);
+    CHECK(!lumen_segment_store_needs_frames(&store, 1));
+    uint8_t buf[64 * 3];
+    memset(buf, 0x5A, sizeof(buf));
+    CHECK(lumen_segment_store_compose(&store, 0, buf, 64, 0) == 64);
+    for (uint16_t i = 0; i < 64; ++i) {
+        CHECK(buf[i * 3] == 0 && buf[i * 3 + 1] == 0 && buf[i * 3 + 2] == 0);
+    }
+
+    /*
+     * 熄灭作为叠加层（layer1）：协议层不额外拒绝，语义是「黑色叠加」。
+     * blend = 覆盖时整段变黑；blend = 相乘结果也是黑。
+     */
+    lumen_segment_t overlay;
+    memset(&overlay, 0, sizeof(overlay));
+    overlay.active = true;
+    overlay.start = 0;
+    overlay.end = 9;
+    overlay.blend = LUMEN_BLEND_OVER;
+    layer_set(LUMEN_EFFECT_STATIC, 0, 255, 0, 0, 0, &overlay.layer[0]);
+    layer_set(LUMEN_EFFECT_OFF, 0, 0, 0, 0, 0, &overlay.layer[1]);
+    CHECK(lumen_segment_validate_shape(&overlay) == LUMEN_RESULT_OK);
+    lumen_effect_pixel(&overlay, 3, 0, rgb);
+    CHECK(rgb[0] == 0 && rgb[1] == 0 && rgb[2] == 0);
+    overlay.blend = LUMEN_BLEND_MULTIPLY;
+    lumen_effect_pixel(&overlay, 3, 0, rgb);
+    CHECK(rgb[0] == 0 && rgb[1] == 0 && rgb[2] == 0);
+}
+
+/*
+ * #74 的校验规则（§7.1 第 8 步）：
+ *   STROBE    flags == 0；period == 0 或 ≥ 100ms
+ *   HEARTBEAT flags bit1-7 == 0（bit0 双脉冲）；period == 0 或 500-1500ms
+ *   OFF       参数（含 hue / sat / p5 / flags / period）全 0
+ */
+static void test_effects_new_types_validation(void)
+{
+    const uint8_t led_count = 30;
+
+    /* ---- 爆闪 ---- */
+    lumen_segment_t strobe = seg_single(LUMEN_EFFECT_STROBE, 0, 9, 0, 255, 100, 128, 0, 0);
+    CHECK(lumen_segment_validate_shape(&strobe) == LUMEN_RESULT_OK);
+    layer_set_period(&strobe.layer[0], 0); /* 0 = 静止，合法 */
+    CHECK(lumen_segment_validate_shape(&strobe) == LUMEN_RESULT_OK);
+    layer_set_period(&strobe.layer[0], 99); /* 99ms < 100ms 下限 → 拒绝 */
+    CHECK(lumen_segment_validate_shape(&strobe) == LUMEN_RESULT_INVALID_PARAM);
+    layer_set_period(&strobe.layer[0], 100);
+    layer_set_flags(&strobe.layer[0], 0x01); /* 爆闪没有 flags 位 */
+    CHECK(lumen_segment_validate_shape(&strobe) == LUMEN_RESULT_INVALID_PARAM);
+
+    /* ---- 心跳 ---- */
+    lumen_segment_t heart = seg_single(LUMEN_EFFECT_HEARTBEAT, 0, 9, 0, 255, 500, 60, 0x01, 0);
+    CHECK(lumen_segment_validate_shape(&heart) == LUMEN_RESULT_OK);
+    layer_set_period(&heart.layer[0], 1500);
+    CHECK(lumen_segment_validate_shape(&heart) == LUMEN_RESULT_OK);
+    layer_set_period(&heart.layer[0], 0); /* 0 = 静止，合法 */
+    CHECK(lumen_segment_validate_shape(&heart) == LUMEN_RESULT_OK);
+    layer_set_period(&heart.layer[0], 499); /* 499 < 500 下限 */
+    CHECK(lumen_segment_validate_shape(&heart) == LUMEN_RESULT_INVALID_PARAM);
+    layer_set_period(&heart.layer[0], 1501); /* 1501 > 1500 上限 */
+    CHECK(lumen_segment_validate_shape(&heart) == LUMEN_RESULT_INVALID_PARAM);
+    layer_set_period(&heart.layer[0], 1000);
+    layer_set_flags(&heart.layer[0], 0x02); /* bit1-7 保留 */
+    CHECK(lumen_segment_validate_shape(&heart) == LUMEN_RESULT_INVALID_PARAM);
+    layer_set_flags(&heart.layer[0], 0x00); /* 单脉冲合法 */
+    CHECK(lumen_segment_validate_shape(&heart) == LUMEN_RESULT_OK);
+
+    /* ---- 熄灭：参数必须全 0 ---- */
+    lumen_segment_t off = seg_single(LUMEN_EFFECT_OFF, 0, 9, 0, 0, 0, 0, 0, 0);
+    CHECK(lumen_segment_validate_shape(&off) == LUMEN_RESULT_OK);
+    layer_set_hue(&off.layer[0], 1); /* hue 非 0 */
+    CHECK(lumen_segment_validate_shape(&off) == LUMEN_RESULT_INVALID_PARAM);
+    layer_set_hue(&off.layer[0], 0);
+    layer_set_sat(&off.layer[0], 1); /* sat 非 0 */
+    CHECK(lumen_segment_validate_shape(&off) == LUMEN_RESULT_INVALID_PARAM);
+    layer_set_sat(&off.layer[0], 0);
+    layer_set_period(&off.layer[0], 100); /* 周期非 0 */
+    CHECK(lumen_segment_validate_shape(&off) == LUMEN_RESULT_INVALID_PARAM);
+    layer_set_period(&off.layer[0], 0);
+    layer_set_p5(&off.layer[0], 1); /* p5 非 0 */
+    CHECK(lumen_segment_validate_shape(&off) == LUMEN_RESULT_INVALID_PARAM);
+    layer_set_p5(&off.layer[0], 0);
+    layer_set_flags(&off.layer[0], 1); /* flags 非 0 */
+    CHECK(lumen_segment_validate_shape(&off) == LUMEN_RESULT_INVALID_PARAM);
+    layer_set_flags(&off.layer[0], 0);
+    CHECK(lumen_segment_validate_shape(&off) == LUMEN_RESULT_OK);
+
+    /* ---- 三种新类型都能作为 layer1（叠加层） ---- */
+    lumen_segment_t layered = seg_single(LUMEN_EFFECT_STATIC, 0, 9, 21845, 255, 0, 0, 0, 0);
+    layered.blend = LUMEN_BLEND_MULTIPLY;
+    layer_set(LUMEN_EFFECT_STROBE, 0, 255, 100, 128, 0, &layered.layer[1]);
+    CHECK(lumen_segment_validate_shape(&layered) == LUMEN_RESULT_OK);
+    layer_set(LUMEN_EFFECT_HEARTBEAT, 0, 255, 1000, 60, 0x01, &layered.layer[1]);
+    CHECK(lumen_segment_validate_shape(&layered) == LUMEN_RESULT_OK);
+    layer_set(LUMEN_EFFECT_OFF, 0, 0, 0, 0, 0, &layered.layer[1]);
+    CHECK(lumen_segment_validate_shape(&layered) == LUMEN_RESULT_OK);
+    /* layer1 的越界参数与 layer0 同一份规则。 */
+    layer_set_period(&layered.layer[1], 99); /* OFF 带周期 → 非法 */
+    CHECK(lumen_segment_validate_shape(&layered) == LUMEN_RESULT_INVALID_PARAM);
+
+    /* ---- 整套段校验（含 strip / 区间 / 重叠）走同一份规则 ---- */
+    lumen_segment_store_t store;
+    lumen_segment_store_init(&store);
+    lumen_segment_t strobe_ok = seg_single(LUMEN_EFFECT_STROBE, 0, 9, 0, 255, 100, 128, 0, 0);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, led_count, &strobe_ok) == LUMEN_RESULT_OK);
+    lumen_segment_t heart_ok = seg_single(LUMEN_EFFECT_HEARTBEAT, 10, 19, 0, 255, 1500, 60, 0x01, 0);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 1, led_count, &heart_ok) == LUMEN_RESULT_OK);
+    lumen_segment_t off_ok = seg_single(LUMEN_EFFECT_OFF, 20, 29, 0, 0, 0, 0, 0, 0);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 2, led_count, &off_ok) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_count(&store, 0) == 3);
+    lumen_segment_t heart_bad = seg_single(LUMEN_EFFECT_HEARTBEAT, 0, 4, 0, 255, 200, 60, 0, 0);
+    CHECK(lumen_segment_store_set(&store, 1, 1, 0, led_count, &heart_bad) ==
+          LUMEN_RESULT_INVALID_PARAM);
+    lumen_segment_t off_bad = seg_single(LUMEN_EFFECT_OFF, 0, 4, 0, 9, 0, 0, 0, 0);
+    CHECK(lumen_segment_store_set(&store, 1, 1, 0, led_count, &off_bad) ==
+          LUMEN_RESULT_INVALID_PARAM);
+}
+
+/*
+ * #74：三种新类型只有爆闪 / 心跳需要帧循环；熄灭是常量黑。
+ */
+static void test_effects_new_types_animation(void)
+{
+    lumen_segment_store_t store;
+    lumen_segment_store_init(&store);
+
+    lumen_segment_t strobe = seg_single(LUMEN_EFFECT_STROBE, 0, 9, 0, 255, 100, 128, 0, 0);
+    CHECK(lumen_segment_is_animated(&strobe));
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, 64, &strobe) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_needs_frames(&store, 1));
+
+    lumen_segment_store_init(&store);
+    lumen_segment_t heart = seg_single(LUMEN_EFFECT_HEARTBEAT, 0, 9, 0, 255, 1000, 60, 1, 0);
+    CHECK(lumen_segment_is_animated(&heart));
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, 64, &heart) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_needs_frames(&store, 1));
+
+    lumen_segment_store_init(&store);
+    lumen_segment_t off = seg_single(LUMEN_EFFECT_OFF, 0, 9, 0, 0, 0, 0, 0, 0);
+    CHECK(!lumen_segment_is_animated(&off));
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, 64, &off) == LUMEN_RESULT_OK);
+    CHECK(!lumen_segment_store_needs_frames(&store, 1));
+
+    /* 熄灭叠加在动画层上时仍需要帧循环（由 layer0 决定）。 */
+    lumen_segment_t mixed;
+    memset(&mixed, 0, sizeof(mixed));
+    mixed.active = true;
+    mixed.start = 0;
+    mixed.end = 9;
+    mixed.blend = LUMEN_BLEND_MULTIPLY;
+    layer_set(LUMEN_EFFECT_BREATHING, 0, 255, 1000, 0, 0, &mixed.layer[0]);
+    layer_set(LUMEN_EFFECT_OFF, 0, 0, 0, 0, 0, &mixed.layer[1]);
+    CHECK(lumen_segment_is_animated(&mixed));
 }
 
 /*
@@ -7591,6 +7923,11 @@ int main(int argc, char **argv)
     test_effects_rainbow_hue();
     test_effects_rainbow_pixel();
     test_effects_comet_gain();
+    test_effects_strobe();
+    test_effects_heartbeat();
+    test_effects_off();
+    test_effects_new_types_validation();
+    test_effects_new_types_animation();
     test_effects_rainbow_comet_coexist();
     test_blob_strip_counts();
     test_state_blob_100_leds();
