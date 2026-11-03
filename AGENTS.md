@@ -7,22 +7,40 @@
 **先读 [`docs/handoff.md`](docs/handoff.md)。** 它写清了当前在哪、哪些已完成、剩余工作卡在
 什么上。不要凭本文件的简短描述推断进度——项目已经过了三个大版本。
 
-> **当前状态：全部已合入 `master`（`78e7fc5`）。三层 PR 依次合并**：
-> #59 灯效编辑重构 → #70 导航重构 + 协议 v4 → #84 灯组进阶编辑器打磨。
+> **当前状态：第五轮（UI / 交互）已在分支 `integration/ui-v5` 上实现完毕**，
+> 规格 [#85](https://github.com/sishoui/light-matt/issues/85)，实现票 #90–#101。
+> 它的上游是 `master`（`78e7fc5`）：#59 灯效编辑重构 → #70 导航重构 + 协议 v4
+> → #84 灯组进阶编辑器打磨。
 
-**最新一轮**（规格 [#71](https://github.com/sishoui/light-matt/issues/71)，实现票 #72–#83）：
+**第五轮**（规格 [#85](https://github.com/sishoui/light-matt/issues/85)，实现票 #90–#101）：
+
+| 层 | 变化 |
+|---|---|
+| 主题 | 主色从橙换成**雾蓝**（浅 `#6B8CAE` / 深 `#8FA9C4`）；页面 / 导航栏 / tabBar / 原生滑块三处同时换色，切完任意页都是新色 |
+| 首页 | 右上角加号下拉 / 灰底搜索框（按名称过滤）/ 大卡亮度可拖（停手 300ms 才下发）/ 长按弹五项菜单 |
+| 发现页 | 重做成**清单式**（搜索条 + 分组标题 + 封面与信号条），点一行弹**添加表单**（名称预填 + 封面），不再点一下就跳走 |
+| 设备页 | 去掉整条状态栏（状态收进副标题）/ 三点菜单 / 灯组卡片改单列（封面 + 名称 + 开关），长按改名与换封面 |
+| 灯组页 | 灯珠数改成标题右侧胶囊，**长按弹圆盘**（1–100，松手下发）/ 方案固定三套圆形数字 / 简单档改成一行式灯效 + 滚轮，**去掉「应用并播放」**（改动立即生效）/ 「光区」全面改叫**分区**，新增逐颗预览条 |
+| 进阶页 | 时间轴不再包在卡片里、标题放大、加步骤在右侧；选中步骤下方有**气泡卡片**（步骤名 / 时长 / 分区列表）；**循环三档**（不循环 / 全部循环 / 最后一步循环）；「效果 + 叠加效果」改成平级的**背景层 + 特效层**，混合只剩相加 / 覆盖 |
+| 灯效 | 八个：空 / 常亮 / 呼吸 / 彩虹 / 流星 / 爆闪 / 心跳 / 随机闪烁（名字不带颜色） |
+| 协议（仍是 v4） | 流星可调密度与实色拖尾、新增**随机闪烁 `0x07`**、循环字节扩成三值 |
+| 修缺陷 | 删除设备现在是**一组动作**（断开 + 清六处存储 + 演示设备不再回来）；电源键三条静默返回都有反馈；灯效选中不再被迟到的读回覆盖；下发前补齐其它灯组切片，修掉跨灯组串扰 |
+| 新增单测 | `theme-sync` / `add-device` / `strip-meta` / `delete-device` / `home-actions` / `quick-selection` / `simple-effects` / `strip-head` / `zone-preview` / `advanced-layers` / `plan-fill`（共 **+200 项**） |
+
+**上一轮**（规格 [#71](https://github.com/sishoui/light-matt/issues/71)，实现票 #72–#83）：
 灯珠上限 64→100 且逐组滑块可调；时间轴固定宽度永不滚动、长按 300ms 抬起跟手重排；
-光区起止有圆形手柄、弹窗有起止数字滚轮；方案改为**设备级动态槽位**（默认 1 套、上限 4、
+分区起止有圆形手柄、弹窗有起止数字滚轮；方案改为**设备级动态槽位**（默认 1 套、上限 4、
 可删且不重排）；新增**爆闪 / 心跳 / 熄灭**三种灯效与 `0x1E ClearScript`；
-进阶档有**叠加层编辑器**（不含「熄灭」）。
+进阶档有**叠加层编辑器**（不含「熄灭」）——**第五轮已用「两层模型」取代它**。
 
-**上一轮**（规格 [#60](https://github.com/sishoui/light-matt/issues/60)，实现票 #61–#69）：
+**再上一轮**（规格 [#60](https://github.com/sishoui/light-matt/issues/60)，实现票 #61–#69）：
 底部改为「设备 / 我的」，发现页降为二级页，新增**灯组详情页**；协议 v4 把层编码扩到
-9 字节并新增逐光区亮度 `level`。`pages/devices`、`pages/scripts`、`pages/segment-edit`
+9 字节并新增逐分区亮度 `level`。`pages/devices`、`pages/scripts`、`pages/segment-edit`
 均已删除。
 
-**验收**：真机协议 22/22（`scripts/probe-v4.py`）、模拟器 250 项、三端单测全绿；
-肉眼观感已确认。详见 [`docs/acceptance-v4.md`](docs/acceptance-v4.md)。
+**验收**：真机协议 22/22（`scripts/probe-v4.py`）、模拟器 `verify-v5.mjs` **49/49**、
+三端单测全绿；肉眼观感已确认。详见 [`docs/acceptance-v4.md`](docs/acceptance-v4.md)
+与 [`docs/acceptance-v5.md`](docs/acceptance-v5.md)。
 
 **上上轮**：v3 的 11 张实现票（#36–#45）与 4 张缺口票（#47–#50）全部关闭，
 **已合入 `master`**（PR #51，merge commit `f9f2fe3`）。**设备侧验收已全部跑完**：协议层 47 项 + 行为语义
@@ -126,8 +144,8 @@ SHA-256 索引、配置丢失记录。
 ## 测试基线（改代码后必须保持）
 
 ```bash
-cmd.exe //c "firmware\\test\\run-tests.cmd"   # 12701 项断言 + 78 条 v4 向量
-cd miniprogram && npx vitest run              # 1485 用例 / 57 文件（不含 e2e）
+cmd.exe //c "firmware\\test\\run-tests.cmd"   # 13996 项断言 + 93 条 v4 向量
+cd miniprogram && npx vitest run              # 1708 用例 / 68 文件（不含 e2e）
 cd miniprogram && npm run test:ble            # 8 项真机 e2e（无设备自动 skip）
 cd miniprogram && npx tsc --noEmit            # 必须干净
 cd server && npm test                         # 140 用例
@@ -139,21 +157,18 @@ cd server && npm run typecheck                # 必须干净
 **渲染回归脚本（改页面后必跑；需要开发者工具开着自动化端口）**
 
 ```bash
-cd miniprogram && node .auto/verify-effect-editor.mjs   # 147 项：九卡 / 参数区 / 时间轴 / 光区轴 / 灯珠弹窗 / 效果面板 / 叠加层 / 术语
-cd miniprogram && node .auto/verify-redesign.mjs        # 37 项：页面树 / 大卡 / 小图 / 主题 / tabBar / 发现页 / 我的页
-cd miniprogram && node .auto/verify-deep.mjs            # 26 项：电源 / 亮度 / 灯组卡片 / 写入 / 播放 / 断开
-cd miniprogram && node .auto/verify-ui-interaction.mjs  # 40 项：点得动（发现页 / 我的页 / 日志面板 / 删除确认）
+cd miniprogram && node .auto/verify-v5.mjs             # 49 项：主题三处同步 / 首页 / 设备页 /
+                                                       #   灯组页（拨盘 / 三套方案 / 一行式 / 滚轮）/
+                                                       #   进阶页（气泡 / 循环三档 / 两层 / 预览条）
 ```
 
 > 端口不是默认 9501 时用 `WS=ws://127.0.0.1:9502` 覆盖。
-> 脚本会自己清 `lumen.planDrafts.v1`，可以反复跑（幂等）。
-
-```bash
-cd miniprogram && node .auto/verify-effect-editor.mjs   # ⚠️ 已作废：简单档六卡 / 时间轴 / 光区轴 / 效果面板
-cd miniprogram && node .auto/verify-redesign.mjs        # 37 项：页面树 / 大卡 / 小图切换 / 主题 / tabBar / 发现页 / 我的页
-cd miniprogram && node .auto/verify-deep.mjs            # ⚠️ 已作废：电源 / 亮度 / 灯组卡片 / 写入 / 播放
-cd miniprogram && node .auto/verify-ui-interaction.mjs  # 40 项：点得动（发现页 / 我的页 / 日志面板 / 删除确认）
-```
+> 脚本会自己切浅色 / 深色并复位，可以反复跑（幂等）。
+>
+> **已作废**（旧断言锁的是已删除的页面或已重写的控件，不要接进 CI）：
+> `verify-effect-editor.mjs`（九张色块卡 → 一行式）、`verify-redesign.mjs`（发现 tab）、
+> `verify-deep.mjs`（设备页自定义档）、`verify-ui-interaction.mjs`（`pages/devices`）。
+> 它们的「点得动」意图已并入 `verify-v5.mjs`。
 
 `verify-effect-editor.mjs` 锁的是「只有渲染层能发现」的问题：白屏、`bindtap` 全失效、
 点小图却发起了连接、主题 class 没挂上、tabBar 没渲染，以及**点效果卡 / 应用并播放后
