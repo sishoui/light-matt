@@ -127,13 +127,14 @@ describe("选中权威（迟到的读回不覆盖）", () => {
 });
 
 describe("页面真的按这三条实现（结构断言）", () => {
-  it("点卡片不再因 quickBusy 直接 return", () => {
-    const tap = /onQuickCardTap\(e: WechatMiniprogram\.TouchEvent\)\s*\{([\s\S]*?)\n  \},/.exec(
+  it("选中灯效不因 quickBusy 直接 return（#96 起选中在 selectEffect）", () => {
+    /* 点「灯效」行只开滚轮；真正的选中在 `selectEffect`。 */
+    const pick = /\n {2}selectEffect\(effectId: string, cardId: string\): void \{([\s\S]*?)\n {2}\},/.exec(
       STRIP_TS,
     );
-    expect(tap).not.toBeNull();
+    expect(pick).not.toBeNull();
     /* 除注释外不该出现 `if (... quickBusy ...) return` 这种早退。 */
-    const code = tap![1]
+    const code = pick![1]
       .split(/\r?\n/)
       .filter((line) => !line.trim().startsWith("*") && !line.trim().startsWith("/*"))
       .join("\n");

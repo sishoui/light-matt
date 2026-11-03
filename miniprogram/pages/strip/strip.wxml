@@ -79,33 +79,34 @@
     </view>
   </view>
 
-  <!-- ---------------- 简单档：九张成品效果卡（三列，#81） ---------------- -->
+  <!-- ---------------- 简单档：一行一个灯效（#96） ----------------
+       不再是色块网格：左边名称、右边当前值，点它从底部弹出滚轮。 -->
   <block wx:if="{{mode === 'simple'}}">
     <view class="section">
       <view class="section-head">
-        <text class="section-title">选一个效果</text>
+        <text class="section-title">灯效</text>
         <text class="section-value">整组生效</text>
       </view>
 
-      <view class="quick-grid {{quickDisabledReason ? 'disabled' : ''}}">
+      <view class="effect-list {{quickDisabledReason ? 'disabled' : ''}}">
         <view
-          wx:for="{{quickCards}}"
-          wx:key="id"
-          class="quick-card {{item.selected ? 'selected' : ''}}"
-          data-card-id="{{item.id}}"
-          bindtap="onQuickCardTap"
-          hover-class="quick-card-hover"
+          wx:for="{{effectRows}}"
+          wx:key="key"
+          class="effect-row"
+          data-key="{{item.key}}"
+          bindtap="onEffectRowTap"
+          hover-class="effect-row-hover"
         >
-          <view class="quick-swatch" style="background: {{item.hex}}"></view>
-          <view class="quick-body">
-            <text class="quick-name">{{item.name}}</text>
-            <text class="quick-hint">{{item.hint}}</text>
+          <text class="effect-row-label">{{item.label}}</text>
+          <view class="effect-row-value">
+            <text class="effect-row-text">{{item.value}}</text>
+            <view class="effect-row-chevron"></view>
           </view>
-          <view wx:if="{{item.selected}}" class="quick-check"></view>
         </view>
       </view>
 
       <text wx:if="{{quickDisabledReason}}" class="section-hint">{{quickDisabledReason}}</text>
+      <text wx:if="{{quickHint}}" class="section-hint">{{quickHint}}</text>
     </view>
 
     <!-- 参数区：只出现这张卡支持的滑块（色相 / 饱和度 + 亮度；熄灭卡没有滑块） -->
@@ -488,6 +489,34 @@
   </block>
 
   <!-- ---------------- 灯珠弹窗（#66）：不进主界面，只在新增 / 改范围时出现 ---------------- -->
+  <!-- ============ 灯效滚轮（#96）：点「灯效」行从底部弹出 ============ -->
+  <view wx:if="{{effectWheelOpen}}" class="dial-mask" bindtap="onEffectWheelClose">
+    <view class="dial-sheet wheel-sheet" catchtap="onDialStopPropagation">
+      <view class="sheet-grabber"></view>
+      <view class="dial-head">
+        <text class="dial-title">选择灯效</text>
+        <text class="dial-sub">选中立即生效</text>
+      </view>
+      <scroll-view scroll-y class="wheel-list">
+        <view
+          wx:for="{{effectOptions}}"
+          wx:key="id"
+          class="wheel-row {{item.selected ? 'on' : ''}}"
+          data-id="{{item.id}}"
+          bindtap="onEffectPick"
+          hover-class="wheel-row-hover"
+        >
+          <view class="wheel-row-main">
+            <text class="wheel-row-name">{{item.name}}</text>
+            <text class="wheel-row-hint">{{item.hint}}</text>
+          </view>
+          <view wx:if="{{item.check}}" class="wheel-row-check"></view>
+        </view>
+      </scroll-view>
+      <view class="dial-cancel" bindtap="onEffectWheelClose">取消</view>
+    </view>
+  </view>
+
   <!-- ============ 灯珠数圆盘（#95）：长按胶囊打开，转动调整，松手下发 ============ -->
   <view wx:if="{{dialOpen}}" class="dial-mask" bindtap="onDialClose">
     <view class="dial-sheet" catchtap="onDialStopPropagation">
@@ -605,17 +634,10 @@
     </view>
   </view>
 
-  <!-- ---------------- 底部：唯一的主按钮 ---------------- -->
-  <view class="apply-bar">
-    <button
-      class="btn primary apply-play"
-      disabled="{{!ready || applying}}"
-      bindtap="onApplyAndPlay"
-    >{{applying ? '正在应用…' : '应用并播放'}}</button>
-    <!-- 写入失败就地说明原因（不弹模态），见 decisions §5 -->
-    <text wx:if="{{applyError}}" class="apply-error">{{applyError}}</text>
-  </view>
-
+  <!--
+    #96：没有「应用并播放」按钮。任何改动在防抖后立即生效；
+    写入失败在页面顶部一行说明（不弹模态）。
+  -->
   <view class="footer">
     <text class="footer-hint">灯效以灯控为准{{mock ? '（演示模式）' : ''}}</text>
   </view>

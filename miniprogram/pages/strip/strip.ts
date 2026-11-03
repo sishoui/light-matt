@@ -113,12 +113,19 @@ import {
   type PickerState,
 } from "../../utils/control/led-picker";
 import {
-  buildQuickCardViews,
   buildQuickSpec,
   quickCardOf,
-  type QuickCardView,
   type QuickParams,
 } from "../../utils/control/quick-effects";
+import {
+  buildEffectRows,
+  buildWheelOptions,
+  effectTypeOf,
+  simpleEffectIdOfType,
+  simpleEffectOf,
+  type EffectRowView,
+  type WheelOptionView,
+} from "../../utils/control/simple-effects";
 import { queryInt } from "../../utils/control/routes";
 import type { ControlSession, ScriptResult } from "../../utils/control/session";
 import { getSession, isMockSession } from "../../utils/control/session-singleton";
@@ -386,8 +393,15 @@ Page({
     pickerEndDisabled: true,
     pickerEndHint: "",
 
-    /* ---- 简单档：九张成品卡（#81 三列） ---- */
-    quickCards: [] as QuickCardView[],
+    /* ---- 简单档（#96）：一行一个灯效 + 滚轮 ---- */
+    /** 一行式列表（只有「灯效」一行：左名称 / 右当前值）。 */
+    effectRows: [] as EffectRowView[],
+    /** 滚轮是否打开。 */
+    effectWheelOpen: false,
+    /** 滚轮的八个选项（当前选中高亮）。 */
+    effectOptions: [] as WheelOptionView[],
+    /** 当前选中的灯效 id（`simple-effects` 的 id）。 */
+    effectId: "solid",
     simpleParams: null as SimpleParamView | null,
     quickDisabledReason: "",
     quickBusy: false,
@@ -436,6 +450,8 @@ Page({
   segmentReports: [] as SegmentReport[],
   /** 当前选中的效果卡；null = 设备上不是「整组一张卡」。 */
   quickCardId: null as string | null,
+  /** #96：当前选中的灯效 id（八个灯效之一），一行式列表的选中态。 */
+  effectId: "solid",
   /** 当前卡片的 HSV 草稿（协议值，不是滑块刻度）。 */
   quickParams: {} as QuickParams,
   /** 简单档的亮度草稿（v4 的层亮度 0-100；松手即下发）。 */
@@ -577,6 +593,7 @@ Page({
     this.autoConnectTried = false;
     this.segmentReports = [];
     this.quickCardId = null;
+    this.effectId = "solid";
     this.quickParams = {};
     this.levelDraft = LEVEL_DEFAULT;
     this.quickTimer = null;
@@ -629,7 +646,8 @@ Page({
       mock: isMockSession(),
       stripId,
       title: `灯组 ${stripId + 1}`,
-      quickCards: buildQuickCardViews(null),
+      effectRows: buildEffectRows("solid"),
+      effectOptions: buildWheelOptions("solid"),
       durationTicks: durationTicks(),
       /* #95：固定三套方案 + 圆盘刻度（一次算好，不每次点开重算）。 */
       planCircles: buildPlanCircles({
@@ -909,6 +927,7 @@ Page({
   clearStripViews() {
     this.segmentReports = [];
     this.quickCardId = null;
+    this.effectId = "solid";
     this.quickParams = {};
     this.dirty = false;
     this.planStepCounts = null;
@@ -932,7 +951,8 @@ Page({
       ledHint: "",
       ledText: "连接后显示灯珠数",
       planHint: "",
-      quickCards: buildQuickCardViews(null),
+      effectRows: buildEffectRows("solid"),
+      effectOptions: buildWheelOptions("solid"),
       simpleParams: null,
       quickDisabledReason: this.disabledReason(),
       quickHint: "",
@@ -2768,14 +2788,87 @@ Page({
     this.syncQuickFromDevice();
   },
 
-  /** 重画卡片 + 参数区（唯一派生入口）。 */
+  /**
+   * 重画简单档（唯一派生入口）：一行式灯效 + 参数区 + 滚轮选项。
+   *
+   * #96：不再有色块网格。`effectId` 是选中态的唯一真相；`quickCardId` 继续
+   * 作为「设备上读回的是哪张卡」的镜像，两者同步更新。
+   */
   renderQuick(patch: Record<string, unknown> = {}): void {
+    /*
+     * #96：`effectId` 是选中态的**唯一真相**，不再每次从卡片反推。
+     *
+     * 「随机闪烁」没有成品卡（卡片表是旧模型），它借「常亮」卡作壳——从卡片
+     * 反推会把它显示成「常亮」。设备回读时由 `syncQuickFromDevice` 按协议类型
+     * 重设 effectId，两个方向因此一致。
+     */
+    const effectId = this.effectId;
     this.setData({
-      quickCards: buildQuickCardViews(this.quickCardId, this.quickParams),
+      effectId,
+      effectRows: buildEffectRows(effectId),
+      effectOptions: buildWheelOptions(effectId),
       simpleParams: buildSimpleParams(this.quickCardId, this.quickParams, this.levelDraft),
       quickDisabledReason: this.disabledReason(),
       ...patch,
     });
+  },
+
+  /**
+   * 效果卡 id（`quick-effects` 的 id）→ 八个灯效 id（`simple-effects` 的 id）。
+   *
+   * 两套表服务于不同目的：卡片表带默认色与档位，灯效表只有名字与协议类型。
+   * 映射缺失时退回「常亮」——界面永远要有一个可读的当前值。
+   */
+  effectIdForCard(cardId: string | null): string {
+    if (cardId === null) {
+      return "solid";
+    }
+    switch (cardId) {
+      case "warm":
+      case "ice":
+      case "violet":
+        return "solid";
+      case "breathe":
+        return "breathe";
+      case "rainbow":
+        return "rainbow";
+      case "comet":
+        return "comet";
+      case "strobe":
+        return "strobe";
+      case "heartbeat":
+        return "heartbeat";
+      case "off":
+        return "empty";
+      default:
+        return "solid";
+    }
+  },
+
+  /** 八个灯效 id → 效果卡 id（用于构建协议层）。 */
+  cardIdForEffect(effectId: string): string | null {
+    switch (effectId) {
+      case "solid":
+        return "warm";
+      case "breathe":
+        return "breathe";
+      case "rainbow":
+        return "rainbow";
+      case "comet":
+        return "comet";
+      case "strobe":
+        return "strobe";
+      case "heartbeat":
+        return "heartbeat";
+      case "empty":
+        return "off";
+      case "flicker":
+        /* 随机闪烁没有对应的成品卡（卡片表的九张是旧模型）；用常亮卡作壳，
+         * 真正的类型由 `effectTypeOf` 写进层里。 */
+        return "warm";
+      default:
+        return null;
+    }
   },
 
   /**
@@ -2788,9 +2881,11 @@ Page({
     const inferred = inferSimpleState(this.segmentReports, this.stripLedCount());
     if (inferred === null) {
       this.quickCardId = null;
+      this.effectId = "solid";
       this.quickParams = {};
     } else {
       this.quickCardId = inferred.cardId;
+      this.effectId = this.effectIdForCard(inferred.cardId);
       /* 只回填颜色与亮度（hue / sat / level 是精确的协议值）；其它档位设备上无法唯一反推。 */
       this.quickParams = { hue: inferred.hue, sat: inferred.sat };
       /* 熄灭卡读回的 level 恒为 0（协议要求），不能当成用户的亮度选择——
@@ -2800,29 +2895,67 @@ Page({
     this.renderQuick();
   },
 
+  /**
+   * 设备上那一层是什么灯效（#96）：按协议类型反查八个灯效之一。
+   *
+   * 「空」= 熄灭类型；未知类型返回 null（界面显示「未设置」）。
+   */
+  effectIdOfDeviceLayer(): string | null {
+    const zone = this.segmentReports[0];
+    if (zone === undefined) {
+      return null;
+    }
+    return simpleEffectIdOfType(zone.layer0.type);
+  },
+
   // ---------------- 简单档：交互 ----------------
 
-  /** 点一张效果卡：这一组整体变成该效果（立刻写入设备）。 */
-  onQuickCardTap(e: WechatMiniprogram.TouchEvent) {
-    const cardId = String(e.currentTarget.dataset.cardId ?? "");
-    const card = quickCardOf(cardId);
-    if (card === null || this.disabledReason() !== "") {
+  /** 点「灯效」行：从底部弹出滚轮（#96）。 */
+  onEffectRowTap() {
+    if (this.disabledReason() !== "") {
       return;
     }
-    /*
-     * #91：写设备期间**不再丢弃点击**。
-     *
-     * 以前这里 `if (quickBusy) return`：用户快速连点不同卡片时，后面的点击
-     * 被静默吞掉，界面上却已经高亮到新的那张（因为高亮在写入前就变了），
-     * 于是「我明明点了」却停在旧的灯效上。
-     *
-     * 现在改成：**选中立刻生效并保持权威**（写入后不再拿设备回读覆盖它），
-     * 写入中再点则只记下最后一张，等本轮写完再补一次。
-     */
-    this.quickCardId = card.id;
-    /* 换卡时参数回到该卡默认值（把呼吸的最暗档带进流光没有意义）。
-     * 亮度草稿保留用户值；只有设备上读回过 0（熄灭卡）时才回到默认满亮，
-     * 否则点了「暖白常亮」还是会全黑。熄灭卡本身不发光，草稿留着没用也不坏。 */
+    this.setData({
+      effectWheelOpen: true,
+      effectOptions: buildWheelOptions(this.data.effectId),
+    });
+  },
+
+  onEffectWheelClose() {
+    if (!this.data.effectWheelOpen) {
+      return;
+    }
+    this.setData({ effectWheelOpen: false });
+  },
+
+  /**
+   * 滚轮里选一个灯效：**立刻生效**（`scheduleQuickWrite(true)`）。
+   *
+   * 选中在同一 tick 内定下来（写设备期间保持权威，见 #91 的修复），
+   * 写入完成后不再拿设备回读覆盖它。
+   */
+  onEffectPick(e: WechatMiniprogram.TouchEvent) {
+    const id = String(e.currentTarget.dataset.id ?? "");
+    const effect = simpleEffectOf(id);
+    const cardId = this.cardIdForEffect(id);
+    if (effect === null || cardId === null || this.disabledReason() !== "") {
+      return;
+    }
+    this.setData({ effectWheelOpen: false });
+    this.selectEffect(id, cardId);
+  },
+
+  /**
+   * 选中一个灯效并立即写入设备。
+   *
+   * 拆出来是因为「点行 → 滚轮 → 选」与「设备读回」两个方向都要用同一套
+   * 参数重置规则（换效果时参数回到该效果默认值）。
+   */
+  selectEffect(effectId: string, cardId: string): void {
+    this.quickCardId = cardId;
+    this.effectId = effectId;
+    /* 换效果时参数回到默认值（把呼吸的最暗档带进流星没有意义）。
+     * 亮度草稿保留用户值；只有读回过 0（空效果）时才回到默认满亮。 */
     this.quickParams = {};
     this.levelDraft = levelAfterCardTap(this.levelDraft);
     this.dirty = true;
@@ -2923,10 +3056,18 @@ Page({
     this.quickQueued = false;
     this.setData({ quickBusy: true, applyError: "" });
     try {
-      /* 播放中设备按方案渲染，实时光区看不见：先停，再写入。 */
+      /*
+       * #96：立即生效的顺序 —— **停播 → 写实时光区 → 静默下发整份方案 → 恢复播放**。
+       *
+       * 停播是必须的第一步：设备在播放方案时按 `active_segments` 渲染，写进去的
+       * 实时光区（`s_segments`）看不见。这是硬件事实，界面不假装能实时预览。
+       * 记住「原来在播」，写完再恢复，用户不会因为改个颜色就停播。
+       */
       const state = session.deviceState;
+      const wasPlaying = state !== null && state.playbackState === 1;
+      const loopMode = state === null ? LOOP.NONE : stateLoopMode(state);
       if (state !== null && state.playbackState !== 0) {
-        await session.setPlayback(0, (state.flags & 0x01) !== 0);
+        await session.setPlayback(0, loopMode);
         this.setData({ quickHint: "已停止播放，改为实时灯效" });
       }
 
@@ -2958,8 +3099,9 @@ Page({
       }
 
       const ledCount = this.stripLedCount();
-      /* v4：亮度是逐光区的层字段，真实写进这一条灯组（不碰全局亮度）。 */
-      const spec = buildQuickSpec(card, this.quickParams, stripId, ledCount, this.levelDraft);
+      /* v4：亮度是逐光区的层字段，真实写进这一条灯组（不碰全局亮度）。
+       * #96：随机闪烁没有成品卡，用「常亮」卡作壳再把类型换成 FLICKER。 */
+      const spec = this.specForEffect(card, stripId, ledCount);
       const ack = await session.setSegment(spec);
       if (!ack.ok) {
         throw new Error(resultText(ack.resultCode));
@@ -2976,7 +3118,13 @@ Page({
       this.segmentReports = [
         { ...spec, stripId, segId: 0 } as unknown as (typeof this.segmentReports)[number],
       ];
-      this.setData({ quickHint: `${card.name} 已生效` });
+      /* #96：静默把整份方案也更新一次（进阶档的编排要能看到这一组的改动），
+       * 再恢复播放。失败不覆盖「已生效」——实时光区已经写进去了。 */
+      await this.silentDownloadPlans();
+      if (wasPlaying) {
+        await session.setPlayback(1, loopMode).catch(() => undefined);
+      }
+      this.setData({ quickHint: `${simpleEffectOf(this.effectId)?.name ?? card.name} 已生效` });
       this.renderQuick();
     } catch (err) {
       const message = errorText(err);
@@ -2992,6 +3140,67 @@ Page({
         this.scheduleQuickWrite(true);
       }
     }
+  },
+
+  /**
+   * 简单档写进设备的段（#96）。
+   *
+   * 八个灯效里只有「随机闪烁」没有成品卡（卡片表是旧模型），它的层由卡壳
+   * 复制而来、类型换成 FLICKER、参数取该类型的默认密度。其余全部走
+   * `buildQuickSpec`，规则只有一份。
+   */
+  /**
+   * 静默下发整份方案（#96）。
+   *
+   * 简单档改的是实时光区；设备上如果有一套已启用的方案，停止播放后回落画面
+   * 才是刚写的内容。这里把草稿里的方案也同步一次，使「停止播放」时看到的
+   * 与方案一致。**失败静默**：实时光区已经写成功，不该因为方案没提交就把
+   * 用户的操作判成失败。
+   */
+  async silentDownloadPlans(): Promise<void> {
+    const session = this.session;
+    if (session === null || !this.data.ready) {
+      return;
+    }
+    const draft = this.currentDraft();
+    if (planIsEmpty(draft)) {
+      return;
+    }
+    try {
+      const stripCount = Math.max(1, this.session?.deviceState?.stripCount ?? 1);
+      const config = draftToScriptConfig(draft, stripCount);
+      const capacity = checkScriptBlobBytes(
+        draftCapacityBytes(this.drafts, [], config.scriptId, config.stripCount),
+      );
+      if (!capacity.ok) {
+        return;
+      }
+      await session.downloadScript(config, { activate: true, loop: false });
+    } catch {
+      /* 方案同步是旁路：实时光区已经生效，这里不覆盖用户看到的结果。 */
+    }
+  },
+
+  specForEffect(
+    card: ReturnType<typeof quickCardOf> & object,
+    stripId: number,
+    ledCount: number,
+  ): SegmentSpec {
+    const base = buildQuickSpec(card, this.quickParams, stripId, ledCount, this.levelDraft);
+    if (this.effectId !== "flicker") {
+      return base;
+    }
+    /* 随机闪烁：色相 / 饱和度沿用用户选的（壳卡的默认色），密度用中档。 */
+    return {
+      ...base,
+      layer0: {
+        ...base.layer0,
+        type: effectTypeOf("flicker"),
+        periodMs: 1200,
+        p5: 96,
+        flags: 0,
+      },
+    } as SegmentSpec;
   },
 
   // ---------------- 应用并播放 ----------------

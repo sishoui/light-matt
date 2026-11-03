@@ -363,95 +363,119 @@
 /* ---------------- 九张成品效果卡（三列，#81） ---------------- */
 
 /*
- * 三列网格：每行 3 张，九张正好三行（卡片数与列数的整除关系由
- * `tests/quick-effects.test.ts` 锁住，改列数必须一起改常量）。
- * 卡片变窄后改成竖排（色块在上、文字在下），名称与提示各占一行，
- * 超出用省略号截断而不是换行——换行会让同一行的卡片高度参差不齐。
+ * 一行一个灯效（#96）：左边名称，右边当前值 + chevron。
+ *
+ * 不再是色块网格——用户是来选效果的，不是来选颜色的；名字里也不出现颜色。
+ * 点这一行从底部弹出滚轮。
  */
-.quick-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12rpx;
+.effect-list {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+  overflow: hidden;
 }
 
-.quick-grid.disabled {
+.effect-list.disabled {
   opacity: 0.45;
   pointer-events: none;
 }
 
-.quick-card {
-  position: relative;
+.effect-row {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8rpx;
-  min-width: 0;
-  padding: 16rpx 14rpx;
-  border-radius: var(--radius-md);
-  background: var(--card-2);
-  box-shadow: inset 0 0 0 1rpx var(--border);
-  transition: background 160ms ease;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20rpx;
+  padding: 24rpx 24rpx;
 }
 
-.quick-card-hover {
+.effect-row-hover {
   background: var(--card-press);
 }
 
-/* 选中态用描边 + 微底：色块本身就有颜色，不能靠颜色区分选中。 */
-.quick-card.selected {
+.effect-row-label {
+  font-size: 28rpx;
+  color: var(--text);
+}
+
+.effect-row-value {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+.effect-row-text {
+  font-size: 27rpx;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.effect-row-chevron {
+  width: 14rpx;
+  height: 14rpx;
+  border-top: 3rpx solid var(--text-3);
+  border-right: 3rpx solid var(--text-3);
+  transform: rotate(45deg);
+}
+
+/* ---------------- 灯效滚轮（#96）：底部弹层里的八个选项 ---------------- */
+
+.wheel-sheet {
+  gap: 16rpx;
+}
+
+.wheel-list {
+  max-height: 62vh;
+  width: 100%;
+}
+
+.wheel-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20rpx;
+  padding: 22rpx 20rpx;
+  border-radius: var(--radius-md);
+}
+
+.wheel-row-hover {
+  background: var(--card-press);
+}
+
+.wheel-row.on {
   background: var(--accent-soft);
-  box-shadow: 0 0 0 2rpx var(--accent);
 }
 
-.quick-swatch {
-  width: 44rpx;
-  height: 44rpx;
-  border-radius: 50%;
-  flex-shrink: 0;
-  box-shadow: inset 0 0 0 1rpx var(--border);
-}
-
-.quick-body {
+.wheel-row-main {
   display: flex;
   flex-direction: column;
-  gap: 2rpx;
-  width: 100%;
+  gap: 4rpx;
   min-width: 0;
 }
 
-.quick-name {
-  display: block;
-  width: 100%;
-  font-size: 24rpx;
+.wheel-row-name {
+  font-size: 29rpx;
   font-weight: 600;
   color: var(--text);
-  /* 三列宽度：一行 + 省略号，绝不换行（换行会让同排卡片不等高）。 */
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
-.quick-hint {
-  display: block;
-  width: 100%;
-  font-size: 19rpx;
-  color: var(--text-2);
-  line-height: 1.4;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.wheel-row.on .wheel-row-name {
+  color: var(--accent);
 }
 
-/* 选中对勾移到右上角：竖排布局里它不再占一行宽度。 */
-.quick-check {
-  position: absolute;
-  top: 16rpx;
-  right: 14rpx;
-  width: 22rpx;
-  height: 12rpx;
-  border-left: 3rpx solid var(--accent);
-  border-bottom: 3rpx solid var(--accent);
+.wheel-row-hint {
+  font-size: 21rpx;
+  color: var(--text-3);
+}
+
+.wheel-row-check {
+  width: 24rpx;
+  height: 13rpx;
+  border-left: 4rpx solid var(--accent);
+  border-bottom: 4rpx solid var(--accent);
   transform: rotate(-45deg) translateY(-2rpx);
+  flex-shrink: 0;
 }
 
 /* ---------------- 参数区：色相 / 饱和度 / 亮度 ---------------- */
@@ -1307,25 +1331,7 @@
   font-size: 27rpx;
 }
 
-/* ---------------- 底部：应用并播放 ---------------- */
-
-.apply-bar {
-  display: flex;
-  flex-direction: column;
-  gap: 12rpx;
-  margin-top: 8rpx;
-}
-
-.apply-play {
-  width: 100%;
-}
-
-/* 写入失败就地说明原因（不弹模态）。 */
-.apply-error {
-  font-size: 22rpx;
-  color: var(--danger);
-  line-height: 1.5;
-}
+/* #96：没有「应用并播放」按钮——任何改动在防抖后立即生效。 */
 
 /* ---------------- 叠加层（#71 US49）：主效果之上再加一层 ---------------- */
 

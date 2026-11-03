@@ -82,26 +82,20 @@ describe("卡片表", () => {
     expect(QUICK_CARDS.length % QUICK_GRID_COLUMNS).toBe(0);
   });
 
-  it("页面 wxss 的网格确实是三列（常量与样式不许漂移）", () => {
+  it("#96 起简单档不再是色块网格（页面上没有 quick-grid / quick-card）", () => {
     const wxss = readFileSync(join(ROOT, "pages/strip/strip.wxss"), "utf8");
-    const grid = /\.quick-grid\s*\{([^}]*)\}/.exec(wxss);
-    expect(grid).not.toBeNull();
-    expect(grid![1]).toMatch(/grid-template-columns:\s*repeat\(3,\s*1fr\)/);
+    expect(wxss).not.toMatch(/\.quick-grid\s*\{/);
+    const wxml = readFileSync(join(ROOT, "pages/strip/strip.wxml"), "utf8");
+    expect(wxml).not.toContain("quick-grid");
+    expect(wxml).not.toContain("quick-card");
   });
 
-  it("三列下卡片文字不换行、超出截断（名称一行 + 提示一行）", () => {
-    const wxss = readFileSync(join(ROOT, "pages/strip/strip.wxss"), "utf8").replace(
-      /\/\*[\s\S]*?\*\//g,
-      "",
-    );
-    for (const selector of [".quick-name", ".quick-hint"]) {
-      const index = wxss.indexOf(`${selector} {`);
-      expect(index, `找不到独立的 ${selector} 块`).toBeGreaterThanOrEqual(0);
-      const body = wxss.slice(wxss.indexOf("{", index) + 1, wxss.indexOf("}", index));
-      expect(body, selector).toMatch(/white-space:\s*nowrap/);
-      expect(body, selector).toMatch(/overflow:\s*hidden/);
-      expect(body, selector).toMatch(/text-overflow:\s*ellipsis/);
-    }
+  it("一行式设置行不换行、超出截断（左侧名称 / 右侧当前值）", () => {
+    const wxss = readFileSync(join(ROOT, "pages/strip/strip.wxss"), "utf8");
+    const index = wxss.indexOf(".effect-row {");
+    expect(index).toBeGreaterThanOrEqual(0);
+    const body = wxss.slice(wxss.indexOf("{", index) + 1, wxss.indexOf("}", index));
+    expect(body).toMatch(/justify-content:\s*space-between/);
   });
 
   it("四张原型卡覆盖协议四种灯效", () => {
