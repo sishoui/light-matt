@@ -7,17 +7,22 @@
 **先读 [`docs/handoff.md`](docs/handoff.md)。** 它写清了当前在哪、哪些已完成、剩余工作卡在
 什么上。不要凭本文件的简短描述推断进度——项目已经过了三个大版本。
 
-> **刚完成**：灯组进阶编辑器打磨（规格 [#71](https://github.com/sishoui/light-matt/issues/71)，
-> 实现票 #72–#83 全部关闭），在分支 `feat/strip-editor-polish`（基线
-> `integration/ui-refactor-v4`），**待合入 master**。灯珠上限 64→100 且逐组滑块可调；
-> 时间轴固定宽度永不滚动、长按 300ms 抬起跟手重排；光区起止有圆形手柄、弹窗有起止数字滚轮；
-> 方案改为**设备级动态槽位**（默认 1 套、上限 4、可删且不重排）；新增**爆闪 / 心跳 / 熄灭**
-> 三种灯效与 `0x1E ClearScript`。**本轮没上真机**，也**没做叠加层编辑器**，详见 handoff §0。
+> **当前状态：全部已合入 `master`（`78e7fc5`）。三层 PR 依次合并**：
+> #59 灯效编辑重构 → #70 导航重构 + 协议 v4 → #84 灯组进阶编辑器打磨。
 
-**上一轮**：UI 重构 + 协议 v4（规格 [#60](https://github.com/sishoui/light-matt/issues/60)，
-实现票 #61–#69），在分支 `integration/ui-refactor-v4`，**待合入 master**。底部改为
-「设备 / 我的」，发现页降为二级页，新增**灯组详情页**；协议 v4 把层编码扩到 9 字节并新增
-逐光区亮度 `level`。`pages/devices`、`pages/scripts`、`pages/segment-edit` 均已删除。
+**最新一轮**（规格 [#71](https://github.com/sishoui/light-matt/issues/71)，实现票 #72–#83）：
+灯珠上限 64→100 且逐组滑块可调；时间轴固定宽度永不滚动、长按 300ms 抬起跟手重排；
+光区起止有圆形手柄、弹窗有起止数字滚轮；方案改为**设备级动态槽位**（默认 1 套、上限 4、
+可删且不重排）；新增**爆闪 / 心跳 / 熄灭**三种灯效与 `0x1E ClearScript`；
+进阶档有**叠加层编辑器**（不含「熄灭」）。
+
+**上一轮**（规格 [#60](https://github.com/sishoui/light-matt/issues/60)，实现票 #61–#69）：
+底部改为「设备 / 我的」，发现页降为二级页，新增**灯组详情页**；协议 v4 把层编码扩到
+9 字节并新增逐光区亮度 `level`。`pages/devices`、`pages/scripts`、`pages/segment-edit`
+均已删除。
+
+**验收**：真机协议 22/22（`scripts/probe-v4.py`）、模拟器 250 项、三端单测全绿；
+肉眼观感已确认。详见 [`docs/acceptance-v4.md`](docs/acceptance-v4.md)。
 
 **上上轮**：v3 的 11 张实现票（#36–#45）与 4 张缺口票（#47–#50）全部关闭，
 **已合入 `master`**（PR #51，merge commit `f9f2fe3`）。**设备侧验收已全部跑完**：协议层 47 项 + 行为语义

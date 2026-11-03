@@ -1,18 +1,24 @@
 # 交接：lumen 当前状态与下一步
 
-**最后更新**：2026-11-03　**分支**：`feat/strip-editor-polish`（灯组进阶编辑器打磨已完成，
-待合入 `master`）
+**最后更新**：2026-11-03　**分支**：`master`（三层 PR 已全部合入）
 
 这份文件是给**新会话**的入口。它只写「新会话必须知道、但代码和文档里读不到」的东西；
 其余一律给指针，不重复。
 
 ---
 
-## 0. 2026-11-03 第六轮：灯组进阶编辑器打磨（**已完成**，分支 `feat/strip-editor-polish`）
+## 0. 2026-11-03 第六轮：灯组进阶编辑器打磨（**已完成并合入 master**）
 
 **规格 [#71](https://github.com/sishoui/light-matt/issues/71) + 12 张实现票 `#72`–`#83` 全部关闭。**
-基线 `integration/ui-refactor-v4`；本地副本 `.scratch/strip-editor-polish-spec.md`、
-`.scratch/strip-editor-polish-tickets/`。分支已推送，**尚未合入 master**。
+本地副本 `.scratch/strip-editor-polish-spec.md`、`.scratch/strip-editor-polish-tickets/`。
+
+**合并记录**（三层 PR 按顺序合入，master = `78e7fc5`）：
+
+| PR | 内容 | merge |
+|---|---|---|
+| #59 | 灯效编辑重构（快捷 / 自定义两档） | `92c9787` |
+| #70 | 导航重构 + 灯组详情页 + 协议 v4 | `2bd4436` |
+| #84 | 灯组进阶编辑器打磨 + 叠加层 + 真机验收 | `78e7fc5` |
 
 ### 交付了什么
 
@@ -52,11 +58,16 @@
   `isKnownEffectType` / `EFFECT_TYPE_NAMES`，`segment-editor` 与 `script-view`
   都改用它；新增 `tests/effect-types.test.ts` 钉住「枚举扩了、清单没扩」。
 
-### 仍未验证（需要人眼 / 手机）
+### 验收状态
 
-见 [`docs/acceptance-v4.md`](acceptance-v4.md) 末节：逐光区亮度的肉眼对比、
-8×100 的 TDM 满载时序、爆闪 20fps 下 10Hz 的观感、呼吸谷底实测、
-清空正在播放的方案是否真停。
+**协议层**：真机 22/22（`scripts/probe-v4.py`），记录见 [`docs/acceptance-v4.md`](acceptance-v4.md)。
+
+**渲染层**：模拟器四套共 250 项全绿（effect-editor 147 / redesign 37 / deep 26 /
+interaction 40），已在 **master 检出**上复跑确认。
+
+**肉眼验收**：用户已确认观感正确（2026-11-03）。以下五项从「待验证」转为「已确认」：
+逐光区亮度的明暗对比、呼吸谷底、爆闪节奏、方案切换的可见变化、清空方案后的熄灯行为。
+仍建议在**长灯带（接近 100 颗）** 上复看一次 TDM 满载时序——当前设备是 30 颗/带。
 
 ### 本轮基线
 
