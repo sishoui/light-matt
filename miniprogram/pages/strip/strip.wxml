@@ -78,7 +78,7 @@
     </view>
   </view>
 
-  <!-- ---------------- 简单档：六张成品效果卡 ---------------- -->
+  <!-- ---------------- 简单档：九张成品效果卡（三列，#81） ---------------- -->
   <block wx:if="{{mode === 'simple'}}">
     <view class="section">
       <view class="section-head">
@@ -107,10 +107,10 @@
       <text wx:if="{{quickDisabledReason}}" class="section-hint">{{quickDisabledReason}}</text>
     </view>
 
-    <!-- 参数区：只出现这张卡支持的滑块（色相 / 饱和度 + 亮度） -->
+    <!-- 参数区：只出现这张卡支持的滑块（色相 / 饱和度 + 亮度；熄灭卡没有滑块） -->
     <view wx:if="{{simpleParams}}" class="section param-panel">
       <view class="section-head">
-        <text class="section-title">{{simpleParams.cardName}}的参数</text>
+        <text class="section-title">{{simpleParams.title}}</text>
         <view class="param-preview" style="background: {{simpleParams.colorHex}}"></view>
       </view>
 
@@ -137,8 +137,9 @@
         <text wx:if="{{item.note}}" class="param-note">{{item.note}}</text>
       </view>
 
+      <text wx:if="{{simpleParams.notice}}" class="param-note">{{simpleParams.notice}}</text>
       <text wx:if="{{quickHint}}" class="section-hint">{{quickHint}}</text>
-      <text wx:else class="section-hint">改完立刻生效，整组一起变</text>
+      <text wx:elif="{{!simpleParams.notice}}" class="section-hint">改完立刻生效，整组一起变</text>
     </view>
   </block>
 

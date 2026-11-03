@@ -173,12 +173,18 @@
   color: var(--text-3);
 }
 
-/* ---------------- 六张成品效果卡 ---------------- */
+/* ---------------- 九张成品效果卡（三列，#81） ---------------- */
 
+/*
+ * 三列网格：每行 3 张，九张正好三行（卡片数与列数的整除关系由
+ * `tests/quick-effects.test.ts` 锁住，改列数必须一起改常量）。
+ * 卡片变窄后改成竖排（色块在上、文字在下），名称与提示各占一行，
+ * 超出用省略号截断而不是换行——换行会让同一行的卡片高度参差不齐。
+ */
 .quick-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16rpx;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12rpx;
 }
 
 .quick-grid.disabled {
@@ -189,9 +195,11 @@
 .quick-card {
   position: relative;
   display: flex;
-  align-items: center;
-  gap: 16rpx;
-  padding: 20rpx;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8rpx;
+  min-width: 0;
+  padding: 16rpx 14rpx;
   border-radius: var(--radius-md);
   background: var(--card-2);
   box-shadow: inset 0 0 0 1rpx var(--border);
@@ -209,8 +217,8 @@
 }
 
 .quick-swatch {
-  width: 56rpx;
-  height: 56rpx;
+  width: 44rpx;
+  height: 44rpx;
   border-radius: 50%;
   flex-shrink: 0;
   box-shadow: inset 0 0 0 1rpx var(--border);
@@ -219,30 +227,44 @@
 .quick-body {
   display: flex;
   flex-direction: column;
-  gap: 4rpx;
+  gap: 2rpx;
+  width: 100%;
   min-width: 0;
-  flex: 1;
 }
 
 .quick-name {
-  font-size: 26rpx;
+  display: block;
+  width: 100%;
+  font-size: 24rpx;
   font-weight: 600;
   color: var(--text);
+  /* 三列宽度：一行 + 省略号，绝不换行（换行会让同排卡片不等高）。 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .quick-hint {
-  font-size: 20rpx;
+  display: block;
+  width: 100%;
+  font-size: 19rpx;
   color: var(--text-2);
   line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
+/* 选中对勾移到右上角：竖排布局里它不再占一行宽度。 */
 .quick-check {
-  width: 26rpx;
-  height: 14rpx;
-  border-left: 4rpx solid var(--accent);
-  border-bottom: 4rpx solid var(--accent);
-  transform: rotate(-45deg) translateY(-4rpx);
-  flex-shrink: 0;
+  position: absolute;
+  top: 16rpx;
+  right: 14rpx;
+  width: 22rpx;
+  height: 12rpx;
+  border-left: 3rpx solid var(--accent);
+  border-bottom: 3rpx solid var(--accent);
+  transform: rotate(-45deg) translateY(-2rpx);
 }
 
 /* ---------------- 参数区：色相 / 饱和度 / 亮度 ---------------- */

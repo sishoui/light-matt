@@ -4,7 +4,7 @@
  * ## 本页的职责
  *
  * 用户从设备页的灯组卡片点进来，只想改**这一条灯组**长什么样。本票实现
- * 「简单档」：六张成品效果卡 + 色相 / 饱和度 / 亮度三个滑块，底部只有
+ * 「简单档」：九张成品效果卡（三列）+ 色相 / 饱和度 / 亮度三个滑块，底部只有
  * 一个「应用并播放」。进阶编排（时间轴 / 光区分段）在 #65–#67，本页先给
  * 占位说明。
  *
@@ -116,6 +116,8 @@ import {
   hueFromDegrees,
   inferSimpleState,
   LEVEL_DEFAULT,
+  levelAfterCardTap,
+  levelDraftFromDevice,
   planSlotLabel,
   planSlotSub,
   satFromPercent,
@@ -304,7 +306,7 @@ Page({
     pickerEndDisabled: true,
     pickerEndHint: "",
 
-    /* ---- 简单档：六张成品卡 ---- */
+    /* ---- 简单档：九张成品卡（#81 三列） ---- */
     quickCards: [] as QuickCardView[],
     simpleParams: null as SimpleParamView | null,
     quickDisabledReason: "",
@@ -2031,7 +2033,9 @@ Page({
       this.quickCardId = inferred.cardId;
       /* 只回填颜色与亮度（hue / sat / level 是精确的协议值）；其它档位设备上无法唯一反推。 */
       this.quickParams = { hue: inferred.hue, sat: inferred.sat };
-      this.levelDraft = inferred.level;
+      /* 熄灭卡读回的 level 恒为 0（协议要求），不能当成用户的亮度选择——
+       * 否则从熄灯切回亮灯时会「拖了亮度也还是全黑」。 */
+      this.levelDraft = levelDraftFromDevice(inferred.cardId, inferred.level, this.levelDraft);
     }
     this.renderQuick();
   },
@@ -2046,8 +2050,11 @@ Page({
       return;
     }
     this.quickCardId = card.id;
-    /* 换卡时参数回到该卡默认值（把呼吸的最暗档带进流光没有意义）。 */
+    /* 换卡时参数回到该卡默认值（把呼吸的最暗档带进流光没有意义）。
+     * 亮度草稿保留用户值；只有设备上读回过 0（熄灭卡）时才回到默认满亮，
+     * 否则点了「暖白常亮」还是会全黑。熄灭卡本身不发光，草稿留着没用也不坏。 */
     this.quickParams = {};
+    this.levelDraft = levelAfterCardTap(this.levelDraft);
     this.dirty = true;
     this.renderQuick({ quickHint: "" });
     this.scheduleQuickWrite(true);

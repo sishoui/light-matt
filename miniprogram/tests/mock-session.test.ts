@@ -23,6 +23,7 @@ import {
   quickPresetFlags,
 } from "../utils/control/quick-effects";
 import { PRESETS, rgbToSegmentParams } from "../utils/color/hsv";
+import { inferSimpleState } from "../utils/control/strip-simple";
 
 const A = MOCK_DEVICES[0];
 const B = MOCK_DEVICES[1];
@@ -242,6 +243,69 @@ describe("演示模式：快捷档写入", () => {
     const ledCount = session.stripLedCount(0);
     const direct = await session.setSegment(buildQuickSpec(card, {}, 0, ledCount));
     expect(direct.ok).toBe(false);
+  });
+
+  it("三张新卡（#81）写下去后设备真的变了：爆闪 / 心跳 / 熄灭", async () => {
+    const { session } = makeSession();
+    await session.connect(A.deviceId, A.broadcastName);
+    const ledCount = session.stripLedCount(0);
+    await session.queryStrip(0);
+    for (const report of session.segmentsOf(0)) {
+      await session.clearSegment(0, report.segId);
+    }
+
+    const expected = {
+      strobe: SEGMENT_TYPE.STROBE,
+      heartbeat: SEGMENT_TYPE.HEARTBEAT,
+      off: SEGMENT_TYPE.OFF,
+    };
+    for (const [id, type] of Object.entries(expected)) {
+      const ack = await session.setSegment(buildQuickSpec(quickCardOf(id)!, {}, 0, ledCount));
+      expect(ack.ok, id).toBe(true);
+      const readBack = await session.queryStrip(0);
+      expect(readBack.kind, id).toBe("ok");
+      if (readBack.kind !== "ok") return;
+      const sameStrip = readBack.reports.filter((report) => report.stripId === 0);
+      expect(sameStrip, id).toHaveLength(1);
+      expect(sameStrip[0].start, id).toBe(0);
+      expect(sameStrip[0].end, id).toBe(ledCount - 1);
+      expect(sameStrip[0].layer0.type, id).toBe(type);
+      expect(sameStrip[0].layer1.type, id).toBe(0xff);
+    }
+  });
+
+  it("点熄灭黑之后这条灯组仍然开着（不是关掉灯组）", async () => {
+    const { session } = makeSession();
+    await session.connect(A.deviceId, A.broadcastName);
+    expect(session.stripPower(0)).toBe(true);
+    const ledCount = session.stripLedCount(0);
+    await session.queryStrip(0);
+    for (const report of session.segmentsOf(0)) {
+      await session.clearSegment(0, report.segId);
+    }
+    await session.setSegment(buildQuickSpec(quickCardOf("off")!, {}, 0, ledCount));
+    /* 熄灭是「光区全黑」，开关位不该被动过。 */
+    expect(session.stripPower(0)).toBe(true);
+    expect(session.deviceState?.power).toBe(A.power);
+  });
+
+  it("熄灭卡读回后能反推出 off（界面的高亮不会错到暖白）", async () => {
+    const { session } = makeSession();
+    await session.connect(A.deviceId, A.broadcastName);
+    const ledCount = session.stripLedCount(0);
+    await session.queryStrip(0);
+    for (const report of session.segmentsOf(0)) {
+      await session.clearSegment(0, report.segId);
+    }
+    await session.setSegment(buildQuickSpec(quickCardOf("off")!, {}, 0, ledCount));
+    const readBack = await session.queryStrip(0);
+    expect(readBack.kind).toBe("ok");
+    if (readBack.kind !== "ok") return;
+    const state = inferSimpleState(
+      readBack.reports.filter((report) => report.stripId === 0),
+      ledCount,
+    );
+    expect(state?.cardId).toBe("off");
   });
 
   it("方案播放中写实时光区前先停止播放（否则设备不出光）", async () => {

@@ -12,6 +12,16 @@
  *  2. 把「档位」翻译成协议值（`EffectLayer`）。
  *
  * 不碰 wx / BLE，可直接单测。真正下发由页面调 `session.setSegment`。
+ *
+ * ## 九张卡（#81）
+ *
+ * 前三张原型（常亮 / 呼吸 / 彩虹 / 流光）+ 两张换色，再各加一张
+ * 爆闪白 / 心跳暖红 / 熄灭黑。新增三张**没有可调档位**：票面要的是一键成品，
+ * 参数固定在该效果的中间档（中等频率 / 中等占空比 / 60 BPM）。
+ *
+ * 编码不在这里另写一套：爆闪与心跳复用 `protocol/commands` 的校验入口
+ * （`cmdSetSegment` 会拒绝非法周期 / 占空比），卡片只给出协议值。数值与
+ * 进阶档面板的默认档（4Hz / 中占空比 / 60 BPM）由单测锁死一致。
  */
 
 import {
@@ -26,8 +36,23 @@ import { breathingFlags, directionFlags } from "../protocol/commands";
 import { rgbToHex, rgbToSegmentParams, segmentHueSatToRgb, PRESETS, type ColorPreset } from "../color/hsv";
 import { buildZoneSpec } from "./zone-model";
 
-/** 卡片对应的灯效类型。 */
-export type QuickKind = "solid" | "breathing" | "rainbow" | "comet";
+/** 卡片对应的灯效类型（与协议 SEGMENT_TYPE 一一对应，`solid` 即静态）。 */
+export type QuickKind =
+  | "solid"
+  | "breathing"
+  | "rainbow"
+  | "comet"
+  | "strobe"
+  | "heartbeat"
+  | "off";
+
+/**
+ * 简单档的网格列数（#81 从 2 列改 3 列）。
+ *
+ * 卡片数与列数由单测同时锁住：9 % 3 === 0，最后一行不会只剩一张孤儿卡。
+ * `pages/strip/strip.wxss` 的 `.quick-grid` 必须写成同一组数（单测比对）。
+ */
+export const QUICK_GRID_COLUMNS = 3;
 
 /** 快慢三档（映射到周期，越慢周期越长）。 */
 export type QuickSpeed = "slow" | "normal" | "fast";
@@ -91,7 +116,28 @@ const TAIL_P5: Record<QuickTail, number> = {
   long: 220,
 };
 
-/** 默认 6 张卡片（前 4 张是四种灯效原型，后 2 张是同效果换色）。 */
+/*
+ * 爆闪 / 心跳的固定档（#81 的卡片没有旋钮，参数就是这三个中间值）。
+ *
+ * 数值必须与进阶档面板的默认档一致（4Hz / 中占空比 / 60 BPM）；
+ * `effect-panel` 反过来依赖本模块（经 `strip-simple`），所以这里**不能**
+ * 从它 import——一致性由 `tests/quick-effects.test.ts` 断言两边换算结果相等。
+ */
+const STROBE_HZ = 4;
+/** 中档占空比（effects-spec §2.5 的 90 ≈ 35%）。 */
+const STROBE_DUTY = 90;
+const STROBE_PERIOD_MS = Math.round(1000 / STROBE_HZ);
+const HEARTBEAT_BPM = 60;
+const HEARTBEAT_PERIOD_MS = Math.round(60000 / HEARTBEAT_BPM);
+/** 心跳脉冲宽度（协议 p5）：与面板同样固定为中等。 */
+const HEARTBEAT_PULSE = 60;
+/** 心跳默认开双脉冲（flags bit0）。 */
+const HEARTBEAT_FLAGS = 0x01;
+
+/**
+ * 九张成品卡（#81）：前 4 张是灯效原型、接着 2 张换色，最后 3 张是
+ * #74 新增的爆闪 / 心跳 / 熄灭。原来的 6 张**顺序与参数都不动**。
+ */
 export const QUICK_CARDS: readonly QuickEffectCard[] = [
   {
     id: "warm",
@@ -158,6 +204,45 @@ export const QUICK_CARDS: readonly QuickEffectCard[] = [
     periodMs: 0,
     p5: 0,
     shows: { color: true, speed: false, level: false, tail: false, direction: false, saturation: false },
+  },
+  {
+    /* #81：白色爆闪。sat = 0 在固件里就是中性白（V 恒为 1），hue 无意义。 */
+    id: "strobe",
+    name: "爆闪白",
+    hint: "高频闪白，够醒目",
+    kind: "strobe",
+    hue: 0,
+    sat: 0,
+    periodMs: STROBE_PERIOD_MS,
+    p5: STROBE_DUTY,
+    shows: { color: false, speed: false, level: false, tail: false, direction: false, saturation: false },
+  },
+  {
+    /* #81：暖红心跳。hue 略偏橙（≈9°）才是「暖」红，纯红（hue 0）显冷。 */
+    id: "heartbeat",
+    name: "心跳暖红",
+    hint: "像心跳一样一明一暗",
+    kind: "heartbeat",
+    hue: 1600,
+    sat: 245,
+    periodMs: HEARTBEAT_PERIOD_MS,
+    p5: HEARTBEAT_PULSE,
+    shows: { color: false, speed: false, level: false, tail: false, direction: false, saturation: false },
+  },
+  {
+    /*
+     * #81：整组熄灭。它是一条**光区**（主效果 OFF），不是关掉这条灯组的开关：
+     * 灯组自身仍然开着（不碰 strip power），所以别的光区或别的灯组照常工作。
+     */
+    id: "off",
+    name: "熄灭黑",
+    hint: "整组黑，灯组仍开着",
+    kind: "off",
+    hue: 0,
+    sat: 0,
+    periodMs: 0,
+    p5: 0,
+    shows: { color: false, speed: false, level: false, tail: false, direction: false, saturation: false },
   },
 ];
 
@@ -242,6 +327,41 @@ export function buildQuickLayer(
         flags: directionFlags(p.direction === "reverse"),
         level: zoneLevel,
       };
+    case "strobe":
+      /*
+       * 爆闪（#74 / #81）：参数固定为卡片默认值（中等频率 + 中等占空比）。
+       * flags 必须为 0；周期下限 100ms 由卡片默认值满足（250ms）。
+       */
+      return {
+        type: SEGMENT_TYPE.STROBE,
+        hue,
+        sat,
+        periodMs: STROBE_PERIOD_MS,
+        p5: STROBE_DUTY,
+        flags: 0,
+        level: zoneLevel,
+      };
+    case "heartbeat":
+      /*
+       * 心跳（#74 / #81）：60 BPM（1000ms），双脉冲，脉冲宽度中等。
+       * 周期必须落在 500-1500ms，卡片默认值正好在中间。
+       */
+      return {
+        type: SEGMENT_TYPE.HEARTBEAT,
+        hue,
+        sat,
+        periodMs: HEARTBEAT_PERIOD_MS,
+        p5: HEARTBEAT_PULSE,
+        flags: HEARTBEAT_FLAGS,
+        level: zoneLevel,
+      };
+    case "off":
+      /*
+       * 熄灭（#74 / #81）：参数块与 level 全 0（协议硬约束：hue / sat /
+       * period / p5 / flags 必须全 0）。`level` 也归 0——熄灭不受亮度影响，
+       * 留一个非零亮度只会让「读回反推」误判。
+       */
+      return { type: SEGMENT_TYPE.OFF, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 };
     default:
       return { type: SEGMENT_TYPE.STATIC, hue, sat, periodMs: 0, p5: 0, flags: 0, level: zoneLevel };
   }
@@ -286,12 +406,16 @@ export function quickRange(ledCount: number): { start: number; end: number } {
 /**
  * 从设备读回的灯效反推「当前是哪种快捷卡片」。
  *
- * 只按 layer0 的 type + 周期档位近似判断（设备不会告诉我们用户当初点了哪张卡）。
+ * 只按 layer0 的 type + 颜色近似判断（设备不会告诉我们用户当初点了哪张卡）。
  * 用于切换回快捷档时高亮上次的选择；判断不出来返回 null（用户可自选）。
+ *
+ * #81 起九张卡都能认：爆闪 / 心跳 / 熄灭按层类型唯一对应；静态按「色相 + 饱和度
+ * 精确命中某张换色卡」认（warm / ice / violet），改过颜色的静态层退回 warm
+ * ——那是静态档的默认卡，且界面会把真实颜色回填，不会假装是别的卡。
  */
 export function inferQuickCard(layer: EffectLayer): string | null {
   if (layer.type === SEGMENT_TYPE.STATIC) {
-    return "warm";
+    return inferSolidCard(layer) ?? "warm";
   }
   if (layer.type === SEGMENT_TYPE.BREATHING) {
     return "breathe";
@@ -302,7 +426,40 @@ export function inferQuickCard(layer: EffectLayer): string | null {
   if (layer.type === SEGMENT_TYPE.COMET) {
     return "comet";
   }
+  if (layer.type === SEGMENT_TYPE.STROBE) {
+    return "strobe";
+  }
+  if (layer.type === SEGMENT_TYPE.HEARTBEAT) {
+    return "heartbeat";
+  }
+  if (layer.type === SEGMENT_TYPE.OFF) {
+    return "off";
+  }
   return null;
+}
+
+/** 静态层里色相与饱和度都精确命中某张换色卡（warm / ice / violet）时返回它。 */
+function inferSolidCard(layer: EffectLayer): string | null {
+  const hue = clampUint16(layer.hue);
+  const sat = clampByte(layer.sat);
+  const hit = QUICK_CARDS.find(
+    (card) => card.kind === "solid" && card.hue === hue && card.sat === sat,
+  );
+  return hit === undefined ? null : hit.id;
+}
+
+/**
+ * 卡片的预览色块。
+ *
+ * 熄灭卡给纯黑（它的默认色相 / 饱和度是 0/0，按 HSV 算出来是白，会误导成
+ * 「点亮」）；其余卡片按色相 / 饱和度算，选中卡跟随用户改过的颜色。
+ */
+export function quickColorHex(card: QuickEffectCard, params: QuickParams = {}): string {
+  if (card.kind === "off") {
+    return "#000000";
+  }
+  const p = { ...defaultParams(card), ...params };
+  return rgbToHex(segmentHueSatToRgb(clampUint16(p.hue), clampByte(p.sat)));
 }
 
 /** 档位的中文显示（卡片下方的当前值摘要）。 */
@@ -442,27 +599,23 @@ function choiceOf<T extends string>(
 }
 
 /**
- * 六张卡的视图：`selectedId` 由页面给出（设备反推或用户点的）。
+ * 九张卡的视图：`selectedId` 由页面给出（设备反推或用户点的）。
  *
- * 图片预览色块按卡片的默认色相/饱和度算：彩虹卡默认 hue 为 0 且会自己循环，
- * 这里给一个渐变感更强的多色彩块由 wxss 处理，不在数据里拼字符串。
+ * 预览色块按卡片的默认色相/饱和度算；选中卡跟随用户改过的颜色。
+ * 彩虹卡默认 hue 为 0 且会自己循环，这里给一个渐变感更强的多色彩块由 wxss
+ * 处理，不在数据里拼字符串（`quickColorHex` 只负责静态色）。
  */
 export function buildQuickCardViews(
   selectedId: string | null,
   params: QuickParams = {},
 ): QuickCardView[] {
-  return QUICK_CARDS.map((card) => {
-    const p = { ...defaultParams(card), ...params };
-    const hue = card.id === selectedId ? p.hue : card.hue;
-    const sat = card.id === selectedId ? p.sat : card.sat;
-    return {
-      id: card.id,
-      name: card.name,
-      hint: card.hint,
-      hex: rgbToHex(segmentHueSatToRgb(hue, sat)),
-      selected: card.id === selectedId,
-    };
-  });
+  return QUICK_CARDS.map((card) => ({
+    id: card.id,
+    name: card.name,
+    hint: card.hint,
+    hex: quickColorHex(card, card.id === selectedId ? params : {}),
+    selected: card.id === selectedId,
+  }));
 }
 
 /**
@@ -496,7 +649,8 @@ export function buildQuickPanel(
     cardId: card.id,
     cardName: card.name,
     summary: paramsSummary(card, p),
-    colorHex: rgbToHex(segmentHueSatToRgb(p.hue, p.sat)),
+    /* 熄灭卡没有颜色可言：预览块给黑，不能按 0/0 色算成白。 */
+    colorHex: quickColorHex(card, p),
     hasChoices: choices.length > 0,
     choices,
     showsColor: card.shows.color,

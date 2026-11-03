@@ -9,6 +9,9 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   buildQuickCardViews,
   buildQuickLayer,
@@ -18,24 +21,87 @@ import {
   inferQuickCard,
   paramsSummary,
   QUICK_CARDS,
+  QUICK_GRID_COLUMNS,
   quickCardOf,
+  quickColorHex,
   type QuickParams,
 } from "../utils/control/quick-effects";
+import {
+  defaultParams as panelDefaultParams,
+  heartbeatPeriodMs,
+  panelLayer,
+  strobePeriodMs,
+} from "../utils/control/effect-panel";
 import {
   ANIMATION_MIN_PERIOD_MS,
   BLEND,
   BREATHING_MIN_PERIOD_MS,
+  HEARTBEAT_MAX_PERIOD_MS,
+  HEARTBEAT_MIN_PERIOD_MS,
   NO_EFFECT,
   SEGMENT_TYPE,
+  STROBE_MIN_PERIOD_MS,
   WAVEFORM,
 } from "../utils/protocol/constants";
-import { breathingWaveform, segmentReverse } from "../utils/protocol/commands";
+import {
+  breathingWaveform,
+  cmdSetSegment,
+  parseSegmentPayload,
+  segmentReverse,
+} from "../utils/protocol/commands";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 describe("卡片表", () => {
-  it("有 6 张卡，id 唯一", () => {
-    expect(QUICK_CARDS).toHaveLength(6);
+  it("有 9 张卡，id 唯一", () => {
+    expect(QUICK_CARDS).toHaveLength(9);
     const ids = QUICK_CARDS.map((card) => card.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("原有 6 张的顺序与 id 不变（用户记忆里的位置不能动）", () => {
+    expect(QUICK_CARDS.slice(0, 6).map((card) => card.id)).toEqual([
+      "warm",
+      "breathe",
+      "rainbow",
+      "comet",
+      "ice",
+      "violet",
+    ]);
+  });
+
+  it("新增三张：#81 爆闪白 / 心跳暖红 / 熄灭黑", () => {
+    const added = QUICK_CARDS.slice(6);
+    expect(added.map((card) => card.id)).toEqual(["strobe", "heartbeat", "off"]);
+    expect(added.map((card) => card.name)).toEqual(["爆闪白", "心跳暖红", "熄灭黑"]);
+    expect(added.map((card) => card.kind)).toEqual(["strobe", "heartbeat", "off"]);
+  });
+
+  it("九张卡按三列排（数量是列数的整数倍）", () => {
+    expect(QUICK_GRID_COLUMNS).toBe(3);
+    expect(QUICK_CARDS.length % QUICK_GRID_COLUMNS).toBe(0);
+  });
+
+  it("页面 wxss 的网格确实是三列（常量与样式不许漂移）", () => {
+    const wxss = readFileSync(join(ROOT, "pages/strip/strip.wxss"), "utf8");
+    const grid = /\.quick-grid\s*\{([^}]*)\}/.exec(wxss);
+    expect(grid).not.toBeNull();
+    expect(grid![1]).toMatch(/grid-template-columns:\s*repeat\(3,\s*1fr\)/);
+  });
+
+  it("三列下卡片文字不换行、超出截断（名称一行 + 提示一行）", () => {
+    const wxss = readFileSync(join(ROOT, "pages/strip/strip.wxss"), "utf8").replace(
+      /\/\*[\s\S]*?\*\//g,
+      "",
+    );
+    for (const selector of [".quick-name", ".quick-hint"]) {
+      const index = wxss.indexOf(`${selector} {`);
+      expect(index, `找不到独立的 ${selector} 块`).toBeGreaterThanOrEqual(0);
+      const body = wxss.slice(wxss.indexOf("{", index) + 1, wxss.indexOf("}", index));
+      expect(body, selector).toMatch(/white-space:\s*nowrap/);
+      expect(body, selector).toMatch(/overflow:\s*hidden/);
+      expect(body, selector).toMatch(/text-overflow:\s*ellipsis/);
+    }
   });
 
   it("四张原型卡覆盖协议四种灯效", () => {
@@ -137,6 +203,101 @@ describe("档位 → 协议值", () => {
   });
 });
 
+describe("新增三张卡（#81）", () => {
+  const strobe = quickCardOf("strobe")!;
+  const heartbeat = quickCardOf("heartbeat")!;
+  const off = quickCardOf("off")!;
+
+  it("爆闪白：白色爆闪，中等频率、中等占空比", () => {
+    const layer = buildQuickLayer(strobe, {});
+    expect(layer.type).toBe(SEGMENT_TYPE.STROBE);
+    expect(layer.periodMs).toBeGreaterThanOrEqual(STROBE_MIN_PERIOD_MS);
+    /* 中等频率 = 面板默认 4Hz（250ms），中等占空比 = 90（≈35%）。 */
+    expect(layer.periodMs).toBe(strobePeriodMs(4));
+    expect(layer.p5).toBe(90);
+    expect(layer.flags).toBe(0);
+  });
+
+  it("爆闪白用的是中性白（sat = 0，固件里 V 恒为 1 即纯白）", () => {
+    const layer = buildQuickLayer(strobe, {});
+    expect(layer.hue).toBe(0);
+    expect(layer.sat).toBe(0);
+    /* 卡片预览色块也是白，不会显示成红色。 */
+    expect(quickColorHex(strobe)).toBe("#FFFFFF");
+  });
+
+  it("爆闪 / 心跳的固定档与进阶档面板的默认档一致（复用同一套数值）", () => {
+    const strobePanel = panelLayer("strobe", panelDefaultParams("strobe"));
+    expect(buildQuickLayer(strobe, {}).periodMs).toBe(strobePanel.periodMs);
+    expect(buildQuickLayer(strobe, {}).p5).toBe(strobePanel.p5);
+
+    const beatPanel = panelLayer("heartbeat", panelDefaultParams("heartbeat"));
+    const beatQuick = buildQuickLayer(heartbeat, {});
+    expect(beatQuick.periodMs).toBe(beatPanel.periodMs);
+    expect(beatQuick.p5).toBe(beatPanel.p5);
+    expect(beatQuick.flags).toBe(beatPanel.flags);
+  });
+
+  it("心跳暖红：暖红、约 60 BPM、双脉冲", () => {
+    const layer = buildQuickLayer(heartbeat, {});
+    expect(layer.type).toBe(SEGMENT_TYPE.HEARTBEAT);
+    expect(layer.periodMs).toBe(heartbeatPeriodMs(60));
+    expect(layer.periodMs).toBe(1000);
+    expect(layer.periodMs).toBeGreaterThanOrEqual(HEARTBEAT_MIN_PERIOD_MS);
+    expect(layer.periodMs).toBeLessThanOrEqual(HEARTBEAT_MAX_PERIOD_MS);
+    expect(layer.flags).toBe(0x01);
+    /* 暖红：色相落在红色扇区的暖侧（0-12°，不是纯 0 的冷红），饱和度接近满。 */
+    expect(heartbeat.hue).toBeGreaterThan(0);
+    expect(heartbeat.hue).toBeLessThan(2200);
+    expect(heartbeat.sat).toBeGreaterThan(200);
+  });
+
+  it("熄灭黑：整组一个光区，主效果熄灭、参数全 0、无叠加层", () => {
+    const spec = buildQuickSpec(off, {}, 1, 20);
+    expect(spec.layer0.type).toBe(SEGMENT_TYPE.OFF);
+    expect(spec.layer0.hue).toBe(0);
+    expect(spec.layer0.sat).toBe(0);
+    expect(spec.layer0.periodMs).toBe(0);
+    expect(spec.layer0.p5).toBe(0);
+    expect(spec.layer0.flags).toBe(0);
+    expect(spec.layer1.type).toBe(NO_EFFECT);
+    expect(spec.blend).toBe(BLEND.OVER);
+    expect(spec.start).toBe(0);
+    expect(spec.end).toBe(19);
+  });
+
+  it("熄灭黑不被亮度滑块点亮（level 恒 0）", () => {
+    expect(buildQuickLayer(off, {}, 100).level).toBe(0);
+    expect(buildQuickLayer(off, {}, 5).level).toBe(0);
+  });
+
+  it("三张新卡都能编成合法载荷（设备不会回 InvalidParam）", () => {
+    for (const card of [strobe, heartbeat, off]) {
+      const spec = buildQuickSpec(card, {}, 0, 30);
+      /* cmdSetSegment 会做完整的协议校验，抛错即失败。 */
+      const request = cmdSetSegment(spec);
+      const roundTrip = parseSegmentPayload(request.payload);
+      expect(roundTrip.layer0.type).toBe(spec.layer0.type);
+      expect(roundTrip.end).toBe(29);
+    }
+  });
+
+  it("三张新卡没有可调的档位控件（卡片只是一键成品）", () => {
+    for (const id of ["strobe", "heartbeat", "off"]) {
+      const panel = buildQuickPanel(id)!;
+      expect(panel.choices).toEqual([]);
+      expect(panel.summary).toBe("");
+    }
+  });
+
+  it("卡片名称与提示都是一行能读的短句（三列宽度）", () => {
+    for (const card of QUICK_CARDS) {
+      expect(card.name.length).toBeLessThanOrEqual(6);
+      expect(card.hint.length).toBeLessThanOrEqual(10);
+    }
+  });
+});
+
 describe("整组 spec（快捷档的语义）", () => {
   const card = quickCardOf("breathe")!;
 
@@ -205,21 +366,60 @@ describe("从设备值反推卡片", () => {
     expect(inferQuickCard({ ...base, type: SEGMENT_TYPE.COMET })).toBe("comet");
   });
 
+  it("爆闪 / 心跳 / 熄灭按类型反推（#81）", () => {
+    const base = { hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 100 };
+    expect(inferQuickCard({ ...base, type: SEGMENT_TYPE.STROBE })).toBe("strobe");
+    expect(inferQuickCard({ ...base, type: SEGMENT_TYPE.HEARTBEAT })).toBe("heartbeat");
+    expect(inferQuickCard({ ...base, type: SEGMENT_TYPE.OFF, level: 0 })).toBe("off");
+  });
+
+  it("熄灭卡整组读回后反推出 off（无叠加层、整组一个光区）", () => {
+    const off = buildQuickSpec(quickCardOf("off")!, {}, 0, 24);
+    /* 设备报告就是 spec 的扁平投影，layer0 足够反推。 */
+    expect(inferQuickCard(off.layer0)).toBe("off");
+    expect(off.layer1.type).toBe(NO_EFFECT);
+    expect(off.start).toBe(0);
+    expect(off.end).toBe(23);
+  });
+
+  it("九张卡逐一往返：buildQuickLayer → inferQuickCard 回到同一个 id", () => {
+    for (const card of QUICK_CARDS) {
+      const layer = buildQuickLayer(card, {}, 60);
+      expect(inferQuickCard(layer), card.id).toBe(card.id);
+    }
+  });
+
+  it("换色静态卡按色相 + 饱和度认（冷蓝 / 紫色）", () => {
+    expect(inferQuickCard(buildQuickLayer(quickCardOf("ice")!))).toBe("ice");
+    expect(inferQuickCard(buildQuickLayer(quickCardOf("violet")!))).toBe("violet");
+  });
+
+  it("改过颜色的静态层退回暖白（界面随后回填真实颜色）", () => {
+    expect(
+      inferQuickCard({ type: SEGMENT_TYPE.STATIC, hue: 1234, sat: 99, periodMs: 0, p5: 0, flags: 0, level: 100 }),
+    ).toBe("warm");
+  });
+
   it("空层认不出（返回 null，让用户自选）", () => {
     expect(inferQuickCard({ type: NO_EFFECT, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 })).toBeNull();
   });
 });
 
 describe("卡片视图（#54）", () => {
-  it("六张卡都带名称、说明与预览色，且只有选中的高亮", () => {
+  it("九张卡都带名称、说明与预览色，且只有选中的高亮", () => {
     const views = buildQuickCardViews("breathe");
-    expect(views).toHaveLength(6);
+    expect(views).toHaveLength(9);
     for (const view of views) {
       expect(view.name.length).toBeGreaterThan(0);
       expect(view.hint.length).toBeGreaterThan(0);
       expect(view.hex).toMatch(/^#[0-9a-f]{6}$/i);
     }
     expect(views.filter((view) => view.selected).map((view) => view.id)).toEqual(["breathe"]);
+  });
+
+  it("熄灭卡的预览色是黑（不是按 0/0 色算出的白）", () => {
+    const off = buildQuickCardViews(null).find((view) => view.id === "off")!;
+    expect(off.hex).toBe("#000000");
   });
 
   it("没有选中时全部不高亮", () => {
@@ -234,7 +434,7 @@ describe("卡片视图（#54）", () => {
     expect(shifted.hex).not.toBe(warm.hex);
   });
 
-  it("未选中的卡不受当前参数影响（避免「调一张卡、六张都变色」）", () => {
+  it("未选中的卡不受当前参数影响（避免「调一张卡、九张都变色」）", () => {
     const base = buildQuickCardViews("warm").find((view) => view.id === "rainbow")!;
     const withParams = buildQuickCardViews("warm", { hue: 50000 }).find(
       (view) => view.id === "rainbow",

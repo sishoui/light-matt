@@ -12,7 +12,6 @@
  * `buildQuickPanel`），这里不重新定义任何一张卡。
  */
 
-import { rgbToHex, segmentHueSatToRgb } from "../color/hsv";
 import { NO_EFFECT } from "../protocol/constants";
 import type { SegmentReport } from "../protocol/types";
 import {
@@ -20,6 +19,7 @@ import {
   defaultParams,
   inferQuickCard,
   quickCardOf,
+  quickColorHex,
   type QuickParams,
 } from "./quick-effects";
 
@@ -135,9 +135,13 @@ export interface SimpleSliderView {
 export interface SimpleParamView {
   cardId: string;
   cardName: string;
+  /** 参数区标题（「暖白常亮的参数」；没有可调项的卡片只写名字）。 */
+  title: string;
   /** 当前颜色的预览色（滑块的实时反馈）。 */
   colorHex: string;
   sliders: SimpleSliderView[];
+  /** 没有滑块时的说明（熄灭卡：整组黑掉但灯组仍开着）；空串表示不显示。 */
+  notice: string;
 }
 
 /**
@@ -146,7 +150,10 @@ export interface SimpleParamView {
  * 「只显示该卡支持的控件」的判据来自卡片表自己的 `shows`：
  *  - `shows.color` → 色相（彩虹卡自己循环变色，没有「色相」可言）；
  *  - `shows.color || shows.saturation` → 饱和度（彩虹卡用它调浓淡）；
- *  - 亮度恒在，**真实下发**（v4 的逐光区 `level`，票 #69 接通）。
+ *  - 亮度对**会有光**的卡片恒在，真实下发（v4 的逐光区 `level`，票 #69 接通）。
+ *
+ * 熄灭卡（#81）不给亮度滑块：它的参数块全 0、`level` 也归 0，给一个拖了
+ * 也不起作用的滑块只会让人以为坏了。它只剩一句说明。
  */
 export function buildSimpleParams(
   cardId: string | null,
@@ -193,26 +200,68 @@ export function buildSimpleParams(
       note: "",
     });
   }
-  /* 读回值可以是 0（该层不出光）：显示真实值，只把滑块下限留给用户拖动。 */
-  const brightness = clampZoneLevel(level);
-  sliders.push({
-    key: "level",
-    label: "亮度",
-    value: brightness,
-    display: `${brightness}%`,
-    min: LEVEL_MIN,
-    max: LEVEL_MAX,
-    step: 1,
-    sends: true,
-    note: "",
-  });
+  if (card.kind !== "off") {
+    /* 读回值可以是 0（该层不出光）：显示真实值，只把滑块下限留给用户拖动。 */
+    const brightness = clampZoneLevel(level);
+    sliders.push({
+      key: "level",
+      label: "亮度",
+      value: brightness,
+      display: `${brightness}%`,
+      min: LEVEL_MIN,
+      max: LEVEL_MAX,
+      step: 1,
+      sends: true,
+      note: "",
+    });
+  }
 
   return {
     cardId: panel.cardId,
     cardName: panel.cardName,
+    title: sliders.length === 0 ? panel.cardName : `${panel.cardName}的参数`,
     colorHex: panel.colorHex,
     sliders,
+    notice: card.kind === "off" ? OFF_CARD_NOTICE : "",
   };
+}
+
+/** 熄灭卡的说明：它不是「关掉这组」，所以必须明说灯组仍然开着。 */
+export const OFF_CARD_NOTICE = "整组保持黑色；这条灯组本身仍然开着。";
+
+/**
+ * 换卡时亮度草稿的去向。
+ *
+ * 熄灭卡（#81）不发光，设备读回的 `level` 是 0；如果把这个 0 原样带到下一张
+ * 会发光的卡上，用户点「暖白常亮」也依然全黑——看起来像卡坏了。
+ * 所以 0 在换卡时按默认满亮处理；非 0 值代表用户自己的亮度，原样保留。
+ *
+ * 注意：换到熄灭卡时**不要**把草稿清零（`levelAfterCardTap` 传旧值即可）：
+ * 熄灭层的 level 恒为 0，草稿留着，用户从熄灭切回亮灯时亮度还在。
+ */
+export function levelAfterCardTap(level: number): number {
+  if (!Number.isFinite(level) || level <= 0) {
+    return LEVEL_DEFAULT;
+  }
+  return clampLevel(level);
+}
+
+/**
+ * 设备读回后亮度草稿该取哪个值。
+ *
+ * 熄灭卡读回的 level 是 0（协议要求），但它不代表用户的亮度选择：
+ * 把 0 写进草稿会让用户从熄灯切回亮灯后又变全黑。所以熄灭卡保留上一次草稿，
+ * 其余卡片以设备值为准。
+ */
+export function levelDraftFromDevice(
+  cardId: string,
+  deviceLevel: number,
+  previous: number,
+): number {
+  if (cardId === "off") {
+    return levelAfterCardTap(previous);
+  }
+  return clampZoneLevel(deviceLevel);
 }
 
 /* ---------------- 设备读回 → 当前卡片 ---------------- */
@@ -252,14 +301,16 @@ export function inferSimpleState(
     return null;
   }
   const cardId = inferQuickCard(only.layer0);
-  if (cardId === null || quickCardOf(cardId) === null) {
+  const card = cardId === null ? null : quickCardOf(cardId);
+  if (card === null) {
     return null;
   }
   return {
-    cardId,
+    cardId: card.id,
     hue: only.layer0.hue,
     sat: only.layer0.sat,
     level: clampZoneLevel(only.layer0.level),
-    colorHex: rgbToHex(segmentHueSatToRgb(only.layer0.hue, only.layer0.sat)),
+    /* 熄灭卡的预览一定是黑；按 0/0 色算会得到白，界面会误导成「点亮」。 */
+    colorHex: quickColorHex(card, { hue: only.layer0.hue, sat: only.layer0.sat }),
   };
 }
