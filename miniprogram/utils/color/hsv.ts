@@ -118,22 +118,6 @@ export function rgbToHsv(rgb: RGB): HSV {
 }
 
 /**
- * 把设备 RGB 反推成色环展示用的 HSV。
- *
- * 灰阶（R=G=B）时色相在数学上无定义，rgbToHsv 会返回 0°，直接套用会让
- * 选中点跳到正红。这里在饱和度接近 0 时保留 fallbackHue（通常是用户上次
- * 选中的色相），只同步饱和度。
- */
-export function hsvForWheel(rgb: RGB, fallbackHue: number): HSV {
-  const hsv = rgbToHsv(rgb);
-  if (hsv.s < 0.01) {
-    return { h: normalizeHue(fallbackHue), s: hsv.s, v: hsv.v };
-  }
-  return hsv;
-}
-
-
-/**
  * 段颜色（协议 hue 0-65535 + sat 0-255）→ 用户空间 RGB，供分段列表展示。
  *
  * 与固件 effects.c 的 static 分支同一套扇区映射（V 恒为 1）；两端不做同一套

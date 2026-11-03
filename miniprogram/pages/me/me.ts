@@ -36,6 +36,7 @@ import { DeviceSync, syncApiOf } from "../../utils/control/device-sync";
 import { formatWhen } from "../../utils/control/home-view";
 import { LogPanelView } from "../../utils/control/log-panel-view";
 import { setMockMode } from "../../utils/control/mock-mode";
+import { clearPlanDraftsForDevice } from "../../utils/control/plan-drafts";
 import {
   DEFAULT_NICKNAME,
   loadProfile,
@@ -388,6 +389,15 @@ Page({
         this.registry = removeDevice(createWxStorage(), row.deviceId);
       }
       this.session?.forgetRecent(row.deviceId, hardwareId);
+      /* 方案草稿是本机数据，**只在这里清**：断线 / 切页都不清（那是「内容只
+       * 存在本机」这句承诺的另一半）。键可能是 hardwareId 或 deviceId，两个都清。 */
+      const storage = createWxStorage();
+      if (hardwareId !== undefined) {
+        clearPlanDraftsForDevice(storage, hardwareId);
+      }
+      if (row.deviceId.length > 0) {
+        clearPlanDraftsForDevice(storage, row.deviceId);
+      }
     } catch (err) {
       wx.showToast({ title: errorText(err), icon: "none" });
       return;

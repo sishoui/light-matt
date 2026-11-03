@@ -91,7 +91,16 @@ v1（MVP）的 wayfinder 地图与决策票仍在 `docs/wayfinding/`（历史产
 | #62 | ✅ 已合入 | 949 用例；模拟器 41/41 |
 | #63 | ✅ 已合入 | 模拟器 26/26（两列卡片 + 逐组灯珠数） |
 | #64 | ✅ 已合入 | 973 用例；模拟器 57/57 |
-| #65–#67 #69 | ⏳ 进行中 | — |
+| #65 | ✅ 已合入 | `utils/control/timeline.ts` + `tests/timeline.test.ts`；模拟器时间轴段落 |
+| #66 | ✅ 已合入 | `utils/control/zone-axis.ts` / `led-picker.ts`；模拟器光区轴与灯珠弹窗段落 |
+| #67 | ✅ 已合入 | `utils/control/effect-panel.ts`；模拟器效果面板段落 |
+| #69 | ✅ 已合入 | 小程序编解码接 v4；模拟器 137/137（含「方案真的整份下发」） |
+
+**收尾（code review 后的修正，同一分支）**：进阶档「应用并播放」现在**真的把整份方案
+下发到设备**（`downloadScript(…, { activate: true, loop })`；此前只写实时光区，
+导致第 2..N 步不可达、时长条对设备无作用）；方案草稿落盘 `lumen.planDrafts.v1`
+（键 `deviceKey#stripId#slot`，断线 / 切页不清，**只在删除设备时清**），
+「内容只存在本机」这句承诺才成立。小程序 **1169 用例 / 53 文件**。
 
 **协议 v4 尺寸（实现期裁决，规格原文笔误已修正）**：层 9 字节 → 段载荷 **23**、
 ScriptSegment **25**、SegmentReport **23**、State blob 段记录 22 / 总长 1440。

@@ -49,11 +49,11 @@ import { getSession, isMockSession } from "../../utils/control/session-singleton
 import { statusView } from "../../utils/control/status-view";
 import { loadTheme, themeClass, type ThemeMode } from "../../utils/control/theme";
 import {
+  BRIGHTNESS_UI_INTERVAL_MS,
   brightnessHintText,
   brightnessViewPatch,
   powerLabelText,
 } from "../../utils/control/view-model";
-import { COLOR_UI_INTERVAL_MS } from "../../utils/control/wheel-view";
 import { MAX_STRIPS, NO_EFFECT } from "../../utils/protocol/constants";
 import type { DeviceState, LinkState, SegmentReport } from "../../utils/protocol/types";
 
@@ -528,6 +528,9 @@ Page({
    *
    * 单光区覆盖整组时只说效果名（最常见）；只覆盖一段时带区间；
    * 多个光区时只说数量（卡片太窄，列不完）。
+   *
+   * 区间按**用户视角从 1 编号**（`1–15`），与灯组页的光区轴一致：协议里从 0
+   * 编号只出现在灯珠弹窗的提示里一次，卡片上出现 `0–29` 会让人以为少了一颗。
    */
   summaryOfReports(reports: readonly SegmentReport[], ledCount: number): string {
     if (reports.length === 0) {
@@ -540,7 +543,7 @@ Page({
     const base = modeNameOf(only.layer0.type);
     const name = only.layer1.type === NO_EFFECT ? base : `${base} + 叠加`;
     const coversWhole = only.start === 0 && only.end >= Math.max(0, ledCount - 1);
-    return coversWhole ? name : `${name} · ${only.start}–${only.end}`;
+    return coversWhole ? name : `${name} · ${only.start + 1}–${only.end + 1}`;
   },
 
   clearDeviceViews() {
@@ -677,7 +680,7 @@ Page({
       return;
     }
     const now = Date.now();
-    if (now - this.lastBrightnessUiAt >= COLOR_UI_INTERVAL_MS) {
+    if (now - this.lastBrightnessUiAt >= BRIGHTNESS_UI_INTERVAL_MS) {
       this.lastBrightnessUiAt = now;
       this.setBrightnessView(value, false);
     }

@@ -326,6 +326,44 @@ describe("段载荷解析（23 字节定宽两层）", () => {
     emptyWithLevel[22] = 50;
     expect(() => parseSegmentPayload(emptyWithLevel)).toThrow(RangeError);
   });
+
+  /**
+   * v4 把呼吸的 `p5`（最低亮 / 谷底）从绝对 0-255 改成**相对百分比 0-100**。
+   *
+   * 固件对 101-255 回 `InvalidParam`，解析层必须同样拒绝：静默钳位会让两端对
+   * 同一帧给出不同结论（App 以为读回成功、设备其实根本没接受）。
+   */
+  it("v4 呼吸层的最暗基线是 0-100 百分比，101-255 被拒（彩虹/流光的 p5 仍到 255）", () => {
+    /* 骨架：单层段，layer0 是呼吸（type 1）、参数全在偏移 5..13。 */
+    const make = (type: number, p5: number): Uint8Array => {
+      const payload = new Uint8Array(23);
+      payload[3] = 9;
+      payload[5] = type;
+      payload[8] = 255;
+      payload[9] = 0x10; /* period 低字节 */
+      payload[10] = 0x03; /* period = 0x0310 = 784ms，高于下限 */
+      payload[11] = p5; /* p5 在层内偏移 6 → 段内偏移 5+6 = 11 */
+      payload[13] = 100; /* level */
+      payload[14] = 0xff; /* layer1 空 */
+      return payload;
+    };
+
+    for (const p5 of [0, 40, 100]) {
+      expect(parseSegmentPayload(make(SEGMENT_TYPE.BREATHING, p5)).layer0.p5, String(p5)).toBe(p5);
+    }
+    for (const p5 of [101, 200, 255]) {
+      expect(() => parseSegmentPayload(make(SEGMENT_TYPE.BREATHING, p5)), String(p5)).toThrow(
+        RangeError,
+      );
+    }
+    /* 彩虹（跨度）与流光（尾长）的 p5 不是百分比，255 仍合法。 */
+    for (const type of [SEGMENT_TYPE.RAINBOW, SEGMENT_TYPE.COMET]) {
+      const payload = make(type, 255);
+      payload[10] = 0x00; /* 周期 0 = 静止，避开下限 */
+      payload[9] = 0x00;
+      expect(parseSegmentPayload(payload).layer0.p5).toBe(255);
+    }
+  });
 });
 
 describe("StripConfigReport 0x87 / DeviceInfoReport 0x88", () => {

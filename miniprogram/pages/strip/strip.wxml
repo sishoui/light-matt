@@ -107,7 +107,7 @@
           bindchanging="onParamChanging"
           bindchange="onParamChange"
         />
-        <!-- 暂不写进设备的滑块（逐光区亮度要等协议 v4）在这里说明原因 -->
+        <!-- 滑块的补充说明（目前没有滑块需要说明：亮度走 v4 的逐光区 level，真实下发） -->
         <text wx:if="{{item.note}}" class="param-note">{{item.note}}</text>
       </view>
 
@@ -319,7 +319,7 @@
             bindchanging="onPanelSliderChanging"
             bindchange="onPanelSliderChange"
           />
-          <!-- 逐光区亮度要等小程序编解码接上 v4（#69）才真正生效。 -->
+          <!-- 滑块的补充说明（亮度走 v4 的逐光区 level，真实下发，不需要额外提示） -->
           <text wx:if="{{item.note}}" class="param-note">{{item.note}}</text>
         </view>
 

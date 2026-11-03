@@ -2,12 +2,17 @@
 
 **状态**：**已实现（2026-11-03，分支 `feat/68-protocol-v4`）**。本文件取代 `docs/protocol-v3.md`
 （v3 保留为历史参考，不再维护）。
-固件 host 测试 11441 项断言与 `docs/protocol-testvectors-v4.json`（64 条向量）
+固件 host 测试 11449 项断言与 `docs/protocol-testvectors-v4.json`（64 条向量）
 都对着本文件跑。
 **适用范围**：微信小程序 ↔ ESP32-C3 固件之间的 BLE 协议。
 **唯一真相**：本文件定义字节级契约，`docs/protocol-testvectors-v4.json` 是它的可执行副本。
 改协议 = 本文件 + 测试向量 + 两端实现进同一个 commit。
 **相关**：[灯效规格](./effects-spec.md)（参数块语义）、[v3 规格](./protocol-v3.md)（历史）。
+
+> **读 `effects-spec.md` 时注意**：那份文档是 **v2/v3 语义**的历史定义，其中
+> 呼吸 `min_level` 是「绝对 0-255」、层编码是 8 字节。**本文件（v4）取代了这两点**：
+> `p5` 改为相对百分比 0-100（`> 100` 一律 `InvalidParam`），层扩到 9 字节并新增 `level`。
+> 参数块的类型枚举、色相 / 周期 / 公式形态不变。冲突时**一律以本文件为准**。
 
 > **v4 不向后兼容。** 现场设备需重刷固件，小程序需整包更新。个人测试阶段没有第三方在用，
 > 没有迁移代价（沿用 v2 / v3 的版本策略）。
@@ -276,7 +281,8 @@ export function crc16(bytes: Uint8Array): number {
 8     1   level       v4 新增：本层亮度档位 0-100（100 满亮，0 不出光）
 ```
 
-参数块语义见 `docs/effects-spec.md` §2：
+参数块语义见 `docs/effects-spec.md` §2 —— **但那份文档写的是 v2/v3 的 `min_level`（绝对 0-255）**；
+v4 下呼吸的 `p5` 是**相对百分比 0-100**（见下方 `level` 语义与 §9.3），冲突以本文件为准：
 
 | type | 有效参数长度 | 在 `param[0..6]` 中的布局 |
 |---|---|---|

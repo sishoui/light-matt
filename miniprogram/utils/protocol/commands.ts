@@ -707,8 +707,12 @@ const LAYER_LEVEL_OFFSET = 8;
 /**
  * 解析 9 字节定宽层（§7.1）。
  *
- * 未知 type、静态层保留字节非 0、空层带非零参数、level > 100 都视为协议不匹配
- * （不「尽量解析」，不静默钳位）。
+ * 未知 type、静态层保留字节非 0、空层带非零参数、level > 100、**呼吸层
+ * `p5 > 100`** 都视为协议不匹配（不「尽量解析」，不静默钳位）。
+ *
+ * 呼吸的 `p5` 在 v4 里是最暗基线的**相对百分比**（0-100），不是 v3 的绝对
+ * 0-255。101-255 在固件侧回 `InvalidParam`，所以这里同样拒绝——两端对同一
+ * 帧给出同一个判定，才不会出现「App 觉得读回成功、设备其实拒收」的漂移。
  */
 export function parseLayer(bytes: Uint8Array, offset = 0): EffectLayer {
   if (bytes.length < offset + LAYER_BYTES) {
@@ -752,6 +756,13 @@ export function parseLayer(bytes: Uint8Array, offset = 0): EffectLayer {
   layer.periodMs = bytes[offset + 4] | (bytes[offset + 5] << 8);
   layer.p5 = bytes[offset + 6];
   layer.flags = bytes[offset + 7];
+  /* v4：呼吸的 p5 是相对百分比 0-100；彩虹 / 流光的 p5（跨度 / 尾长）仍是
+   * 0-255，不受这条约束。 */
+  if (type === SEGMENT_TYPE.BREATHING && layer.p5 > 100) {
+    throw new RangeError(
+      `呼吸层的 p5（最低亮）必须是百分比 0-100，收到 ${layer.p5}`,
+    );
+  }
   return layer;
 }
 

@@ -29,9 +29,11 @@ import { errorText, resultText } from "../../utils/ble/errors";
 import type { LinkDetail } from "../../utils/ble/transport";
 import { ConnectCancelledError } from "../../utils/ble/transport";
 import { createWxStorage, type SessionStorage } from "../../utils/control/device-cache";
+import { deviceKeyOf } from "../../utils/control/device-history";
 import {
   addStepStage,
   advancedDraftOf,
+  advancedStepCount,
   canAddStepStage,
   createAdvancedDrafts,
   moveStepStage,
@@ -63,7 +65,10 @@ import {
   type PanelSliderView,
   type PanelType,
 } from "../../utils/control/effect-panel";
-import { planIsEmpty } from "../../utils/control/plan-editor";
+import { planIsEmpty, PLAN_CAPACITY_NOTE, planUserMessage } from "../../utils/control/plan-editor";
+import { loadPlanDrafts, savePlanDraft } from "../../utils/control/plan-drafts";
+import { checkScriptBlobBytes } from "../../utils/control/script-plan";
+import { draftCapacityBytes, draftToScriptConfig } from "../../utils/control/script-view";
 import {
   buildPickerCells,
   commitPicker,
@@ -85,7 +90,7 @@ import {
   type QuickParams,
 } from "../../utils/control/quick-effects";
 import { queryInt } from "../../utils/control/routes";
-import type { ControlSession } from "../../utils/control/session";
+import type { ControlSession, ScriptResult } from "../../utils/control/session";
 import { getSession, isMockSession } from "../../utils/control/session-singleton";
 import { statusView } from "../../utils/control/status-view";
 import {
@@ -299,6 +304,10 @@ Page({
   /* ---- 进阶档：时间轴与光区的本地草稿（#65 / #66，不进设备） ---- */
   /** 4 个方案槽位各自的草稿（`ScriptDraft`：步骤 → 光区）；进阶档的唯一真相。 */
   drafts: [] as ScriptDraft[],
+  /** 哪些槽位是**用户自己的**草稿（读过落盘 / 本次会话改过），摘要以它为准。 */
+  draftOwned: [false, false, false, false] as boolean[],
+  /** 草稿落盘用的设备键（hardwareId 优先）；空串 = 设备身份还没确定。 */
+  draftsKey: "",
   /** 时间轴选中步骤的下标（0 起）。 */
   timelineIndex: 0,
   /** 时间轴容器（scroll-view）的宽度（px）；0 = 还没测量。 */
@@ -366,6 +375,8 @@ Page({
     this.planStepCounts = null;
     this.planEpoch = 0;
     this.drafts = createAdvancedDrafts();
+    this.draftOwned = [false, false, false, false];
+    this.draftsKey = "";
     this.timelineIndex = 0;
     this.timelineContainerWidth = 0;
     this.timelineWidth = 0;
@@ -400,6 +411,8 @@ Page({
       durationTicks: durationTicks(),
     });
     this.renderTimeline();
+    /* 草稿落盘：设备身份已知时把上次的编排读回来（冷启动不丢）。 */
+    this.ensureDraftsLoaded();
   },
 
   onShow() {
@@ -409,6 +422,8 @@ Page({
     }
     this.subscribe();
     this.syncFromSession();
+    /* 回到本页时设备身份可能已经补齐（0x88 是异步的）：补读一次草稿。 */
+    this.ensureDraftsLoaded();
     void this.session?.onShow();
     void this.ensureConnected();
   },
@@ -438,8 +453,12 @@ Page({
     this.unsubscribers = [
       session.onLink((state, detail) => this.applyLink(state, detail)),
       session.onState((state) => this.applyDeviceState(state)),
-      /* 固件版本 / 硬件号由会话在 ready 后异步补齐：到位后补一次标题。 */
-      session.onDeviceConfig(() => this.applyDeviceName()),
+      /* 固件版本 / 硬件号由会话在 ready 后异步补齐：到位后补一次标题，并把
+       * 草稿的存储键从 deviceId 升级到 hardwareId（iOS 换 UUID 后的稳定键）。 */
+      session.onDeviceConfig(() => {
+        this.applyDeviceName();
+        this.ensureDraftsLoaded();
+      }),
     ];
   },
 
@@ -565,6 +584,8 @@ Page({
     /* 光区与方案摘要都不在 State 里、设备也不会主动上报：进页面各读一次。 */
     void this.refreshSegments();
     void this.refreshPlanSlots();
+    /* 0x88 读回来之后设备键才稳定（hardwareId）：这里再读一次草稿。 */
+    this.ensureDraftsLoaded();
   },
 
   /** 设备权威的 State → 灯珠数 / 标题 / 参数区可用性。 */
@@ -628,9 +649,12 @@ Page({
     this.quickParams = {};
     this.dirty = false;
     this.planStepCounts = null;
-    /* 进阶草稿属于「这台设备的这条灯组」：断开后一律作废，免得下次连上另一台
-     * 设备时把上一台的编排当成它的。 */
+    /* 进阶草稿**不丢**：它已经落盘（`lumen.planDrafts.v1`）。这里只是把内存
+     * 镜像换回默认值并清掉设备键，避免把上一台设备的编排当成这一台的；
+     * 下次 ready 时 `ensureDraftsLoaded` 会按键把草稿读回来。 */
     this.drafts = createAdvancedDrafts();
+    this.draftOwned = [false, false, false, false];
+    this.draftsKey = "";
     this.timelineIndex = 0;
     this.pickedSegId = -1;
     this.resetPanel();
@@ -780,13 +804,110 @@ Page({
     return advancedDraftOf(this.drafts, this.data.planSlot);
   },
 
-  /** 写回当前槽位的草稿；新对象才替换（引用相等 = 什么都没变）。 */
+  /**
+   * 写回当前槽位的草稿；新对象才替换（引用相等 = 什么都没变）。
+   *
+   * 三件事一起做：内存镜像、`draftOwned` 标记、落盘。落盘是「内容只存在本机」
+   * 这句承诺的唯一实现——不在这里写，断线或重启就会丢。
+   */
   setDraft(next: ScriptDraft): void {
     if (next === this.currentDraft()) {
       return;
     }
     const slot = this.data.planSlot;
     this.drafts = this.drafts.map((draft, index) => (index === slot ? next : draft));
+    this.draftOwned[slot] = true;
+    this.saveDraft(slot, next);
+    /* 槽位摘要跟着草稿走：用户一改步骤数，右上角立刻显示 N 个步骤。 */
+    this.setData({ planSub: this.planSubOf(slot) });
+  },
+
+  /**
+   * 草稿落盘要用的设备键（hardwareId 优先，与 `device-history.deviceKeyOf` 同口径）。
+   *
+   * 为什么键必须稳定：iOS 上 deviceId 会变，按它存等于每次换机就丢编排。
+   * hardwareId 只有 0x88 读回来后才有，所以可能在页面生命周期中从「不稳定」
+   * 迁移到「稳定」一次——`ensureDraftsLoaded` 负责这次迁移。
+   * 身份完全未知时返回空串（调用方据此不落盘）。
+   */
+  deviceKeyForDrafts(): string {
+    const session = this.session;
+    const info = session?.deviceInfo ?? null;
+    if (info !== null && info.hwId.length > 0) {
+      return deviceKeyOf({ deviceId: session?.transport.currentDeviceId ?? "", hardwareId: info.hwId });
+    }
+    const cached = session?.cachedDevice ?? null;
+    if (cached !== null && cached.deviceId.length > 0) {
+      return deviceKeyOf({ deviceId: cached.deviceId });
+    }
+    const live = session?.transport.currentDeviceId ?? "";
+    return live.length > 0 ? deviceKeyOf({ deviceId: live }) : "";
+  },
+
+  /**
+   * 按当前设备键把草稿读回内存（进页面 / ready / identity 变化时调用）。
+   *
+   * 分工：
+   *  - 键没变 → 什么都不做（本次会话的编辑就是最新的，别用旧存储覆盖它）；
+   *  - 键变了 → 先把内存里**用户自己的**草稿迁到新键，再读新键；
+   *  - 读不到 → 保留默认草稿（不把「没存过」当成「用户清空了」）。
+   *
+   * `draftOwned` 是这件事的判据：只有真正被编辑过（或从存储读回的）槽位才迁移，
+   * 否则会把「设备上其实有方案」的槽位用空白默认草稿覆盖掉存储。
+   */
+  ensureDraftsLoaded(): void {
+    const storage = this.storage;
+    const key = this.deviceKeyForDrafts();
+    if (storage === null || key.length === 0) {
+      return;
+    }
+    if (key === this.draftsKey) {
+      return;
+    }
+    const stripId = this.data.stripId;
+    /* 键变了：把用户自己的草稿迁到新键（deviceId → hardwareId 的升级）。 */
+    if (this.draftsKey.length > 0) {
+      for (let slot = 0; slot < this.drafts.length; slot += 1) {
+        if (this.draftOwned[slot] === true) {
+          savePlanDraft(storage, key, stripId, slot, this.drafts[slot]);
+        }
+      }
+    }
+    this.draftsKey = key;
+    const stored = loadPlanDrafts(storage, key, stripId);
+    if (stored === null) {
+      /* 新键没有历史：保留内存里的（迁移上来的部分），其余仍是默认草稿。 */
+      this.setData({ planSub: this.planSubOf(this.data.planSlot) });
+      return;
+    }
+    this.drafts = this.drafts.map((draft, slot) => {
+      const loaded = stored[slot];
+      if (loaded === null || loaded === undefined) {
+        /* 该槽位没存过：保留内存里的（可能是刚迁移上来的用户草稿）。 */
+        return draft;
+      }
+      this.draftOwned[slot] = true;
+      return loaded;
+    });
+    this.setData({ planSub: this.planSubOf(this.data.planSlot) });
+    /* 已经在进阶档时（0x88 晚到 / 从后台回来）要重画两条轴，否则屏幕上还是默认草稿。 */
+    if (this.data.mode === "advanced") {
+      this.timelineIndex = Math.min(this.timelineIndex, Math.max(0, this.currentDraft().stages.length - 1));
+      this.pickedSegId = -1;
+      this.panelKey = "";
+      this.renderTimeline();
+    }
+  },
+
+  /** 把某个槽位写进存储（键未知时静默跳过，绝不编造键）。 */
+  saveDraft(slot: number, draft: ScriptDraft): void {
+    const storage = this.storage;
+    const key = this.draftsKey.length > 0 ? this.draftsKey : this.deviceKeyForDrafts();
+    if (storage === null || key.length === 0) {
+      return;
+    }
+    this.draftsKey = key;
+    savePlanDraft(storage, key, this.data.stripId, slot, draft);
   },
 
   /** 当前步骤里当前灯组的光区。 */
@@ -1433,7 +1554,22 @@ Page({
     }
   },
 
+  /**
+   * 槽位摘要（「空白 / N 个步骤」）。
+   *
+   * 优先级：
+   *  1. **用户自己的草稿**（本机编排 / 落盘读回的）——它是进阶档的真相，
+   *     用户刚加了一步就应该立刻看到「3 个步骤」，而不是等写设备；
+   *  2. 设备摘要（`planStepCounts`）——没动过的槽位反映「灯控上有什么」；
+   *  3. 都没读到 → 「读取中…」。
+   */
   planSubOf(slot: number): string {
+    if (this.draftOwned[slot] === true) {
+      const draft = this.drafts[slot];
+      if (draft !== undefined) {
+        return planSlotSub(advancedStepCount(draft));
+      }
+    }
     if (this.planStepCounts === null) {
       return "读取中…";
     }
@@ -1732,96 +1868,150 @@ Page({
   },
 
   /**
-   * 进阶档的「应用并播放」：写入当前步骤 × 当前灯组 → 再播放。
+   * 进阶档的「应用并播放」：先写实时光区，再**下发整份方案**并播放。
    *
-   * 写入的语义是 `replaceStepZonesInList`：只替换**当前步骤里当前灯组**那一片
-   * 光区，别的灯组、别的步骤一字不动（草稿里已经这么存，这里只是把它落到设备）。
-   * 这与 #64 简单档的「写整组再播」是同一条路径，区别只在写多少：
+   * ## 为什么会话里必须下发方案
    *
+   * 固件只在「有一套已提交并启用的方案」时才按方案渲染：没有 `ScriptCommit`
+   * + `ActivateScript`，播放头根本没有东西可放，第 2..N 步永远播不到、时长
+   * 拖拽条对设备没有任何作用。只写「当前步骤 × 当前灯组」的实时光区只能让
+   * 第 1 步亮起来——那是早期实现漏掉的一步，也是 4 个方案槽位变成纯装饰的原因。
+   *
+   * ## 顺序（两步都要，各有用途）
+   *
+   *  0. **纯本地预检**（一帧都不发）：`draftToScriptConfig` 展开 → 校验 → 容量；
    *  1. 写入前若在播放 → 先停（设备按方案渲染时实时光区不可见）；
-   *  2. 先 `queryStrip` 读回真实光区，把**这一组**的旧光区全清掉——
-   *     协议要求同组光区不重叠，不清就会回 `InvalidParam`（陷阱 #3）；
-   *  3. 按草稿逐个 `setSegment`；
-   *  4. `setPlayback(1, loop)`。
+   *  2. **实时光区**：`queryStrip` 读回 → 清掉这一组 → 按草稿逐个 `setSegment`。
+   *     这一份是「停止播放时看到的东西」：用户按停止后回落的画面。
+   *     清空时先快照，中途失败尽力还原（否则用户看到灯直接灭了）；
+   *  3. **整份方案**：`downloadScript(script, { activate: true, loop })`；
+   *  4. `setPlayback(1, loop)` 从第 1 步开始播（`activate` 只启用，不等于播）。
    *
-   * 任何一步失败都落到 `applyError`（按钮下方就地显示），不弹模态。
+   * 预检放在最前面是有意的：草稿本身非法时一帧都不发，设备上的灯保持原样，
+   * 用户看到的只是按钮下方一行原因，而不是「灯先闪了一下又报错」。
+   *
+   * 预检失败与写入失败都落在 `applyError`（按钮下方就地显示），不弹模态。
+   * 方案写入失败时**不还原**实时光区：那一步已经成功，用户想要的画面已经写进去了，
+   * 只把「方案没提交」这个原因如实说出来。
    */
   async applyAdvanced(): Promise<void> {
     const session = this.session;
     if (session === null) {
       return;
     }
-    const zones = this.currentZones();
-    if (zones.length === 0) {
-      this.setData({
-        applyError: planIsEmpty(this.currentDraft())
-          ? PANEL_EMPTY_PLAN_GUIDE
-          : PANEL_EMPTY_STEP_GUIDE,
-      });
+    const draft = this.currentDraft();
+    if (planIsEmpty(draft)) {
+      this.setData({ applyError: PANEL_EMPTY_PLAN_GUIDE });
       return;
     }
+    /* 当前步骤可能本来就是空的（多步骤方案里「这一步让灯组熄一下」），
+     * 这不该拦住整份方案的下发；只有整份方案为空才拒绝。 */
+    const zones = this.currentZones();
     const stripId = this.data.stripId;
     this.setPanelHint("");
     this.setData({ applying: true, applyError: "" });
-    /* 写入前先快照设备上这一组的光区：清空之后任何一帧失败都能**尽力还原**，
-     * 否则用户会看到灯直接灭了（比「写入失败」更糟）。 */
+    /* 写入前先快照设备上这一组的光区：清空之后任何一帧失败都能**尽力还原**。 */
     let restore: SegmentSpec[] = [];
     try {
+      /* ⓪ 预检（纯本地）。草稿非法时一帧都不发，设备上的灯保持原样。 */
+      const script = draftToScriptConfig(draft, session.deviceState?.stripCount ?? 1);
+      const precheck = session.validateScriptForDevice(script);
+      if (!precheck.ok) {
+        this.setData({ applyError: planUserMessage(precheck.message) });
+        return;
+      }
+      /* 容量预检与旧页同口径：只量**这次要写的那一套**。设备上其它槽位的
+       * 内容读不回来（只有 4 字节摘要），合计超限只能由设备在 Commit 时发现，
+       * 走 `ScriptTooLarge` 的专门文案。 */
+      const capacity = checkScriptBlobBytes(
+        draftCapacityBytes(this.drafts, [], script.scriptId, script.stripCount),
+      );
+      if (!capacity.ok) {
+        this.setData({
+          applyError: `${planUserMessage(capacity.message)}（${PLAN_CAPACITY_NOTE}）`,
+        });
+        return;
+      }
+
       const state = session.deviceState;
-      if (state !== null && state.playbackState !== 0) {
-        await session.setPlayback(0, (state.flags & 0x01) !== 0);
-      }
-      /* ① 当前步骤 × 当前灯组：先读回、清掉这一组的旧光区，再逐个写。 */
-      const current = await session.queryStrip(stripId);
-      if (current.kind === "ok") {
-        this.segmentReports = current.reports.filter((report) => report.stripId === stripId);
-      }
-      restore = this.segmentReports.map((report) => ({
-        stripId: report.stripId,
-        segId: report.segId,
-        start: report.start,
-        end: report.end,
-        blend: report.blend,
-        layer0: { ...report.layer0 },
-        layer1: { ...report.layer1 },
-      }));
-      for (const report of this.segmentReports) {
-        const cleared = await session.clearSegment(stripId, report.segId);
-        if (!cleared.ok) {
-          throw new Error(resultText(cleared.resultCode));
-        }
-      }
-      for (const zone of zones) {
-        const ack = await session.setSegment(zone);
-        if (!ack.ok) {
-          throw new Error(resultText(ack.resultCode));
-        }
-      }
-      /* ② 播放（读回的 State 是权威，用它刷播放态）。 */
       const loop = state !== null && (state.flags & 0x01) === 1;
+      if (state !== null && state.playbackState !== 0) {
+        await session.setPlayback(0, loop);
+      }
+
+      /* ① 当前步骤 × 当前灯组：先读回、清掉这一组的旧光区，再逐个写。
+       * 这一步即使 `zones` 为空也照做——「这一步让这条灯组熄一下」是合法的
+       * 编排，实时画面（停止播放后的回落）必须与草稿一致。 */
+      try {
+        const current = await session.queryStrip(stripId);
+        if (current.kind === "ok") {
+          this.segmentReports = current.reports.filter((report) => report.stripId === stripId);
+        }
+        restore = this.segmentReports.map((report) => ({
+          stripId: report.stripId,
+          segId: report.segId,
+          start: report.start,
+          end: report.end,
+          blend: report.blend,
+          layer0: { ...report.layer0 },
+          layer1: { ...report.layer1 },
+        }));
+        for (const report of this.segmentReports) {
+          const cleared = await session.clearSegment(stripId, report.segId);
+          if (!cleared.ok) {
+            throw new Error(resultText(cleared.resultCode));
+          }
+        }
+        for (const zone of zones) {
+          const ack = await session.setSegment(zone);
+          if (!ack.ok) {
+            throw new Error(resultText(ack.resultCode));
+          }
+        }
+      } catch (err) {
+        this.setData({ applyError: `写入失败：${errorText(err)}` });
+        await this.restoreZones(restore);
+        return;
+      }
+
+      /* ② 整份方案：写入即启用（`activate`），播放单独走下一帧。 */
+      const uploaded = await session.downloadScript(script, { activate: true, loop });
+      if (uploaded.kind !== "ok") {
+        this.setData({ applyError: this.scriptFailureText(uploaded) });
+        await this.refreshSegments();
+        return;
+      }
+
+      /* ③ 播放（读回的 State 是权威，用它刷播放态）。 */
       const played = await session.setPlayback(1, loop);
       if (played.kind !== "ok") {
-        const message =
-          played.kind === "ack-error"
-            ? resultText(played.ack.resultCode)
-            : played.kind === "stale"
-              ? "连接已经切换，这次播放的结果已丢弃"
-              : played.message;
-        this.setData({ applyError: message });
+        this.setData({ applyError: this.scriptFailureText(played) });
         await this.refreshSegments();
         return;
       }
       if (played.state !== undefined && played.state !== null) {
         this.applyDeviceState(played.state);
       }
-      this.setPanelHint("已写入并开始播放");
+      this.setPanelHint("方案已写入并开始播放");
       await this.refreshSegments();
-    } catch (err) {
-      this.setData({ applyError: `写入失败：${errorText(err)}` });
-      await this.restoreZones(restore);
+      await this.refreshPlanSlots();
     } finally {
       this.setData({ applying: false });
     }
+  },
+
+  /** `ScriptResult` 的非 ok 分支 → 按钮下方的一行原因（术语已换成人话）。 */
+  scriptFailureText(result: Exclude<ScriptResult, { kind: "ok" }>): string {
+    if (result.kind === "ack-error") {
+      return `写入被拒绝（${resultText(result.ack.resultCode)}），灯控上的上一套方案仍可用`;
+    }
+    if (result.kind === "stale") {
+      return "连接已经切换，这次写入的结果已丢弃";
+    }
+    if (result.kind === "too-large") {
+      return `${planUserMessage(result.message)}；灯控上的上一套方案仍可用`;
+    }
+    return planUserMessage(result.message);
   },
 
   /**

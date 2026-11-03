@@ -1,13 +1,84 @@
 # 交接：lumen 当前状态与下一步
 
-**最后更新**：2026-11-02　**分支**：`feat/effect-editor`（灯效编辑重构已完成，待合入 `master`）
+**最后更新**：2026-11-03　**分支**：`integration/ui-refactor-v4`（UI 重构 + 协议 v4 已完成，
+待合入 `master`）
 
 这份文件是给**新会话**的入口。它只写「新会话必须知道、但代码和文档里读不到」的东西；
 其余一律给指针，不重复。
 
 ---
 
-## 0. 2026-11-02 第四轮：灯效编辑重构（**已完成**，分支 `feat/effect-editor`）
+## 0. 2026-11-03 第五轮：UI 重构 + 协议 v4（**已完成**，集成分支 `integration/ui-refactor-v4`）
+
+**规格 [#60](https://github.com/sishoui/light-matt/issues/60) + 9 张实现票 `#61`–`#69` 全部落地。**
+本地副本：`.scratch/ui-refactor-v4-spec.md`、`.scratch/ui-refactor-tickets/`、裁决在
+`../ui-refactor-notes/decisions.md`。
+
+### 交付了什么
+
+| 层 | 变化 |
+|---|---|
+| 导航 | 底部两 tab 改为 **设备 / 我的**；发现页降为二级页（只有扫描）；新增**灯组详情页** `pages/strip` |
+| 设备页 | 只留名称 / 状态 / 总闸 / 全局亮度 / **灯组两列卡片** / 设备摘要；编辑控件全部搬走 |
+| 灯组页 · 简单档 | 六张成品卡（`warm/breathe/rainbow/comet/ice/violet`）+ 色相 / 饱和度 / 亮度三滑块 |
+| 灯组页 · 进阶档 | 时间轴（比例块、380ms 长按重排、≤8）→ 时长条（0.5–30s）→ 光区轴（未覆盖灰条、≤8）→ 效果面板（四类型参数整体替换）；灯珠方格只在弹窗里 |
+| 协议 v4 | 层编码 **9 字节**（新增 `level` 0–100）；呼吸 `p5` 改**相对百分比**；State blob 版本 **5**、脚本 blob `LMS4`/v3 |
+
+### 协议 v4 的仲裁数字（规格原文有笔误，以这里为准）
+
+| 项 | v3 | **v4** |
+|---|---|---|
+| 层编码 | 8 | **9** |
+| SetSegment 载荷 | 21 | **23** |
+| ScriptSegment 载荷 | 23 | **25** |
+| SegmentReport | 21 | **23** |
+| State blob 段记录 / 总长 | 20 / 1312 | **22 / 1440** |
+| State blob 版本 / 脚本 blob | 4 / `LMS3` v2 | **5 / `LMS4` v3** |
+| `LUMEN_SCRIPT_SEGMENT_MAX` | 19 | **21** |
+
+> 规格原文写的 22/24/22 少了段头里的 1 字节（`5 + 9×2 = 23`）。同一张表里 State blob
+> 段记录 `4 + 9 + 9 = 22` 是对的，反证 wire 端每项都少算 1。
+> 仲裁全文见 `../ui-refactor-notes/decisions.md` §1。
+
+### 三个必须先记住的陷阱（都踩过）
+
+1. **相对 import 不能指向目录** —— 小程序解析器不认目录 `index`，App 启动链上会**整个白屏**，
+   `tsc` 与单测都发现不了。回归：`tests/module-resolution.test.ts`。
+2. **`Page({})` 只保证 `data` 里的字段存在于实例** —— 写在字面量上的私有字段运行时是
+   `undefined`，在 `onLoad` 链上抛错会**中断整页事件绑定**（「点什么都没反应」）。
+   每个页面 `onLoad` 开头显式初始化全部私有字段。回归：`tests/page-fields.test.ts`。
+3. **快捷档 / 进阶档写整组前必须先清掉该组其它光区** —— 协议要求同带光区不重叠，
+   不清就回 `InvalidParam`，用户点了卡片却毫无变化。
+
+本轮新增的第四条（**不是白屏，是功能静默失效**）：**进阶档必须下发整份方案**。
+只写「当前步骤 × 当前灯组」的实时光区，固件没有 `ScriptCommit` + `ActivateScript` 就
+没有播放头，第 2..N 步永远播不到、时长条对设备毫无作用——4 个方案槽位会变成纯装饰。
+现在的顺序：停播 → 写实时光区（停止后的回落画面）→ `downloadScript(script, {activate:true, loop})`
+→ `setPlayback(1, loop)`。回归：`verify-effect-editor.mjs` 的「设备回 stageCount === 步骤数」。
+
+### 方案草稿落盘
+
+「方案内容只存在这台手机上」（`PANEL_FACTS`）之前是**假话**：草稿是页面实例状态，断线即清。
+现在落盘在 `lumen.planDrafts.v1`（`utils/control/plan-drafts.ts`）：
+
+- 键 = `deviceKey#stripId#slot`（deviceKey 是 hardwareId 优先，iOS 换 UUID 不串号）；
+- 写：`setDraft` 每次改动；读：`onLoad` / `onShow` / ready / 0x88 到位后各一次；
+- 清：**只在用户显式删除设备时**（`pages/me` 与 `pages/device-info` 两处删除路径）；
+- 坏数据逐条丢弃（结构不对的槽位 / 光区），不整表失败。
+- 回归：`tests/plan-drafts.test.ts`（16 项）。
+
+### 待办：硬件验收（唯一剩下的东西）
+
+模拟器已全绿（137 + 37 + 26 + 40），**真机一项都没跑**：
+
+- v4 逐光区亮度在真实灯带上的可分辨性（100 档里相邻档位看不看得出来）；
+- 进阶档多步骤方案在真实灯带上的播放顺序与时长（mock 只验证到 `stageCount`）；
+- v4 固件还没在 IDF 6.1 下实际编译 / 烧录过。
+- 注意：**刷 v4 是断崖升级**，设备配置回默认值，脚本 blob 与 State blob 都整份拒绝旧版本。
+
+---
+
+## 0.1 2026-11-02 第四轮：灯效编辑重构（**已完成**，分支 `feat/effect-editor`）
 
 **6 张实现票 `#53`–`#58` 全部实现完毕并验证。** 规格与实现票落在 GitHub：
 
@@ -50,7 +121,7 @@
 | #54 | 快捷档成品效果卡 | `pages/device` 的「快捷」档；`quick-effects` 的 `buildQuickCardViews` / `buildQuickPanel` |
 | #55 | 自定义档光区编辑 | `zone-editor.ts`（拖动划选 / 切分 / 增删改）+ 灯珠条 UI |
 | #56 | 方案与步骤 | `plan-editor.ts`（4 槽 × 步骤 ≤8 × 光区 ≤8，复用 `script-view` 草稿） |
-| #57 | 模式切换快照 | `effect-mode.ts` 快照扩展为完整四级编排 |
+| #57 | 模式切换快照 | `effect-mode.ts` 快照扩展为完整四级编排（**第五轮已删除**：新编辑模型没有第三档） |
 | #58 | 术语统一 + 删旧入口 | 删 `pages/scripts` 与 `pages/segment-edit`；tabBar 只剩两项 |
 
 **两个必须记住的实现细节**（都是真机会踩的）：
@@ -77,20 +148,21 @@ cd miniprogram && node .auto/verify-ui-interaction.mjs  # 7/7
 `verify-effect-editor.mjs` 锁的是**只有渲染层能发现**的几件事：点卡片后设备状态真的变、
 参数区只显示该卡的档位、均分切分互不重叠、切档后编排完整恢复、界面零协议词、两 tab。
 
-> **`.auto/verify-ui.mjs` 已作废**（它的目标页面 `pages/scripts` / `pages/segment-edit`
-> 已删除），只作历史证据保留，跑它会失败——那是预期。
+> **`.auto/verify-ui.mjs` 已删除**（它的目标页面 `pages/scripts` / `pages/segment-edit`
+> 已删除且跑必失败）。`utils/control/effect-mode.ts`（快捷↔自定义内存快照）与
+> `utils/control/strip-chips.ts`（旧灯带切换器派生）也已随第五轮重构删除：新的编辑模型
+> 只有「简单 / 进阶」两档，不再有需要快照保护的第三档。
 
 ### 已完成的地基（重要：别重写）
 
-三份**纯逻辑模块已实现并通过 69 项单测**，是 #54/#55/#57 的直接依赖：
+两份**纯逻辑模块已实现并通过 53 项单测**，是 #54/#55/#57 的直接依赖：
 
 | 模块 | 内容 | 测试 |
 |---|---|---|
 | `utils/control/quick-effects.ts` | 6 张卡定义、档位 → 协议值（含彩虹饱和度）、整组 spec 构造、从设备值反推卡片 | `tests/quick-effects.test.ts`（20） |
 | `utils/control/effect-layout.ts` | 区间校验、重叠拦截、整条/前半/后半/均分切分、逐灯珠归属 | `tests/effect-layout.test.ts`（33） |
-| `utils/control/effect-mode.ts` | 快捷↔自定义内存快照（按设备 + 灯组隔离）、切换决策 | `tests/effect-mode.test.ts`（16） |
 
-**新会话不要重新设计这三层**，直接从 #53 开始接线。
+**新会话不要重新设计这两层**，直接从 #53 开始接线。
 
 ### 几个必须知道的协议陷阱（写进了规格，实施时别踩）
 

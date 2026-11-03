@@ -25,6 +25,7 @@ import {
 import { getDeviceApi } from "../../utils/control/device-api-singleton";
 import { DeviceSync, syncApiOf } from "../../utils/control/device-sync";
 import { parseLedCountInput, ledCountResultHint } from "../../utils/control/ledCount";
+import { clearPlanDraftsForDevice } from "../../utils/control/plan-drafts";
 import { ControlSession } from "../../utils/control/session";
 import { getSession } from "../../utils/control/session-singleton";
 import { loadTheme, themeClass } from "../../utils/control/theme";
@@ -436,6 +437,13 @@ Page({
         this.registry?.devices.find((item) => item.deviceId === deviceId)?.backendId ?? null;
       removeDevice(createWxStorage(), deviceId);
       this.session?.forgetRecent(deviceId, hardwareId);
+      /* 方案草稿是本机数据，**只在这里清**：断线 / 切页都不清（那是「内容只
+       * 存在本机」这句承诺的另一半）。键可能是 hardwareId 或 deviceId，两个都清。 */
+      const storage = createWxStorage();
+      if (hardwareId !== undefined) {
+        clearPlanDraftsForDevice(storage, hardwareId);
+      }
+      clearPlanDraftsForDevice(storage, deviceId);
       this.reloadRegistry();
       this.setData({ remarkInput: "", hint: "已删除本机记录" });
       /* 后端只解除关联：设备行保留，重新扫描仍可登记。 */

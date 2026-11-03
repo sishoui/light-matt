@@ -1,8 +1,28 @@
-# 灯效规格与参数表（v2）
+# 灯效规格与参数表（v2 语义，**线上契约已被 v4 取代**）
 
-**状态**：**已定稿**（2026-10-31，用户逐条确认）。
-**唯一真相**：本文的字节布局与行为公式将并入 `docs/protocol.md` 的 v2 章节；两者冲突时以 `protocol.md` 为准。
-**相关**：[地图 #16](https://github.com/sishoui/light-matt/issues/16)、[协议 v2 #21](https://github.com/sishoui/light-matt/issues/21)、[动画引擎 #22](https://github.com/sishoui/light-matt/issues/22)。
+> ## ⚠️ 本文件的亮度与参数语义已被协议 v4 取代
+>
+> **本文保留为「灯效参数块的历史定义」，不再是最新契约。** 线上字节布局与时序校验的唯一
+> 真相是 [`docs/protocol-v4.md`](./protocol-v4.md)（层 9 字节、段载荷 23 / 25、逐层 `level`）。
+>
+> v4 相对本文**改了三处**，读本文时按这三条校正：
+>
+> | 项 | 本文（v2 / v3 语义） | **v4（现行）** |
+> |---|---|---|
+> | 呼吸最暗基线 | `min_level` 是**绝对 0-255**（第 5 字节） | `p5` 是**相对本层 `level` 的百分比 0-100**，谷底 = `level × p5 / 100`；**101-255 一律 `InvalidParam`** |
+> | 逐（光区 / 段）亮度 | 没有这个字段（静态层剩余 4 字节是保留位，必须为 0） | 每层新增独立字节 **`level` 0-100**（100 满亮、0 不出光、>100 拒绝），与全局 `brightness` 在用户空间相乘 |
+> | 层编码宽度 | 8 字节（`type + 7 参数`） | **9 字节**（`type + 7 参数 + level`）；SetSegment 载荷 23、ScriptSegment 25、SegmentReport 23 |
+>
+> 不变的部分：四种灯效的类型枚举、色相 2 字节、周期毫秒、参数块内容与公式、流光每段独立相位、
+> 频率下限、未知类型 `InvalidParam`。**公式里凡是出现 `min_level/255` 的地方，v4 都是 `p5/100`；
+> 凡是「亮度」处，v4 还要再乘本层 `level/100`。**
+>
+> 本文的字节级描述（信封、帧长、段布局）只适用于历史归档，**不要照着它实现**。
+
+**状态**：**已定稿**（2026-10-31，用户逐条确认）；**v4 起被取代**（2026-11-03）。
+**唯一真相**：本文的字节布局与行为公式曾并入 `docs/protocol.md` 的 v2 章节；v4 起以
+[`docs/protocol-v4.md`](./protocol-v4.md) 为准。
+**相关**：[地图 #16](https://github.com/sishoui/light-matt/issues/16)、[协议 v2 #21](https://github.com/sishoui/light-matt/issues/21)、[动画引擎 #22](https://github.com/sishoui/light-matt/issues/22)、[**协议 v4（现行）**](./protocol-v4.md)。
 
 ---
 

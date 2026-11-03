@@ -290,6 +290,8 @@ describe("方案消息的术语翻译", () => {
     expect(durationMessageText("500ms 太短")).toBe("不足 1 秒 太短");
     expect(durationMessageText("2000ms 太长")).toBe("2 秒 太长");
     expect(durationMessageText("没有单位")).toBe("没有单位");
+    /* 小数也不该漏过（`0.5ms` 不能说成「0.5 毫秒」）。 */
+    expect(durationMessageText("0.5ms")).toBe("不足 1 秒");
   });
 
   it("planUserMessage 同时做两件事", () => {
@@ -298,6 +300,23 @@ describe("方案消息的术语翻译", () => {
     expect(text).not.toContain("ms");
     expect(text).toContain("步骤");
     expect(text).toContain("秒");
+  });
+
+  /**
+   * 顺序回归：早期 `planMessageText` 先把 `1ms` 换成「1 毫秒」，后面的秒换算
+   * 再也看不到 `ms`，界面于是出现禁用词。两条路径都必须干净。
+   */
+  it("任何路径都不产出「毫秒」（ms → 秒 的那一步不能被前一步吃掉）", () => {
+    for (const source of [
+      "阶段 2的时长必须 ≥ 1ms（收到 0）",
+      "阶段 1 的时长超过 65535ms 上限",
+      "500ms 太短",
+      "时长 1500ms",
+    ]) {
+      expect(planUserMessage(source), source).not.toContain("毫秒");
+      expect(planUserMessage(source), source).not.toContain("ms");
+      expect(durationMessageText(planMessageText(source)), source).not.toContain("毫秒");
+    }
   });
 
   it("下发 / 激活也翻成写入 / 启用", () => {
