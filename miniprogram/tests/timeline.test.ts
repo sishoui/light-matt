@@ -6,6 +6,9 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   addStep,
   allocateWidths,
@@ -13,8 +16,10 @@ import {
   blockIndexAtRects,
   BLOCK_GAP_PX,
   canAddStep,
+  chooseGap,
   clampDuration,
   clampSelected,
+  COMPACT_BLOCK_GAP_PX,
   createTimeline,
   DEFAULT_STEP_MS,
   durationFromRatio,
@@ -28,7 +33,6 @@ import {
   layoutBlocks,
   LONG_PRESS_MS,
   MAX_DURATION_MS,
-  MAX_ROW_SCALE,
   MAX_STEPS,
   MIN_BLOCK_PX,
   MIN_DURATION_MS,
@@ -135,23 +139,21 @@ describe("宽度分配：比例", () => {
 });
 
 describe("宽度分配：最小宽度保底", () => {
-  it("单个极短块被抬到 40px，其余块之间仍严格成比例", () => {
-    /* 0.5 + 5 + 10 = 15.5 秒，行宽 = 15.5×100 = 1550px。
-     * 无保底时 0.5 秒只有 50px——还够；把行宽缩到 1000 让 0.5 秒的理想宽度
-     * 变成 32.3px（< 40）触发保底。 */
-    const widths = allocateWidths([500, 5000, 10000], 1000, MIN_BLOCK_PX);
+  it("单个极短块被抬到下限，其余块之间仍严格成比例", () => {
+    /* 0.5 + 5 + 10 = 15.5 秒。可用 600px 时 0.5 秒的理想宽度只有 19.4px
+     * （< 24）触发保底；剩余 576px 按 1:2 分给 5 秒 / 10 秒两块。 */
+    const widths = allocateWidths([500, 5000, 10000], 600, MIN_BLOCK_PX);
     expect(near(widths[0], MIN_BLOCK_PX)).toBe(true);
-    /* 剩余 960px 按 1:2 分给 5 秒 / 10 秒两块。 */
-    expect(near(widths[1], 320)).toBe(true);
-    expect(near(widths[2], 640)).toBe(true);
-    expect(near(widths.reduce((a, b) => a + b, 0), 1000)).toBe(true);
+    expect(near(widths[1], 192)).toBe(true);
+    expect(near(widths[2], 384)).toBe(true);
+    expect(near(widths.reduce((a, b) => a + b, 0), 600)).toBe(true);
     /* 关键：被抬起的块之外的块，比例仍然是 2:1。 */
     expect(near(widths[2] / widths[1], 2)).toBe(true);
   });
 
-  it("八个步骤里只有一个长块：七个 0.5 秒的块正好 40px，长块吃掉剩下的", () => {
-    /* 7×0.5 + 30 = 33.5 秒。行宽 640、7 个间隙 8px → 可用 584px。
-     * 七个短块的理想宽度只有 8.7px → 全部钉在 40（280px），30 秒块拿 304px。 */
+  it("八个步骤里只有一个长块：七个 0.5 秒的块正好钉在下限", () => {
+    /* 7×0.5 + 30 = 33.5 秒。可用 584px，七个短块的理想宽度只有 8.7px
+     * → 全部钉在下限，30 秒块吃掉剩下的。 */
     const widths = allocateWidths([500, 500, 500, 500, 500, 500, 500, 30000], 584, MIN_BLOCK_PX);
     for (let index = 0; index < 7; index += 1) {
       expect(near(widths[index], MIN_BLOCK_PX)).toBe(true);
@@ -160,24 +162,23 @@ describe("宽度分配：最小宽度保底", () => {
     expect(near(widths.reduce((a, b) => a + b, 0), 584)).toBe(true);
   });
 
-  it("长块反而被保底抬起（短块多到把长块也压扁时）", () => {
-    /* 七个 30 秒 + 一个 0.5 秒，行宽只有 584：30 秒块的理想宽度 = 584×30/210.5
-     * ≈ 83px，仍大于 40，所以只有 0.5 秒块被抬起。反向的极端（长块也被抬起）
-     * 用 30 秒 vs 三十个 0.5 秒构造——上限是 8 块，这里用 8 个 0.5 秒验证均分。 */
+  it("长块在短块多时仍是最宽的（短块只拿到下限）", () => {
+    /* 一个 30 秒 + 七个 0.5 秒，可用 584：短块全部钉在下限，长块拿走剩下的。 */
     const widths = allocateWidths([30000, 500, 500, 500, 500, 500, 500, 500], 584, MIN_BLOCK_PX);
-    expect(near(widths[0], 304)).toBe(true);
+    expect(near(widths[0], 584 - 7 * MIN_BLOCK_PX)).toBe(true);
     for (let index = 1; index < 8; index += 1) {
       expect(near(widths[index], MIN_BLOCK_PX)).toBe(true);
     }
+    expect(widths[0]).toBeGreaterThan(widths[1]);
   });
 
   it("保底总和放不下时退化为均分（每个块都还有点得动的宽度）", () => {
-    /* 8 个块 × 40px = 320px > 只有 200px 的可用宽度：水位法无解。 */
-    const widths = allocateWidths([500, 500, 500, 500, 500, 500, 500, 30000], 200, MIN_BLOCK_PX);
+    /* 8 个块 × 24px = 192px > 只有 160px 的可用宽度：水位法无解。 */
+    const widths = allocateWidths([500, 500, 500, 500, 500, 500, 500, 30000], 160, MIN_BLOCK_PX);
     for (const width of widths) {
-      expect(near(width, 25)).toBe(true);
+      expect(near(width, 20)).toBe(true);
     }
-    expect(near(widths.reduce((a, b) => a + b, 0), 200)).toBe(true);
+    expect(near(widths.reduce((a, b) => a + b, 0), 160)).toBe(true);
   });
 
   it("自己给的保底值也生效（边界可配）", () => {
@@ -575,58 +576,185 @@ describe("长按阈值", () => {
   });
 });
 
-describe("行宽：保底与比例都放不下时靠横向滚动", () => {
-  const equal = (seconds: number) => new Array(8).fill(seconds * 1000);
+describe("行宽：恒等于容器宽（永不横向滚动）", () => {
+  const equal = (count: number, ms: number) => new Array(count).fill(ms);
 
-  it("块少时行宽 = 容器宽（不会出现无意义的滚动）", () => {
+  it("块少时行宽 = 容器宽", () => {
     expect(timelineRowWidth([1000, 1000], 360)).toBe(360);
     expect(timelineRowWidth([], 360)).toBe(360);
   });
 
-  it("八个步骤等长时行宽撑到 8×40 + 7×8 = 376px", () => {
-    expect(timelineRowWidth(equal(1), 320)).toBe(8 * MIN_BLOCK_PX + 7 * BLOCK_GAP_PX);
-    expect(timelineRowWidth(equal(1), 320)).toBe(376);
-    expect(timelineRowWidth(equal(1), 500)).toBe(500);
+  it("八个步骤也**不**撑出容器：行宽仍是容器宽", () => {
+    expect(timelineRowWidth(equal(8, 1000), 320)).toBe(320);
+    expect(timelineRowWidth(equal(8, 1000), 345)).toBe(345);
   });
 
-  it("宽度未知（0）时不会把行压成 0", () => {
-    expect(timelineRowWidth(equal(1), 0)).toBe(376);
-    expect(timelineRowWidth([1000, 1000], Number.NaN)).toBe(
-      2 * MIN_BLOCK_PX + BLOCK_GAP_PX,
-    );
+  it("极端时长分布也不会把行撑宽", () => {
+    const weights = [30000, ...equal(7, 500)];
+    expect(timelineRowWidth(weights, 330)).toBe(330);
   });
 
-  it("极端分布（30 秒 + 七个 0.5 秒）会撑宽，让比例真的看得出来", () => {
-    const weights = [30000, ...new Array(7).fill(500)];
-    const row = timelineRowWidth(weights, 330);
-    /* 保底 376 不够看：比例下限 = 40×33.5/0.5 + 56 = 2736px，封顶在 2.5 倍容器宽。 */
-    expect(row).toBeCloseTo(330 * MAX_ROW_SCALE, 6);
+  it("宽度未知（0）时退回一个下限（块数 × 最小宽 + 间隙），不会把行压成 0", () => {
+    expect(timelineRowWidth(equal(8, 1000), 0)).toBe(8 * MIN_BLOCK_PX + 7 * BLOCK_GAP_PX);
+    expect(timelineRowWidth([1000, 1000], Number.NaN)).toBe(2 * MIN_BLOCK_PX + BLOCK_GAP_PX);
+    /* 单块没有间隙，也至少要一个最小宽。 */
+    expect(timelineRowWidth([1000], 0)).toBe(MIN_BLOCK_PX);
+  });
+
+  it("八个步骤并列时每块都还有宽度、都点得中（下限 24px）", () => {
+    const weights = equal(8, 500);
+    const row = timelineRowWidth(weights, 345);
+    const gap = chooseGap(8, row, MIN_BLOCK_PX);
     const views = layoutBlocks(
       weights.map((weight) => step(weight)),
-      { widthPx: row },
-    );
-    /* 七个短块正好 40px，长块拿走剩下的——比例语义仍在。 */
-    for (let index = 1; index < 8; index += 1) {
-      expect(views[index].widthPx).toBeCloseTo(MIN_BLOCK_PX, 6);
-      expect(views[index].floored).toBe(true);
-    }
-    expect(views[0].widthPx).toBeGreaterThan(views[1].widthPx * 5);
-    expect(views[0].floored).toBe(false);
-  });
-
-  it("八个步骤并列时每个块都至少有 40px（0.5 秒的也点得到）", () => {
-    const weights = [500, ...new Array(7).fill(30000)];
-    const row = timelineRowWidth(weights, 320);
-    const views = layoutBlocks(
-      weights.map((weight) => step(weight)),
-      { widthPx: row },
+      { widthPx: row, gapPx: gap },
     );
     for (const view of views) {
       expect(view.widthPx).toBeGreaterThanOrEqual(MIN_BLOCK_PX - 1e-6);
     }
-    /* 七个 30 秒块互相仍然等宽（比例语义没被保底破坏）。 */
-    const longs = views.slice(1).map((view) => Math.round(view.widthPx));
-    expect(new Set(longs).size).toBe(1);
+    /* 总和 + 间隙正好填满容器：不溢出也没有空隙。 */
+    const total = views.reduce((sum, view) => sum + view.widthPx, 0) + gap * 7;
+    expect(near(total, row)).toBe(true);
+  });
+
+  it("30 秒 + 七个 0.5 秒：短块钉在下限，长块最宽，总和 = 容器宽", () => {
+    const weights = [30000, ...equal(7, 500)];
+    const row = timelineRowWidth(weights, 345);
+    const gap = chooseGap(weights.length, row, MIN_BLOCK_PX);
+    const views = layoutBlocks(
+      weights.map((weight) => step(weight)),
+      { widthPx: row, gapPx: gap },
+    );
+    for (let index = 1; index < 8; index += 1) {
+      expect(near(views[index].widthPx, MIN_BLOCK_PX)).toBe(true);
+      expect(views[index].floored).toBe(true);
+    }
+    expect(views[0].widthPx).toBeGreaterThan(views[1].widthPx);
+    expect(views[0].floored).toBe(false);
+    const total = views.reduce((sum, view) => sum + view.widthPx, 0) + gap * 7;
+    expect(near(total, row)).toBe(true);
+  });
+
+  it("极窄容器（200px）下八块：均分兜底，总和仍 = 容器宽", () => {
+    const weights = [30000, ...equal(7, 500)];
+    const row = timelineRowWidth(weights, 200);
+    const gap = chooseGap(weights.length, row, MIN_BLOCK_PX);
+    /* 8×24 + 7×8 = 248 > 200，8×24 + 7×4 = 220 > 200 → 间隙取 4。 */
+    expect(gap).toBe(COMPACT_BLOCK_GAP_PX);
+    const views = layoutBlocks(
+      weights.map((weight) => step(weight)),
+      { widthPx: row, gapPx: gap },
+    );
+    for (const view of views) {
+      expect(view.widthPx).toBeGreaterThan(0);
+      expect(near(view.widthPx, (200 - 7 * gap) / 8)).toBe(true);
+    }
+    const total = views.reduce((sum, view) => sum + view.widthPx, 0) + gap * 7;
+    expect(near(total, 200)).toBe(true);
+  });
+
+  it("步骤数从一变到八：每一步都不出容器", () => {
+    for (let count = 1; count <= MAX_STEPS; count += 1) {
+      const weights = new Array(count).fill(1000);
+      const row = timelineRowWidth(weights, 320);
+      const gap = chooseGap(count, row, MIN_BLOCK_PX);
+      const views = layoutBlocks(
+        weights.map((weight) => step(weight)),
+        { widthPx: row, gapPx: gap },
+      );
+      const total = views.reduce((sum, view) => sum + view.widthPx, 0) + gap * (count - 1);
+      expect(near(total, 320)).toBe(true);
+      expect(views.every((view) => view.widthPx >= MIN_BLOCK_PX - 1e-6)).toBe(true);
+    }
+  });
+});
+
+describe("间隙降级", () => {
+  it("宽容器用 8px", () => {
+    expect(chooseGap(2, 345, MIN_BLOCK_PX)).toBe(BLOCK_GAP_PX);
+    expect(chooseGap(8, 345, MIN_BLOCK_PX)).toBe(BLOCK_GAP_PX);
+    expect(BLOCK_GAP_PX).toBe(8);
+  });
+
+  it("8px 放不下时降到 4px", () => {
+    /* 8×24 + 7×8 = 248 > 240；8×24 + 7×4 = 220 ≤ 240 → 4。 */
+    expect(chooseGap(8, 240, MIN_BLOCK_PX)).toBe(COMPACT_BLOCK_GAP_PX);
+    /* 边界：248 正好放下 → 8。 */
+    expect(chooseGap(8, 248, MIN_BLOCK_PX)).toBe(BLOCK_GAP_PX);
+    expect(chooseGap(8, 247, MIN_BLOCK_PX)).toBe(COMPACT_BLOCK_GAP_PX);
+  });
+
+  it("4px 也放不下时仍返回 4（剩下靠均分兜底）", () => {
+    expect(chooseGap(8, 200, MIN_BLOCK_PX)).toBe(COMPACT_BLOCK_GAP_PX);
+    expect(chooseGap(8, 0, MIN_BLOCK_PX)).toBe(COMPACT_BLOCK_GAP_PX);
+  });
+
+  it("单块没有间隙：永远是宽间隙", () => {
+    expect(chooseGap(1, 100, MIN_BLOCK_PX)).toBe(BLOCK_GAP_PX);
+    expect(chooseGap(0, 100, MIN_BLOCK_PX)).toBe(BLOCK_GAP_PX);
+  });
+
+  it("非有限容器宽不崩", () => {
+    expect(chooseGap(8, Number.NaN, MIN_BLOCK_PX)).toBe(COMPACT_BLOCK_GAP_PX);
+    expect(chooseGap(8, Number.POSITIVE_INFINITY, MIN_BLOCK_PX)).toBe(BLOCK_GAP_PX);
+  });
+});
+
+describe("最小块宽与标签阈值", () => {
+  it("最小块宽 24px，标签阈值 48px（不跟着降）", () => {
+    expect(MIN_BLOCK_PX).toBe(24);
+    expect(LABEL_MIN_PX).toBe(48);
+  });
+
+  it("宽度 47 不显示时长文字，48 显示", () => {
+    const views47 = layoutBlocks([step(500), step(500)], { widthPx: 47 * 2 + BLOCK_GAP_PX });
+    expect(views47[0].widthPx).toBe(47);
+    expect(views47[0].showLabel).toBe(false);
+    const views48 = layoutBlocks([step(500), step(500)], { widthPx: 48 * 2 + BLOCK_GAP_PX });
+    expect(views48[0].widthPx).toBe(48);
+    expect(views48[0].showLabel).toBe(true);
+  });
+});
+
+describe("渲染层：时间轴永不横向滚动（#76）", () => {
+  const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const wxml = readFileSync(join(ROOT, "pages/strip/strip.wxml"), "utf8");
+  /* 去掉注释再断言：说明文字里出现同名 token 不该让规则变假 / 变假绿。 */
+  const wxss = readFileSync(join(ROOT, "pages/strip/strip.wxss"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+
+  /** 取一个选择器的声明块（第一个匹配）。 */
+  function rule(selector: string): string {
+    const index = wxss.indexOf(selector);
+    expect(index, `wxss 里找不到 ${selector}`).toBeGreaterThanOrEqual(0);
+    const open = wxss.indexOf("{", index);
+    const close = wxss.indexOf("}", open);
+    return wxss.slice(open + 1, close);
+  }
+
+  it("时间轴不再套 scroll-view，也没有 scroll-x 绑定", () => {
+    expect(wxml).not.toContain("timeline-scroll");
+    expect(wxml).not.toContain("scroll-x");
+  });
+
+  it("行宽不内联成像素：块宽由 flex 像素决定，行恒为 100%", () => {
+    expect(wxml).not.toContain("timelineRowStyle");
+    expect(wxml).not.toContain("timelineScrollable");
+    expect(wxml).toContain('class="timeline-row {{timelineCompact');
+    expect(rule(".timeline-row")).toMatch(/width:\s*100%/);
+  });
+
+  it("wxss 的间隙与时间轴的 8px / 4px 降级一致", () => {
+    expect(rule(".timeline-row")).toMatch(/gap:\s*8px/);
+    expect(rule(".timeline-row.compact")).toMatch(/gap:\s*4px/);
+    expect(BLOCK_GAP_PX).toBe(8);
+    expect(COMPACT_BLOCK_GAP_PX).toBe(4);
+  });
+
+  it("块本身不写 min-width：宽度以页面算出的像素为唯一真相", () => {
+    expect(rule(".timeline-block")).not.toMatch(/min-width/);
   });
 });
 

@@ -108,13 +108,16 @@ import {
 import { loadTheme, themeClass, type ThemeMode } from "../../utils/control/theme";
 import {
   blockIndexAtRects,
+  chooseGap,
   clampDuration,
+  COMPACT_BLOCK_GAP_PX,
   DEFAULT_STEP_MS,
   durationText,
   durationTicks,
   layoutBlocks,
   LONG_PRESS_MS,
   MAX_STEPS,
+  MIN_BLOCK_PX,
   selectionAfterMove,
   timelineRowWidth,
   type DurationTickView,
@@ -212,8 +215,8 @@ Page({
     stepIndex: 0,
     stepCanAdd: false,
     timelineSummary: "",
-    timelineRowStyle: "width: 100%;",
-    timelineScrollable: false,
+    /* 块宽之和 + 间隙永远等于容器宽（#76）：不滚动，只可能在窄容器上收紧间隙。 */
+    timelineCompact: false,
     stepDurationSeconds: 1,
     stepDurationText: "1 秒",
     durationTicks: [] as DurationTickView[],
@@ -310,10 +313,8 @@ Page({
   draftsKey: "",
   /** 时间轴选中步骤的下标（0 起）。 */
   timelineIndex: 0,
-  /** 时间轴容器（scroll-view）的宽度（px）；0 = 还没测量。 */
+  /** 时间轴容器（现在就是时间轴行）的宽度（px）；0 = 还没测量。 */
   timelineContainerWidth: 0,
-  /** 时间轴行实际宽度（px）= max(容器宽, 块数 × 40 + 间隙)；拖动的坐标换算用它。 */
-  timelineWidth: 0,
   /** 长按定时器：到时进入拖动状态。 */
   longPressTimer: null as ReturnType<typeof setTimeout> | null,
   /** 拖动中的源下标；-1 = 没有拖动。 */
@@ -379,7 +380,6 @@ Page({
     this.draftsKey = "";
     this.timelineIndex = 0;
     this.timelineContainerWidth = 0;
-    this.timelineWidth = 0;
     this.longPressTimer = null;
     this.dragFrom = -1;
     this.dragTo = -1;
@@ -707,7 +707,7 @@ Page({
     /* 第一次进进阶档：把灯控现在的光区填进当前步骤，用户从「现在的样子」改，
      * 而不是面对一条空白。已有草稿的步骤不会被覆盖。 */
     this.seedAdvancedFromDevice();
-    /* 进进阶档才渲染时间轴：块的宽度依赖真实行宽，行不在 DOM 里就量不到。 */
+    /* 进进阶档才渲染时间轴：块的宽度依赖真实容器宽，行不在 DOM 里就量不到。 */
     this.renderTimeline();
     this.measureTimeline(true);
   },
@@ -741,14 +741,17 @@ Page({
     const stripId = this.data.stripId;
     const draft = this.currentDraft();
     const timelineSteps = timelineStepsOf(draft, stripId);
-    /* 容器宽度没量到之前不能算像素（会把首帧算成 88px），退回时长权重 +
-     * CSS 最小宽度；量到之后按「容器宽 / 保底下限 / 比例下限」三者取大分配。 */
+    /* 容器宽度没量到之前不能算像素（会把首帧算成每个块几像素），退回时长权重 +
+     * CSS 最小宽度；量到之后行宽恒等于容器宽，块宽在容器内部按比例 / 最小宽度
+     * 分配——任何步骤数都不出容器，页面不滚动（#76）。 */
     const measured = this.timelineContainerWidth > 0;
     const durations = timelineSteps.map((step) => clampDuration(step.durationMs));
     const rowWidth = timelineRowWidth(durations, this.timelineContainerWidth);
-    this.timelineWidth = rowWidth;
+    /* 8px 间隙放不下最小块宽时收紧到 4px（`layoutBlocks` 也按同一规则兜底）。 */
+    const gapPx = measured ? chooseGap(timelineSteps.length, rowWidth, MIN_BLOCK_PX) : undefined;
     const blocks = layoutBlocks(timelineSteps, {
       widthPx: measured ? rowWidth : 0,
+      ...(gapPx === undefined ? {} : { gapPx }),
       selected: this.timelineIndex,
       dragIndex: this.dragFrom >= 0 ? this.dragFrom : -1,
       dropIndex: this.dragFrom >= 0 ? this.dragTo : -1,
@@ -756,10 +759,6 @@ Page({
     });
     const durationMs = this.currentDurationMs();
     const totalMs = durations.reduce((sum, ms) => sum + ms, 0);
-    /* 拖动期间关掉横向滚动：否则手指一横移，滚动容器先动、块纹丝不动，
-     * 长按拖动就永远读不出落点。松手后恢复。 */
-    const scrollable =
-      measured && rowWidth > this.timelineContainerWidth && this.dragFrom < 0;
     const zones = stepZonesOf(draft, this.timelineIndex, stripId);
     const axisZones = axisZonesOf(zones);
     const selected = selectedZoneAfter(axisZones, this.pickedSegId);
@@ -773,8 +772,7 @@ Page({
       stepCount: timelineSteps.length,
       stepIndex: this.timelineIndex,
       stepCanAdd: canAddStepStage(draft),
-      timelineRowStyle: measured ? `width: ${rowWidth}px;` : "width: 100%;",
-      timelineScrollable: scrollable,
+      timelineCompact: gapPx === COMPACT_BLOCK_GAP_PX,
       timelineSummary:
         timelineSteps.length === 0
           ? "还没有步骤"
@@ -1107,17 +1105,18 @@ Page({
   },
 
   /**
-   * 量时间轴滚动容器的真实宽度。
+   * 量时间轴行的真实宽度。
    *
-   * 块的宽度按「行宽 - 间隙」分配，容器宽度只能问渲染层。量到之后立刻重算
-   * 一次，动画才会从「时长比例」平滑过渡到「像素」。
+   * 块的宽度按「容器宽 - 间隙」分配，容器宽度只能问渲染层。量到之后立刻重算
+   * 一次，动画才会从「时长比例」平滑过渡到「像素」。行本身是 `width: 100%`，
+   * 所以量到的就是可用宽度——它只影响块宽，不影响是否滚动（#76：永不滚动）。
    */
   measureTimeline(force = false): void {
     if (this.timelineMeasured && !force) {
       return;
     }
     wx.createSelectorQuery()
-      .select(".timeline-scroll")
+      .select(".timeline-row")
       .boundingClientRect((rect) => {
         /* 容器不在 DOM 里（还在简单档）时回调给 null：保持未测量状态。 */
         if (!rect) {
@@ -1163,12 +1162,11 @@ Page({
   /**
    * 手指按下：起长按定时器。
    *
-   * 定时器到点才进入拖动状态——直接按下变拖动会与横向滚动打架，用户也没法
-   * 「先看一眼再点」。380 毫秒是票面的约数。
+   * 定时器到点才进入拖动状态——直接按下变拖动会与「点一下选中」抢事件，用户
+   * 也没法「先看一眼再点」。380 毫秒是票面的约数。
    *
    * 进入拖动时顺手量一次所有块的屏幕位置：落点换算用这些真实矩形，而不是
-   * 「容器左边缘 + 滚动量」的推算——行比容器宽时后者会因为惯性滚动和 1px
-   * 取整而错位，用户会觉得「拖到右边那个块上却换了别的」。
+   * 「行左边缘 + 累计宽度」的推算——1px 取整会累积，屏幕坐标直比最稳。
    */
   onStepTouchStart(e: WechatMiniprogram.TouchEvent) {
     const index = Number(e.currentTarget.dataset.index);
@@ -1208,8 +1206,7 @@ Page({
     if (touch === null) {
       return;
     }
-    /* 用拖动开始时量到的块屏幕矩形做命中：行比容器宽（八个步骤）时也准，
-     * 不受横向滚动与 1px 取整影响。 */
+    /* 用拖动开始时量到的块屏幕矩形做命中：屏幕坐标直比，不受 1px 取整影响。 */
     const target = blockIndexAtRects(this.blockRects, touch.clientX);
     if (target < 0 || target === this.dragTo) {
       return;
@@ -1218,7 +1215,7 @@ Page({
     this.renderTimeline();
   },
 
-  /** 拖动落点命中：指尖坐标 → 块下标（行比容器宽时也准，屏幕坐标直比）。 */
+  /** 拖动落点命中：指尖坐标 → 块下标（屏幕坐标直比，不受取整影响）。 */
   dropIndexAt(clientX: number): number {
     return blockIndexAtRects(this.blockRects, clientX);
   },

@@ -126,34 +126,30 @@
 
       <!--
         每个步骤一个块，宽度按时长比例分配；点选、长按后横向拖动重排。
-        八个步骤时 8×40px 保底可能比屏幕宽，所以外面套一层横向滚动容器。
+        行宽恒等于容器宽（#76）：八块时靠最小宽度 + 间隙降级 + 均分兜底，
+        永不横向滚动，所以这里没有 scroll-view。
       -->
-      <scroll-view
-        class="timeline-scroll {{timelineScrollable ? 'scrollable' : ''}}"
-        scroll-x="{{timelineScrollable}}"
-      >
-        <view class="timeline-row" style="{{timelineRowStyle}}">
-          <view
-            wx:for="{{steps}}"
-            wx:key="key"
-            class="timeline-block {{item.selected ? 'selected' : ''}} {{item.dragging ? 'dragging' : ''}} {{item.dropTarget ? 'drop-target' : ''}}"
-            style="{{item.style}}"
-            data-index="{{item.index}}"
-            bindtap="onStepTap"
-            bindtouchstart="onStepTouchStart"
-            bindtouchmove="onStepTouchMove"
-            bindtouchend="onStepTouchEnd"
-            bindtouchcancel="onStepTouchCancel"
-          >
-            <!-- 缩略色带：按这一步的光区灯珠比例铺满整条 -->
-            <view class="timeline-bands">
-              <view wx:for="{{item.bands}}" wx:for-item="band" wx:key="key" class="timeline-band" style="{{band.style}}"></view>
-            </view>
-            <text wx:if="{{item.showLabel}}" class="timeline-label">{{item.durationText}}</text>
-            <text class="timeline-order">{{item.index + 1}}</text>
+      <view class="timeline-row {{timelineCompact ? 'compact' : ''}}">
+        <view
+          wx:for="{{steps}}"
+          wx:key="key"
+          class="timeline-block {{item.selected ? 'selected' : ''}} {{item.dragging ? 'dragging' : ''}} {{item.dropTarget ? 'drop-target' : ''}}"
+          style="{{item.style}}"
+          data-index="{{item.index}}"
+          bindtap="onStepTap"
+          bindtouchstart="onStepTouchStart"
+          bindtouchmove="onStepTouchMove"
+          bindtouchend="onStepTouchEnd"
+          bindtouchcancel="onStepTouchCancel"
+        >
+          <!-- 缩略色带：按这一步的光区灯珠比例铺满整条 -->
+          <view class="timeline-bands">
+            <view wx:for="{{item.bands}}" wx:for-item="band" wx:key="key" class="timeline-band" style="{{band.style}}"></view>
           </view>
+          <text wx:if="{{item.showLabel}}" class="timeline-label">{{item.durationText}}</text>
+          <text class="timeline-order">{{item.index + 1}}</text>
         </view>
-      </scroll-view>
+      </view>
 
       <view class="timeline-actions">
         <text class="section-hint">长按步骤可拖动换位置</text>

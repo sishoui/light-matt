@@ -8,9 +8,9 @@
  *
  * 三个理由让它必须在 JS 里算：
  *
- *  1. **行宽可能超过容器**。八个步骤时 8×40px 保底 + 7 个间隙 = 376px，比多数手机
- *     的可用宽度更宽。保底不能被容器宽度废掉，所以行本身要能比屏幕宽——
- *     页面用 `scroll-view scroll-x` 装它；
+ *  1. **最小宽度与容器宽度会打架**。八个步骤时 8×24px 保底 + 7 个间隙 = 248px，
+ *     窄屏或大字号下仍可能放不下。这里先压缩间隙（8px → 4px），再不行退化为
+ *     均分——但**行宽永远等于容器宽**，页面不再横向滚动（#76）；
  *  2. **拖动重排要按块命中**。落点、`showLabel`、盒宽都是这一层算出来的具体
  *     数字，渲染层不复算，避免「显示宽度」与「命中宽度」两套真相；
  *  3. **边界只能单测**。0.4 秒 / 30.1 秒 / 单个步骤 / 八个步骤 / 越界拖动——在模拟器上
@@ -20,7 +20,7 @@
  *
  * ## 宽度分配：水位法到底做了什么
  *
- * 记 `available = 行宽 - 间隙 × (块数 - 1)`，每个块按 `duration / 总时长` 得到
+ * 记 `available = 容器宽 - 间隙 × (块数 - 1)`，每个块按 `duration / 总时长` 得到
  * 理想宽度。凡是理想宽度低于 `MIN_BLOCK_PX` 的块，被**钉**在最小宽度；剩下的
  * 宽度在没被钉住的块之间按各自时长重新分配。重复直到没有新的块需要被钉住。
  *
@@ -29,7 +29,7 @@
  *  - 没触发保底时，宽度严格与时长成比例（水位法不会改变比例）；
  *  - 触发保底时，被钉住的块正好 `MIN_BLOCK_PX`，**其余块彼此之间仍然严格成比例**
  *    —— 这就是「极端分布下比例语义不变」的确切含义；
- *  - 保底的总和已经放不下时（例：八个块抢一个比 320px 还窄的可用宽度），
+ *  - 保底的总和已经放不下时（例：八个块抢一个比 220px 还窄的可用宽度），
  *    水位法没有解，退化为**均分**：每块 `available / 块数`。此时时长不再决定
  *    宽度，但每个块都还有宽度、都点得到，界面不会溢出，用户仍能选中 / 拖动。
  *
@@ -37,8 +37,8 @@
  * 复现的正是算出来的宽度；未测量到行宽时退回 `flex: <时长> 0 0%`（真正的
  * 时长比例）+ CSS `min-width`，只是首帧的临时形态。
  *
- * 行宽本身由 `timelineRowWidth` 决定：容器宽、保底下限、比例下限三者取大，
- * 再封顶在容器宽的 2.5 倍。
+ * 行宽本身由 `timelineRowWidth` 决定：**恒等于容器宽**（未测量时退回
+ * 「块数 × 最小宽 + 间隙」）。间隙由 `chooseGap` 在 8px / 4px 之间降级。
  */
 
 /** 时长下限：0.5 秒。 */
@@ -54,13 +54,13 @@ export const DEFAULT_STEP_COUNT = 2;
 /** 时间轴最多 8 个步骤（与协议每套方案 8 个步骤一致）。 */
 export const MAX_STEPS = 8;
 /** 时间轴块的最小宽度（px）：0.5 秒的步骤在多块并列时仍然点得到。 */
-export const MIN_BLOCK_PX = 40;
+export const MIN_BLOCK_PX = 24;
 /** 块与块之间的间隙（px）；必须与 `strip.wxss` 的 `.timeline-row { gap }` 一致。 */
 export const BLOCK_GAP_PX = 8;
+/** 放不下时收缩到的间隙（px）。 */
+export const COMPACT_BLOCK_GAP_PX = 4;
 /** 长按进入拖动状态的阈值（毫秒）。 */
 export const LONG_PRESS_MS = 380;
-/** 时间轴行最多比容器宽多少倍（极端时长分布下靠横向滚动保留比例）。 */
-export const MAX_ROW_SCALE = 2.5;
 /** 块窄到这个宽度以下就不画时长文字（会溢出到邻块上）。 */
 export const LABEL_MIN_PX = 48;
 /** 时长条的三个刻度（下方文字用）。 */
@@ -285,9 +285,9 @@ export interface TimelineBlockView {
 }
 
 export interface LayoutOptions {
-  /** 时间轴行的真实宽度（px）；0 = 还没测量。 */
+  /** 时间轴行的真实宽度（px）；0 = 还没测量。行宽恒等于容器宽。 */
   widthPx: number;
-  /** 块间隙（px），默认 `BLOCK_GAP_PX`。 */
+  /** 块间隙（px）；不传时用 `chooseGap` 按容器宽在 8 / 4 之间降级。 */
   gapPx?: number;
   /** 最小宽度（px），默认 `MIN_BLOCK_PX`。 */
   minPx?: number;
@@ -372,23 +372,14 @@ function flexStyle(weight: number, measured: boolean): string {
 }
 
 /**
- * 时间轴行需要多宽（给定各块时长权重）。
+ * 时间轴行需要多宽 —— **恒等于容器宽**（#76：永不横向滚动）。
  *
- * 三个候选值取大，再封顶在容器宽的 `MAX_ROW_SCALE` 倍：
+ * 块宽之和 + 间隙永远等于容器宽，所以页面不需要 `scroll-view`，也不需要把
+ * 行撑宽来保留比例：比例由 `allocateWidths` 在容器内部表达（保底钉住最短的
+ * 几块，其余块彼此仍严格成比例）。
  *
- *  1. **容器宽**：够宽就用满，不产生无意义的滚动；
- *  2. **保底下限** `块数 × 40 + 间隙`：8 个块就是 376px，比多数手机的可用
- *     宽度更宽。保底不能被容器宽度废掉，否则 0.5 秒的块又缩回十几像素；
- *  3. **比例下限**：让最短的块恰好 40px 时整行需要的宽度
- *     （`40 × 总时长 / 最短时长 + 间隙`）。没有它，「30 秒 + 七个 0.5 秒」
- *     在 376px 的行里会被压成八块一样宽——比例等于被保底吃掉。
- *
- * 比例下限在极端分布下可达容器宽的十几倍（30 秒 / 0.5 秒 = 60 倍），横向滚
- * 十几屏并不好用，所以封顶 2.5 倍：滚一点点，换来「长块看起来真的长」。
- * 封顶后回到水位法自己的规则——被钉住的是最短的那几块，其余块彼此仍严格
- * 成比例。
- *
- * `containerPx <= 0`（还没测量）时只靠两个下限，不会把行压成 0。
+ * `containerPx <= 0`（还没测量）时退回「块数 × 最小宽 + 间隙」——那只是首帧
+ * 或测量失败时的兜底，不会把行压成 0；一旦测到真实宽度就严格等于容器宽。
  */
 export function timelineRowWidth(
   weights: readonly number[],
@@ -396,22 +387,38 @@ export function timelineRowWidth(
   gapPx: number = BLOCK_GAP_PX,
   minPx: number = MIN_BLOCK_PX,
 ): number {
+  const container = Number.isFinite(containerPx) ? Math.max(0, containerPx) : 0;
+  if (container > 0) {
+    return container;
+  }
   const count = weights.length;
   if (count === 0) {
-    return Number.isFinite(containerPx) ? Math.max(0, containerPx) : 0;
+    return 0;
   }
-  const container = Number.isFinite(containerPx) ? Math.max(0, containerPx) : 0;
-  const gaps = gapPx * (count - 1);
-  const floorNeed = count * minPx + gaps;
-  const durations = weights.map((weight) => (Number.isFinite(weight) ? Math.max(0, weight) : 0));
-  const total = durations.reduce((sum, value) => sum + value, 0);
-  const shortest = durations.reduce((min, value) => Math.min(min, value), Number.POSITIVE_INFINITY);
-  const ratioNeed = total > 0 && shortest > 0 ? (minPx * total) / shortest + gaps : 0;
-  if (container <= 0) {
-    return Math.max(floorNeed, ratioNeed);
+  return count * minPx + gapPx * (count - 1);
+}
+
+/**
+ * 块间隙：8px 放得下就用 8，否则降到 4；4 也放不下就仍返回 4（靠均分兜底）。
+ *
+ * 判定基准是「每块都能拿到最小宽度」：`count × minPx + gap × (count - 1) <= 容器`。
+ * 单块（或空列表）没有间隙，永远返回宽间隙。
+ */
+export function chooseGap(
+  count: number,
+  containerPx: number,
+  minPx: number = MIN_BLOCK_PX,
+): number {
+  if (!Number.isInteger(count) || count <= 1) {
+    return BLOCK_GAP_PX;
   }
-  const capped = Math.min(ratioNeed, container * MAX_ROW_SCALE);
-  return Math.max(container, floorNeed, capped);
+  /* NaN 当成「放不下」（走紧凑间隙）；Infinity 是「无限宽」，自然满足。 */
+  const container = Number.isNaN(containerPx) ? 0 : Math.max(0, containerPx);
+  const need = (gap: number) => count * minPx + gap * (count - 1);
+  if (need(BLOCK_GAP_PX) <= container) {
+    return BLOCK_GAP_PX;
+  }
+  return COMPACT_BLOCK_GAP_PX;
 }
 
 /**
@@ -427,9 +434,10 @@ export function layoutBlocks(
   if (count === 0) {
     return [];
   }
-  const gapPx = options.gapPx ?? BLOCK_GAP_PX;
   const minPx = options.minPx ?? MIN_BLOCK_PX;
   const measured = Number.isFinite(options.widthPx) && options.widthPx > 0;
+  /* 没显式给间隙时按容器宽自己降级：8px 放不下就 4px（未测量时无从判断，用宽间隙）。 */
+  const gapPx = options.gapPx ?? (measured ? chooseGap(count, options.widthPx, minPx) : BLOCK_GAP_PX);
   const durations = steps.map((step) => clampDuration(step.durationMs));
   const totalDuration = durations.reduce((sum, value) => sum + value, 0);
   const available = measured ? Math.max(0, options.widthPx - gapPx * (count - 1)) : 0;
@@ -500,9 +508,9 @@ export interface BlockRect {
 /**
  * 屏幕坐标 → 落点下标（拖动中的实时命中）。
  *
- * 为什么不用 `blockIndexAt` + 宽度：行比容器宽时（八个步骤）横向滚动会让「行内
- * 偏移」和指尖对不上，1px 取整也会累积。拖动开始时量一次每个块的真实屏幕
- * 矩形，之后全部按屏幕坐标比较，就与滚动、取整都无关。
+ * 为什么不用 `blockIndexAt` + 宽度：`blockIndexAt` 假设坐标相对行左边缘，而
+ * 页面拿到的是屏幕坐标；1px 取整也会累积。拖动开始时量一次每个块的真实屏幕
+ * 矩形，之后全部按屏幕坐标比较，就与取整、缩放都无关。
  *
  * 先看指尖落在哪个块里；落在块之间的间隙里时取**离指尖最近**的块——与
  * 「间隙归右边那块」的直观一致，也不会在宽块左半边命中前一块。

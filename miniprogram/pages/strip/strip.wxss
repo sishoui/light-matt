@@ -257,30 +257,20 @@
 }
 
 /*
- * 时间轴容器。八段时 8×40px 保底 + 7 个间隙 = 376px，比多数手机可用宽度更宽，
- * 此时允许横向滚动（见 timeline.ts 的 timelineRowWidth），而不是把块压到点不到。
- */
-.timeline-scroll {
-  width: 100%;
-  /* scroll-view 自己不给高度，显式定高，否则块会被压扁。 */
-  height: 108rpx;
-  white-space: nowrap;
-}
-
-.timeline-scroll.scrollable {
-  /* 可滚动时留一条细边，提示「右边还有」。 */
-  padding-bottom: 2rpx;
-}
-
-/*
  * 每个步骤一个块。宽度由 flex-grow 决定（页面算好像素后写进 style），
- * 行本身不换行：块再多也是横向排开。
+ * 行宽恒等于容器宽（页面把块宽之和 + 间隙算到正好填满），不换行也不滚动。
  */
 .timeline-row {
   display: flex;
   align-items: stretch;
   gap: 8px;
+  width: 100%;
   height: 108rpx;
+}
+
+/* 窄容器（最小宽度 + 8px 间隙放不下）：页面把间隙降到 4px。 */
+.timeline-row.compact {
+  gap: 4px;
 }
 
 .timeline-block {
@@ -288,7 +278,11 @@
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  min-width: 40px;
+  /*
+   * 不写 min-width：块宽由页面以像素内联（`flex: <px> 0 0%`），「算出来的宽度」
+   * 和「显示宽度」必须是同一份真相。未测量时的首帧由页面内联的
+   * `min-width: 24px` 兜底（见 timeline.ts 的 flexStyle）。
+   */
   box-sizing: border-box;
   padding: 10rpx 8rpx;
   border-radius: var(--radius-sm);
