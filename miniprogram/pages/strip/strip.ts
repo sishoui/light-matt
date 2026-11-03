@@ -113,6 +113,11 @@ import {
   type StepBubbleView,
 } from "../../utils/control/step-bubble";
 import { LOOP_MODE, clampLoopMode, type LoopMode } from "../../utils/control/advanced-layers";
+import {
+  fillOtherStrips,
+  missingSlices,
+  missingSlicesText,
+} from "../../utils/control/plan-fill";
 import { checkScriptBlobBytes } from "../../utils/control/script-plan";
 import { draftCapacityBytes, draftToScriptConfig } from "../../utils/control/script-view";
 import {
@@ -214,6 +219,7 @@ import { layerFromFlat } from "../../utils/control/segment-model";
 import {
   LOOP,
   MAX_LEDS,
+  MAX_STRIPS,
   MAX_SCRIPTS,
   MIN_LEDS,
   NO_EFFECT,
@@ -3489,6 +3495,79 @@ Page({
    * 方案写入失败时**不还原**实时分区：那一步已经成功，用户想要的画面已经写进去了，
    * 只把「方案没提交」这个原因如实说出来。
    */
+  /**
+   * 读回其它灯组在各步骤的现有分区，补进草稿（#101）。
+   *
+   * 返回补齐后的草稿；任何一条读回失败都返回 null（并就地显示原因），
+   * 调用方据此**放弃这次下发**——绝不能发一份会把别的灯组刷空的方案。
+   */
+  async fillOtherStripSlices(draft: ScriptDraft, stripCount: number): Promise<ScriptDraft | null> {
+    const session = this.session;
+    if (session === null) {
+      return draft;
+    }
+    const targetStripId = this.data.stripId;
+    const otherIds: number[] = [];
+    for (let stripId = 0; stripId < Math.min(stripCount, MAX_STRIPS); stripId += 1) {
+      if (stripId !== targetStripId) {
+        otherIds.push(stripId);
+      }
+    }
+    if (otherIds.length === 0) {
+      return draft;
+    }
+
+    /* 每一步都要有其它灯组的切片：读回一次，按「灯组 × 步骤」摊开。 */
+    const slices = new Map<number, Array<readonly SegmentSpec[]>>();
+    const ledCounts = new Map<number, number>();
+    for (const stripId of otherIds) {
+      const result = await session.queryStrip(stripId);
+      if (result.kind !== "ok") {
+        this.setData({ applyError: missingSlicesText([stripId]) });
+        return null;
+      }
+      const zones = result.reports
+        .filter((report) => report.stripId === stripId)
+        .map((report) => ({
+          stripId: report.stripId,
+          segId: report.segId,
+          start: report.start,
+          end: report.end,
+          blend: report.blend,
+          layer0: { ...report.layer0 },
+          layer1: { ...report.layer1 },
+        }));
+      /* 设备上的现有分区对**每个步骤**都适用（它代表「这条灯组当前的样子」）。 */
+      slices.set(
+        stripId,
+        draft.stages.map(() => zones),
+      );
+      ledCounts.set(stripId, session.deviceState?.stripCounts[stripId] ?? 0);
+    }
+
+    const missing = missingSlices(
+      Array.from({ length: Math.min(stripCount, MAX_STRIPS) }, (_, index) => index),
+      targetStripId,
+      slices,
+    );
+    if (missing.length > 0) {
+      /* 读回成功但缺失（理论上不会发生）：仍然按「不下发」处理。 */
+      this.setData({ applyError: missingSlicesText(missing) });
+      return null;
+    }
+
+    const { draft: merged, filled } = fillOtherStrips({
+      draft,
+      targetStripId,
+      slices,
+      ledCounts,
+    });
+    if (filled.length > 0) {
+      this.setPanelHint(`已保留灯组 ${filled.map((id) => id + 1).join("、")} 的现有编排`);
+    }
+    return merged;
+  },
+
   async applyAdvanced(_opts: { silent?: boolean } = {}): Promise<void> {
     const session = this.session;
     if (session === null) {
@@ -3508,8 +3587,24 @@ Page({
     /* 写入前先快照设备上这一组的分区：清空之后任何一帧失败都能**尽力还原**。 */
     let restore: SegmentSpec[] = [];
     try {
+      /*
+       * ⓫ #101：补齐其它灯组的切片。
+       *
+       * 方案是**设备级**的：一套方案覆盖所有灯组。草稿里通常只有当前灯组，
+       * 直接下发会让其它灯组退回基准单色（看起来就是「改一条串到别的灯组」）。
+       * 所以先读回其它灯组在各步骤的现有分区，补进草稿。
+       *
+       * 任一条读回失败就**不下发**并给出原因：宁可这次不发，也不能把它们刷掉。
+       */
+      const stripCount = Math.max(1, session.deviceState?.stripCount ?? 1);
+      const filled = await this.fillOtherStripSlices(draft, stripCount);
+      if (filled === null) {
+        return;
+      }
+      const effectiveDraft = filled;
+
       /* ⓪ 预检（纯本地）。草稿非法时一帧都不发，设备上的灯保持原样。 */
-      const script = draftToScriptConfig(draft, session.deviceState?.stripCount ?? 1);
+      const script = draftToScriptConfig(effectiveDraft, stripCount);
       const precheck = session.validateScriptForDevice(script);
       if (!precheck.ok) {
         this.setData({ applyError: planUserMessage(precheck.message) });
