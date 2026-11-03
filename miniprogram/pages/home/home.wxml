@@ -2,9 +2,37 @@
   <nav-bar
     title="设备"
     subtitle="{{empty ? '还没有设备' : (ready ? '已连接' : '未连接')}}"
-    action-text="发现"
-    bind:action="onGoDiscover"
+    action-text="+"
+    bind:action="onPlusTap"
   />
+
+  <!-- 右上角「+」的下拉菜单（#93）：本轮只有「添加设备」，结构上留出后续加项的位置。 -->
+  <view wx:if="{{plusOpen}}" class="menu-mask plus-mask" bindtap="onPlusClose" catchtouchmove="onPlusNoop"></view>
+  <view wx:if="{{plusOpen}}" class="menu-panel plus-panel" style="top: {{plusTop}}px;">
+    <view class="menu-item" bindtap="onPlusAddDevice" hover-class="menu-item-hover">
+      <text class="menu-item-label">添加设备</text>
+      <text class="menu-item-sub">扫描附近</text>
+    </view>
+  </view>
+
+  <!-- 灰底圆角搜索框：按名称过滤（备注名优先、不区分大小写、不匹配设备标识） -->
+  <view wx:if="{{!empty}}" class="searchbar">
+    <view class="search-glyph">
+      <view class="search-glyph-ring"></view>
+      <view class="search-glyph-handle"></view>
+    </view>
+    <input
+      class="search-input"
+      value="{{query}}"
+      placeholder="搜索设备"
+      placeholder-class="search-placeholder"
+      confirm-type="search"
+      bindinput="onQueryInput"
+    />
+    <view wx:if="{{query}}" class="search-clear" bindtap="onQueryClear" hover-class="search-clear-hover">
+      <view class="search-clear-x"></view>
+    </view>
+  </view>
 
   <!-- 空态：没有任何设备时给出下一步 -->
   <view wx:if="{{empty}}" class="empty-card" bindtap="onEmptyTap" hover-class="empty-card-hover">
@@ -14,15 +42,44 @@
     </view>
     <text class="empty-title">还没有设备</text>
     <text class="empty-hint">{{emptyHint}}</text>
-    <view class="empty-cta">去发现</view>
+    <view class="empty-cta">添加设备</view>
   </view>
+
+  <!-- ============ 搜索态：整页变成一列设备卡 ============ -->
+  <block wx:elif="{{searching}}">
+    <view wx:if="{{searchResults.length === 0}}" class="empty-card search-empty">
+      <text class="empty-title">{{searchEmpty}}</text>
+      <text class="empty-hint">换个关键词，或清空搜索看全部设备。</text>
+    </view>
+    <view wx:else class="search-list">
+      <view
+        wx:for="{{searchResults}}"
+        wx:key="key"
+        class="search-row {{item.selected ? 'selected' : ''}}"
+        data-key="{{item.key}}"
+        bindtap="onSearchResultTap"
+        hover-class="search-row-hover"
+      >
+        <image wx:if="{{item.photo}}" class="search-cover" src="{{item.photo}}" mode="aspectFill" />
+        <view wx:else class="search-cover search-cover-fallback" style="{{item.glowStyle}}">
+          <text class="search-initial">{{item.initial}}</text>
+        </view>
+        <view class="search-row-main">
+          <text class="search-row-name">{{item.name}}</text>
+          <text class="search-row-meta">{{item.statusText}} · {{item.metaText}}</text>
+        </view>
+        <view class="search-chevron"></view>
+      </view>
+    </view>
+  </block>
 
   <block wx:else>
     <!-- ============ 方形大卡：图片铺满，信息叠在底部 ============ -->
     <view
       class="hero-card tone-{{current.tone}}"
+      data-key="{{current.key}}"
       bindtap="onCardTap"
-      bindlongpress="onClearPhoto"
+      bindlongpress="onCardLongPress"
       hover-class="hero-card-hover"
     >
       <!-- 封面：有照片用照片，没有就用设备色渐变（不假装有照片） -->
@@ -38,7 +95,7 @@
       <!-- 压暗层：保证底部文字在任何照片上都可读 -->
       <view class="hero-scrim"></view>
 
-      <!-- 顶部：状态 + 电源键 -->
+      <!-- 顶部：状态 + 电源键（#93 去掉了卡片上的「封面」按钮：改到长按菜单里） -->
       <view class="hero-top">
         <view class="hero-status">
           <view class="hero-dot"></view>
@@ -46,15 +103,6 @@
         </view>
 
         <view class="hero-actions">
-          <!-- 封面：用户自定义图片（catchtap 不冒泡，否则会进详情） -->
-          <view
-            class="hero-cover-btn {{photoBusy ? 'busy' : ''}}"
-            catchtap="onPickPhoto"
-            hover-class="hero-cover-hover"
-          >
-            <text class="hero-cover-text">{{current.photoIsUserPicked ? '更换' : '封面'}}</text>
-          </view>
-
           <!-- 电源快捷键：catchtap 阻止冒泡，不触发进详情 -->
           <view
             class="hero-power {{current.powerOn ? 'on' : ''}} {{busy ? 'busy' : ''}}"
@@ -67,18 +115,33 @@
         </view>
       </view>
 
-      <!-- 底部：标题信息叠加在图片上 -->
+      <!-- 底部：标题信息 + 可拖亮度滑条 -->
       <view class="hero-bottom">
         <text class="hero-name">{{current.name}}</text>
         <view class="hero-meta-row">
           <text class="hero-meta">{{current.metaText}}</text>
-          <text wx:if="{{current.brightnessPercent !== null}}" class="hero-brightness">
-            {{current.brightnessPercent}}%
-          </text>
+          <text wx:if="{{current.brightnessPercent !== null}}" class="hero-brightness">{{brightnessPercent}}%</text>
         </view>
-        <!-- 亮度条：只读展示，真正的调节在详情页 -->
-        <view wx:if="{{current.brightnessPercent !== null}}" class="hero-meter">
-          <view class="hero-meter-fill" style="width: {{current.brightnessPercent}}%;"></view>
+        <!-- 亮度滑条：可拖，松手才下发（catchtap 不冒泡，否则会进详情） -->
+        <view
+          wx:if="{{current.brightnessPercent !== null}}"
+          class="hero-slider"
+          catchtap="onHeroSliderBlock"
+        >
+          <slider
+            class="hero-slider-control {{brightnessDraggable ? '' : 'disabled'}}"
+            min="0"
+            max="{{brightnessMax}}"
+            step="1"
+            value="{{brightnessSlider}}"
+            disabled="{{!brightnessDraggable}}"
+            activeColor="{{accentColor}}"
+            backgroundColor="rgba(255, 255, 255, 0.3)"
+            block-size="18"
+            bindchanging="onBrightnessChanging"
+            bindchange="onBrightnessChange"
+          />
+          <text class="hero-slider-hint">{{brightnessHint}}</text>
         </view>
       </view>
     </view>
@@ -94,6 +157,7 @@
             class="thumb"
             data-key="{{item.key}}"
             bindtap="onThumbTap"
+            bindlongpress="onCardLongPress"
             hover-class="thumb-hover"
           >
             <view class="thumb-disc tone-{{item.tone}}">
@@ -130,4 +194,22 @@
       演示模式：这些设备是占位数据，控制会真实生效但不会连到硬件
     </view>
   </block>
+
+  <!-- ============ 长按菜单（#93）：大卡与小图共用一个 ============ -->
+  <view wx:if="{{menuOpen}}" class="sheet-mask" bindtap="onMenuClose" catchtouchmove="onMenuNoop"></view>
+  <view wx:if="{{menuOpen}}" class="sheet">
+    <view class="sheet-grabber"></view>
+    <view
+      wx:for="{{menuItems}}"
+      wx:key="action"
+      class="sheet-item {{item.enabled ? '' : 'disabled'}} {{item.danger ? 'danger' : ''}}"
+      data-action="{{item.action}}"
+      bindtap="onMenuAction"
+      hover-class="{{item.enabled ? 'sheet-item-hover' : 'none'}}"
+    >
+      <text class="sheet-item-label">{{item.label}}</text>
+      <text class="sheet-item-sub">{{item.sub}}</text>
+    </view>
+    <view class="sheet-cancel" bindtap="onMenuClose">取消</view>
+  </view>
 </view>

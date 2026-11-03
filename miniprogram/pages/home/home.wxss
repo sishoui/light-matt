@@ -289,18 +289,29 @@
   flex-shrink: 0;
 }
 
-.hero-meter {
-  height: 8rpx;
-  border-radius: 4rpx;
-  background: rgba(255, 255, 255, 0.22);
-  overflow: hidden;
+/*
+ * 大卡上的亮度滑条（#93）：压在图片上，所以滑轨与文字都用白色系——
+ * 主题变量在这里会看不清（照片亮度不可控）。激活色仍由页面数据传入
+ * （原生 slider 读不到 CSS 变量）。
+ */
+.hero-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+  padding: 4rpx 0;
 }
 
-.hero-meter-fill {
-  height: 100%;
-  border-radius: 4rpx;
-  background: rgba(255, 255, 255, 0.92);
-  transition: width 200ms ease;
+.hero-slider-control {
+  margin: 0 -18rpx;
+}
+
+.hero-slider-control.disabled {
+  opacity: 0.45;
+}
+
+.hero-slider-hint {
+  font-size: 20rpx;
+  color: rgba(255, 255, 255, 0.7);
 }
 
 /* ---------------- 其他设备小图 ---------------- */
@@ -413,28 +424,330 @@
   flex-shrink: 0;
 }
 
-/* 封面按钮：与电源键同一套玻璃质感，但更小、只是文字 */
-.hero-cover-btn {
-  height: 56rpx;
-  padding: 0 22rpx;
-  border-radius: 999rpx;
-  background: rgba(0, 0, 0, 0.34);
-  border: 1rpx solid rgba(255, 255, 255, 0.22);
+
+/* ---------------- 搜索框（#93） ---------------- */
+
+.searchbar {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  height: 72rpx;
+  padding: 0 20rpx;
+  box-sizing: border-box;
+  border-radius: 18rpx;
+  background: var(--card-2);
+  border: 1rpx solid var(--border);
+}
+
+.search-glyph {
+  position: relative;
+  width: 30rpx;
+  height: 30rpx;
+  flex-shrink: 0;
+}
+
+.search-glyph-ring {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 22rpx;
+  height: 22rpx;
+  border: 3rpx solid var(--text-3);
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+
+.search-glyph-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 12rpx;
+  height: 3rpx;
+  border-radius: 2rpx;
+  background: var(--text-3);
+  transform: rotate(45deg);
+}
+
+.search-input {
+  flex: 1;
+  min-width: 0;
+  height: 72rpx;
+  font-size: 27rpx;
+  color: var(--text);
+}
+
+.search-placeholder {
+  color: var(--text-3);
+}
+
+.search-clear {
+  width: 44rpx;
+  height: 44rpx;
+  border-radius: 50%;
+  background: var(--card-press);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.search-clear-hover {
+  opacity: 0.7;
+}
+
+.search-clear-x {
+  position: relative;
+  width: 18rpx;
+  height: 18rpx;
+}
+
+.search-clear-x::before,
+.search-clear-x::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8rpx;
+  width: 18rpx;
+  height: 2rpx;
+  border-radius: 1rpx;
+  background: var(--text-2);
+}
+
+.search-clear-x::before {
+  transform: rotate(45deg);
+}
+
+.search-clear-x::after {
+  transform: rotate(-45deg);
+}
+
+/* ---------------- 搜索结果（一列设备卡） ---------------- */
+
+.search-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14rpx;
+}
+
+.search-row {
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+  padding: 18rpx;
+  border-radius: var(--radius-md);
+  background: var(--card);
+  border: 1rpx solid var(--border);
+  box-shadow: var(--shadow);
+}
+
+.search-row-hover {
+  background: var(--card-press);
+}
+
+.search-row.selected {
+  border-color: var(--accent);
+}
+
+.search-cover {
+  width: 88rpx;
+  height: 88rpx;
+  border-radius: 14rpx;
+  flex-shrink: 0;
+  background: var(--card-2);
+}
+
+.search-cover-fallback {
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-.hero-cover-hover {
-  opacity: 0.7;
+.search-initial {
+  font-size: 32rpx;
+  font-weight: 700;
+  color: var(--text);
 }
 
-.hero-cover-btn.busy {
-  opacity: 0.45;
+.search-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6rpx;
 }
 
-.hero-cover-text {
-  font-size: 22rpx;
-  color: rgba(255, 255, 255, 0.94);
+.search-row-name {
+  font-size: 29rpx;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.search-row-meta {
+  font-size: 22rpx;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-chevron {
+  width: 14rpx;
+  height: 14rpx;
+  border-top: 3rpx solid var(--text-3);
+  border-right: 3rpx solid var(--text-3);
+  transform: rotate(45deg);
+  flex-shrink: 0;
+}
+
+.search-empty {
+  align-items: center;
+}
+
+/* ---------------- 右上角「+」下拉菜单（#93） ---------------- */
+
+.plus-mask {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 85;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.plus-panel {
+  position: fixed;
+  right: 24rpx;
+  z-index: 86;
+  min-width: 300rpx;
+  padding: 8rpx 0;
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-card);
+  border: 1rpx solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+.menu-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 24rpx;
+  padding: 22rpx 28rpx;
+}
+
+.menu-item-hover {
+  background: var(--card-press);
+}
+
+.menu-item-label {
+  font-size: 28rpx;
+  color: var(--text);
+}
+
+.menu-item-sub {
+  font-size: 20rpx;
+  color: var(--text-3);
+}
+
+/* ---------------- 长按菜单（底部弹层，#93） ---------------- */
+
+.sheet-mask {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 118;
+  background: rgba(0, 0, 0, 0.42);
+}
+
+.sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 120;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  padding: 16rpx 32rpx calc(32rpx + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+  box-sizing: border-box;
+  animation: home-sheet-rise 180ms ease-out;
+}
+
+@keyframes home-sheet-rise {
+  from {
+    transform: translateY(24rpx);
+    opacity: 0.6;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.sheet-grabber {
+  width: 72rpx;
+  height: 8rpx;
+  border-radius: 4rpx;
+  background: var(--card-press);
+  align-self: center;
+  margin: 4rpx 0 12rpx;
+}
+
+.sheet-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 24rpx;
+  padding: 24rpx 8rpx;
+  border-bottom: 1rpx solid var(--divider);
+}
+
+.sheet-item:last-of-type {
+  border-bottom: none;
+}
+
+.sheet-item-hover {
+  background: var(--card-press);
+}
+
+.sheet-item.disabled {
+  opacity: 0.4;
+}
+
+.sheet-item-label {
+  font-size: 29rpx;
+  color: var(--text);
+}
+
+.sheet-item-sub {
+  font-size: 21rpx;
+  color: var(--text-3);
+}
+
+.sheet-item.disabled .sheet-item-label {
+  color: var(--text-3);
+}
+
+.sheet-item.danger .sheet-item-label {
+  color: var(--danger);
+}
+
+.sheet-cancel {
+  margin-top: 12rpx;
+  height: 88rpx;
+  line-height: 88rpx;
+  text-align: center;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  font-size: 28rpx;
+  color: var(--text-2);
 }
