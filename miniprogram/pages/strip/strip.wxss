@@ -330,6 +330,11 @@
   gap: 8px;
   width: 100%;
   height: 108rpx;
+  /*
+   * 拖动时被抬起的块（z-index）要盖住邻块。行自己成为堆叠上下文，块之间的
+   * 层级才稳定；也避免抬起的块跑到卡片外的其它元素上面。
+   */
+  isolation: isolate;
 }
 
 /* 窄容器（最小宽度 + 8px 间隙放不下）：页面把间隙降到 4px。 */
@@ -353,7 +358,13 @@
   background: var(--card-2);
   box-shadow: inset 0 0 0 1rpx var(--border);
   overflow: hidden;
-  transition: box-shadow 140ms ease;
+  /*
+   * 位移与阴影都只走 transform / box-shadow（#82）：小程序里改 flex 等布局
+   * 属性做动画会重排、抖动且不一定生效，所以位移一律内联 `transform`。
+   * 150ms 是票面的让位时长；松手时内联 transform 被清空，同一条过渡把它弹回去。
+   */
+  transition: transform 150ms ease, box-shadow 150ms ease;
+  transform-origin: center center;
 }
 
 /*
@@ -364,14 +375,38 @@
   box-shadow: 0 0 0 2px var(--accent);
 }
 
-/* 拖动中：被拖的块浮起来，落点块用虚线示意会排到这里。 */
+/*
+ * 拖动中被拖的块：抬起一层。
+ *
+ * 放大（1.06）由页面写进**内联** transform——它必须和 `translateX` 同一条
+ * 变换，否则内联会覆盖这里的 scale。这里只负责层级与投影：`z-index` 要在
+ * 同一个堆叠上下文里才有效，所以行有 `isolation: isolate`。
+ */
 .timeline-block.dragging {
-  opacity: 0.7;
-  z-index: 2;
+  z-index: 3;
+  box-shadow: 0 10rpx 28rpx rgba(0, 0, 0, 0.22);
+  opacity: 1;
+  /*
+   * 跟手必须是**即时**的：transform 不过渡（否则块会慢半拍拖在手指后面）。
+   * 只让阴影平滑淡入，抬起的一瞬间看起来仍是「抬起来」。
+   */
+  transition: box-shadow 150ms ease;
 }
 
+/* 落点块高亮描边：`.drop-target` 排在 `.selected` 之后，拖动时以它为准。 */
 .timeline-block.drop-target {
-  box-shadow: 0 0 0 2px var(--blue);
+  box-shadow: 0 0 0 2px var(--blue), 0 0 0 5px var(--blue-soft);
+}
+
+/*
+ * 提交重排的那一帧不要过渡（#82）。
+ *
+ * 块的 key 是下标，重排后同一个节点换了内容；若让 transform 从「跟手位置」
+ * 平滑跑回原位，看到的是一块已经换过内容的块飞回去。提交帧直接落位，下一帧
+ * （`timelineSettling` 恢复 false）再把过渡还回来。
+ */
+.timeline-row.settling .timeline-block {
+  transition: none;
 }
 
 /* 缩略色带：贴块底，按该步骤光区的灯珠比例分成若干条。 */

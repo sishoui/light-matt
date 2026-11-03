@@ -125,11 +125,13 @@ import {
 } from "../../utils/control/strip-simple";
 import { loadTheme, themeClass, type ThemeMode } from "../../utils/control/theme";
 import {
-  blockIndexAtRects,
   chooseGap,
   clampDuration,
   COMPACT_BLOCK_GAP_PX,
   DEFAULT_STEP_MS,
+  dragFollowOffset,
+  dragTapSuppressUntil,
+  dragTargetAtRects,
   durationText,
   durationTicks,
   layoutBlocks,
@@ -137,6 +139,7 @@ import {
   MAX_STEPS,
   MIN_BLOCK_PX,
   selectionAfterMove,
+  tapSuppressedAt,
   timelineRowWidth,
   type DurationTickView,
   type TimelineBlockView,
@@ -269,6 +272,14 @@ Page({
     stepDurationText: "1 秒",
     durationTicks: [] as DurationTickView[],
     stepHint: "",
+    /**
+     * 提交重排的那一帧关掉块过渡（#82）。
+     *
+     * 块 key 是下标，重排后同一个节点换了内容；让内联 transform 从跟手位置
+     * 过渡回原位，会看到「已经换过内容的块」飞回去。这一帧直接落位，下一帧
+     * 再把过渡还回来。
+     */
+    timelineSettling: false,
 
     /* ---- 进阶档：光区轴（#66） ---- */
     zoneBlocks: [] as ZoneAxisBlock[],
@@ -388,6 +399,24 @@ Page({
   dragFrom: -1,
   /** 拖动落点下标；-1 = 没在拖。 */
   dragTo: -1,
+  /**
+   * 被拖块「跟手指走」的横向位移（px）。
+   *
+   * 由纯函数 `dragFollowOffset` 算出后原样传进 `layoutBlocks`；页面只记这个
+   * 数字，不自己算位移规则。
+   */
+  dragFollow: 0,
+  /** 进入拖动那一刻的指尖横坐标；`dragFollow` 的零点。 */
+  dragStartX: 0,
+  /** 这一次触摸是否已经拖出时间轴（出界松手 = 取消，不提交顺序）。 */
+  dragOutside: false,
+  /**
+   * 触摸代次：每次按下 / 抬起 / 取消自增。
+   *
+   * 长按进入拖动前要先异步量块矩形；代次变了说明这次触摸已经结束，回调不能
+   * 再挂拖动状态（否则会留下一个「幽灵拖动」，下次移动凭空拖起一块）。
+   */
+  dragEpoch: 0,
   /** 拖动开始时量到的块屏幕矩形（按顺序）。 */
   blockRects: [] as Array<{ left: number; right: number }>,
   /** 时间轴容器左边缘（px，屏幕坐标），只用于诊断。 */
@@ -458,6 +487,10 @@ Page({
     this.longPressTimer = null;
     this.dragFrom = -1;
     this.dragTo = -1;
+    this.dragFollow = 0;
+    this.dragStartX = 0;
+    this.dragOutside = false;
+    this.dragEpoch = 0;
     this.blockRects = [];
     this.timelineLeft = 0;
     this.dragTapUntil = 0;
@@ -509,6 +542,8 @@ Page({
     /* 防抖定时器不属于界面：页面隐藏后它还会跑一次，可能对已断开的设备白发一帧。 */
     this.clearQuickTimer();
     this.clearLongPress();
+    /* 拖动状态也不跨页面存活：回来时不该有一块还「浮在半空」。 */
+    this.resetDragState();
   },
 
   onUnload() {
@@ -516,6 +551,7 @@ Page({
     this.unsubscribe();
     this.clearQuickTimer();
     this.clearLongPress();
+    this.resetDragState();
     this.session = null;
     this.storage = null;
   },
@@ -817,19 +853,15 @@ Page({
   // ---------------- 进阶档：时间轴（#65） ----------------
 
   /**
-   * 重画进阶档（唯一派生入口）：时间轴 + 光区轴一起算。
+   * 时间轴块的派生（`layoutBlocks` 的唯一调用点）。
    *
-   * 两条轴必须来自**同一份草稿**：分开各自派生迟早会出现「轴上三段、块里
-   * 两条色带」。所以只有这一个入口，任何一步改动都走它。
-   *
-   * 只调纯函数 + 一次 `setData`：拖时长条时块宽跟着变，但页面结构不动，
-   * 所以拖动是连续的。
+   * 抽出来是为了拖动：`touchmove` 只需要重画块（位移 / 落点），不必重算光区轴
+   * 与效果面板。两条路径共用这一个函数，块宽与位移规则因此不会分叉。
    */
-  renderTimeline(patch: Record<string, unknown> = {}, callback?: () => void): void {
-    const ledCount = this.stripLedCount();
-    const stripId = this.data.stripId;
-    const draft = this.currentDraft();
-    const timelineSteps = timelineStepsOf(draft, stripId);
+  timelineBlocksOf(timelineSteps: ReturnType<typeof timelineStepsOf>): {
+    blocks: TimelineBlockView[];
+    gapPx: number | undefined;
+  } {
     /* 容器宽度没量到之前不能算像素（会把首帧算成每个块几像素），退回时长权重 +
      * CSS 最小宽度；量到之后行宽恒等于容器宽，块宽在容器内部按比例 / 最小宽度
      * 分配——任何步骤数都不出容器，页面不滚动（#76）。 */
@@ -844,8 +876,40 @@ Page({
       selected: this.timelineIndex,
       dragIndex: this.dragFrom >= 0 ? this.dragFrom : -1,
       dropIndex: this.dragFrom >= 0 ? this.dragTo : -1,
-      ledCount,
+      followPx: this.dragFrom >= 0 ? this.dragFollow : 0,
+      ledCount: this.stripLedCount(),
     });
+    return { blocks, gapPx };
+  },
+
+  /**
+   * 拖动中的轻量重绘：只更新 `steps`（块宽不会变，但位移与落点会）。
+   *
+   * 用 `setData` 的路径串而不是整页派生：`touchmove` 每秒几十次，重算光区轴
+   * 与效果面板纯属浪费，而且会拖慢跟手。
+   */
+  renderDragBlocks(): void {
+    const draft = this.currentDraft();
+    const { blocks } = this.timelineBlocksOf(timelineStepsOf(draft, this.data.stripId));
+    this.setData({ steps: blocks });
+  },
+
+  /**
+   * 重画进阶档（唯一派生入口）：时间轴 + 光区轴一起算。
+   *
+   * 两条轴必须来自**同一份草稿**：分开各自派生迟早会出现「轴上三段、块里
+   * 两条色带」。所以只有这一个入口，任何一步改动都走它。
+   *
+   * 只调纯函数 + 一次 `setData`：拖时长条时块宽跟着变，但页面结构不动，
+   * 所以拖动是连续的。
+   */
+  renderTimeline(patch: Record<string, unknown> = {}, callback?: () => void): void {
+    const ledCount = this.stripLedCount();
+    const stripId = this.data.stripId;
+    const draft = this.currentDraft();
+    const timelineSteps = timelineStepsOf(draft, stripId);
+    const { blocks, gapPx } = this.timelineBlocksOf(timelineSteps);
+    const durations = timelineSteps.map((step) => clampDuration(step.durationMs));
     const durationMs = this.currentDurationMs();
     const totalMs = durations.reduce((sum, ms) => sum + ms, 0);
     const zones = stepZonesOf(draft, this.timelineIndex, stripId);
@@ -862,6 +926,8 @@ Page({
       stepIndex: this.timelineIndex,
       stepCanAdd: canAddStepStage(draft),
       timelineCompact: gapPx === COMPACT_BLOCK_GAP_PX,
+      /* 默认恢复过渡；只有提交重排那一帧由 `patch` 临时关掉（#82）。 */
+      timelineSettling: false,
       timelineSummary:
         timelineSteps.length === 0
           ? "还没有步骤"
@@ -1466,7 +1532,7 @@ Page({
   onStepTap(e: WechatMiniprogram.TouchEvent) {
     /* 拖动刚松手：这一次点击是同一次触摸的尾巴，不能改选中。
      * 用时间戳而不是布尔量——卡在 true 会让整条时间轴从此点不动。 */
-    if (Date.now() < this.dragTapUntil) {
+    if (tapSuppressedAt(Date.now(), this.dragTapUntil)) {
       return;
     }
     const index = Number(e.currentTarget.dataset.index);
@@ -1482,31 +1548,56 @@ Page({
   },
 
   /**
-   * 手指按下：起长按定时器。
+   * 手指按下：记住起点并起长按定时器。
    *
    * 定时器到点才进入拖动状态——直接按下变拖动会与「点一下选中」抢事件，用户
-   * 也没法「先看一眼再点」。380 毫秒是票面的约数。
+   * 也没法「先看一眼再点」。300 毫秒（`LONG_PRESS_MS`，#82）。
    *
-   * 进入拖动时顺手量一次所有块的屏幕位置：落点换算用这些真实矩形，而不是
-   * 「行左边缘 + 累计宽度」的推算——1px 取整会累积，屏幕坐标直比最稳。
+   * `dragStartX` 是「跟手位移」的零点：等待期间手指若有轻微移动，就跟着更新，
+   * 于是块抬起的那一刻位移正好是 0，不会先跳一下。
+   *
+   * 进入拖动时先量块的屏幕位置，再挂上拖动状态：测量必须在**没有 transform**
+   * 的情况下做，否则被拖块的 1.06 放大也会进矩形，命中范围就偏了。
    */
   onStepTouchStart(e: WechatMiniprogram.TouchEvent) {
     const index = Number(e.currentTarget.dataset.index);
     if (!Number.isInteger(index) || index < 0 || index >= this.currentDraft().stages.length) {
       return;
     }
+    const touch = firstTouch(e);
+    this.dragStartX = touch === null ? 0 : touch.clientX;
     this.clearLongPress();
+    /*
+     * 代次：测量是异步的（`boundingClientRect` 要等一个渲染回合）。若手指在
+     * 测量回来之前就抬起，回调里再挂拖动状态会留下一个「幽灵拖动」——下一次
+     * 移动就凭空拖起来。代次在 touchstart / touchend / cancel 都自增，回调
+     * 只在代次没变时生效。
+     */
+    this.dragEpoch += 1;
+    const epoch = this.dragEpoch;
     this.longPressTimer = setTimeout(() => {
       this.longPressTimer = null;
-      this.dragFrom = index;
-      this.dragTo = index;
-      this.timelineIndex = index;
-      this.renderTimeline({ stepHint: "拖到目标位置松手" }, () => this.measureBlockRects());
+      if (epoch !== this.dragEpoch) {
+        return;
+      }
+      /* 先量后挂：测量必须在**没有 transform** 的时候做，被拖块的 1.06 放大
+       * 会进矩形，命中范围就偏了。 */
+      this.measureBlockRects(() => {
+        if (epoch !== this.dragEpoch) {
+          return;
+        }
+        this.dragFrom = index;
+        this.dragTo = index;
+        this.dragFollow = 0;
+        this.dragOutside = false;
+        this.timelineIndex = index;
+        this.renderTimeline({ stepHint: "拖到目标位置松手" });
+      });
     }, LONG_PRESS_MS);
   },
 
-  /** 量所有时间轴块的屏幕矩形（拖动落点换算的基准）。 */
-  measureBlockRects(): void {
+  /** 量所有时间轴块的屏幕矩形（拖动落点换算的基准）；量完回调。 */
+  measureBlockRects(done?: () => void): void {
     wx.createSelectorQuery()
       .selectAll(".timeline-block")
       .boundingClientRect((rects) => {
@@ -1515,48 +1606,61 @@ Page({
           const box = rect as WechatMiniprogram.BoundingClientRectCallbackResult;
           return { left: box.left, right: box.right };
         });
+        done?.();
       })
       .exec();
   },
 
-  /** 拖动中：把指尖坐标命中到某个块（只是预览，顺序还没改）。 */
+  /**
+   * 拖动中：被拖块跟手指走，落点预览跟着变（顺序还没提交）。
+   *
+   * 位移量与落点全部交给纯函数（`dragFollowOffset` / `dragTargetAtRects`），
+   * 页面只搬运数字——「看到的位移」和「实际的落点」因此不会成为两套真相。
+   */
   onStepTouchMove(e: WechatMiniprogram.TouchEvent) {
-    if (this.dragFrom < 0) {
-      return;
-    }
     const touch = firstTouch(e);
     if (touch === null) {
       return;
     }
-    /* 用拖动开始时量到的块屏幕矩形做命中：屏幕坐标直比，不受 1px 取整影响。 */
-    const target = blockIndexAtRects(this.blockRects, touch.clientX);
-    if (target < 0 || target === this.dragTo) {
+    /* 还没长按到点：手指在动就把零点跟着挪，抬起那一刻不会跳。 */
+    if (this.dragFrom < 0) {
+      this.dragStartX = touch.clientX;
       return;
     }
-    this.dragTo = target;
-    this.renderTimeline();
-  },
-
-  /** 拖动落点命中：指尖坐标 → 块下标（屏幕坐标直比，不受取整影响）。 */
-  dropIndexAt(clientX: number): number {
-    return blockIndexAtRects(this.blockRects, clientX);
+    const follow = dragFollowOffset(this.dragStartX, touch.clientX, this.blockRects, this.dragFrom);
+    const target = dragTargetAtRects(this.blockRects, touch.clientX);
+    /* 拖出时间轴 = 取消：不给让位预览，也不高亮落点（松手后原地回弹）。 */
+    const nextTo = target.outside || target.index < 0 ? this.dragFrom : target.index;
+    const followChanged = Math.round(follow * 2) !== Math.round(this.dragFollow * 2);
+    const targetChanged = nextTo !== this.dragTo;
+    const outsideChanged = target.outside !== this.dragOutside;
+    if (!followChanged && !targetChanged && !outsideChanged) {
+      return;
+    }
+    this.dragFollow = follow;
+    this.dragTo = nextTo;
+    this.dragOutside = target.outside;
+    /* 只重画块：光区轴与效果面板在拖动中没变，不必跟着重算（跟手更顺）。 */
+    this.renderDragBlocks();
   },
 
   onStepTouchEnd() {
     this.clearLongPress();
     const from = this.dragFrom;
     const to = this.dragTo;
+    const outside = this.dragOutside;
     /* 定时器没到点就没有进入拖动：这次触摸只是「按住了一下」，不改顺序。
      * 拖过（无论有没有真的换位置）都要让随后的 tap 闭嘴。 */
     const dragged = from >= 0;
-    this.dragFrom = -1;
-    this.dragTo = -1;
+    /* 触摸已经结束：清状态并作废任何还在路上的长按回调。 */
+    this.resetDragState();
     if (!dragged) {
       return;
     }
-    this.dragTapUntil = Date.now() + 300;
-    if (to < 0 || from === to) {
-      this.renderTimeline({ stepHint: "" });
+    this.dragTapUntil = dragTapSuppressUntil(Date.now());
+    /* 拖到自身位置或拖出时间轴：不产生顺序变化，块正常回弹。 */
+    if (to < 0 || from === to || outside) {
+      this.renderTimeline({ stepHint: outside ? "拖出时间轴，已取消" : "" });
       return;
     }
     const draft = this.currentDraft();
@@ -1569,19 +1673,43 @@ Page({
     const selected = selectionAfterMove(this.timelineIndex, from, to);
     this.setDraft(moved);
     this.timelineIndex = selected;
-    this.renderTimeline({
-      stepHint: `已把第 ${from + 1} 个步骤挪到第 ${to + 1} 位`,
-    });
+    /*
+     * 提交重排的那一帧不要过渡（`timelineSettling`）：块的 key 是下标，重排后
+     * 同一个节点会换成别的内容；让内联 transform 从「跟手位置」过渡回原位，
+     * 会看到一块已经换过内容的块（幽灵）飞回去。这一帧直接落位，下一帧再把
+     * 过渡还回来——松手后看到的就是「顺序已经变了，块都在最终位置」。
+     *
+     * 取消（拖回原位 / 拖出时间轴）不走这里：那种情况节点内容没换，150ms 的
+     * 过渡正是「回弹」本身。
+     */
+    this.renderTimeline(
+      { stepHint: `已把第 ${from + 1} 个步骤挪到第 ${to + 1} 位`, timelineSettling: true },
+      () => this.setData({ timelineSettling: false }),
+    );
   },
 
   onStepTouchCancel() {
     this.clearLongPress();
     if (this.dragFrom >= 0) {
-      this.dragTapUntil = Date.now() + 300;
+      this.dragTapUntil = dragTapSuppressUntil(Date.now());
     }
+    this.resetDragState();
+    this.renderTimeline();
+  },
+
+  /**
+   * 清空拖动状态（抬指 / 取消 / 页面隐藏都走这里）。
+   *
+   * 单独一个方法是为了不漏字段：漏掉 `dragFollow` 会让块停在半路；同时自增
+   * `dragEpoch`——还在路上的「长按 → 量矩形 → 挂拖动」回调据此作废，否则会
+   * 留下一个「幽灵拖动」，下次移动凭空拖起一块。
+   */
+  resetDragState() {
+    this.dragEpoch += 1;
     this.dragFrom = -1;
     this.dragTo = -1;
-    this.renderTimeline();
+    this.dragFollow = 0;
+    this.dragOutside = false;
   },
 
   clearLongPress() {

@@ -59,8 +59,17 @@ export const MIN_BLOCK_PX = 24;
 export const BLOCK_GAP_PX = 8;
 /** 放不下时收缩到的间隙（px）。 */
 export const COMPACT_BLOCK_GAP_PX = 4;
-/** 长按进入拖动状态的阈值（毫秒）。 */
-export const LONG_PRESS_MS = 380;
+/**
+ * 长按进入拖动状态的阈值（毫秒）。
+ *
+ * 300ms：够短，按住就有反应；又长于一次普通点击的按下时长，不会与「点一下
+ * 选中」抢事件（#82 从 380ms 收紧）。
+ */
+export const LONG_PRESS_MS = 300;
+/** 被拖的块抬起的放大倍数（#82）。 */
+export const DRAG_LIFT_SCALE = 1.06;
+/** 拖动结束后抑制紧随其后那次 tap 的时长（毫秒）。 */
+export const DRAG_TAP_SUPPRESS_MS = 300;
 /** 块窄到这个宽度以下就不画时长文字（会溢出到邻块上）。 */
 export const LABEL_MIN_PX = 48;
 /** 时长条的三个刻度（下方文字用）。 */
@@ -280,6 +289,21 @@ export interface TimelineBlockView {
   dragging: boolean;
   /** 拖动时的落点（松手后会排到这里）。 */
   dropTarget: boolean;
+  /**
+   * 拖动中的横向位移（px）；0 = 不动。
+   *
+   * 由 `dragOffsetFor` 算出：被拖的块跟手指走，原位置与落点之间的块挪到
+   * 「重排后它该在的位置」让出插槽（等宽时正好是一个块宽）。纯函数是唯一
+   * 真相——页面不复算。
+   */
+  dragOffsetPx: number;
+  /**
+   * 直接塞进 style 的位移串（`transform: …`）；没在拖动时为空串。
+   *
+   * 被拖的块在这里带上抬起放大，因为**内联 transform 会覆盖 CSS 类里的
+   * transform**——放大和跟手必须是同一条 transform，否则松开手会跳。
+   */
+  dragStyle: string;
   /** 这么窄就别画时长文字了。 */
   showLabel: boolean;
 }
@@ -297,6 +321,12 @@ export interface LayoutOptions {
   dragIndex?: number;
   /** 拖动落点的下标；-1 = 没有。 */
   dropIndex?: number;
+  /**
+   * 被拖块「跟手指走」的横向位移（px）；由 `dragFollowOffset` 算出。
+   *
+   * 页面只把指尖坐标交给纯函数、再把结果原样传回来——不复算位移规则。
+   */
+  followPx?: number;
   /** 当前灯组的灯珠数（画色带用）。 */
   ledCount?: number;
 }
@@ -448,12 +478,23 @@ export function layoutBlocks(
   const dragIndex = options.dragIndex ?? -1;
   const dropIndex = options.dropIndex ?? -1;
   const ledCount = options.ledCount ?? 0;
+  /*
+   * 拖动是「这是一次拖动」而不是「容器量到了」：抬起（放大 / 投影 / 层级）
+   * 只要在拖就该有；位移则需要像素宽度，没测量时一律 0（首帧不该有拖动）。
+   */
+  const draggingActive = dragIndex >= 0 && dropIndex >= 0;
+  const offsets =
+    measured && draggingActive ? dragOffsetFor(dragIndex, dropIndex, widths, gapPx) : widths.map(() => 0);
+  /* 跟手位移由页面从纯函数拿来；没给就是 0（原地抬起）。 */
+  const followPx = Number.isFinite(options.followPx) ? (options.followPx as number) : 0;
 
   return steps.map((step, index) => {
     const durationMs = durations[index];
     const widthPx = widths[index];
     const weight = measured ? widthPx : durationMs;
     const idealPx = measured && totalDuration > 0 ? (available * durationMs) / totalDuration : 0;
+    const offsetPx = offsets[index];
+    const dragging = index === dragIndex;
     return {
       index,
       key: `step-${index}`,
@@ -467,8 +508,29 @@ export function layoutBlocks(
       style: flexStyle(weight, measured),
       bands: thumbBands(step.zones, ledCount),
       selected: index === selected,
-      dragging: index === dragIndex,
-      dropTarget: dropIndex >= 0 && index === dropIndex,
+      dragging,
+      /*
+       * 落点高亮只给「会被挤开的那一块」：被拖块本身不标落点，否则两层阴影
+       * 打架（抬起投影会被描边覆盖，看起来像没抬起来）。原地拖动（`from ===
+       * to`）没有落点，什么都不高亮。
+       */
+      dropTarget: dropIndex >= 0 && dropIndex !== dragIndex && index === dropIndex,
+      dragOffsetPx: offsetPx,
+      /*
+       * 被拖的块抬起来并跟手（内联 translateX + scale）；让位的块只平移；
+       * 其余为空串。没在拖动时全是空串，交给 CSS 的回弹过渡。
+       *
+       * 放大必须写在**同一条内联 transform** 里：内联 transform 覆盖 CSS 类
+       * 的 transform，拆成两处会让放大在拖动中丢掉、松手又突然出现。
+       */
+      dragStyle:
+        !draggingActive
+          ? ""
+          : dragging
+            ? dragStyleOf(followPx, true)
+            : offsetPx === 0
+              ? ""
+              : dragStyleOf(offsetPx, false),
       showLabel: !measured || widthPx >= LABEL_MIN_PX,
     };
   });
@@ -533,6 +595,164 @@ export function blockIndexAtRects(rects: readonly BlockRect[], x: number): numbe
     }
   }
   return fallback;
+}
+
+/* ---------------- 拖动的物理反馈（#82） ---------------- */
+
+/**
+ * 拖动时每一块该平移多少像素（纯函数，页面不复算）。
+ *
+ * ## 语义
+ *
+ * 「`fromIndex` 那一块正被拖向 `toIndex`」时的**让位**：
+ *
+ *  - 被拖的块位移为 0 —— 它跟手指走（`dragFollowOffset`），落点由让位的块
+ *    表达；把跟手和让位叠加到同一块上会变成双倍位移；
+ *  - 原位置与落点**之间**的块挪到「重排后它该在的位置」，让出插槽；
+ *  - 落点之外（`from` 与 `to` 的另一侧）的块不动；
+ *  - `from === to`、越界、非整数下标：一律 0（块原地不动，松手回弹）。
+ *
+ * ## 为什么按「重排后的真实位置」算，而不是按固定一格
+ *
+ * 块宽按时长比例分配，**各块不等宽**。若所有让位的块都平移「被拖块宽 +
+ * 间隙」，只有等宽时才对齐；不等宽时动画结束的位置与松手后的布局会差几像素
+ * 到几十像素，看起来像「松手后跳了一下」。所以这里先排出重排后的顺序，再
+ * 逐块算「目标 x − 当前 x」——**等宽时它就等于一个块宽**（票面的说法），
+ * 不等宽时也精确对齐。这样「看到的位移」和「实际的落点」才是同一份真相。
+ *
+ * ## 边界
+ *
+ * `from === to`、越界、非整数下标、空列表时全部返回 0：拖回原位不该有任何
+ * 让位，块正常回弹。
+ *
+ * 调用方只需要把返回值直接写成 `translateX(<n>px)`，不需要知道方向规则。
+ */
+export function dragOffsetFor(
+  fromIndex: number,
+  toIndex: number,
+  widths: readonly number[],
+  gapPx: number = BLOCK_GAP_PX,
+): number[] {
+  const count = widths.length;
+  const offsets = widths.map(() => 0);
+  if (
+    count === 0 ||
+    !Number.isInteger(fromIndex) ||
+    !Number.isInteger(toIndex) ||
+    fromIndex < 0 ||
+    toIndex < 0 ||
+    fromIndex >= count ||
+    toIndex >= count ||
+    fromIndex === toIndex
+  ) {
+    return offsets;
+  }
+  const gap = Number.isFinite(gapPx) ? Math.max(0, gapPx) : 0;
+  const w = widths.map((width) => (Number.isFinite(width) ? Math.max(0, width) : 0));
+  /* 当前每个块的行内起点。 */
+  const positions: number[] = [];
+  let cursor = 0;
+  for (let index = 0; index < count; index += 1) {
+    positions.push(cursor);
+    cursor += w[index] + gap;
+  }
+  /* 重排后的顺序（与 `moveBlock` / `moveStepStage` 同一语义）。 */
+  const order: number[] = [];
+  for (let index = 0; index < count; index += 1) {
+    if (index !== fromIndex) {
+      order.push(index);
+    }
+  }
+  order.splice(toIndex, 0, fromIndex);
+  /* 每个块在重排后队列里的起点。 */
+  let finalCursor = 0;
+  for (const block of order) {
+    offsets[block] = finalCursor - positions[block];
+    finalCursor += w[block] + gap;
+  }
+  /* 被拖的块跟手指走，不吃让位位移。 */
+  offsets[fromIndex] = 0;
+  return offsets;
+}
+
+/** 位移串：`transform: translateX(3.5px) scale(1.06);`；对齐到 0.1px 避免抖。 */
+export function dragStyleOf(offsetPx: number, lifted: boolean): string {
+  const value = Math.round((Number.isFinite(offsetPx) ? offsetPx : 0) * 10) / 10;
+  const scale = lifted ? ` scale(${DRAG_LIFT_SCALE})` : "";
+  return `transform: translateX(${value}px)${scale};`;
+}
+
+/**
+ * 被拖的块「跟手指走」时的横向位移（纯函数）。
+ *
+ * `startX` 是进入拖动那一刻的指尖横坐标，`currentX` 是当前指尖横坐标，
+ * `rects` 是拖动开始时量到的块矩形。结果被钳在行内：块不能跟着手指滑出
+ * 时间轴（行外就算「拖出边界」，见 `dragTargetAtRects`），否则块会跑到卡片外
+ * 把 `overflow` 撑出滚动条。
+ *
+ * 没测量（矩形缺失 / 下标越界）时返回 0：宁可不动，也不跳到某个猜出来的位置。
+ */
+export function dragFollowOffset(
+  startX: number,
+  currentX: number,
+  rects: readonly BlockRect[],
+  fromIndex: number,
+): number {
+  if (!Number.isFinite(startX) || !Number.isFinite(currentX)) {
+    return 0;
+  }
+  const rect = rects[fromIndex];
+  if (rect === undefined || rects.length === 0) {
+    return 0;
+  }
+  const width = Math.max(0, rect.right - rect.left);
+  const rowLeft = rects[0].left;
+  const rowRight = rects[rects.length - 1].right;
+  const wanted = currentX - startX;
+  /* 块整体留在行内：左不过行首，右不过行尾。 */
+  const min = rowLeft - rect.left;
+  const max = rowRight - (rect.left + width);
+  return Math.max(min, Math.min(max, wanted));
+}
+
+/**
+ * 拖动中的命中结果：预览用的下标 + 是否已经拖出时间轴。
+ *
+ * `blockIndexAtRects` 把行外钳到首 / 末块（选中手感更顺），拖动重排却要区分：
+ * 拖出时间轴再松手应当**取消**，否则块会莫名跳到第一 / 最后一位。所以这里
+ * 一次给出两件事——`index` 永远是可用的预览落点，`outside` 决定松手是否提交。
+ */
+export interface DragTarget {
+  /** 预览落点（行外钳到首 / 末块，无矩形时 -1）。 */
+  index: number;
+  /** 指尖已经在时间轴行外（松手不提交）。 */
+  outside: boolean;
+}
+
+/** 指尖坐标 → 拖动命中（预览落点 + 是否出界）。 */
+export function dragTargetAtRects(rects: readonly BlockRect[], x: number): DragTarget {
+  if (rects.length === 0 || !Number.isFinite(x)) {
+    return { index: -1, outside: true };
+  }
+  const left = rects[0].left;
+  const right = rects[rects.length - 1].right;
+  return { index: blockIndexAtRects(rects, x), outside: x < left || x > right };
+}
+
+/**
+ * 拖动结束时「吞掉紧随其后的 tap」到什么时候为止（纯函数，时间戳自愈）。
+ *
+ * 手指抬起会补发一次 `tap`；不吞掉它，`onStepTap` 会把选中改成被拖块落点的
+ * 那块，顺序看起来「跳了一下」。用时间戳而不是布尔量：窗口一过自动恢复，
+ * 不会把整条时间轴永久点死。
+ */
+export function dragTapSuppressUntil(now: number): number {
+  return Number.isFinite(now) ? now + DRAG_TAP_SUPPRESS_MS : 0;
+}
+
+/** 这一次点击是否落在「拖动刚结束」的抑制窗口里。 */
+export function tapSuppressedAt(now: number, suppressUntil: number): boolean {
+  return Number.isFinite(now) && Number.isFinite(suppressUntil) && now < suppressUntil;
 }
 
 /* ---------------- 增删与重排 ---------------- */

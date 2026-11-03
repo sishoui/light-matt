@@ -155,13 +155,17 @@
         每个步骤一个块，宽度按时长比例分配；点选、长按后横向拖动重排。
         行宽恒等于容器宽（#76）：八块时靠最小宽度 + 间隙降级 + 均分兜底，
         永不横向滚动，所以这里没有 scroll-view。
+
+        `item.dragStyle` 是拖动位移（内联 transform）：被拖的块跟手指走并抬起，
+        原位置到落点之间的块让出一格。位移量与落点都由 timeline.ts 的纯函数
+        算出，页面不做算术（#82）。
       -->
-      <view class="timeline-row {{timelineCompact ? 'compact' : ''}}">
+      <view class="timeline-row {{timelineCompact ? 'compact' : ''}} {{timelineSettling ? 'settling' : ''}}">
         <view
           wx:for="{{steps}}"
           wx:key="key"
           class="timeline-block {{item.selected ? 'selected' : ''}} {{item.dragging ? 'dragging' : ''}} {{item.dropTarget ? 'drop-target' : ''}}"
-          style="{{item.style}}"
+          style="{{item.style}}{{item.dragStyle}}"
           data-index="{{item.index}}"
           bindtap="onStepTap"
           bindtouchstart="onStepTouchStart"
