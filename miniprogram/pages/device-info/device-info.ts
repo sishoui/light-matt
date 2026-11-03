@@ -17,7 +17,6 @@ import { errorText, resultText } from "../../utils/ble/errors";
 import { createWxStorage } from "../../utils/control/device-cache";
 import {
   loadRegistry,
-  removeDevice,
   setRemark,
   setStripEnabled,
   type DeviceRegistry,
@@ -35,14 +34,12 @@ import {
   sumStripLeds,
 } from "../../utils/control/led-count-plan";
 import { ledCountResultHint } from "../../utils/control/ledCount";
-import {
-  clearPlanDraftsForDevice,
-  loadPlanDrafts,
-  savePlanDraft,
-} from "../../utils/control/plan-drafts";
+import { loadPlanDrafts, savePlanDraft } from "../../utils/control/plan-drafts";
+import { deleteDeviceFully } from "../../utils/control/delete-device";
 import { ControlSession } from "../../utils/control/session";
 import { getSession } from "../../utils/control/session-singleton";
 import { pageThemeData } from "../../utils/control/page-theme";
+import { resolveStripMeta } from "../../utils/control/strip-meta";
 import { zonesFromReports } from "../../utils/control/zone-editor";
 import { MAX_LEDS, MIN_LEDS, MAX_STRIPS } from "../../utils/protocol/constants";
 import type { DeviceInfo, DeviceState, SegmentSpec, StripConfig } from "../../utils/protocol/types";
@@ -185,9 +182,18 @@ Page({
       /* 拖动中的本地值优先：State 是 20Hz 的，跟着它走会让滑块在手指下跳。
        * 松手提交后 `ledDrafts` 清空，这里自然回到设备权威值。 */
       const draft = this.ledDrafts[stripId];
+      /* #94：设备信息页与设备页、灯组页读**同一个来源**的灯组名。 */
+      const meta =
+        this.data.deviceId.length > 0
+          ? resolveStripMeta(
+              createWxStorage(),
+              this.draftKeyOfDevice(),
+              stripId,
+            )
+          : null;
       stripRows.push({
         stripId,
-        label: `灯组 ${stripId + 1}`,
+        label: meta?.name ?? `灯组 ${stripId + 1}`,
         /* 逐带真实值：设备 State，不复制 strip 0。 */
         ledCount: draft ?? deviceCount,
         gpioText,
@@ -645,25 +651,23 @@ Page({
     }
     const confirmed = await showConfirm(
       "删除这台设备？",
-      "只解除本机与后端的登记关系，设备上的灯光配置不受影响；重新扫描仍能连上。",
+      "本机会断开连接、清掉登记与封面；设备上的灯光配置不受影响，重新扫描仍能连上。",
     );
     if (!confirmed) {
       return;
     }
     this.setData({ deleteBusy: true });
     try {
-      const hardwareId = this.hardwareIdOf(deviceId) ?? undefined;
+      const hardwareId = this.hardwareIdOf(deviceId) ?? "";
       const backendId =
         this.registry?.devices.find((item) => item.deviceId === deviceId)?.backendId ?? null;
-      removeDevice(createWxStorage(), deviceId);
-      this.session?.forgetRecent(deviceId, hardwareId);
-      /* 方案草稿是本机数据，**只在这里清**：断线 / 切页都不清（那是「内容只
-       * 存在本机」这句承诺的另一半）。键可能是 hardwareId 或 deviceId，两个都清。 */
-      const storage = createWxStorage();
-      if (hardwareId !== undefined) {
-        clearPlanDraftsForDevice(storage, hardwareId);
-      }
-      clearPlanDraftsForDevice(storage, deviceId);
+      /* 删除是**一组动作**（#91）：与「我的」页走同一个实现，语义只有一份。 */
+      await deleteDeviceFully({
+        storage: createWxStorage(),
+        deviceId,
+        hardwareId,
+        session: this.session,
+      });
       this.reloadRegistry();
       this.setData({ remarkInput: "", hint: "已删除本机记录" });
       /* 后端只解除关联：设备行保留，重新扫描仍可登记。 */

@@ -1,9 +1,9 @@
 <view class="page {{themeClass}}">
   <nav-bar
     title="{{deviceName}}"
-    subtitle="{{deviceId}}"
+    subtitle="{{navSubtitle}}"
     back="{{true}}"
-    action-text="菜单"
+    action-text="⋯"
     bind:action="onMenuTap"
   />
 
@@ -16,10 +16,6 @@
     catchtouchmove="onMenuNoop"
   ></view>
   <view wx:if="{{menuOpen}}" class="menu-panel" style="top: {{menuTop}}px;">
-    <view class="menu-item" bindtap="onMenuDiscover" hover-class="menu-item-hover">
-      <text class="menu-item-label">添加设备</text>
-      <text class="menu-item-sub">扫描附近</text>
-    </view>
     <view class="menu-item" bindtap="onMenuDeviceInfo" hover-class="menu-item-hover">
       <text class="menu-item-label">设备信息</text>
       <text class="menu-item-sub">固件 · 灯珠数 · 自检</text>
@@ -40,17 +36,16 @@
     <text class="notice-action">重试</text>
   </view>
 
-  <!-- 连接状态条（文案由 status-view 派生；可重试时点它重连） -->
-  <view class="statusbar {{linkClass}}" bindtap="onRetryConnect">
-    <view class="status-dot"></view>
-    <view class="status-main">
-      <text class="status-text">{{statusText}}</text>
-      <text class="status-sub">{{statusSub}}</text>
-    </view>
-    <text
-      wx:if="{{!ready && !connectBusy && (linkClass === 'link-idle' || linkClass === 'link-error')}}"
-      class="status-action"
-    >重连</text>
+  <!-- #94：不再有整条状态栏。连接状态已收进导航栏副标题；
+       未连接时下方给一行可点的重试提示（点它重连）。 -->
+  <view
+    wx:if="{{!ready && !connectBusy}}"
+    class="retry-strip {{linkClass}}"
+    bindtap="onRetryConnect"
+    hover-class="retry-strip-hover"
+  >
+    <text class="retry-text">{{statusText}}</text>
+    <text class="retry-action">重连</text>
   </view>
 
   <!-- ---------------- 设备级：总开关 + 整台设备的亮度 ---------------- -->
@@ -96,34 +91,38 @@
       <text class="section-value">{{stripCards.length}} 组</text>
     </view>
 
-    <view wx:if="{{stripCards.length > 0}}" class="strip-grid {{ready ? '' : 'disabled'}}">
+    <!-- #94：一列排布，左封面 / 中名称与灯珠数 / 右开关。长按弹出改名与换封面。 -->
+    <view wx:if="{{stripCards.length > 0}}" class="strip-list {{ready ? '' : 'disabled'}}">
       <view
         wx:for="{{stripCards}}"
         wx:key="stripId"
-        class="strip-card {{item.on ? '' : 'off'}}"
+        class="strip-row {{item.on ? '' : 'off'}}"
         data-strip-id="{{item.stripId}}"
         bindtap="onStripCardTap"
-        hover-class="strip-card-hover"
+        bindlongpress="onStripCardLongPress"
+        hover-class="strip-row-hover"
       >
-        <view class="strip-card-head">
-          <text class="strip-card-title">{{item.label}}</text>
-          <view wx:if="{{item.animating}}" class="strip-anim-dot"></view>
-        </view>
-        <text class="strip-card-leds">{{item.ledCount}} 灯</text>
-        <text class="strip-card-summary">{{item.summary}}</text>
-        <view class="strip-card-foot">
-          <!-- catchtap 拦住冒泡：点开关不能顺带进灯组页。
-               开关自己的状态变化走 bindchange（change 与 tap 是两条独立事件）。 -->
-          <view class="strip-switch" catchtap="onStripSwitchBlock">
-            <switch
-              checked="{{item.on}}"
-              color="{{accentColor}}"
-              disabled="{{!ready || item.busy}}"
-              data-strip-id="{{item.stripId}}"
-              bindchange="onStripPowerChange"
-            />
+        <image wx:if="{{item.photo}}" class="strip-cover" src="{{item.photo}}" mode="aspectFill" />
+        <view wx:else class="strip-cover strip-cover-fallback"></view>
+
+        <view class="strip-row-main">
+          <view class="strip-row-title-line">
+            <text class="strip-row-title">{{item.label}}</text>
+            <view wx:if="{{item.animating}}" class="strip-anim-dot"></view>
           </view>
-          <view class="link-chevron"></view>
+          <text class="strip-row-meta">{{item.ledCount}} 颗 · {{item.summary}}</text>
+        </view>
+
+        <!-- catchtap 拦住冒泡：点开关不能顺带进灯组页。
+             开关自己的状态变化走 bindchange（change 与 tap 是两条独立事件）。 -->
+        <view class="strip-switch" catchtap="onStripSwitchBlock">
+          <switch
+            checked="{{item.on}}"
+            color="{{accentColor}}"
+            disabled="{{!ready || item.busy}}"
+            data-strip-id="{{item.stripId}}"
+            bindchange="onStripPowerChange"
+          />
         </view>
       </view>
     </view>
@@ -132,7 +131,7 @@
       {{ready ? '没有可见的灯组' : '连接后显示灯组'}}
     </text>
     <text wx:if="{{ready && stripCards.length > 0}}" class="section-hint">
-      点卡片进入灯组编辑；右边的开关只影响这一组
+      点卡片进入灯组编辑，长按可改名或换封面；右边的开关只影响这一组
     </text>
   </view>
 
@@ -169,5 +168,32 @@
 
   <view class="footer">
     <text class="footer-hint">开关与灯控状态以灯控为准{{mock ? '（演示模式）' : ''}}</text>
+  </view>
+
+  <!-- ============ 灯组长按菜单（#94） ============ -->
+  <view wx:if="{{stripMenuOpen}}" class="menu-mask sheet-mask" bindtap="onStripMenuClose"></view>
+  <view wx:if="{{stripMenuOpen}}" class="sheet">
+    <view class="sheet-grabber"></view>
+    <view class="sheet-head">
+      <text class="sheet-title">{{stripMenuName}}</text>
+      <text class="sheet-sub">灯组动作</text>
+    </view>
+    <view class="sheet-item" bindtap="onStripMenuRename" hover-class="sheet-item-hover">
+      <text class="sheet-item-label">修改名称</text>
+      <text class="sheet-item-sub">{{stripMenuName}}</text>
+    </view>
+    <view class="sheet-item" bindtap="onStripMenuPickPhoto" hover-class="sheet-item-hover">
+      <text class="sheet-item-label">更换封面</text>
+      <text class="sheet-item-sub">从相册选择</text>
+    </view>
+    <view
+      class="sheet-item {{stripMenuPhotoIsCustom ? '' : 'disabled'}}"
+      bindtap="onStripMenuClearPhoto"
+      hover-class="{{stripMenuPhotoIsCustom ? 'sheet-item-hover' : 'none'}}"
+    >
+      <text class="sheet-item-label">移除封面</text>
+      <text class="sheet-item-sub">{{stripMenuPhotoIsCustom ? '恢复默认占位图' : '当前是默认封面'}}</text>
+    </view>
+    <view class="sheet-cancel" bindtap="onStripMenuClose">取消</view>
   </view>
 </view>

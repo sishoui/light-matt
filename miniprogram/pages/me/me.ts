@@ -26,17 +26,13 @@ import { errorText } from "../../utils/ble/errors";
 import type { LogPanelRow } from "../../utils/ble/log-panel";
 import { createWxStorage } from "../../utils/control/device-cache";
 import { buildMyDevices } from "../../utils/control/device-list";
-import {
-  loadRegistry,
-  removeDevice,
-  type DeviceRegistry,
-} from "../../utils/control/device-registry";
+import { loadRegistry, type DeviceRegistry } from "../../utils/control/device-registry";
 import { getDeviceApi } from "../../utils/control/device-api-singleton";
 import { DeviceSync, syncApiOf } from "../../utils/control/device-sync";
 import { formatWhen } from "../../utils/control/home-view";
 import { LogPanelView } from "../../utils/control/log-panel-view";
 import { setMockMode } from "../../utils/control/mock-mode";
-import { clearPlanDraftsForDevice } from "../../utils/control/plan-drafts";
+import { deleteDeviceFully } from "../../utils/control/delete-device";
 import {
   DEFAULT_NICKNAME,
   loadProfile,
@@ -374,7 +370,7 @@ Page({
     }
     const confirmed = await showConfirm(
       "删除这台设备？",
-      "只解除本机与后端的登记关系，设备上的灯光配置不受影响；重新扫描仍能连上。",
+      "本机会断开连接、清掉登记与封面；设备上的灯光配置不受影响，重新扫描仍能连上。",
     );
     if (!confirmed) {
       return;
@@ -382,28 +378,21 @@ Page({
     /* 后端 id 必须在删本地记录之前取：删完就查不到了。 */
     const backendId =
       this.registry?.devices.find((item) => item.deviceId === row.deviceId)?.backendId ?? null;
-
-    /* 先本地：删除后列表立刻不再显示它（列表的数据源包含「最近连过」，
-     * 只删登记表不够）。 */
     try {
-      const hardwareId = row.hardwareId.length > 0 ? row.hardwareId : undefined;
-      if (row.deviceId.length > 0) {
-        this.registry = removeDevice(createWxStorage(), row.deviceId);
-      }
-      this.session?.forgetRecent(row.deviceId, hardwareId);
-      /* 方案草稿是本机数据，**只在这里清**：断线 / 切页都不清（那是「内容只
-       * 存在本机」这句承诺的另一半）。键可能是 hardwareId 或 deviceId，两个都清。 */
-      const storage = createWxStorage();
-      if (hardwareId !== undefined) {
-        clearPlanDraftsForDevice(storage, hardwareId);
-      }
-      if (row.deviceId.length > 0) {
-        clearPlanDraftsForDevice(storage, row.deviceId);
-      }
+      /* 删除是**一组动作**（#91）：断开 / 清上次设备 / 清最近 / 清登记 /
+       * 清草稿 / 清灯组元数据 / 清封面 / 记演示删除标记。缺任何一步都会
+       * 留下「删了但还在」的痕迹。 */
+      await deleteDeviceFully({
+        storage: createWxStorage(),
+        deviceId: row.deviceId,
+        hardwareId: row.hardwareId.length > 0 ? row.hardwareId : "",
+        session: this.session,
+      });
     } catch (err) {
       wx.showToast({ title: errorText(err), icon: "none" });
       return;
     }
+    this.registry = this.loadRegistry();
     this.refreshDevices();
 
     /* 同步是旁路：失败只意味着下次拉列表它又出现（后端还在）。 */

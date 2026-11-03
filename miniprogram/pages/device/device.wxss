@@ -61,50 +61,76 @@
   border-top: 1rpx solid var(--divider);
 }
 
-/* ---------------- 灯组两列卡片 ---------------- */
-
-.strip-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+/* ---------------- 灯组一列卡片（#94） ----------------
+ *
+ * 左封面 / 中名称与灯珠数 / 右开关。封面没有时用占位图（按灯组号固定分配）。
+ */
+.strip-list {
+  display: flex;
+  flex-direction: column;
   gap: 16rpx;
 }
 
-.strip-grid.disabled {
+.strip-list.disabled {
   opacity: 0.45;
   pointer-events: none;
 }
 
-.strip-card {
+.strip-row {
   display: flex;
-  flex-direction: column;
-  gap: 8rpx;
-  padding: 20rpx;
+  flex-direction: row;
+  align-items: center;
+  gap: 20rpx;
+  padding: 18rpx;
   border-radius: var(--radius-md);
   background: var(--card-2);
   box-shadow: inset 0 0 0 1rpx var(--border);
   transition: background 160ms ease;
 }
 
-.strip-card-hover {
+.strip-row-hover {
   background: var(--card-press);
 }
 
 /* 这一组关着：整体压暗，但文字仍要能读（要看得到灯珠数与效果）。 */
-.strip-card.off {
+.strip-row.off {
   opacity: 0.6;
 }
 
-.strip-card-head {
+.strip-cover {
+  width: 104rpx;
+  height: 104rpx;
+  border-radius: 14rpx;
+  flex-shrink: 0;
+  background: var(--card-press);
+}
+
+.strip-cover-fallback {
+  background: var(--accent-soft);
+}
+
+.strip-row-main {
+  flex: 1;
+  min-width: 0;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
   gap: 8rpx;
 }
 
-.strip-card-title {
-  font-size: 27rpx;
+.strip-row-title-line {
+  display: flex;
+  align-items: center;
+  gap: 10rpx;
+  min-width: 0;
+}
+
+.strip-row-title {
+  font-size: 29rpx;
   font-weight: 600;
   color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 动画提示点：只作显示（协议 §9.1 明确它不能当正确性依据）。 */
@@ -116,29 +142,15 @@
   flex-shrink: 0;
 }
 
-.strip-card-leds {
-  font-size: 21rpx;
-  color: var(--text-2);
-}
-
-.strip-card-summary {
+.strip-row-meta {
   font-size: 22rpx;
-  color: var(--text);
+  color: var(--text-2);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.strip-card-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8rpx;
-  padding-top: 8rpx;
-  border-top: 1rpx solid var(--divider);
-}
-
-/* 开关在卡片内右对齐；缩放一点避免挤掉文字。 */
+/* 开关在一行内右对齐；缩放一点避免挤掉文字。 */
 .strip-switch {
   display: flex;
   align-items: center;
@@ -288,4 +300,145 @@
 
 .menu-item.disabled .menu-item-label {
   color: var(--text-3);
+}
+
+/* ---------------- 未连接时的重试提示（#94） ----------------
+ *
+ * 不再是一整条状态栏：连接状态在导航栏副标题里，这里只在未连接时给
+ * 一行可点的重试入口。
+ */
+.retry-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+  padding: 18rpx 24rpx;
+  border-radius: var(--radius-md);
+  background: var(--card);
+  border: 1rpx solid var(--border);
+}
+
+.retry-strip-hover {
+  background: var(--card-press);
+}
+
+.retry-text {
+  font-size: 25rpx;
+  color: var(--text-2);
+}
+
+.retry-action {
+  font-size: 25rpx;
+  font-weight: 500;
+  color: var(--accent);
+}
+
+/* ---------------- 底部弹层（灯组长按菜单，#94） ---------------- */
+
+.sheet-mask {
+  z-index: 118;
+  background: rgba(0, 0, 0, 0.42);
+}
+
+.sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 120;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  padding: 16rpx 32rpx calc(32rpx + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+  box-sizing: border-box;
+  animation: device-sheet-rise 180ms ease-out;
+}
+
+@keyframes device-sheet-rise {
+  from {
+    transform: translateY(24rpx);
+    opacity: 0.6;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.sheet-grabber {
+  width: 72rpx;
+  height: 8rpx;
+  border-radius: 4rpx;
+  background: var(--card-press);
+  align-self: center;
+  margin-bottom: 8rpx;
+}
+
+.sheet-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+  padding: 8rpx 8rpx 16rpx;
+  border-bottom: 1rpx solid var(--divider);
+  margin-bottom: 8rpx;
+}
+
+.sheet-title {
+  font-size: 34rpx;
+  font-weight: 700;
+  letter-spacing: -0.3rpx;
+  color: var(--text);
+}
+
+.sheet-sub {
+  font-size: 22rpx;
+  color: var(--text-3);
+}
+
+.sheet-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 24rpx;
+  padding: 24rpx 8rpx;
+  border-bottom: 1rpx solid var(--divider);
+}
+
+.sheet-item:last-of-type {
+  border-bottom: none;
+}
+
+.sheet-item-hover {
+  background: var(--card-press);
+}
+
+.sheet-item.disabled {
+  opacity: 0.4;
+}
+
+.sheet-item-label {
+  font-size: 29rpx;
+  color: var(--text);
+}
+
+.sheet-item-sub {
+  font-size: 21rpx;
+  color: var(--text-3);
+}
+
+.sheet-item.disabled .sheet-item-label {
+  color: var(--text-3);
+}
+
+.sheet-cancel {
+  margin-top: 12rpx;
+  height: 88rpx;
+  line-height: 88rpx;
+  text-align: center;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  font-size: 28rpx;
+  color: var(--text-2);
 }

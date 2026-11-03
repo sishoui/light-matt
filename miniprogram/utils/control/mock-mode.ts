@@ -30,6 +30,7 @@ import {
   type DeviceRegistry,
 } from "./device-registry";
 import { MOCK_DEVICES } from "./mock-devices";
+import { clearMockDeleted, loadMockDeleted } from "./mock-deleted";
 
 /** 用户显式选择（"1" 开 / "0" 关）；不存在表示「按有没有真机自动判断」。 */
 export const MOCK_PREF_KEY = "lumen.mockMode.v1";
@@ -117,6 +118,12 @@ export function reconcileMockMode(
 
 export function setMockMode(storage: SessionStorage, enabled: boolean): void {
   storage.set(MOCK_PREF_KEY, enabled ? "1" : "0");
+  /* 用户显式打开演示模式 = 显式重置：清掉「删除过」的标记，三台演示设备
+   * 照常回来。只是让 reconcile 顺手清理（关掉 / 有真机）时**不**清标记，
+   * 否则「删了这台演示设备」在切真机再切回来后会失效。 */
+  if (enabled) {
+    clearMockDeleted(storage);
+  }
 }
 
 /** 真机记录的判定：只要有一条不是演示设备，就算有真机。 */
@@ -139,8 +146,10 @@ export function hasRealDevices(storage: SessionStorage): boolean {
 export function seedMockDevices(storage: SessionStorage, nowMs: number = Date.now()): void {
   const existing = loadRecentDevices(storage);
   const knownIds = new Set(existing.map((entry) => entry.deviceId));
+  /* 用户显式删掉的演示设备不再播种（#91）——否则「删除」下次启动就失效。 */
+  const deleted = new Set(loadMockDeleted(storage));
   const additions: RecentDevice[] = MOCK_DEVICES.filter(
-    (spec) => !knownIds.has(spec.deviceId),
+    (spec) => !knownIds.has(spec.deviceId) && !deleted.has(spec.deviceId),
   ).map((spec, index) => ({
     deviceId: spec.deviceId,
     hardwareId: spec.hwId,
@@ -156,7 +165,9 @@ export function seedMockDevices(storage: SessionStorage, nowMs: number = Date.no
 
   const registry = loadRegistry(storage);
   const knownRegistry = new Set(registry.devices.map((entry) => entry.deviceId));
-  const entries = MOCK_DEVICES.filter((spec) => !knownRegistry.has(spec.deviceId)).map((spec) => ({
+  const entries = MOCK_DEVICES.filter(
+    (spec) => !knownRegistry.has(spec.deviceId) && !deleted.has(spec.deviceId),
+  ).map((spec) => ({
     deviceId: spec.deviceId,
     hardwareId: spec.hwId,
     stripMask: ALL_STRIPS_MASK,
