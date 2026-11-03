@@ -32,6 +32,32 @@
     </view>
   </view>
 
+  <!--
+    灯珠数滑块（#79）：拖动只改本地值，松手（bindchange）才下发。缩小且这条
+    灯组有越界光区时先弹二次确认；下发失败就地显示原因并保留原数量。
+    这里只改**当前这一组**，不影响其它灯组。
+  -->
+  <view class="led-count-bar">
+    <view class="led-count-head">
+      <text class="led-count-label">灯珠数</text>
+      <text class="led-count-value mono">{{ledSliderValue}} 颗{{ledPending ? ' · 未应用' : ''}}</text>
+    </view>
+    <slider
+      class="led-count-slider"
+      min="{{ledMin}}"
+      max="{{ledMax}}"
+      step="1"
+      value="{{ledSliderValue}}"
+      disabled="{{!ready || ledBusy}}"
+      activeColor="#ff9500"
+      backgroundColor="rgba(120, 120, 128, 0.2)"
+      block-size="22"
+      bindchanging="onLedCountChanging"
+      bindchange="onLedCountChange"
+    />
+    <text wx:if="{{ledHint}}" class="led-count-hint">{{ledHint}}</text>
+  </view>
+
   <!-- ---------------- 简单 / 进阶 ---------------- -->
   <view class="mode-switch">
     <view

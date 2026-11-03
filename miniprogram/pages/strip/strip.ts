@@ -66,7 +66,17 @@ import {
   type PanelType,
 } from "../../utils/control/effect-panel";
 import { planIsEmpty, PLAN_CAPACITY_NOTE, planUserMessage } from "../../utils/control/plan-editor";
+import {
+  affectedZoneCount,
+  clampLedCount,
+  draftZoneRanges,
+  planShrink,
+  shrinkConfirmText,
+  shrinkDraft,
+} from "../../utils/control/led-count-plan";
+import { ledCountResultHint } from "../../utils/control/ledCount";
 import { loadPlanDrafts, savePlanDraft } from "../../utils/control/plan-drafts";
+import { zonesFromReports } from "../../utils/control/zone-editor";
 import { checkScriptBlobBytes } from "../../utils/control/script-plan";
 import { draftCapacityBytes, draftToScriptConfig } from "../../utils/control/script-view";
 import {
@@ -170,6 +180,23 @@ function firstTouch(e: WechatMiniprogram.TouchEvent): { clientX: number; clientY
 }
 
 /**
+ * 二次确认（缩小灯珠数前）。`wx.showModal` 的 fail 也当取消——绝不因为一次
+ * 弹窗失败就擅自改动用户编排。
+ */
+function showModal(title: string, content: string, confirmText: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    wx.showModal({
+      title,
+      content,
+      confirmText,
+      cancelText: "取消",
+      success: (res) => resolve(res.confirm),
+      fail: () => resolve(false),
+    });
+  });
+}
+
+/**
  * 面板草稿的默认层（静态、暖白、满亮）。
  *
  * 抽成函数而不是字面量：`EffectLayer` 的字段随协议版本增长（v4 多了 `level`），
@@ -208,6 +235,15 @@ Page({
     title: "灯组",
     ledCount: 0,
     ledText: "连接后显示灯珠数",
+    /* 灯珠数滑块（#79）：拖动只改本地，松手才下发；缩小越界要二次确认。 */
+    ledMin: 1,
+    ledMax: MAX_LEDS,
+    /** 滑块值：下界是 1，「还没读到」时显示 1（0 在滑块上没有位置）。 */
+    ledSliderValue: 1,
+    ledBusy: false,
+    ledHint: "",
+    /* 只读的诊断行：滑块值与设备值的差别（拖动中 / 下发失败后）。 */
+    ledPending: false,
     planSlot: 0,
     planLabel: "方案 ①",
     planSub: "读取中…",
@@ -367,6 +403,14 @@ Page({
     flags: 0,
     level: 100,
   }),
+  /**
+   * 灯珠数滑块上「用户拖过但还没松手 / 还没下发成功」的值（#79）。
+   *
+   * 设备 State 是 20Hz 的：拖动期间若把 `stripCounts` 同步回滑块，手指还没松开
+   * 数字就会跳回旧值。松手提交成功后清空，交还给设备权威值。
+   * `null` = 没有本地草稿。
+   */
+  ledDraft: null as number | null,
   /** 面板的一次性反馈（`data.panelHint` 的镜像，换目标时清空）。 */
   panelHintText: "",
   /**
@@ -414,6 +458,7 @@ Page({
     this.panelParams = paramsFromLayer("static", defaultPanelLayer());
     this.panelHintText = "";
     this.panelLevels = {};
+    this.ledDraft = null;
 
     const storage = createWxStorage();
     this.storage = storage;
@@ -612,9 +657,15 @@ Page({
   applyDeviceState(state: DeviceState) {
     const ledCount = state.stripCounts[this.data.stripId] ?? 0;
     const changed = ledCount !== this.data.ledCount;
-    if (changed) {
+    /* 滑块值：有本地草稿（拖动中 / 确认框弹着）时以它为准，否则跟随设备权威值。
+     * 拖动期间设备每帧上报旧值，跟着它走滑块就会在手指下跳。
+     * 滑块下界是 1，所以「还没读到」时显示 1 而不是 0（0 在滑块上没有位置）。 */
+    const sliderValue = Math.max(1, this.ledDraft ?? ledCount);
+    if (changed || sliderValue !== this.data.ledSliderValue) {
       this.setData({
         ledCount,
+        ledSliderValue: sliderValue,
+        ledPending: this.ledDraft !== null && this.ledDraft !== ledCount,
         ledText: ledCount > 0 ? `${ledCount} 颗灯珠` : "还没读到灯珠数量",
       });
     }
@@ -678,8 +729,12 @@ Page({
     this.timelineIndex = 0;
     this.pickedSegId = -1;
     this.resetPanel();
+    this.ledDraft = null;
     this.setData({
       ledCount: 0,
+      ledSliderValue: 1,
+      ledPending: false,
+      ledHint: "",
       ledText: "连接后显示灯珠数",
       planSub: "读取中…",
       quickCards: buildQuickCardViews(null),
@@ -964,6 +1019,209 @@ Page({
   /** 当前灯组的灯珠数（门禁：没读到就不能划光区）。 */
   currentLedCount(): number {
     return Math.min(this.stripLedCount(), MAX_LEDS);
+  },
+
+  // ---------------- 灯珠数滑块（#79） ----------------
+
+  /** 拖动中：**只改本地值**，不下发（每帧发会撞上 0x05 Busy）。 */
+  onLedCountChanging(e: WechatMiniprogram.SliderChanging) {
+    const value = clampLedCount(Number(e.detail.value));
+    this.ledDraft = value;
+    this.setData({
+      ledSliderValue: value,
+      ledPending: value !== this.data.ledCount,
+      ledHint: "",
+    });
+  },
+
+  /**
+   * 松手：缩小且这条灯组有越界光区 / 草稿时先确认；确认后下发并就地清理。
+   *
+   * 只改**当前灯组**：其它灯组的灯珠数与光区一个字节都不动。
+   */
+  async onLedCountChange(e: WechatMiniprogram.SliderChange) {
+    const session = this.session;
+    const value = clampLedCount(Number(e.detail.value));
+    const current = this.stripLedCount();
+    this.ledDraft = value;
+    this.setData({
+      ledSliderValue: value,
+      ledPending: value !== current,
+      ledHint: "",
+    });
+    if (session === null || !this.data.ready || this.data.ledBusy) {
+      this.backToDeviceLedCount();
+      return;
+    }
+    if (value === current) {
+      this.backToDeviceLedCount();
+      return;
+    }
+
+    /* 缩小前的本地预检：设备光区 + 4 套草稿，数出会越界的个数。改大永远 0。
+     * 设备光区**现读一次**（不只用缓存的 `segmentReports`）：确认文案里的数字
+     * 必须与设备上真实存在的段对得上。读失败就按缓存算。 */
+    let deviceZones = zonesFromReports(
+      this.segmentReports.filter((report) => report.stripId === this.data.stripId),
+    );
+    if (value < current) {
+      const fresh = await session.queryStrip(this.data.stripId);
+      if (fresh.kind === "ok") {
+        deviceZones = zonesFromReports(
+          fresh.reports.filter((report) => report.stripId === this.data.stripId),
+        );
+      }
+      const affected = affectedZoneCount(
+        deviceZones,
+        draftZoneRanges(this.drafts, this.data.stripId),
+        value,
+      );
+      if (affected > 0) {
+        const confirmed = await showModal(
+          "缩短灯组会截断光区",
+          shrinkConfirmText(affected, value),
+          "继续缩短",
+        );
+        if (!confirmed) {
+          /* 取消：设备与草稿都不动。 */
+          this.backToDeviceLedCount();
+          return;
+        }
+      }
+    }
+
+    await this.applyLedCount(value, current, deviceZones);
+  },
+
+  /** 滑块回到设备权威值（取消 / 无效拖动 / 下发失败）。 */
+  backToDeviceLedCount(): void {
+    this.ledDraft = null;
+    this.setData({
+      ledSliderValue: Math.max(1, this.stripLedCount()),
+      ledPending: false,
+    });
+  },
+
+  /**
+   * 下发当前灯组的灯珠数。
+   *
+   * 成功：清理草稿（截断 / 删除越界光区）并把截断后的光区写回设备。
+   * 失败：**就地显示原因并保留原灯珠数**（草稿一个字节都不动）。
+   */
+  async applyLedCount(
+    value: number,
+    current: number,
+    deviceZones: readonly SegmentSpec[],
+  ): Promise<void> {
+    const session = this.session;
+    if (session === null) {
+      return;
+    }
+    const stripId = this.data.stripId;
+    this.setData({ ledBusy: true, ledHint: "正在应用…" });
+    try {
+      /* 只改这一条：`setLedCount` 的 stripId 显式传当前组。 */
+      const result = await session.setLedCount(value, stripId);
+      if (result.kind === "ok") {
+        const applied = result.state.stripCounts[stripId] ?? value;
+        this.ledDraft = null;
+        this.setData({
+          ledSliderValue: applied,
+          ledPending: false,
+          ledCount: applied,
+          ledText: applied > 0 ? `${applied} 颗灯珠` : "还没读到灯珠数量",
+          ledHint: `已设为 ${applied} 颗`,
+        });
+        if (value < current) {
+          /* 缩小：草稿与设备上的光区同步截断（截到新末尾、完全越界的删除）。 */
+          this.shrinkDraftsForStrip(applied);
+          await this.rewriteClampedZones(deviceZones, applied);
+          if (this.data.mode === "advanced") {
+            this.renderTimeline();
+          }
+        }
+        return;
+      }
+      if (result.kind === "ack-error") {
+        const hint = ledCountResultHint(result.ack.resultCode) || "设置失败";
+        this.failLedCount(current, hint);
+        return;
+      }
+      if (result.kind === "stale") {
+        this.backToDeviceLedCount();
+        return;
+      }
+      this.failLedCount(current, `设置失败：${result.message}`);
+    } finally {
+      this.setData({ ledBusy: false });
+    }
+  },
+
+  /** 失败：就地显示原因，滑块保留原灯珠数。 */
+  failLedCount(current: number, hint: string): void {
+    this.ledDraft = null;
+    this.setData({
+      ledSliderValue: current,
+      ledPending: false,
+      ledHint: hint,
+    });
+    wx.showToast({ title: hint, icon: "none" });
+  },
+
+  /**
+   * 把当前灯组在 4 套草稿里的越界光区按新长度清理并落盘。
+   *
+   * 只碰 `stripId` 那一片（`shrinkDraft` 的语义）；其它灯组、其它槽位原样保留。
+   * 当前槽位走 `setDraft`（顺带更新右上角摘要），其余槽位直接落盘。
+   */
+  shrinkDraftsForStrip(newLedCount: number): void {
+    const stripId = this.data.stripId;
+    const currentSlot = this.data.planSlot;
+    for (let slot = 0; slot < this.drafts.length; slot += 1) {
+      const draft = this.drafts[slot];
+      const result = shrinkDraft(draft, stripId, newLedCount);
+      if (!result.changed) {
+        continue;
+      }
+      if (slot === currentSlot) {
+        this.setDraft(result.draft);
+      } else {
+        this.drafts = this.drafts.map((item, index) => (index === slot ? result.draft : item));
+        this.draftOwned[slot] = true;
+        this.saveDraft(slot, result.draft);
+      }
+    }
+  },
+
+  /**
+   * 把被截断的光区按新终点重新写回设备（只写当前灯组）。
+   *
+   * 固件在数量变更时会把 `end >= new_count` 的段整段 prune 掉（不自动缩短，
+   * protocol-v4 §7.2），所以确认后只需把「截断版」写回去——`SetSegment` 按
+   * (灯组, 槽位) 覆盖同一格，不与保留的段冲突。写失败只就地提示，不回滚
+   * 已经成功的灯珠数。
+   */
+  async rewriteClampedZones(zones: readonly SegmentSpec[], newLedCount: number): Promise<void> {
+    const session = this.session;
+    if (session === null) {
+      return;
+    }
+    const plan = planShrink(zones, newLedCount);
+    if (plan.clamped.length === 0) {
+      return;
+    }
+    try {
+      for (const zone of plan.clamped) {
+        const ack = await session.setSegment(zone);
+        if (!ack.ok) {
+          this.setData({ ledHint: `灯珠数已改；光区写回失败（${resultText(ack.resultCode)}）` });
+          return;
+        }
+      }
+      await this.refreshSegments();
+    } catch (err) {
+      this.setData({ ledHint: `灯珠数已改；光区写回失败（${errorText(err)}）` });
+    }
   },
 
   // ---------------- 进阶档：效果面板（#67） ----------------

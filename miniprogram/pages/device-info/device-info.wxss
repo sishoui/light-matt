@@ -1,20 +1,52 @@
 /* 设备详情页独有布局（共享外观在 app.wxss）。 */
 
+/* 总灯珠数：只读汇总（#79），放在灯组列表最上方。 */
+.led-total {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12rpx;
+  margin: 4rpx 0 8rpx;
+  padding: 16rpx 20rpx;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+.led-total-label {
+  font-size: 24rpx;
+  color: var(--text-2);
+}
+
+.led-total-value {
+  font-size: 30rpx;
+  font-weight: 700;
+  color: var(--accent);
+}
+
 .strip-info-list {
   display: flex;
   flex-direction: column;
 }
 
+/* 每条灯组一张卡片：名称 + 数字 / 滑块 / 开关与 GPIO / 反馈（#79）。 */
 .strip-info-row {
   display: flex;
-  align-items: center;
-  gap: 16rpx;
-  padding: 14rpx 0;
+  flex-direction: column;
+  gap: 6rpx;
+  padding: 16rpx 0;
   border-bottom: 1rpx solid var(--divider);
 }
 
 .strip-info-row:last-child {
   border-bottom: none;
+}
+
+.strip-info-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16rpx;
 }
 
 .strip-info-name {
@@ -24,25 +56,42 @@
 }
 
 .strip-info-meta {
-  font-size: 22rpx;
-  color: var(--text-2);
+  font-size: 24rpx;
+  color: var(--text);
   font-family: Menlo, Consolas, monospace;
-  min-width: 96rpx;
   text-align: right;
 }
 
-/* 显示的灯组开关（本机偏好，永不下发）：压在行尾，缩小默认尺寸。 */
+/* 1–100 的灯珠数滑块：占满整行，便于拖动（#79）。 */
+.led-slider {
+  width: 100%;
+  margin: 0;
+}
+
+.strip-info-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12rpx;
+  min-height: 40rpx;
+}
+
+.strip-info-gpio {
+  font-size: 22rpx;
+  color: var(--text-3);
+  font-family: Menlo, Consolas, monospace;
+}
+
+.strip-info-hint {
+  font-size: 21rpx;
+  color: var(--text-2);
+}
+
+/* 显示的灯组开关（本机偏好，永不下发）：行尾，缩小默认尺寸。 */
 .strip-info-switch {
   flex: 0 0 auto;
   transform: scale(0.8);
-  transform-origin: right center;
-}
-
-/* 灯带选择 chip 排一行（最多 8 个，短标签） */
-.chip-row.tight .chip {
-  flex: 0 1 auto;
-  min-width: 120rpx;
-  padding: 12rpx 18rpx;
+  transform-origin: left center;
 }
 
 /* 改名行（#44）：输入框 + 保存按钮。 */

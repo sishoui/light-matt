@@ -61,6 +61,48 @@
   color: var(--text-2);
 }
 
+/* ---------------- 灯珠数滑块（#79） ---------------- */
+
+.led-count-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+  margin-top: 12rpx;
+  padding: 14rpx 20rpx 10rpx;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  box-shadow: inset 0 0 0 1rpx var(--border);
+}
+
+.led-count-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12rpx;
+}
+
+.led-count-label {
+  font-size: 23rpx;
+  color: var(--text-2);
+}
+
+.led-count-value {
+  font-size: 25rpx;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.led-count-slider {
+  width: 100%;
+  margin: 0;
+}
+
+.led-count-hint {
+  font-size: 21rpx;
+  color: var(--text-2);
+  line-height: 1.4;
+}
+
 /* 方案槽位按钮：点一下轮换 ①→②→③→④→①，空槽位写「空白」。 */
 .plan-slot {
   display: flex;

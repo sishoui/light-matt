@@ -45,59 +45,55 @@
       <text class="section-title">灯组</text>
       <text class="section-value">{{stripRows.length}} 条</text>
     </view>
+
+    <!-- 总灯珠数：各灯组灯珠数之和，只读（#79） -->
+    <view class="led-total">
+      <text class="led-total-label">总灯珠数</text>
+      <text class="led-total-value mono">{{ledTotal}} 颗</text>
+    </view>
+
+    <!--
+      每组一条 1–100 的滑块（#79）：拖动只改本地值，松手（bindchange）才下发。
+      SetLedCount 要重建设备的 led_strip 句柄（ACK 上限 3 秒），不能逐帧发。
+    -->
     <view class="strip-info-list">
       <view wx:for="{{stripRows}}" wx:key="stripId" class="strip-info-row">
-        <text class="strip-info-name">{{item.label}}</text>
-        <text class="strip-info-meta">{{item.ledCount}} 灯</text>
-        <text class="strip-info-meta">{{item.gpioText}}</text>
-        <!-- 显示开关：本机界面偏好，永不下发（裁决 §7 从发现页搬来） -->
-        <switch
-          class="strip-info-switch"
-          checked="{{item.visible}}"
-          color="#ff9500"
+        <view class="strip-info-head">
+          <text class="strip-info-name">{{item.label}}</text>
+          <text class="strip-info-meta mono">{{item.ledCount}} 颗</text>
+        </view>
+        <slider
+          class="led-slider"
+          min="{{ledMin}}"
+          max="{{ledMax}}"
+          step="1"
+          value="{{item.ledCount}}"
+          disabled="{{!ready || ledBusyStripId >= 0}}"
+          activeColor="#ff9500"
+          backgroundColor="rgba(120, 120, 128, 0.2)"
+          block-size="22"
           data-strip-id="{{item.stripId}}"
-          bindchange="onTrimStrip"
+          bindchanging="onLedCountChanging"
+          bindchange="onLedCountChange"
         />
+        <view class="strip-info-foot">
+          <!-- 显示开关：本机界面偏好，永不下发（裁决 §7 从发现页搬来） -->
+          <switch
+            class="strip-info-switch"
+            checked="{{item.visible}}"
+            color="#ff9500"
+            data-strip-id="{{item.stripId}}"
+            bindchange="onTrimStrip"
+          />
+          <text class="strip-info-gpio">{{item.gpioText}}</text>
+        </view>
+        <text wx:if="{{item.ledHint}}" class="strip-info-hint">{{item.ledHint}}</text>
       </view>
       <view wx:if="{{stripRows.length === 0}}" class="device-empty">未连接或灯控未报告灯组</view>
     </view>
     <text class="section-hint">
-      GPIO 来自构建期引脚表，协议只读；「显示的灯组」开关只影响本机界面，设备配置不变
+      拖动滑块只在松手后写入设备（重建灯带需要一点时间）；GPIO 来自构建期引脚表，协议只读
     </text>
-  </view>
-
-  <!-- 灯珠数量（按选中带改）：会重建设备的 led_strip 句柄，超时 3s -->
-  <view class="section {{ready ? '' : 'disabled'}}">
-    <view class="section-head">
-      <text class="section-title">灯珠数量</text>
-      <text class="section-value">按带设置</text>
-    </view>
-    <view class="chip-row tight">
-      <view
-        wx:for="{{ledStripOptions}}"
-        wx:key="stripId"
-        class="chip blue {{ledCountStripId === item.stripId ? 'selected' : ''}}"
-        data-strip-id="{{item.stripId}}"
-        bindtap="onLedStripTap"
-      >{{item.label}}</view>
-    </view>
-    <view class="range-row">
-      <input
-        class="range-input"
-        type="number"
-        value="{{ledCountInput}}"
-        maxlength="3"
-        placeholder="1-100"
-        disabled="{{!ready || ledCountBusy}}"
-        bindinput="onLedCountInput"
-      />
-      <button
-        class="range-apply {{ledCountBusy ? 'busy' : ''}}"
-        disabled="{{!ready || ledCountBusy}}"
-        bindtap="onApplyLedCount"
-      >{{ledCountBusy ? '应用中…' : '应用'}}</button>
-    </view>
-    <text class="section-hint">{{ledCountHint || '改完立即生效并写入设备，重启后保持；非法值会被拒绝'}}</text>
   </view>
 
   <!-- 自检与危险操作 -->
