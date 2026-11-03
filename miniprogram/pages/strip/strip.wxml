@@ -308,8 +308,9 @@
       </view>
 
       <!--
-        效果类型行在最上：四个等宽按钮。切换后参数区**整体替换**（列表来自
-        effect-panel.SLIDER_KEYS，页面不按类型写 wx:if 集合）。
+        效果类型行在最上：七个等宽按钮（静态 / 呼吸 / 彩虹 / 流光 / 爆闪 / 心跳 / 熄灭）。
+        切换后参数区**整体替换**（列表来自 effect-panel.SLIDER_KEYS，页面不按类型写
+        wx:if 集合）。
       -->
       <view class="panel-types">
         <view
@@ -323,6 +324,11 @@
       </view>
 
       <block wx:if="{{panelHasZone}}">
+        <!-- 「熄灭」没有旋钮：只说明这一片不亮（它下发的是全零参数块）。 -->
+        <view wx:if="{{panelNotice}}" class="panel-notice">
+          <text class="panel-notice-text">{{panelNotice}}</text>
+        </view>
+
         <view wx:for="{{panelSliders}}" wx:key="key" class="param-row">
           <view class="param-head">
             <text class="param-label">{{item.label}}</text>

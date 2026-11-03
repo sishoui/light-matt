@@ -52,12 +52,14 @@ import {
   buildEffectPanel,
   buildTypeViews,
   HUE_RAMP_GRADIENT,
+  layersCheck,
   PANEL_EMPTY_PLAN_GUIDE,
   PANEL_EMPTY_STEP_GUIDE,
   PANEL_FACTS,
   PANEL_NO_ZONE_GUIDE,
   PANEL_TYPE_OPTIONS,
   isPanelSliderKey,
+  panelCheck,
   panelTypeOf,
   paramsFromLayer,
   switchPanelType,
@@ -150,11 +152,13 @@ import {
   type ZoneAxisBlock,
 } from "../../utils/control/zone-axis";
 import type { ScriptDraft } from "../../utils/control/script-view";
-import { MAX_LEDS, SEGMENT_TYPE } from "../../utils/protocol/constants";
+import { layerFromFlat } from "../../utils/control/segment-model";
+import { MAX_LEDS, NO_EFFECT, SEGMENT_TYPE } from "../../utils/protocol/constants";
 import type {
   DeviceState,
   EffectLayer,
   LinkState,
+  SegmentConfig,
   SegmentReport,
   SegmentSpec,
 } from "../../utils/protocol/types";
@@ -307,18 +311,23 @@ Page({
     quickBusy: false,
     quickHint: "",
 
-    /* ---- 进阶档：效果面板（#67） ---- */
-    /** 四个等宽效果类型按钮（静态 / 呼吸 / 彩虹 / 流光）。 */
+    /* ---- 进阶档：效果面板（#67 / #80） ---- */
+    /** 七个等宽效果类型按钮（静态 / 呼吸 / 彩虹 / 流光 / 爆闪 / 心跳 / 熄灭）。 */
     panelTypes: buildTypeViews("static"),
     panelType: "static" as PanelType,
     /** 参数区滑块（按类型整体替换）。 */
     panelSliders: [] as PanelSliderView[],
-    /** 参数区选择控件（波形 / 方向）。 */
+    /** 参数区选择控件（波形 / 方向 / 占空比）。 */
     panelChoices: [] as PanelChoiceView[],
     /** 预览色块（拖色相 / 饱和度时的即时反馈）。 */
     panelColorHex: "",
     /** 一行摘要（「呼吸 · 2 秒 · 最暗 40% · 正弦」）。 */
     panelSummary: "",
+    /**
+     * 没有旋钮时的说明（只有「熄灭」用得到：它下发全零参数块，
+     * 界面上没有任何可调项，只说明这一片是黑的）。
+     */
+    panelNotice: "",
     /** 当前选中的光区是否可编辑（否则只有引导文字）。 */
     panelHasZone: false,
     /** 没得编辑时的引导（方案为空 / 这一步为空 / 没选中光区）。 */
@@ -758,6 +767,7 @@ Page({
       panelChoices: [],
       panelColorHex: "",
       panelSummary: "",
+      panelNotice: "",
       panelHasZone: false,
       panelGuide: "",
       panelHint: "",
@@ -1277,6 +1287,9 @@ Page({
        * 是一句凭空捏造的描述。 */
       panelColorHex: zone === null ? "" : view.colorHex,
       panelSummary: zone === null ? "" : view.summary,
+      /* 「熄灭」没有任何旋钮：说明必须跟着光区一起出现 / 消失，否则没选中光区时
+       * 它会变成一句凭空捏造的描述。 */
+      panelNotice: zone === null ? "" : view.notice,
       panelHasZone: zone !== null,
       panelGuide: guide,
       panelFacts: PANEL_FACTS,
@@ -1316,20 +1329,31 @@ Page({
    *
    * 装配走 `applyPanelToZone` → `zone-model.buildZoneSpec`：叠加层为空时叠加方式
    * 归一为覆盖、两层定宽、深拷贝——面板只改效果，不顺手把叠加层弄丢。
+   *
+   * 写入前先过 `panelCheck`：频率过快 / 节奏过快或过慢在本地就拦住，
+   * 草稿保持原样、界面给出一行原因（不会悄悄把越界值写进去）。
+   *
+   * 返回是否真的写进了草稿——调用方据此决定要不要清掉提示。
    */
-  commitPanel(): void {
+  commitPanel(): boolean {
     const segId = this.pickedSegId;
     if (segId < 0) {
-      return;
+      return false;
     }
     const zones = this.currentZones();
     if (!zones.some((zone) => zone.segId === segId)) {
-      return;
+      return false;
+    }
+    const check = panelCheck(this.panelMode, this.panelParams);
+    if (!check.ok) {
+      this.setPanelHint(check.message);
+      return false;
     }
     this.applyStepZones(applyPanelToZone(zones, segId, this.panelMode, this.panelParams));
+    return true;
   },
 
-  /** 点四个效果类型按钮之一：参数区整体替换，颜色与亮度保留。 */
+  /** 点七个效果类型按钮之一：参数区整体替换，颜色与亮度保留。 */
   onPanelTypeTap(e: WechatMiniprogram.TouchEvent) {
     const type = String(e.currentTarget.dataset.type ?? "") as PanelType;
     if (!PANEL_TYPE_OPTIONS.some((option) => option.type === type)) {
@@ -1339,12 +1363,14 @@ Page({
     if (this.data.panelHasZone !== true || type === this.panelMode) {
       return;
     }
-    /* 先换算再改类型：`switchPanelType` 需要知道「从哪个类型切过来」。 */
+    /* 先换算再改类型：`switchPanelType` 需要知道「从哪个类型切过来」。
+     * 切换后的默认值一定在区间内，所以这里不会触发预检拒绝。 */
     this.panelParams = switchPanelType(this.panelParams, this.panelMode, type);
     this.panelMode = type;
-    this.setPanelHint("颜色已经保留，其余参数按新效果重置了");
     /* 类型是离散动作：立刻落进草稿（但不写设备——写设备只走「应用并播放」）。 */
-    this.commitPanel();
+    if (this.commitPanel()) {
+      this.setPanelHint("颜色已经保留，其余参数按新效果重置了");
+    }
     this.renderTimeline();
   },
 
@@ -1357,8 +1383,10 @@ Page({
   onPanelSliderChange(e: WechatMiniprogram.SliderChange) {
     const key = String((e.currentTarget.dataset as { key?: string }).key ?? "");
     if (this.applyPanelSlider(key, Number(e.detail.value))) {
-      this.commitPanel();
-      this.clearPanelHint();
+      /* 被预检拦住时保留原因（`commitPanel` 已经写进 hint），别在这里抹掉。 */
+      if (this.commitPanel()) {
+        this.clearPanelHint();
+      }
       this.renderTimeline();
     }
   },
@@ -1379,19 +1407,20 @@ Page({
     return true;
   },
 
-  /** 波形 / 方向：点一下就是一次离散改动，直接落进草稿。 */
+  /** 波形 / 方向 / 占空比：点一下就是一次离散改动，直接落进草稿。 */
   onPanelChoiceTap(e: WechatMiniprogram.TouchEvent) {
     const key = String(e.currentTarget.dataset.key ?? "");
     const value = Number(e.currentTarget.dataset.value);
-    if (key !== "waveform" && key !== "direction") {
+    if (key !== "waveform" && key !== "direction" && key !== "duty") {
       return;
     }
     if (!Number.isFinite(value) || this.data.panelHasZone !== true) {
       return;
     }
     this.panelParams = applyChoice(this.panelParams, key, value);
-    this.commitPanel();
-    this.clearPanelHint();
+    if (this.commitPanel()) {
+      this.clearPanelHint();
+    }
     this.renderTimeline();
   },
 
@@ -2273,6 +2302,20 @@ Page({
       const precheck = session.validateScriptForDevice(script);
       if (!precheck.ok) {
         this.setData({ applyError: planUserMessage(precheck.message) });
+        return;
+      }
+      /* 新灯效的区间（爆闪 10Hz / 心跳 40-120 BPM）由 `layersCheck` 兜住：
+       * 草稿可能来自设备读回或旧版本落盘，不只是这一次的滑块输入。 */
+      const layers = script.stages.flatMap((stage) =>
+        stage.segments.flatMap((segment) =>
+          "layer0" in segment
+            ? [segment.layer0, segment.layer1]
+            : [layerFromFlat(segment as SegmentConfig)],
+        ),
+      );
+      const layerGate = layersCheck(layers.filter((layer) => layer.type !== NO_EFFECT));
+      if (!layerGate.ok) {
+        this.setData({ applyError: layerGate.message });
         return;
       }
       /* 容量预检与旧页同口径：只量**这次要写的那一套**。设备上其它槽位的
