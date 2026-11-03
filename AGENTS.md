@@ -122,7 +122,7 @@ SHA-256 索引、配置丢失记录。
 
 ```bash
 cmd.exe //c "firmware\\test\\run-tests.cmd"   # 12701 项断言 + 78 条 v4 向量
-cd miniprogram && npx vitest run              # 1461 用例 / 56 文件（不含 e2e）
+cd miniprogram && npx vitest run              # 1485 用例 / 57 文件（不含 e2e）
 cd miniprogram && npm run test:ble            # 8 项真机 e2e（无设备自动 skip）
 cd miniprogram && npx tsc --noEmit            # 必须干净
 cd server && npm test                         # 140 用例
@@ -131,11 +131,17 @@ cd server && npm run typecheck                # 必须干净
 
 **模拟器 UI 回归**（改页面后必跑；需要微信开发者工具开着自动化端口）：
 
-> ⚠️ **截至 `feat/strip-editor-polish`，下面三个脚本已作废**：它们断言的是旧的
-> 六张卡 + 方案轮换世界（`onPlanSlotTap`、`quickCards.length === 6` 等），
-> 页面已改为九张卡 + 方案 tab，跑会直接崩。**需要按新结构重写**（handoff §0 记录在案）。
-> 新增的 `verify-plan-slots.mjs`（26 项，方案 tab / 新建 / 删除）当时能跑通，
-> 但它在 gitignored 的 `.auto/` 里，只存在于当时的 worktree。
+**渲染回归脚本（改页面后必跑；需要开发者工具开着自动化端口）**
+
+```bash
+cd miniprogram && node .auto/verify-effect-editor.mjs   # 147 项：九卡 / 参数区 / 时间轴 / 光区轴 / 灯珠弹窗 / 效果面板 / 叠加层 / 术语
+cd miniprogram && node .auto/verify-redesign.mjs        # 37 项：页面树 / 大卡 / 小图 / 主题 / tabBar / 发现页 / 我的页
+cd miniprogram && node .auto/verify-deep.mjs            # 26 项：电源 / 亮度 / 灯组卡片 / 写入 / 播放 / 断开
+cd miniprogram && node .auto/verify-ui-interaction.mjs  # 40 项：点得动（发现页 / 我的页 / 日志面板 / 删除确认）
+```
+
+> 端口不是默认 9501 时用 `WS=ws://127.0.0.1:9502` 覆盖。
+> 脚本会自己清 `lumen.planDrafts.v1`，可以反复跑（幂等）。
 
 ```bash
 cd miniprogram && node .auto/verify-effect-editor.mjs   # ⚠️ 已作废：简单档六卡 / 时间轴 / 光区轴 / 效果面板

@@ -37,15 +37,26 @@
 第三条（本轮收尾补的）：**跨页草稿陈旧** —— 设备信息页改小灯珠数只写存储，灯组页在栈上
 不重读，内存草稿仍越界，「应用并播放」被预检拒绝。现按 `ledCountSeen` 检测变小并重载 + 裁剪。
 
-### 本轮仍未验证 / 未完成（**不要当成已完成**）
+### 本轮收尾（2026-11-03 晚，已补完）
 
-- **真机**：没有烧录、没有连设备。固件改动只有 host 单测（12701 项）与 IDF 编译把关。
-  重点待测：8×100 的 TDM 时序余量、爆闪在 20fps 下 10Hz 的观感、清空正在播放的方案是否真停。
-- **`.auto` 渲染脚本**：`verify-effect-editor.mjs` / `verify-deep.mjs` / `verify-redesign.mjs`
-  面向旧的六卡 + 方案轮换，已被九卡 / 方案 tab 改动作废，**需要按新结构重写**。
-- **叠加层编辑器没做**：`PANEL_OVERLAY_TYPE_OPTIONS` 只在测试里被引用，页面没有叠加层 UI。
-  规格 #71 的 User Story 49（「把爆闪/心跳当叠加层用」）**未落地**。
-- 死代码：`segment-editor.isKnownType`（4 类型）、`script-view.typeName`、`timeline` 若干未用导出。
+- **真机协议验收：22/22 全过**。`scripts/probe-v4.py` 覆盖断崖拒收、灯珠上限 100、
+  三种新灯效、频闪/心跳下限、逐光区亮度 100/25、ClearScript 幂等。
+  记录见 [`docs/acceptance-v4.md`](acceptance-v4.md)。
+- **`.auto` 渲染脚本**：只有 `verify-effect-editor.mjs` 真的失效（六卡 → 九卡、方案轮换
+  → 方案 tab、四类 → 七类）。已重写并扩到 **147 项**，含 7 项叠加层断言。
+  `verify-deep.mjs`（26）与 `verify-redesign.mjs`（37）本就没失效，保持原样。
+- **叠加层编辑器已补**（US49 / US50）：进阶档主效果下方一整块「叠加效果」，
+  选项是「关闭 + 六种类型」（**不含熄灭**），带叠加方式与自己的参数滑块；
+  草稿走 `OverlayDraft`，关闭时保留参数再开回来还能接着调。
+- **死代码已收敛**：`protocol/constants.ts` 提供 `KNOWN_EFFECT_TYPES` /
+  `isKnownEffectType` / `EFFECT_TYPE_NAMES`，`segment-editor` 与 `script-view`
+  都改用它；新增 `tests/effect-types.test.ts` 钉住「枚举扩了、清单没扩」。
+
+### 仍未验证（需要人眼 / 手机）
+
+见 [`docs/acceptance-v4.md`](acceptance-v4.md) 末节：逐光区亮度的肉眼对比、
+8×100 的 TDM 满载时序、爆闪 20fps 下 10Hz 的观感、呼吸谷底实测、
+清空正在播放的方案是否真停。
 
 ### 本轮基线
 
