@@ -28,6 +28,11 @@ export interface ScriptStageDraft {
   /** 编辑器里的时长输入原样保存成字符串，避免输入中间态被抹掉。 */
   durationInput: string;
   /**
+   * 这一步的名字（#99）。未设置时界面显示「第 N 步」——**不写进草稿**，
+   * 这样改名、插步骤、删步骤都不会让默认名与序号错位。
+   */
+  name?: string;
+  /**
    * 段的草稿形状：扁平（层 0）或两层 `SegmentSpec` 都允许。
    * 槽位唯一性按 `(stripId, segId)` 计——每条灯带各 8 个槽位。
    */
@@ -38,6 +43,12 @@ export interface ScriptStageDraft {
 export interface ScriptDraft {
   scriptId: number;
   stages: ScriptStageDraft[];
+  /**
+   * 循环模式（#99 / #98）：0 不循环 / 1 全部循环 / 2 最后一步循环。
+   *
+   * 缺省视为 0（旧草稿没有这个字段）。它是**方案级**设置，不属于某一步。
+   */
+  loop?: number;
 }
 
 /** 一阶段 × 一条灯带的段数摘要（时间轴上的跨带预览）。 */

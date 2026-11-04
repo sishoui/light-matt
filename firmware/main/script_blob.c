@@ -12,7 +12,7 @@
  */
 
 size_t lumen_script_blob_encode(const lumen_script_store_t *store, uint8_t active_script_id,
-                                bool loop, uint8_t *out, size_t out_cap)
+                                uint8_t loop, uint8_t *out, size_t out_cap)
 {
     return lumen_script_blob_encode_with_override(store, 0, NULL, active_script_id, loop, out,
                                                   out_cap);
@@ -142,7 +142,7 @@ static bool decode_layer(reader_t *r, lumen_effect_layer_t *layer)
  */
 static size_t encode_impl(const lumen_script_store_t *store, uint8_t override_slot,
                           const lumen_script_t *override_script, bool clear_slot,
-                          uint8_t active_script_id, bool loop, uint8_t *out, size_t out_cap)
+                          uint8_t active_script_id, uint8_t loop, uint8_t *out, size_t out_cap)
 {
     if (store == NULL || out == NULL || out_cap < 8) {
         return 0;
@@ -154,7 +154,13 @@ static size_t encode_impl(const lumen_script_store_t *store, uint8_t override_sl
     out[pos++] = (uint8_t)(LUMEN_SCRIPT_BLOB_VERSION & 0xFF);
     out[pos++] = (uint8_t)(LUMEN_SCRIPT_BLOB_VERSION >> 8);
     out[pos++] = active_script_id;
-    out[pos++] = loop ? 0x01 : 0x00;
+    /*
+     * #98：flags 是**位表**而不是布尔——bit0 循环中、bit2 最后一步循环。
+     * bit1 在 blob 里没有「激活」概念（激活 id 是独立字段），恒 0。
+     * 旧版本读到这里只会看 bit0（`flags & 0xFE != 0 → 整份拒绝`），所以带
+     * bit2 的 blob 会被旧固件明确拒收，而不是被当成「不循环」静默降级。
+     */
+    out[pos++] = lumen_loop_flags(loop);
 
     for (uint8_t id = 0; id < LUMEN_MAX_SCRIPTS; ++id) {
         /*
@@ -226,8 +232,8 @@ static size_t encode_impl(const lumen_script_store_t *store, uint8_t override_sl
 size_t lumen_script_blob_encode_with_override(const lumen_script_store_t *store,
                                               uint8_t override_slot,
                                               const lumen_script_t *override_script,
-                                              uint8_t active_script_id, bool loop, uint8_t *out,
-                                              size_t out_cap)
+                                              uint8_t active_script_id, uint8_t loop,
+                                              uint8_t *out, size_t out_cap)
 {
     return encode_impl(store, override_slot, override_script, false, active_script_id, loop, out,
                        out_cap);
@@ -235,7 +241,7 @@ size_t lumen_script_blob_encode_with_override(const lumen_script_store_t *store,
 
 size_t lumen_script_blob_encode_with_cleared(const lumen_script_store_t *store,
                                              uint8_t cleared_slot, uint8_t active_script_id,
-                                             bool loop, uint8_t *out, size_t out_cap)
+                                             uint8_t loop, uint8_t *out, size_t out_cap)
 {
     if (cleared_slot >= LUMEN_MAX_SCRIPTS) {
         return 0;
@@ -246,7 +252,7 @@ size_t lumen_script_blob_encode_with_cleared(const lumen_script_store_t *store,
 bool lumen_script_blob_decode(const uint8_t *blob, size_t len,
                               const uint16_t strip_counts[LUMEN_MAX_STRIPS],
                               lumen_script_store_t *store, uint8_t *active_script_id,
-                              bool *loop)
+                              uint8_t *loop)
 {
     if (blob == NULL || store == NULL || len < 8) {
         return false;
@@ -260,9 +266,17 @@ bool lumen_script_blob_decode(const uint8_t *blob, size_t len,
     }
     uint8_t stored_active = blob[6];
     uint8_t stored_flags = blob[7];
-    if ((stored_flags & 0xFEu) != 0) {
-        /* bit1-7 保留必须为 0（与 State 字节 13 同一约定）。 */
+    /*
+     * 合法位：bit0（循环中）与 bit2（最后一步循环）。bit1 在 blob 里没有含义
+     * （激活 id 是独立字段），bit3-7 保留——任一非 0 都整份拒绝。
+     */
+    if ((stored_flags & (uint8_t)(LUMEN_PLAYBACK_FLAG_ACTIVE | LUMEN_PLAYBACK_FLAGS_RESERVED)) !=
+        0) {
         return false;
+    }
+    if ((stored_flags & LUMEN_PLAYBACK_FLAG_LOOP_LAST) != 0 &&
+        (stored_flags & LUMEN_PLAYBACK_FLAG_LOOP) == 0) {
+        return false; /* bit2 必须伴随 bit0（「最后一步循环」也是循环） */
     }
     if (stored_active != LUMEN_NO_SCRIPT && stored_active >= LUMEN_MAX_SCRIPTS) {
         return false;
@@ -366,7 +380,7 @@ bool lumen_script_blob_decode(const uint8_t *blob, size_t len,
         *active_script_id = stored_active;
     }
     if (loop != NULL) {
-        *loop = (stored_flags & 0x01u) != 0;
+        *loop = lumen_loop_from_flags(stored_flags);
     }
     return true;
 }

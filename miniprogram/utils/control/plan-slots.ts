@@ -130,8 +130,8 @@ export function planNumberLabel(id: number): string {
 /**
  * 方案 tab 的摘要：没有内容标「空白」，有内容说「n 步」。
  *
- * 「有没有内容」看的是**光区**（`planIsEmpty`），不是步骤数：新建的方案
- * 默认就有一步（编辑器的靶子），但一步都没画光区时仍然是「空白」。
+ * 「有没有内容」看的是**分区**（`planIsEmpty`），不是步骤数：新建的方案
+ * 默认就有一步（编辑器的靶子），但一步都没画分区时仍然是「空白」。
  */
 export function planTabSummary(draft: ScriptDraft): string {
   if (planIsEmpty(draft)) {
@@ -198,9 +198,9 @@ export function planIsPlaying(state: PlanPlaybackState | null, planId: number): 
 }
 
 /**
- * 新建方案的空草稿：**一步、没有光区**。
+ * 新建方案的空草稿：**一步、没有分区**。
  *
- * 一步是编辑器的靶子（时间轴总得有一块可点），没有光区让界面如实标「空白」。
+ * 一步是编辑器的靶子（时间轴总得有一块可点），没有分区让界面如实标「空白」。
  */
 export function createEmptyPlanDraft(scriptId: number): ScriptDraft {
   const id = Number.isFinite(scriptId) ? Math.floor(scriptId) : 0;

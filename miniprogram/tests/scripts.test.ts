@@ -255,7 +255,13 @@ describe("#32 剧本命令构造器与 v3 向量逐字节一致", () => {
 describe("#32 设备回报帧解析（本地夹具，v3 信封）", () => {
   it("ScriptSummary 0x85", () => {
     const summary = parseScriptSummary(new Uint8Array([0, 4, 0x01, 1]));
-    expect(summary).toEqual({ scriptId: 0, stageCount: 4, flags: 0x01, active: true });
+    expect(summary).toEqual({
+      scriptId: 0,
+      stageCount: 4,
+      flags: 0x01,
+      loopMode: 1,
+      active: true,
+    });
     expect(describeScriptSummary(summary)).toBe(
       "ScriptSummary script=0 stages=4 loop=1 active=1",
     );

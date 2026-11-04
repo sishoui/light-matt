@@ -19,74 +19,44 @@
     >重连</text>
   </view>
 
-  <!-- ---------------- 顶部：灯组名 / 灯珠数 ---------------- -->
+  <!--
+    顶部（#95）：标题 = 灯组自定义名（不再重复一行标题块）。
+    右侧是灯珠数胶囊（**长按**弹圆盘）与三个圆形方案按钮；灯的开关在设备页。
+  -->
   <view class="strip-head">
     <view class="strip-head-main">
       <text class="strip-name">{{title}}</text>
       <text class="strip-meta">{{ledText}}</text>
     </view>
+    <view
+      class="led-capsule {{ledBusy ? 'busy' : ''}}"
+      bindlongpress="onLedCapsuleLongPress"
+      hover-class="led-capsule-hover"
+    >
+      <text class="led-capsule-text mono">{{ledCapsule}}</text>
+    </view>
   </view>
 
   <!--
-    方案 tab 行（#83）：按需增长，不再固定四个坑。
-    每套显示自己的圈码与「空白 / n 步」；「+ 新建」占用当前最小的空位，
-    四套都在用时禁用。删除前有二次确认，且会真的从灯控上清掉。
-    界面上只出现圈码与步数，不出现任何协议词或内部编号。
+    方案按钮（#95）：固定三个圆形数字，没有新增 / 删除入口。
+    有内容的方案点了立即启用并播放；空方案不写设备（避免刷成空白）。
   -->
   <view class="plan-bar">
-    <view class="plan-tabs">
+    <view class="plan-circles">
       <view
-        wx:for="{{planTabs}}"
+        wx:for="{{planCircles}}"
         wx:key="id"
-        class="plan-tab {{item.selected ? 'on' : ''}} {{item.playing ? 'playing' : ''}}"
+        class="plan-circle {{item.selected ? 'on' : ''}} {{item.hasContent ? '' : 'empty'}}"
         data-plan-id="{{item.id}}"
         bindtap="onPlanTap"
-        hover-class="plan-tab-hover"
+        hover-class="plan-circle-hover"
       >
-        <text class="plan-tab-label">{{item.label}}</text>
-        <text class="plan-tab-sub">{{item.summary}}</text>
-        <view wx:if="{{item.playing}}" class="plan-tab-dot"></view>
+        <text class="plan-circle-label">{{item.label}}</text>
+        <view wx:if="{{item.playing}}" class="plan-circle-dot"></view>
       </view>
     </view>
-    <view class="plan-actions">
-      <view
-        class="plan-action {{planCanAdd ? '' : 'disabled'}}"
-        hover-class="{{planCanAdd ? 'plan-action-hover' : ''}}"
-        bindtap="onPlanAdd"
-      >+ 新建</view>
-      <view
-        class="plan-action danger {{planDeleting >= 0 ? 'disabled' : ''}}"
-        hover-class="{{planDeleting >= 0 ? '' : 'plan-action-hover'}}"
-        bindtap="onPlanDelete"
-      >{{planDeleting >= 0 ? '删除中…' : '删除'}}</view>
-    </view>
+    <text class="plan-summary">{{planCircles[planSlot].summary}}</text>
     <text wx:if="{{planHint}}" class="plan-hint">{{planHint}}</text>
-  </view>
-
-  <!--
-    灯珠数滑块（#79）：拖动只改本地值，松手（bindchange）才下发。缩小且这条
-    灯组有越界光区时先弹二次确认；下发失败就地显示原因并保留原数量。
-    这里只改**当前这一组**，不影响其它灯组。
-  -->
-  <view class="led-count-bar">
-    <view class="led-count-head">
-      <text class="led-count-label">灯珠数</text>
-      <text class="led-count-value mono">{{ledSliderValue}} 颗{{ledPending ? ' · 未应用' : ''}}</text>
-    </view>
-    <slider
-      class="led-count-slider"
-      min="{{ledMin}}"
-      max="{{ledMax}}"
-      step="1"
-      value="{{ledSliderValue}}"
-      disabled="{{!ready || ledBusy}}"
-      activeColor="#ff9500"
-      backgroundColor="rgba(120, 120, 128, 0.2)"
-      block-size="22"
-      bindchanging="onLedCountChanging"
-      bindchange="onLedCountChange"
-    />
-    <text wx:if="{{ledHint}}" class="led-count-hint">{{ledHint}}</text>
   </view>
 
   <!-- ---------------- 简单 / 进阶 ---------------- -->
@@ -109,33 +79,34 @@
     </view>
   </view>
 
-  <!-- ---------------- 简单档：九张成品效果卡（三列，#81） ---------------- -->
+  <!-- ---------------- 简单档：一行一个灯效（#96） ----------------
+       不再是色块网格：左边名称、右边当前值，点它从底部弹出滚轮。 -->
   <block wx:if="{{mode === 'simple'}}">
     <view class="section">
       <view class="section-head">
-        <text class="section-title">选一个效果</text>
+        <text class="section-title">灯效</text>
         <text class="section-value">整组生效</text>
       </view>
 
-      <view class="quick-grid {{quickDisabledReason ? 'disabled' : ''}}">
+      <view class="effect-list {{quickDisabledReason ? 'disabled' : ''}}">
         <view
-          wx:for="{{quickCards}}"
-          wx:key="id"
-          class="quick-card {{item.selected ? 'selected' : ''}}"
-          data-card-id="{{item.id}}"
-          bindtap="onQuickCardTap"
-          hover-class="quick-card-hover"
+          wx:for="{{effectRows}}"
+          wx:key="key"
+          class="effect-row"
+          data-key="{{item.key}}"
+          bindtap="onEffectRowTap"
+          hover-class="effect-row-hover"
         >
-          <view class="quick-swatch" style="background: {{item.hex}}"></view>
-          <view class="quick-body">
-            <text class="quick-name">{{item.name}}</text>
-            <text class="quick-hint">{{item.hint}}</text>
+          <text class="effect-row-label">{{item.label}}</text>
+          <view class="effect-row-value">
+            <text class="effect-row-text">{{item.value}}</text>
+            <view class="effect-row-chevron"></view>
           </view>
-          <view wx:if="{{item.selected}}" class="quick-check"></view>
         </view>
       </view>
 
       <text wx:if="{{quickDisabledReason}}" class="section-hint">{{quickDisabledReason}}</text>
+      <text wx:if="{{quickHint}}" class="section-hint">{{quickHint}}</text>
     </view>
 
     <!-- 参数区：只出现这张卡支持的滑块（色相 / 饱和度 + 亮度；熄灭卡没有滑块） -->
@@ -158,13 +129,13 @@
           value="{{item.value}}"
           data-key="{{item.key}}"
           disabled="{{!ready}}"
-          activeColor="#ff9500"
+          activeColor="{{accentColor}}"
           backgroundColor="rgba(120, 120, 128, 0.2)"
           block-size="22"
           bindchanging="onParamChanging"
           bindchange="onParamChange"
         />
-        <!-- 滑块的补充说明（目前没有滑块需要说明：亮度走 v4 的逐光区 level，真实下发） -->
+        <!-- 滑块的补充说明（目前没有滑块需要说明：亮度走 v4 的逐分区 level，真实下发） -->
         <text wx:if="{{item.note}}" class="param-note">{{item.note}}</text>
       </view>
 
@@ -176,10 +147,36 @@
 
   <!-- ---------------- 进阶档：时间轴 + 时长（#65） ---------------- -->
   <block wx:if="{{mode === 'advanced'}}">
-    <view class="section timeline-section">
-      <view class="section-head">
-        <text class="section-title">时间轴</text>
-        <text class="section-value">{{timelineSummary}}</text>
+    <view class="timeline-section">
+      <!--
+        #99：时间轴是页面结构，不包在卡片里。标题放大，步骤数与总秒数降为副标题；
+        「加步骤」在标题右侧；没有「删步骤」按钮。循环是方案级设置，也放这一行。
+      -->
+      <view class="timeline-head">
+        <view class="timeline-head-main">
+          <text class="timeline-title">时间轴</text>
+          <text class="timeline-sub">{{timelineSummary}}</text>
+        </view>
+        <view class="timeline-head-right">
+          <view class="loop-control">
+            <text class="loop-caption">循环</text>
+            <view class="loop-options">
+              <view
+                wx:for="{{loopChoices}}"
+                wx:key="value"
+                class="loop-option {{item.selected ? 'on' : ''}} {{item.disabled ? 'disabled' : ''}}"
+                data-value="{{item.value}}"
+                bindtap="onLoopTap"
+                hover-class="{{item.disabled ? 'none' : 'loop-option-hover'}}"
+              >{{item.label}}</view>
+            </view>
+          </view>
+          <view
+            class="timeline-add {{stepCanAdd ? '' : 'disabled'}}"
+            hover-class="{{stepCanAdd ? 'timeline-add-hover' : ''}}"
+            bindtap="onStepAdd"
+          >+ 步骤</view>
+        </view>
       </view>
 
       <!--
@@ -204,7 +201,7 @@
           bindtouchend="onStepTouchEnd"
           bindtouchcancel="onStepTouchCancel"
         >
-          <!-- 缩略色带：按这一步的光区灯珠比例铺满整条 -->
+          <!-- 缩略色带：按这一步的分区灯珠比例铺满整条 -->
           <view class="timeline-bands">
             <view wx:for="{{item.bands}}" wx:for-item="band" wx:key="key" class="timeline-band" style="{{band.style}}"></view>
           </view>
@@ -213,62 +210,78 @@
         </view>
       </view>
 
-      <view class="timeline-actions">
-        <text class="section-hint">长按步骤可拖动换位置</text>
-        <view class="timeline-actions-right">
-          <view
-            class="timeline-add ghost {{stepCount <= 1 ? 'disabled' : ''}}"
-            hover-class="{{stepCount > 1 ? 'timeline-add-hover' : ''}}"
-            bindtap="onStepRemove"
-          >删步骤</view>
-          <view
-            class="timeline-add {{stepCanAdd ? '' : 'disabled'}}"
-            hover-class="{{stepCanAdd ? 'timeline-add-hover' : ''}}"
-            bindtap="onStepAdd"
-          >+ 加步骤</view>
-        </view>
-      </view>
+      <text class="timeline-hint">点一块选中，长按可拖动换位置</text>
 
-      <!-- 时长：拖动时上方块宽实时变化，最小单位 0.5 秒 -->
-      <view class="duration-block">
-        <view class="duration-head">
-          <text class="duration-label">这一步时长</text>
-          <text class="duration-value mono">{{stepDurationText}}</text>
+      <!--
+        #99 步骤气泡：选中步骤后出现在时间轴下方，箭头对准选中块正中。
+        自上而下：步骤名（长按可改）→ 副标题（时长 · 分区数）→ 时长滑轴 → 分区列表。
+      -->
+      <view wx:if="{{bubble.visible}}" class="step-bubble">
+        <view class="bubble-arrow" style="left: {{bubble.arrowPercent}}%"></view>
+        <view class="bubble-name-row">
+          <text class="bubble-name" bindlongpress="onStepRename">{{bubble.name}}</text>
+          <text class="bubble-sub">{{bubble.subtitle}}</text>
         </view>
-        <slider
-          class="duration-slider"
-          min="0.5"
-          max="30"
-          step="0.5"
-          value="{{stepDurationSeconds}}"
-          disabled="{{stepCount === 0}}"
-          activeColor="#ff9500"
-          backgroundColor="rgba(120, 120, 128, 0.2)"
-          block-size="24"
-          bindchanging="onDurationChanging"
-          bindchange="onDurationChange"
-        />
-        <view class="duration-ticks">
-          <text
-            wx:for="{{durationTicks}}"
-            wx:key="key"
-            class="duration-tick tick-{{item.align}}"
-            style="left: {{item.percent}}%"
-            data-ms="{{item.durationMs}}"
-            bindtap="onDurationTickTap"
-          >{{item.label}}</text>
+
+        <view class="duration-block">
+          <view class="duration-head">
+            <text class="duration-label">这一步时长</text>
+            <text class="duration-value mono">{{stepDurationText}}</text>
+          </view>
+          <slider
+            class="duration-slider"
+            min="0.5"
+            max="30"
+            step="0.5"
+            value="{{stepDurationSeconds}}"
+            disabled="{{stepCount === 0}}"
+            activeColor="{{accentColor}}"
+            backgroundColor="rgba(120, 120, 128, 0.2)"
+            block-size="24"
+            bindchanging="onDurationChanging"
+            bindchange="onDurationChange"
+          />
+          <view class="duration-ticks">
+            <text
+              wx:for="{{durationTicks}}"
+              wx:key="key"
+              class="duration-tick tick-{{item.align}}"
+              style="left: {{item.percent}}%"
+              data-ms="{{item.durationMs}}"
+              bindtap="onDurationTickTap"
+            >{{item.label}}</text>
+          </view>
         </view>
+
+        <!-- 分区列表：点一行展开该分区的背景层与特效层（两层编辑在下面）。 -->
+        <view wx:if="{{bubble.zones.length > 0}}" class="bubble-zones">
+          <view
+            wx:for="{{bubble.zones}}"
+            wx:key="segId"
+            class="bubble-zone-row {{item.expanded ? 'expanded' : ''}}"
+            data-seg-id="{{item.segId}}"
+            bindtap="onBubbleZoneTap"
+            hover-class="bubble-zone-hover"
+          >
+            <view class="bubble-zone-dot" style="background: {{item.hex}}"></view>
+            <text class="bubble-zone-range mono">{{item.rangeText}}</text>
+            <text class="bubble-zone-effect">{{item.effectText}}</text>
+            <view class="bubble-zone-chevron"></view>
+          </view>
+        </view>
+        <text wx:else class="bubble-empty">这一步还没有分区</text>
       </view>
 
       <text wx:if="{{stepHint}}" class="section-hint">{{stepHint}}</text>
     </view>
 
-    <!-- ---------------- 进阶档：光区轴（#66） ---------------- -->
+    <!-- ---------------- 进阶档：分区轴（#66） ---------------- -->
     <view class="section zone-section">
       <view class="section-head">
-        <text class="section-title">光区</text>
+        <text class="section-title">分区</text>
         <view class="axis-head-right">
           <text class="section-value">{{zoneSummary}}</text>
+          <view class="timeline-add preview-btn" bindtap="onPreviewToggle" hover-class="timeline-add-hover">预览</view>
           <view
             class="timeline-add zone-add {{zoneCanAdd ? '' : 'disabled'}}"
             hover-class="{{zoneCanAdd ? 'timeline-add-hover' : ''}}"
@@ -278,8 +291,8 @@
       </view>
 
       <!--
-        光区轴：每个光区按灯珠下标比例定位（left = 起点 / 灯珠数），没被覆盖的
-        灯珠画成灰条（点不动）。选中态用 2px 描边而不是换底色——光区本身就有
+        分区轴：每个分区按灯珠下标比例定位（left = 起点 / 灯珠数），没被覆盖的
+        灯珠画成灰条（点不动）。选中态用 2px 描边而不是换底色——分区本身就有
         颜色，换底色会让人分不清「这是它的颜色」还是「它被选中了」。
 
         选中的那一块两端各挂一个圆形手柄（#77）：手柄是块的绝对定位子元素，
@@ -297,7 +310,7 @@
         >
           <view wx:if="{{item.kind === 'zone'}}" class="zone-fill" style="background: {{item.hex}}"></view>
           <text wx:if="{{item.showLabel}}" class="zone-label">{{item.label}}</text>
-          <!-- 起止手柄：只有选中的光区才有（未选中时 handles 为空，不渲染节点）。 -->
+          <!-- 起止手柄：只有选中的分区才有（未选中时 handles 为空，不渲染节点）。 -->
           <view
             wx:for="{{item.handles}}"
             wx:for-item="handle"
@@ -308,7 +321,26 @@
         </view>
       </view>
 
-      <!-- 零光区：给引导，而不是一条没有任何说明的灰条。 -->
+      <!--
+        #97 预览条：按每个分区的颜色画出该组**每一颗灯珠**。
+        只读聚合视图（不绑任何 touch 事件），与可编辑的分区轴刻意区分开。
+      -->
+      <view wx:if="{{previewOpen}}" class="preview-block">
+        <view class="preview-head">
+          <text class="preview-title">预览</text>
+          <text class="preview-sub">每一颗灯珠按分区颜色画出，只读</text>
+        </view>
+        <view class="preview-strip">
+          <view
+            wx:for="{{previewLeds}}"
+            wx:key="index"
+            class="preview-led {{item.hex ? '' : 'empty'}} {{item.start ? 'is-start' : ''}} {{item.end ? 'is-end' : ''}}"
+            style="{{item.hex ? 'background: ' + item.hex : ''}}"
+          ></view>
+        </view>
+      </view>
+
+      <!-- 零分区：给引导，而不是一条没有任何说明的灰条。 -->
       <view wx:if="{{zoneGuide}}" class="zone-guide">
         <text class="zone-guide-text">{{zoneGuide}}</text>
       </view>
@@ -322,21 +354,19 @@
       </view>
 
       <view class="zone-actions">
-        <view
-          class="timeline-add {{selectedSegId >= 0 ? '' : 'disabled'}}"
-          hover-class="{{selectedSegId >= 0 ? 'timeline-add-hover' : ''}}"
-          bindtap="onZoneEditSelected"
-        >改范围</view>
+        <!-- #97：没有「改范围」按钮——再点一次选中的分区（或长按）就进入编辑。 -->
         <text class="section-hint">点一块选中；再点一次（或长按）改范围</text>
       </view>
 
       <text wx:if="{{zoneHint}}" class="section-hint">{{zoneHint}}</text>
     </view>
 
-    <!-- ---------------- 进阶档：效果面板（#67） ---------------- -->
+    <!-- ---------------- 进阶档：两层效果（#100） ----------------
+         每个分区两个平级槽位：背景层（铺底）与特效层（流动）。
+         「叠加效果」这一整块已经不存在——两层本身就是叠加。 -->
     <view class="section panel-section">
       <view class="section-head">
-        <text class="section-title">效果</text>
+        <text class="section-title">背景层</text>
         <view class="panel-head-right">
           <text class="section-value">{{panelSummary}}</text>
           <view wx:if="{{panelColorHex}}" class="param-preview" style="background: {{panelColorHex}}"></view>
@@ -396,13 +426,13 @@
             value="{{item.value}}"
             data-key="{{item.key}}"
             disabled="{{!ready}}"
-            activeColor="#ff9500"
+            activeColor="{{accentColor}}"
             backgroundColor="rgba(120, 120, 128, 0.2)"
             block-size="22"
             bindchanging="onPanelSliderChanging"
             bindchange="onPanelSliderChange"
           />
-          <!-- 滑块的补充说明（亮度走 v4 的逐光区 level，真实下发，不需要额外提示） -->
+          <!-- 滑块的补充说明（亮度走 v4 的逐分区 level，真实下发，不需要额外提示） -->
           <text wx:if="{{item.note}}" class="param-note">{{item.note}}</text>
         </view>
 
@@ -423,13 +453,13 @@
 
         <text wx:if="{{panelHint}}" class="section-hint">{{panelHint}}</text>
 
-        <!-- ---------------- 叠加层（#71 US49 / US50） ----------------
-             主效果之上可以再叠一层：爆闪 / 心跳这类短促效果叠在底色上就是「闪光」。
-             选项里没有「熄灭」（叠一层黑等于没做事，US50）。 -->
+        <!-- ---------------- 特效层（#100） ----------------
+             与背景层平级的第二个槽位：流星 / 随机闪烁这类流动的效果放在这里。
+             两层本身即叠加，界面不再有「叠加效果」这一层概念。 -->
         <view class="overlay-block">
           <view class="section-head overlay-head">
-            <text class="section-title">叠加效果</text>
-            <text class="section-value">{{overlayEnabled ? overlaySummary : '关闭'}}</text>
+            <text class="section-title">特效层</text>
+            <text class="section-value">{{overlayEnabled ? overlaySummary : '空'}}</text>
           </view>
 
           <view class="overlay-types">
@@ -445,7 +475,7 @@
           <block wx:if="{{overlayEnabled}}">
             <!-- 叠加方式：只在真有叠加层时出现（关闭时问「怎么叠」没有意义） -->
             <view class="panel-choice overlay-blend">
-              <text class="param-label">叠加方式</text>
+              <text class="param-label">混合方式</text>
               <view class="panel-choice-row">
                 <view
                   wx:for="{{overlayBlendOptions}}"
@@ -489,7 +519,7 @@
                 value="{{item.value}}"
                 data-key="{{item.key}}"
                 disabled="{{!ready}}"
-                activeColor="#ff9500"
+                activeColor="{{accentColor}}"
                 backgroundColor="rgba(120, 120, 128, 0.2)"
                 block-size="22"
                 bindchanging="onOverlaySliderChanging"
@@ -518,6 +548,64 @@
   </block>
 
   <!-- ---------------- 灯珠弹窗（#66）：不进主界面，只在新增 / 改范围时出现 ---------------- -->
+  <!-- ============ 灯效滚轮（#96）：点「灯效」行从底部弹出 ============ -->
+  <view wx:if="{{effectWheelOpen}}" class="dial-mask" bindtap="onEffectWheelClose">
+    <view class="dial-sheet wheel-sheet" catchtap="onDialStopPropagation">
+      <view class="sheet-grabber"></view>
+      <view class="dial-head">
+        <text class="dial-title">选择灯效</text>
+        <text class="dial-sub">选中立即生效</text>
+      </view>
+      <scroll-view scroll-y class="wheel-list">
+        <view
+          wx:for="{{effectOptions}}"
+          wx:key="id"
+          class="wheel-row {{item.selected ? 'on' : ''}}"
+          data-id="{{item.id}}"
+          bindtap="onEffectPick"
+          hover-class="wheel-row-hover"
+        >
+          <view class="wheel-row-main">
+            <text class="wheel-row-name">{{item.name}}</text>
+            <text class="wheel-row-hint">{{item.hint}}</text>
+          </view>
+          <view wx:if="{{item.check}}" class="wheel-row-check"></view>
+        </view>
+      </scroll-view>
+      <view class="dial-cancel" bindtap="onEffectWheelClose">取消</view>
+    </view>
+  </view>
+
+  <!-- ============ 灯珠数圆盘（#95）：长按胶囊打开，转动调整，松手下发 ============ -->
+  <view wx:if="{{dialOpen}}" class="dial-mask" bindtap="onDialClose">
+    <view class="dial-sheet" catchtap="onDialStopPropagation">
+      <view class="sheet-grabber"></view>
+      <view class="dial-head">
+        <text class="dial-title">灯珠数</text>
+        <text class="dial-sub">{{dialPending ? '松手后生效' : '转动圆盘调整'}}</text>
+      </view>
+      <view
+        class="dial-face"
+        bindtouchstart="onDialTouchStart"
+        catchtouchmove="onDialTouchMove"
+        bindtouchend="onDialTouchEnd"
+        bindtouchcancel="onDialTouchEnd"
+      >
+        <view class="dial-ring"></view>
+        <view wx:for="{{dialTicks}}" wx:key="value" class="dial-tick {{item.major ? 'major' : ''}}" style="transform: rotate({{(item.value - 1) * 3.6}}deg);">
+          <view class="dial-tick-line"></view>
+          <text wx:if="{{item.label}}" class="dial-tick-label">{{item.label}}</text>
+        </view>
+        <view class="dial-center">
+          <text class="dial-value mono">{{dialValue}}</text>
+          <text class="dial-unit">颗</text>
+        </view>
+      </view>
+      <text class="dial-hint">范围 1–100；缩小到会裁掉分区时会先问你</text>
+      <view class="dial-cancel" bindtap="onDialClose">取消</view>
+    </view>
+  </view>
+
   <view wx:if="{{pickerOpen}}" class="picker-mask" bindtap="onPickerMaskTap">
     <view class="picker-sheet" catchtap="onPickerStopPropagation">
       <view class="picker-head">
@@ -538,7 +626,7 @@
           bindtap="onPickerCellTap"
         >
           <text class="picker-cell-no">{{item.label}}</text>
-          <!-- 别人光区的格子置灰，只留一个小色点说明它归哪个光区。 -->
+          <!-- 别人分区的格子置灰，只留一个小色点说明它归哪个分区。 -->
           <view
             wx:if="{{item.ownerHex}}"
             class="picker-owner-dot"
@@ -548,7 +636,7 @@
       </view>
 
       <!-- 两个数字滚轮（#78）：值域只含与锚点连通的连续空闲灯珠，
-           被别的光区占着的序号根本不出现在候选里，所以非法区间选不出来。 -->
+           被别的分区占着的序号根本不出现在候选里，所以非法区间选不出来。 -->
       <view class="picker-wheels">
         <view class="picker-wheel">
           <text class="picker-wheel-tag">起点</text>
@@ -590,7 +678,7 @@
       <text wx:if="{{pickerError}}" class="picker-error">{{pickerError}}</text>
 
       <view class="picker-foot">
-        <button class="btn ghost picker-btn" bindtap="onPickerCancel">取消</button>
+        <!-- #97：没有「取消」按钮——点空白处就关。 -->
         <button
           wx:if="{{pickerEditing}}"
           class="btn danger picker-btn"
@@ -605,17 +693,10 @@
     </view>
   </view>
 
-  <!-- ---------------- 底部：唯一的主按钮 ---------------- -->
-  <view class="apply-bar">
-    <button
-      class="btn primary apply-play"
-      disabled="{{!ready || applying}}"
-      bindtap="onApplyAndPlay"
-    >{{applying ? '正在应用…' : '应用并播放'}}</button>
-    <!-- 写入失败就地说明原因（不弹模态），见 decisions §5 -->
-    <text wx:if="{{applyError}}" class="apply-error">{{applyError}}</text>
-  </view>
-
+  <!--
+    #96：没有「应用并播放」按钮。任何改动在防抖后立即生效；
+    写入失败在页面顶部一行说明（不弹模态）。
+  -->
   <view class="footer">
     <text class="footer-hint">灯效以灯控为准{{mock ? '（演示模式）' : ''}}</text>
   </view>

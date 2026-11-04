@@ -24,12 +24,70 @@
  * 已提交的那一套完全不动。commit 成功才整体覆盖。
  */
 
-/* 播放状态（State 字节 12，docs/protocol-v4.md §7）。 */
+/* 播放状态（State 字节 9，docs/protocol-v4.md §7）。 */
 typedef enum {
     LUMEN_PLAYBACK_STOPPED = 0,
     LUMEN_PLAYBACK_PLAYING = 1,
     LUMEN_PLAYBACK_PAUSED = 2,
 } lumen_playback_state_t;
+
+/*
+ * 循环模式（#98，docs/protocol-v4.md §7.1 / §9.6）：SetPlayback / ActivateScript
+ * 的 loop 字节从布尔扩成三值。
+ *
+ * 取值就是线上字节，**不做重映射**：0 不循环 / 1 全部循环 / 2 最后一步循环。
+ * 旧固件只接受 0/1，收到 2 按 §5 回 InvalidParam 且不改任何配置——这正是
+ * 「旧固件安全拒绝」的实现依据，所以这里的枚举值必须与线上字节一一对应。
+ */
+typedef enum {
+    LUMEN_LOOP_NONE = 0,
+    LUMEN_LOOP_ALL = 1,
+    LUMEN_LOOP_LAST = 2,
+} lumen_loop_mode_t;
+
+#define LUMEN_LOOP_MAX LUMEN_LOOP_LAST
+
+/*
+ * State 字节 10（flags）与 ScriptSummary 0x85 的 flags 共用一套位布局
+ * （docs/protocol-v4.md §7.3 / §7.4）：
+ *   bit0    循环中（loop != 0）——**保持旧语义**，旧读者仍能看到「在循环」
+ *   bit1    有激活剧本（State）/ active（ScriptSummary）
+ *   bit2    最后一步循环（loop == 2）
+ *   bit3-7  保留 = 0
+ *
+ * 剧本 blob 的 flags 字节没有「激活」概念（激活 id 是独立字段），所以那边
+ * bit1 恒 0，其余位含义不变——**同一张表**，不需要读者记两套。
+ */
+#define LUMEN_PLAYBACK_FLAG_LOOP 0x01u
+#define LUMEN_PLAYBACK_FLAG_ACTIVE 0x02u
+#define LUMEN_PLAYBACK_FLAG_LOOP_LAST 0x04u
+#define LUMEN_PLAYBACK_FLAGS_RESERVED 0xF8u
+
+/*
+ * 循环模式 → flags 字节（blob / State / ScriptSummary 共用这一份）。
+ * 越界值按「不循环」写，绝不把未知模式悄悄写成「全循环」。
+ */
+static inline uint8_t lumen_loop_flags(uint8_t loop_mode)
+{
+    switch (loop_mode) {
+    case LUMEN_LOOP_ALL:
+        return LUMEN_PLAYBACK_FLAG_LOOP;
+    case LUMEN_LOOP_LAST:
+        return (uint8_t)(LUMEN_PLAYBACK_FLAG_LOOP | LUMEN_PLAYBACK_FLAG_LOOP_LAST);
+    case LUMEN_LOOP_NONE:
+    default:
+        return 0;
+    }
+}
+
+/* flags 字节 → 循环模式；矛盾组合（bit2 无 bit0）回落到「不循环」。 */
+static inline uint8_t lumen_loop_from_flags(uint8_t flags)
+{
+    if ((flags & LUMEN_PLAYBACK_FLAG_LOOP) == 0) {
+        return LUMEN_LOOP_NONE;
+    }
+    return (flags & LUMEN_PLAYBACK_FLAG_LOOP_LAST) != 0 ? LUMEN_LOOP_LAST : LUMEN_LOOP_ALL;
+}
 
 /* 一个阶段：固定时长 + 淡入淡出时长 + 全部灯带的段配置（段用 active 位标记是否使用）。 */
 typedef struct {
@@ -76,7 +134,7 @@ typedef struct {
     uint8_t script_id;    /* LUMEN_NO_SCRIPT = 没有激活剧本 */
     uint8_t stage_index;  /* 当前阶段（播放头） */
     uint8_t state;        /* lumen_playback_state_t */
-    bool loop;            /* 循环开关 */
+    uint8_t loop;         /* lumen_loop_mode_t：0 不循环 / 1 全部循环 / 2 最后一步循环 */
     bool hold_last;       /* 非循环播完：停在最后阶段画面 */
     uint32_t elapsed_ms;  /* 当前阶段内已播放时长（不含暂停时间） */
     uint32_t last_tick_ms;/* 上一次推进/冻结的时刻（真实时间） */
@@ -195,9 +253,14 @@ uint8_t lumen_script_stage_count(const lumen_script_store_t *store, uint8_t scri
 
 void lumen_script_playback_init(lumen_script_playback_t *playback);
 
-/* 激活：选剧本、写 loop，播放头回到 0、停止态（不自动播放）。 */
-void lumen_script_playback_select(lumen_script_playback_t *playback, uint8_t script_id, bool loop,
-                                  uint32_t now_ms);
+/*
+ * 激活：选剧本、写 loop 模式，播放头回到 0、停止态（不自动播放）。
+ *
+ * loop 取值是 lumen_loop_mode_t（0/1/2），越界由命令层拒绝；这里不做钳位，
+ * 让非法值在测试里能被看见。
+ */
+void lumen_script_playback_select(lumen_script_playback_t *playback, uint8_t script_id,
+                                  uint8_t loop, uint32_t now_ms);
 
 /* stop：播放头回 0，停止态，画面交回静态配置。 */
 void lumen_script_playback_stop(lumen_script_playback_t *playback, uint32_t now_ms);
@@ -218,7 +281,11 @@ void lumen_script_playback_pause(lumen_script_playback_t *playback, uint32_t now
  *
  * PLAYING 时用 `while (elapsed >= duration)` 追上所有过期阶段：
  * BLE 可能把渲染任务推迟超过一个阶段，一次补齐而不是卡在旧阶段。
- * 非循环走完最后阶段 → STOPPED + hold_last（停在最后一阶段画面）。
+ *
+ * 走完最后阶段时的三种去向（#98）：
+ *   loop = 0  → STOPPED + hold_last（停在最后一阶段画面）
+ *   loop = 1  → 回到阶段 0（全部循环）
+ *   loop = 2  → **原地重播最后一步**（stage_index 不变，只重置相位）
  *
  * 返回 true 表示阶段变了（调用方据此重置各段 t0_ms，即「阶段切换重置相位」）。
  * script_time_ms 非 NULL 时写回剧本时间轴（= now - 累计暂停时长），

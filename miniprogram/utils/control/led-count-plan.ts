@@ -5,14 +5,14 @@
  *
  * 设备信息页与灯组详情页各有一条 1–100 的滑块，语义相同：拖动只改本地值，
  * 松手才下发（SetLedCount 要重建 led_strip 句柄，ACK 上限 3000ms，不能逐帧发）。
- * 缩小灯珠数时还要先本地检查越界的光区 / 草稿，确认后才截断。
+ * 缩小灯珠数时还要先本地检查越界的分区 / 草稿，确认后才截断。
  *
  * 这些规则**两条页面都要用**，放进页面就会各写一份、迟早漂移；而且它们只有
  * 纯数据，可以直接单测（部分越界 / 完全越界 / 无越界 / 改大）。
  *
  * ## 区间语义
  *
- * 光区是**闭区间** `[start, end]`，合法灯珠下标是 `0..newLedCount-1`。所以：
+ * 分区是**闭区间** `[start, end]`，合法灯珠下标是 `0..newLedCount-1`。所以：
  *
  *  - `end < newLedCount` → 完全在范围内，**原样保留**（改大时全部走这支）；
  *  - `start >= newLedCount` → 整段落在新长度之外，**删除**；
@@ -50,7 +50,7 @@ export function sumStripLeds(counts: readonly number[]): number {
   return total;
 }
 
-/** 一条光区在缩小到 `newLedCount` 之后的去向。 */
+/** 一条分区在缩小到 `newLedCount` 之后的去向。 */
 export interface ShrinkPlan {
   /** 完全在范围内，原样保留。 */
   kept: SegmentSpec[];
@@ -58,15 +58,15 @@ export interface ShrinkPlan {
   clamped: SegmentSpec[];
   /** 整段落在新长度之外，应删除。 */
   dropped: SegmentSpec[];
-  /** 受影响的光区数（= clamped + dropped，即「有 n 个光区超出新长度」）。 */
+  /** 受影响的分区数（= clamped + dropped，即「有 n 个分区超出新长度」）。 */
   affected: number;
 }
 
 /**
- * 计算缩小灯珠数时每条光区的去向（**纯函数**，不改入参）。
+ * 计算缩小灯珠数时每条分区的去向（**纯函数**，不改入参）。
  *
  * 改大时所有 `end < newLedCount`，全部进 `kept`，`affected` 为 0——
- * 「改大不会改动任何已有光区」由此保证。
+ * 「改大不会改动任何已有分区」由此保证。
  */
 export function planShrink(zones: readonly SegmentSpec[], newLedCount: number): ShrinkPlan {
   const last = clampLedCount(newLedCount) - 1;
@@ -93,14 +93,14 @@ interface RangeLike {
 }
 
 /**
- * 统计「会超出新长度」的光区数（给确认文案的数字）。
+ * 统计「会超出新长度」的分区数（给确认文案的数字）。
  *
  * 口径：
- *  - **设备光区**各自计数；
- *  - **草稿光区**按各槽位（方案）分别计数——同一段定义出现在两套方案里是
+ *  - **设备分区**各自计数；
+ *  - **草稿分区**按各槽位（方案）分别计数——同一段定义出现在两套方案里是
  *    两份编排，不该合并成一个；
- *  - 但**与设备光区完全同一定义**的草稿段不再重复计：草稿往往是从设备播种
- *    出来的同一份东西（`seedStepFromReports`），相加会把一个光区算成两个，
+ *  - 但**与设备分区完全同一定义**的草稿段不再重复计：草稿往往是从设备播种
+ *    出来的同一份东西（`seedStepFromReports`），相加会把一个分区算成两个，
  *    确认文案就会吓人。
  *
  * 去重键是 `segId:start:end`（不含槽位号：同一段在方案里可以占同一个槽位）。
@@ -125,7 +125,7 @@ export function affectedZoneCount(
         continue;
       }
       const key = zoneKey(zone);
-      /* 与设备那一份是同一个光区（播种来的副本）：不重复计。 */
+      /* 与设备那一份是同一个分区（播种来的副本）：不重复计。 */
       if (deviceKeys.has(key) || seen.has(key)) {
         continue;
       }
@@ -136,30 +136,30 @@ export function affectedZoneCount(
   return count;
 }
 
-/** 光区在去重口径里的身份（区间 + 槽位；不含灯组，调用方已按灯组过滤）。 */
+/** 分区在去重口径里的身份（区间 + 槽位；不含灯组，调用方已按灯组过滤）。 */
 function zoneKey(zone: RangeLike): string {
   return `${zone.segId}:${zone.start}:${zone.end}`;
 }
 
 /** 二次确认的文案：带数量、带新长度，说明截断规则。 */
 export function shrinkConfirmText(affected: number, newLedCount: number): string {
-  return `有 ${affected} 个光区超出新长度（${clampLedCount(newLedCount)} 颗），确认后越界部分会截到新末尾，完全越界的会被删除。`;
+  return `有 ${affected} 个分区超出新长度（${clampLedCount(newLedCount)} 颗），确认后越界部分会截到新末尾，完全越界的会被删除。`;
 }
 
 /** 一份草稿缩小后的结果。 */
 export interface DraftShrink {
   /** 清理后的草稿；没有变化时**返回原对象**（引用相等 = 什么都不用存）。 */
   draft: ScriptDraft;
-  /** 这条灯组受影响的光区数。 */
+  /** 这条灯组受影响的分区数。 */
   affected: number;
   /** 是否真的改了（有删除或截断）。 */
   changed: boolean;
 }
 
 /**
- * 把一份（设备级）草稿里**某条灯组**的光区按新长度清理。
+ * 把一份（设备级）草稿里**某条灯组**的分区按新长度清理。
  *
- * 只动 `stripId` 那一片：其它灯组、其它步骤的光区一字不改（#75 的设备级草稿
+ * 只动 `stripId` 那一片：其它灯组、其它步骤的分区一字不改（#75 的设备级草稿
  * 里各组的切片共存）。其它灯组自己的长度是它们自己的事。
  */
 export function shrinkDraft(
@@ -211,7 +211,7 @@ export interface DraftsShrink {
   drafts: ScriptDraft[];
   /** 真正被改过的槽位下标（落盘用）。 */
   changedSlots: number[];
-  /** 受影响光区总数（去重口径；见 `affectedZoneCount`）。 */
+  /** 受影响分区总数（去重口径；见 `affectedZoneCount`）。 */
   affected: number;
 }
 
@@ -248,7 +248,7 @@ export function shrinkDrafts(
   };}
 
 /**
- * 草稿里某条灯组的全部光区，**按方案槽位分组**（确认文案的计数输入）。
+ * 草稿里某条灯组的全部分区，**按方案槽位分组**（确认文案的计数输入）。
  *
  * 分组而不是拉平：`affectedZoneCount` 只在同一槽位内去重，跨槽位的同一段
  * 定义是两份编排，要分别计。

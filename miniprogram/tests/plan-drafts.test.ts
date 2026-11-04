@@ -6,7 +6,7 @@
  * 逐条丢弃，不整表失败、不把脏结构写进下发帧。
  *
  * #75 起草稿是**设备级**的：方案属于设备（4 个固定 `script_id`），灯组只是
- * 编辑视角。所以键里不再有灯组维度，同一套方案里各灯组的光区切片共存。
+ * 编辑视角。所以键里不再有灯组维度，同一套方案里各灯组的分区切片共存。
  * 旧键（`deviceKey#stripId#slot`）在第一次读取时一次性迁移：同一槽位取
  * 灯组号最小的那份，其余丢弃。
  */
@@ -60,7 +60,7 @@ function segment(stripId: number, segId: number, hue: number, start = 0, end = 9
   };
 }
 
-/** 一个光区（给 `writeStepZones` 用）。 */
+/** 一个分区（给 `writeStepZones` 用）。 */
 function zone(stripId: number, segId: number, hue: number) {
   return buildZoneSpec({
     stripId,
@@ -82,9 +82,9 @@ function zone(stripId: number, segId: number, hue: number) {
 }
 
 /**
- * `steps` 个步骤的草稿；第一步带一条光区（`hue === 0` 时不留光区）。
+ * `steps` 个步骤的草稿；第一步带一条分区（`hue === 0` 时不留分区）。
  *
- * `stripId` 决定那条光区属于哪条灯组——迁移用例靠它区分来源。
+ * `stripId` 决定那条分区属于哪条灯组——迁移用例靠它区分来源。
  */
 function draftWithStep(steps: number, hue = 1000, stripId = 0): ScriptDraft {
   const segments = hue === 0 ? [] : [segment(stripId, 0, hue)];
@@ -481,7 +481,7 @@ describe("坏数据容忍", () => {
     expect(drafts![2]?.stages).toHaveLength(2);
   });
 
-  it("坏光区被丢弃，但整步仍能读回（不因为一条坏段丢掉整个方案）", () => {
+  it("坏分区被丢弃，但整步仍能读回（不因为一条坏段丢掉整个方案）", () => {
     const good = draftWithStep(1);
     const storage = createSessionStorage({
       [PLAN_DRAFTS_KEY]: JSON.stringify({

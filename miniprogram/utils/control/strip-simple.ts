@@ -6,7 +6,7 @@
  *
  *  1. 方案槽位按钮的文案（「方案 ①」+「空白 / N 个步骤」）；
  *  2. HSV 三滑块的取值范围（亮度是协议 v4 的 `level`，**真实下发**）；
- *  3. 设备读回值 → 「当前是不是某一张卡」（整组一个光区、无叠加层才算）。
+ *  3. 设备读回值 → 「当前是不是某一张卡」（整组一个分区、无叠加层才算）。
  *
  * 卡片表本身在 `quick-effects.ts`（`QUICK_CARDS` / `buildQuickCardViews` /
  * `buildQuickPanel`），这里不重新定义任何一张卡。
@@ -77,7 +77,7 @@ export function clampLevel(level: number): number {
  *
  * 与 `clampLevel` 的区别：滑块的显示下限是 5（0 会让整组不出光，不给拖），
  * 但 **0 在协议里合法**（这一层不出光）。设备读回 0 时必须原样保留，否则
- * 「读-改-写」会把用户刻意关掉的光区偷偷点亮。
+ * 「读-改-写」会把用户刻意关掉的分区偷偷点亮。
  */
 export function clampZoneLevel(level: number): number {
   if (!Number.isFinite(level)) {
@@ -126,7 +126,7 @@ export interface SimpleParamView {
  * 「只显示该卡支持的控件」的判据来自卡片表自己的 `shows`：
  *  - `shows.color` → 色相（彩虹卡自己循环变色，没有「色相」可言）；
  *  - `shows.color || shows.saturation` → 饱和度（彩虹卡用它调浓淡）；
- *  - 亮度对**会有光**的卡片恒在，真实下发（v4 的逐光区 `level`，票 #69 接通）。
+ *  - 亮度对**会有光**的卡片恒在，真实下发（v4 的逐分区 `level`，票 #69 接通）。
  *
  * 熄灭卡（#81）不给亮度滑块：它的参数块全 0、`level` 也归 0，给一个拖了
  * 也不起作用的滑块只会让人以为坏了。它只剩一句说明。
@@ -248,7 +248,7 @@ export interface SimpleDeviceState {
   /** 协议色相 0-65535（不是滑块度数）。 */
   hue: number;
   sat: number;
-  /** v4：该光区主效果的亮度 0-100（设备权威值，滑块据它回显）。 */
+  /** v4：该分区主效果的亮度 0-100（设备权威值，滑块据它回显）。 */
   level: number;
   colorHex: string;
 }
@@ -257,7 +257,7 @@ export interface SimpleDeviceState {
  * 判断设备上的这一组是否「整组 = 一张成品卡」。
  *
  * 只有同时满足才敢回填界面（否则界面会高亮一个设备上并不存在的效果）：
- *  1. 只有一个光区；
+ *  1. 只有一个分区；
  *  2. 它从 0 覆盖到最后一颗灯珠；
  *  3. 没有叠加层（`layer1.type === NO_EFFECT`）；
  *  4. 层类型能反推出某张卡（`inferQuickCard`）。

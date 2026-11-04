@@ -906,7 +906,7 @@ static void run_app_case(const vector_case_t *c)
             case LUMEN_CMD_SET_PLAYBACK:
                 CHECK(outcome.script_op == LUMEN_SCRIPT_OP_PLAYBACK);
                 CHECK(outcome.script_action == frame.payload[0]);
-                CHECK(outcome.script_loop == (frame.payload[1] != 0));
+                CHECK(outcome.script_loop == frame.payload[1]);
                 break;
             case LUMEN_CMD_SCRIPT_BEGIN:
                 CHECK(outcome.script_op == LUMEN_SCRIPT_OP_BEGIN);
@@ -950,7 +950,7 @@ static void run_app_case(const vector_case_t *c)
             case LUMEN_CMD_ACTIVATE_SCRIPT:
                 CHECK(outcome.script_op == LUMEN_SCRIPT_OP_ACTIVATE);
                 CHECK(outcome.script_id == frame.payload[0]);
-                CHECK(outcome.script_loop == (frame.payload[1] != 0));
+                CHECK(outcome.script_loop == frame.payload[1]);
                 break;
             case LUMEN_CMD_QUERY_SCRIPT:
                 CHECK(outcome.script_op == LUMEN_SCRIPT_OP_QUERY);
@@ -2680,9 +2680,10 @@ static void test_state_blob(void)
     memcpy(bad, blob, sizeof(bad));
     bad[LUMEN_SEG_COUNT_OFFSET] = 3;
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
-    /* c) 未知 type 0x07（记录内的 layer0.type 在偏移 4）。 */
+    /* c) 未知 type 0x08（记录内的 layer0.type 在偏移 4）。0x07 是随机闪烁，
+     *    不再未知，所以「未知类型」必须用第一个真正的空洞。 */
     memcpy(bad, blob, sizeof(bad));
-    bad[seg_off + 4] = 0x07;
+    bad[seg_off + 4] = 0x08;
     CHECK(!lumen_state_blob_decode(bad, sizeof(bad), &out));
     /* d) 把 seg 1 挪到 [10-20]，与 seg 0 的 [0-15] 重叠。 */
     memcpy(bad, blob, sizeof(bad));
@@ -2782,10 +2783,11 @@ static void test_effects_dispatch(void)
     CHECK(lumen_effect_type_known(LUMEN_EFFECT_STROBE));
     CHECK(lumen_effect_type_known(LUMEN_EFFECT_HEARTBEAT));
     CHECK(lumen_effect_type_known(LUMEN_EFFECT_OFF));
-    CHECK(!lumen_effect_type_known(0x07));
+    CHECK(lumen_effect_type_known(LUMEN_EFFECT_FLICKER));
+    CHECK(!lumen_effect_type_known(0x08));
     CHECK(!lumen_effect_type_known(0xFF));
 
-    /* 七种类型的像素实现全部就绪（#25 / #30 / #31 / #74）。 */
+    /* 八种类型的像素实现全部就绪（#25 / #30 / #31 / #74 / #98）。 */
     CHECK(lumen_effect_type_implemented(LUMEN_EFFECT_STATIC));
     CHECK(lumen_effect_type_implemented(LUMEN_EFFECT_BREATHING));
     CHECK(lumen_effect_type_implemented(LUMEN_EFFECT_RAINBOW));
@@ -2793,9 +2795,10 @@ static void test_effects_dispatch(void)
     CHECK(lumen_effect_type_implemented(LUMEN_EFFECT_STROBE));
     CHECK(lumen_effect_type_implemented(LUMEN_EFFECT_HEARTBEAT));
     CHECK(lumen_effect_type_implemented(LUMEN_EFFECT_OFF));
-    CHECK(!lumen_effect_type_implemented(0x07));
+    CHECK(lumen_effect_type_implemented(LUMEN_EFFECT_FLICKER));
+    CHECK(!lumen_effect_type_implemented(0x08));
 
-    /* 参数块长度（effects-spec §2.8）：三种新类型都复用 7 字节。 */
+    /* 参数块长度（effects-spec §2.8）：所有动画类型都复用 7 字节。 */
     CHECK(lumen_effect_param_len(LUMEN_EFFECT_STATIC) == 3);
     CHECK(lumen_effect_param_len(LUMEN_EFFECT_BREATHING) == 7);
     CHECK(lumen_effect_param_len(LUMEN_EFFECT_RAINBOW) == 7);
@@ -2803,7 +2806,8 @@ static void test_effects_dispatch(void)
     CHECK(lumen_effect_param_len(LUMEN_EFFECT_STROBE) == 7);
     CHECK(lumen_effect_param_len(LUMEN_EFFECT_HEARTBEAT) == 7);
     CHECK(lumen_effect_param_len(LUMEN_EFFECT_OFF) == 7);
-    CHECK(lumen_effect_param_len(0x07) == 0);
+    CHECK(lumen_effect_param_len(LUMEN_EFFECT_FLICKER) == 7);
+    CHECK(lumen_effect_param_len(0x08) == 0);
 
     /* 静态与熄灭不是动画（熄灭是常量黑，不该逼渲染层逐帧重画）；其余是。 */
     CHECK(!lumen_effect_is_animated(LUMEN_EFFECT_STATIC));
@@ -4025,6 +4029,473 @@ static void test_effects_new_types_animation(void)
     layer_set(LUMEN_EFFECT_BREATHING, 0, 255, 1000, 0, 0, &mixed.layer[0]);
     layer_set(LUMEN_EFFECT_OFF, 0, 0, 0, 0, 0, &mixed.layer[1]);
     CHECK(lumen_segment_is_animated(&mixed));
+}
+
+/* ---------------- #98 流光密度 / 实色拖尾 ---------------- */
+
+/* 剧本下发 helper 定义在靠后的剧本测试区（#32）；这里先用后定义，前向声明。 */
+static bool script_download(lumen_script_store_t *store, uint8_t script_id, uint8_t stages,
+                            uint16_t duration_ms);
+
+/* 收集一段里所有满亮（65535）的段内偏移。 */
+static uint16_t comet_heads(const lumen_segment_t *seg, uint32_t now_ms, uint16_t *out,
+                            uint16_t cap)
+{
+    uint16_t n = lumen_effect_segment_length(seg);
+    uint16_t count = 0;
+    for (uint16_t off = 0; off < n && count < cap; ++off) {
+        if (lumen_effect_comet_gain_q16(seg, (uint16_t)(seg->start + off), now_ms) == 65535) {
+            out[count++] = off;
+        }
+    }
+    return count;
+}
+
+/*
+ * 造一段有 heads 个头的流光，**段长 = heads × 16**，保证 n 能被 heads 整除
+ * ——这样每个头的相位都正好落在一颗灯珠上，测试才能精确断言头的位置。
+ * 段长不能被头数整除时头会落在两颗灯之间（现实中很常见，也是允许的），
+ * 但那种情况没法用「某颗灯满亮」判断头在哪。
+ */
+static lumen_segment_t make_comet_heads(uint8_t heads, uint8_t tail, bool solid,
+                                        uint8_t flags_extra)
+{
+    uint8_t flags = (uint8_t)(flags_extra |
+                              (uint8_t)(((heads - 1u) << LUMEN_COMET_DENSITY_SHIFT) &
+                                        LUMEN_COMET_DENSITY_MASK));
+    if (solid) {
+        flags = (uint8_t)(flags | LUMEN_COMET_FLAG_SOLID_TAIL);
+    }
+    return make_animated(LUMEN_EFFECT_COMET, 0, (uint8_t)(heads * 16u - 1u), 0, 255, 1000, tail,
+                         flags, 0);
+}
+
+static void test_effects_comet_density(void)
+{
+    uint16_t heads[8];
+
+    /*
+     * 头数量 = flags bit2-3 + 1。tail = 0 时每个头都只有一颗灯，
+     * 所以「满亮的偏移」恰好就是头的位置，且沿整条**均分**。
+     */
+    for (uint8_t want = 1; want <= 4; ++want) {
+        lumen_segment_t seg = make_comet_heads(want, 0, false, 0);
+        uint16_t n = lumen_effect_segment_length(&seg);
+        uint16_t count = comet_heads(&seg, 0, heads, sizeof(heads) / sizeof(heads[0]));
+        CHECK(count == want);
+        /* 第 k 个头领先 k/want 圈 ⇒ 段内偏移 k × n/want（n 是 want 的整数倍）。 */
+        for (uint16_t k = 0; k < count; ++k) {
+            CHECK(heads[k] == (uint16_t)((uint32_t)k * n / want));
+        }
+        /* 越过一整圈：相位回绕后头的位置不变。 */
+        uint16_t again[8];
+        uint16_t count2 = comet_heads(&seg, 1000, again, sizeof(again) / sizeof(again[0]));
+        CHECK(count2 == count);
+        for (uint16_t k = 0; k < count; ++k) {
+            CHECK(again[k] == heads[k]);
+        }
+    }
+
+    /*
+     * 相位推进时每个头都前进：N=16、周期 1000ms，半周期时 1 个头到 8；
+     * 2 个头时头 0 → 8、头 1 → 0（(1/2 + 1/2) mod 1）。
+     */
+    lumen_segment_t one = make_comet_heads(1, 0, false, 0);
+    CHECK(comet_brightest_offset(&one, 500) == 8); /* n=16 的半条 */
+    lumen_segment_t two = make_comet_heads(2, 0, false, 0); /* n=32 */
+    /* 两个头相距半条；半周期后它们互换位置，所以集合仍是 {0, 16}。 */
+    CHECK(comet_heads(&two, 500, heads, 8) == 2);
+    CHECK(heads[0] == 0 && heads[1] == 16);
+
+    /*
+     * 多个头重叠时**取最大值**合成，绝不相加：满拖尾（tail = 255）时整条都被
+     * 尾巴覆盖，但没有任何一颗的增益超过单个头部的 65535。
+     */
+    for (uint8_t want = 1; want <= 4; ++want) {
+        lumen_segment_t seg = make_comet_heads(want, 255, false, 0);
+        uint16_t len = lumen_effect_segment_length(&seg);
+        for (uint16_t off = 0; off < len; ++off) {
+            uint32_t gain = lumen_effect_comet_gain_q16(&seg, off, 0);
+            CHECK(gain <= 65535u); /* 溢出即「相加」 */
+            CHECK(gain > 0);       /* 满拖尾覆盖整条 */
+        }
+    }
+
+    /* 多一个头只会更亮或不变，且永不翻倍（两段都取 32 颗以便逐位比较）。 */
+    lumen_segment_t single = make_animated(LUMEN_EFFECT_COMET, 0, 31, 0, 255, 1000, 200, 0, 0);
+    lumen_segment_t dual = make_animated(LUMEN_EFFECT_COMET, 0, 31, 0, 255, 1000, 200,
+                                         (uint8_t)(1u << LUMEN_COMET_DENSITY_SHIFT), 0);
+    for (uint16_t off = 0; off < 32; ++off) {
+        uint32_t a = lumen_effect_comet_gain_q16(&single, off, 0);
+        uint32_t b = lumen_effect_comet_gain_q16(&dual, off, 0);
+        CHECK(b >= a);
+        CHECK(b <= 65535u);
+    }
+    /* 不在任何头 / 尾路径上的位置逐字节相同（证明没有额外叠加）。 */
+    CHECK(lumen_effect_comet_gain_q16(&single, 5, 0) ==
+          lumen_effect_comet_gain_q16(&dual, 5, 0));
+    CHECK(lumen_effect_comet_gain_q16(&single, 13, 0) ==
+          lumen_effect_comet_gain_q16(&dual, 13, 0));
+
+    /* 密度只在 flags bit2-3：bit4-7 非 0 会被校验拒。 */
+    lumen_segment_t bad_flags =
+        make_animated(LUMEN_EFFECT_COMET, 0, 15, 0, 255, 1000, 8, 0x10, 0);
+    CHECK(lumen_segment_validate_shape(&bad_flags) == LUMEN_RESULT_INVALID_PARAM);
+    bad_flags = make_animated(LUMEN_EFFECT_COMET, 0, 15, 0, 255, 1000, 8, 0x0D, 0);
+    CHECK(lumen_segment_validate_shape(&bad_flags) == LUMEN_RESULT_OK);
+}
+
+static void test_effects_comet_solid_tail(void)
+{
+    const uint16_t n = 16;
+
+    /* 衰减拖尾：沿尾巴严格递减（tail = 255 覆盖整条，便于逐颗比较）。 */
+    lumen_segment_t decayed = make_comet_heads(1, 255, false, 0);
+    uint32_t prev = lumen_effect_comet_gain_q16(&decayed, 0, 0);
+    CHECK(prev == 65535u);
+    for (uint16_t off = 1; off < n; ++off) {
+        uint32_t gain = lumen_effect_comet_gain_q16(&decayed, off, 0);
+        CHECK(gain < prev);
+        prev = gain;
+    }
+
+    /* 实色拖尾：尾部各颗**同亮**，但头部之后一颗立刻降到台阶值。 */
+    lumen_segment_t solid = make_comet_heads(1, 255, true, 0);
+    uint32_t head = lumen_effect_comet_gain_q16(&solid, 0, 0);
+    uint32_t first_tail = lumen_effect_comet_gain_q16(&solid, 1, 0);
+    CHECK(head == 65535u);
+    CHECK(first_tail == LUMEN_COMET_SOLID_TAIL_GAIN_Q16);
+    CHECK(first_tail < head); /* 头与尾之间有台阶，不糊成一片 */
+    for (uint16_t off = 2; off < n; ++off) {
+        CHECK(lumen_effect_comet_gain_q16(&solid, off, 0) == first_tail);
+    }
+
+    /* 两种拖尾观感明显不同：中间某一颗亮度差在 20% 以上。 */
+    uint32_t d_mid = lumen_effect_comet_gain_q16(&decayed, n / 2, 0);
+    uint32_t s_mid = lumen_effect_comet_gain_q16(&solid, n / 2, 0);
+    CHECK(s_mid > d_mid + 65535u / 5u);
+
+    /* 实色拖尾仍然尊重 tail 的长度：tail = 0 时尾部一颗都不亮。 */
+    lumen_segment_t solid_hard = make_comet_heads(1, 0, true, 0);
+    CHECK(lumen_effect_comet_gain_q16(&solid_hard, 0, 0) == 65535u);
+    for (uint16_t off = 1; off < n; ++off) {
+        CHECK(lumen_effect_comet_gain_q16(&solid_hard, off, 0) == 0);
+    }
+
+    /* reverse（bit0）与密度 / 拖尾互不干扰：两个头的位置整体镜像。 */
+    lumen_segment_t mirrored = make_comet_heads(2, 0, false, LUMEN_COMET_FLAG_REVERSE); /* n=32 */
+    uint16_t heads[8];
+    uint16_t count = comet_heads(&mirrored, 0, heads, 8);
+    CHECK(count == 2);
+    CHECK(heads[0] == 15); /* n - 1 - 16，升序扫描时先遇到 */
+    CHECK(heads[1] == 31); /* n - 1 - 0 */
+}
+
+/* ---------------- #98 随机闪烁 ---------------- */
+
+/* 统计某一时刻亮着的灯珠数（增益 ≥ 半亮即算「亮着」）。 */
+static uint16_t flicker_lit_count(uint16_t period, uint8_t duty, uint16_t n, uint32_t now_ms)
+{
+    uint16_t lit = 0;
+    for (uint16_t i = 0; i < n; ++i) {
+        if (lumen_effect_flicker_gain_q16(period, duty, i, n, 0, now_ms) >= 32768u) {
+            ++lit;
+        }
+    }
+    return lit;
+}
+
+static void test_effects_flicker(void)
+{
+    const uint16_t n = 100;
+
+    /* 确定性：同一颗灯、同一时刻反复求值完全一致。 */
+    for (uint16_t i = 0; i < n; i = (uint16_t)(i + 7)) {
+        uint32_t a = lumen_effect_flicker_gain_q16(1000, 128, i, n, 1234, 5000);
+        uint32_t b = lumen_effect_flicker_gain_q16(1000, 128, i, n, 1234, 5000);
+        CHECK(a == b);
+    }
+    /* 同一时刻整条重算一遍（换调用顺序）结果不变——不是逐帧白噪声。 */
+    uint32_t snapshot[100];
+    for (uint16_t i = 0; i < n; ++i) {
+        snapshot[i] = lumen_effect_flicker_gain_q16(1000, 128, i, n, 0, 4000);
+    }
+    for (uint16_t i = n; i-- > 0;) {
+        CHECK(snapshot[i] == lumen_effect_flicker_gain_q16(1000, 128, i, n, 0, 4000));
+    }
+
+    /* 时间推进后画面确实变了（否则不是闪烁而是静态点阵）。 */
+    bool any_changed = false;
+    for (uint16_t i = 0; i < n; ++i) {
+        if (snapshot[i] != lumen_effect_flicker_gain_q16(1000, 128, i, n, 0, 4500)) {
+            any_changed = true;
+            break;
+        }
+    }
+    CHECK(any_changed);
+
+    /* 密度控制同时亮着的比例：sparse 明显少于 dense，且都在合理区间。 */
+    uint16_t sparse = 0;
+    uint16_t dense = 0;
+    uint16_t total = 0;
+    for (uint32_t now = 0; now < 1000; now += 100) {
+        sparse = (uint16_t)(sparse + flicker_lit_count(1000, 32, n, now));
+        dense = (uint16_t)(dense + flicker_lit_count(1000, 224, n, now));
+        total = (uint16_t)(total + n);
+    }
+    CHECK(sparse < dense);
+    CHECK(dense > total / 2u);  /* 224/255 ≈ 88% 亮 */
+    CHECK(sparse * 4u < total); /* 32/255 ≈ 12.5% 亮 */
+
+    /* duty = 0 → 全灭；duty = 255 → 几乎全亮（只留两端的边沿斜坡）。 */
+    CHECK(flicker_lit_count(1000, 0, n, 500) == 0);
+    CHECK(flicker_lit_count(1000, 255, n, 500) > n * 9u / 10u);
+
+    /* 每颗灯相位不同：同一时刻不是整条一起亮 / 一起灭。 */
+    uint16_t lit = flicker_lit_count(1000, 128, n, 600);
+    CHECK(lit > 0 && lit < n);
+
+    /* period = 0：时间相位不前进，画面停在一张固定分布上。 */
+    uint32_t still = lumen_effect_flicker_gain_q16(0, 128, 3, n, 0, 0);
+    CHECK(still == lumen_effect_flicker_gain_q16(0, 128, 3, n, 0, 123456));
+
+    /* 越界下标与 n = 0 防御。 */
+    CHECK(lumen_effect_flicker_gain_q16(1000, 128, n, n, 0, 0) == 0);
+    CHECK(lumen_effect_flicker_gain_q16(1000, 128, 0, 0, 0, 0) == 0);
+
+    /* 像素层：基色恒定、只被方波开关；整段不是同亮同灭。 */
+    lumen_segment_t seg = seg_single(LUMEN_EFFECT_FLICKER, 0, 99, 0, 255, 1000, 128, 0, 0);
+    uint16_t bright = 0;
+    uint16_t dark = 0;
+    for (uint16_t i = 0; i < 100; ++i) {
+        uint8_t rgb[3];
+        lumen_effect_pixel(&seg, i, 600, rgb);
+        CHECK(rgb[1] == 0 && rgb[2] == 0); /* 纯红基色 */
+        if (rgb[0] > 128) {
+            ++bright;
+        } else if (rgb[0] == 0) {
+            ++dark;
+        }
+    }
+    CHECK(bright > 0 && dark > 0);
+
+    /* ---- 校验（§7.1 第 8 步）：flags 必须 0、周期 0 或 ≥ 334ms ---- */
+    CHECK(lumen_segment_validate_shape(&seg) == LUMEN_RESULT_OK);
+    lumen_segment_t v = seg;
+    layer_set_period(&v.layer[0], 0);
+    CHECK(lumen_segment_validate_shape(&v) == LUMEN_RESULT_OK);
+    layer_set_period(&v.layer[0], 333);
+    CHECK(lumen_segment_validate_shape(&v) == LUMEN_RESULT_INVALID_PARAM);
+    layer_set_period(&v.layer[0], LUMEN_FLICKER_MIN_PERIOD_MS);
+    CHECK(lumen_segment_validate_shape(&v) == LUMEN_RESULT_OK);
+    layer_set_flags(&v.layer[0], 0x01);
+    CHECK(lumen_segment_validate_shape(&v) == LUMEN_RESULT_INVALID_PARAM);
+    layer_set_flags(&v.layer[0], 0x00);
+    CHECK(lumen_segment_validate_shape(&v) == LUMEN_RESULT_OK);
+
+    /* 随机闪烁是动画类（需要帧循环）。 */
+    CHECK(lumen_segment_is_animated(&seg));
+    lumen_segment_store_t store;
+    lumen_segment_store_init(&store);
+    CHECK(lumen_segment_store_set(&store, 0, 1, 0, 100, &seg) == LUMEN_RESULT_OK);
+    CHECK(lumen_segment_store_needs_frames(&store, 1));
+
+    /* 作为 layer1 合法（与其它动画类型同一套规则）。 */
+    lumen_segment_t layered = seg_single(LUMEN_EFFECT_STATIC, 0, 9, 21845, 255, 0, 0, 0, 0);
+    layered.blend = LUMEN_BLEND_MULTIPLY;
+    layer_set(LUMEN_EFFECT_FLICKER, 0, 255, 1000, 128, 0, &layered.layer[1]);
+    CHECK(lumen_segment_validate_shape(&layered) == LUMEN_RESULT_OK);
+    layer_set_period(&layered.layer[1], 100);
+    CHECK(lumen_segment_validate_shape(&layered) == LUMEN_RESULT_INVALID_PARAM);
+}
+
+/* ---------------- #98 循环三档 ---------------- */
+
+/*
+ * 「最后一步循环」：前 N-1 步各播一次，最后一步原地重播。
+ * 4 阶段 × 1000ms，按 500ms 步进，走到 4000ms 之后必须一直停在阶段 3。
+ */
+static void test_script_playback_loop_last(void)
+{
+    lumen_script_store_t store;
+    lumen_script_store_init(&store);
+    CHECK(script_download(&store, 0, 4, 1000));
+    const lumen_script_t *script = lumen_script_get(&store, 0);
+    CHECK(script != NULL);
+
+    lumen_script_playback_t pb;
+    lumen_script_playback_init(&pb);
+    lumen_script_playback_select(&pb, 0, LUMEN_LOOP_LAST, 0);
+    CHECK(pb.loop == LUMEN_LOOP_LAST);
+    lumen_script_playback_play(&pb, 0);
+
+    /* 0 → 1 → 2 → 3，之后一直停在 3，状态仍是 PLAYING（不是 hold_last）。 */
+    for (uint32_t t = 500; t <= 10000; t += 500) {
+        (void)lumen_script_playback_tick(script, &pb, t, NULL);
+        if (t % 1000u == 0) {
+            uint8_t expect = (uint8_t)((t / 1000u < 3u) ? (t / 1000u) : 3u);
+            CHECK(pb.stage_index == expect);
+        }
+        if (t > 4000u) {
+            CHECK(pb.stage_index == 3);
+            CHECK(pb.state == LUMEN_PLAYBACK_PLAYING);
+            CHECK(!pb.hold_last);
+            CHECK(lumen_script_playback_active(&pb));
+        }
+    }
+
+    /* 一个 tick 跨过终点：3 → 3（原地重播），不是 0。 */
+    lumen_script_playback_select(&pb, 0, LUMEN_LOOP_LAST, 0);
+    lumen_script_playback_play(&pb, 0);
+    (void)lumen_script_playback_tick(script, &pb, 3900, NULL);
+    CHECK(pb.stage_index == 3);
+    (void)lumen_script_playback_tick(script, &pb, 4500, NULL);
+    CHECK(pb.stage_index == 3);
+    CHECK(pb.state == LUMEN_PLAYBACK_PLAYING);
+
+    /* 单阶段剧本：loop = 2 与 loop = 1 行为一致（原地就是唯一那一步）。 */
+    lumen_script_store_init(&store);
+    CHECK(script_download(&store, 0, 1, 1000));
+    script = lumen_script_get(&store, 0);
+    CHECK(script != NULL);
+    lumen_script_playback_select(&pb, 0, LUMEN_LOOP_LAST, 0);
+    lumen_script_playback_play(&pb, 0);
+    for (uint32_t t = 500; t <= 3000; t += 500) {
+        (void)lumen_script_playback_tick(script, &pb, t, NULL);
+        CHECK(pb.stage_index == 0);
+    }
+    CHECK(pb.state == LUMEN_PLAYBACK_PLAYING);
+
+    /* 循环三档的推进语义对照：0 停住、1 归零、2 原地。 */
+    lumen_script_store_init(&store);
+    CHECK(script_download(&store, 0, 3, 1000));
+    script = lumen_script_get(&store, 0);
+    CHECK(script != NULL);
+    for (uint8_t mode = 0; mode <= LUMEN_LOOP_MAX; ++mode) {
+        lumen_script_playback_select(&pb, 0, mode, 0);
+        lumen_script_playback_play(&pb, 0);
+        for (uint32_t t = 500; t <= 3500; t += 500) {
+            (void)lumen_script_playback_tick(script, &pb, t, NULL);
+        }
+        if (mode == 0) {
+            CHECK(pb.stage_index == 2 && pb.state == LUMEN_PLAYBACK_STOPPED);
+        } else if (mode == LUMEN_LOOP_ALL) {
+            CHECK(pb.stage_index == 0 && pb.state == LUMEN_PLAYBACK_PLAYING);
+        } else {
+            CHECK(pb.stage_index == 2 && pb.state == LUMEN_PLAYBACK_PLAYING);
+        }
+    }
+}
+
+/* 循环模式 ↔ flags 字节的位表（State / ScriptSummary / blob 共用一份）。 */
+static void test_loop_flag_layout(void)
+{
+    CHECK(lumen_loop_flags(LUMEN_LOOP_NONE) == 0x00);
+    CHECK(lumen_loop_flags(LUMEN_LOOP_ALL) == LUMEN_PLAYBACK_FLAG_LOOP);
+    CHECK(lumen_loop_flags(LUMEN_LOOP_LAST) ==
+          (LUMEN_PLAYBACK_FLAG_LOOP | LUMEN_PLAYBACK_FLAG_LOOP_LAST));
+
+    /* bit0 保持「循环中」的旧语义：旧读者仍能看到 1。 */
+    CHECK((lumen_loop_flags(LUMEN_LOOP_ALL) & 0x01u) != 0);
+    CHECK((lumen_loop_flags(LUMEN_LOOP_LAST) & 0x01u) != 0);
+    CHECK((lumen_loop_flags(LUMEN_LOOP_NONE) & 0x01u) == 0);
+
+    for (uint8_t mode = 0; mode <= LUMEN_LOOP_MAX; ++mode) {
+        CHECK(lumen_loop_from_flags(lumen_loop_flags(mode)) == mode);
+    }
+    /* 矛盾组合（bit2 无 bit0）回落到不循环，不猜。 */
+    CHECK(lumen_loop_from_flags(LUMEN_PLAYBACK_FLAG_LOOP_LAST) == LUMEN_LOOP_NONE);
+}
+
+/* 循环三值的命令层校验：2 合法、3 拒绝、越界不改任何配置。 */
+static void test_loop_command_values(void)
+{
+    lumen_state_t current;
+    lumen_state_defaults(&current, 30);
+    lumen_command_outcome_t outcome;
+
+    for (uint8_t mode = 0; mode <= LUMEN_LOOP_MAX; ++mode) {
+        lumen_frame_t frame = {0};
+        frame.command = LUMEN_CMD_SET_PLAYBACK;
+        frame.payload[0] = 1;
+        frame.payload[1] = mode;
+        frame.payload_len = 2;
+        lumen_command_dispatch(&frame, &current, NULL, NULL, 200, &outcome);
+        CHECK(outcome.result_code == LUMEN_RESULT_OK);
+        CHECK(outcome.script_loop == mode);
+
+        frame.command = LUMEN_CMD_ACTIVATE_SCRIPT;
+        frame.payload[0] = 0;
+        frame.payload[1] = mode;
+        lumen_command_dispatch(&frame, &current, NULL, NULL, 200, &outcome);
+        CHECK(outcome.result_code == LUMEN_RESULT_OK);
+        CHECK(outcome.script_loop == mode);
+    }
+
+    /* 3 越界：两条命令都回 InvalidParam，且不登记任何剧本操作。 */
+    lumen_frame_t bad = {0};
+    bad.command = LUMEN_CMD_SET_PLAYBACK;
+    bad.payload[0] = 1;
+    bad.payload[1] = 3;
+    bad.payload_len = 2;
+    lumen_command_dispatch(&bad, &current, NULL, NULL, 200, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(outcome.script_op == LUMEN_SCRIPT_OP_NONE);
+
+    bad.command = LUMEN_CMD_ACTIVATE_SCRIPT;
+    bad.payload[0] = 0;
+    lumen_command_dispatch(&bad, &current, NULL, NULL, 200, &outcome);
+    CHECK(outcome.result_code == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(outcome.script_op == LUMEN_SCRIPT_OP_NONE);
+    CHECK(!outcome.cancels_selftest);
+}
+
+/* 循环模式落盘再读回：三档都必须逐值保住（最后一步循环不能退化成全循环）。 */
+static void test_script_loop_blob_roundtrip(void)
+{
+    uint16_t counts[LUMEN_MAX_STRIPS] = {30, 0, 0, 0, 0, 0, 0, 0};
+
+    lumen_script_store_t store;
+    lumen_script_store_init(&store);
+    CHECK(script_download(&store, 0, 2, 1000));
+
+    uint8_t blob[LUMEN_SCRIPT_BLOB_MAX];
+    for (uint8_t mode = 0; mode <= LUMEN_LOOP_MAX; ++mode) {
+        size_t len = lumen_script_blob_encode(&store, 0, mode, blob, sizeof(blob));
+        CHECK(len > 8);
+        CHECK(blob[7] == lumen_loop_flags(mode));
+
+        lumen_script_store_t restored;
+        lumen_script_store_init(&restored);
+        uint8_t active = LUMEN_NO_SCRIPT;
+        uint8_t loop = 0xFF;
+        CHECK(lumen_script_blob_decode(blob, len, counts, &restored, &active, &loop));
+        CHECK(active == 0);
+        CHECK(loop == mode);
+    }
+
+    /* 保留位 / 无意义位 / 矛盾组合整份拒绝。 */
+    size_t len = lumen_script_blob_encode(&store, 0, LUMEN_LOOP_LAST, blob, sizeof(blob));
+    CHECK(len > 8);
+
+    uint8_t bad[LUMEN_SCRIPT_BLOB_MAX];
+    memcpy(bad, blob, len);
+    bad[7] = 0x08; /* bit3 保留 */
+    lumen_script_store_t restored;
+    lumen_script_store_init(&restored);
+    uint8_t active = LUMEN_NO_SCRIPT;
+    uint8_t loop = 0;
+    CHECK(!lumen_script_blob_decode(bad, len, counts, &restored, &active, &loop));
+
+    memcpy(bad, blob, len);
+    bad[7] = 0x02; /* bit1 在 blob 里没有含义 */
+    lumen_script_store_init(&restored);
+    CHECK(!lumen_script_blob_decode(bad, len, counts, &restored, &active, &loop));
+
+    memcpy(bad, blob, len);
+    bad[7] = LUMEN_PLAYBACK_FLAG_LOOP_LAST; /* bit2 无 bit0：矛盾 */
+    lumen_script_store_init(&restored);
+    CHECK(!lumen_script_blob_decode(bad, len, counts, &restored, &active, &loop));
 }
 
 /*
@@ -6114,7 +6585,7 @@ static void test_script_playback_advance(void)
     CHECK(!lumen_script_playback_active(&pb));
 
     /* --- 循环会回绕：走完 4 个阶段后回到 stage 0 --- */
-    lumen_script_playback_select(&pb, 0, true, 0);
+    lumen_script_playback_select(&pb, 0, LUMEN_LOOP_ALL, 0);
     CHECK(pb.stage_index == 0);
     CHECK(pb.state == LUMEN_PLAYBACK_STOPPED);
     lumen_script_playback_play(&pb, 0);
@@ -6134,11 +6605,11 @@ static void test_script_playback_advance(void)
     /* 4500ms：过了 4 个整阶段 → 回到 stage 0（绕一圈）。 */
     CHECK(pb.stage_index == 0);
     CHECK(pb.state == LUMEN_PLAYBACK_PLAYING);
-    CHECK(pb.loop);
+    CHECK(pb.loop == LUMEN_LOOP_ALL);
     CHECK(changes == 4);
 
     /* 非循环：走完最后一阶段 → STOPPED，停在最后一阶段（hold_last）。 */
-    lumen_script_playback_select(&pb, 0, false, 0);
+    lumen_script_playback_select(&pb, 0, LUMEN_LOOP_NONE, 0);
     lumen_script_playback_play(&pb, 0);
     for (t = 500; t <= 4000; t += 500) {
         (void)lumen_script_playback_tick(script, &pb, t, NULL);
@@ -6151,7 +6622,7 @@ static void test_script_playback_advance(void)
     CHECK(pb.stage_index == 3);
 
     /* 延迟一轮：渲染任务被推迟 3500ms，一次追上 3 个阶段而不是卡住。 */
-    lumen_script_playback_select(&pb, 0, false, 0);
+    lumen_script_playback_select(&pb, 0, LUMEN_LOOP_NONE, 0);
     lumen_script_playback_play(&pb, 0);
     int caught = lumen_script_playback_tick(script, &pb, 3500, NULL) ? 1 : 0;
     CHECK(caught == 1);
@@ -6182,7 +6653,7 @@ static void test_script_playback_pause_resume(void)
 
     lumen_script_playback_t pb;
     lumen_script_playback_init(&pb);
-    lumen_script_playback_select(&pb, 0, true, 0);
+    lumen_script_playback_select(&pb, 0, LUMEN_LOOP_ALL, 0);
     lumen_script_playback_play(&pb, 0);
 
     uint32_t script_time = 0;
@@ -6246,7 +6717,7 @@ static void test_script_playback_hold_during_selftest(void)
 
     lumen_script_playback_t pb;
     lumen_script_playback_init(&pb);
-    lumen_script_playback_select(&pb, 0, true, 0);
+    lumen_script_playback_select(&pb, 0, LUMEN_LOOP_ALL, 0);
     lumen_script_playback_play(&pb, 0);
 
     uint32_t t = 0;
@@ -6303,13 +6774,13 @@ static void test_script_fade_roundtrip(void)
     CHECK(lumen_script_commit(&store, 0, counts, NULL, 0, NULL) == LUMEN_SCRIPT_COMMIT_OK);
 
     uint8_t blob[LUMEN_SCRIPT_BLOB_MAX];
-    size_t len = lumen_script_blob_encode(&store, 0, false, blob, sizeof(blob));
+    size_t len = lumen_script_blob_encode(&store, 0, LUMEN_LOOP_NONE, blob, sizeof(blob));
     CHECK(len > 8);
 
     lumen_script_store_t restored;
     lumen_script_store_init(&restored);
     uint8_t active = LUMEN_NO_SCRIPT;
-    bool loop = true;
+    uint8_t loop = LUMEN_LOOP_ALL;
     CHECK(lumen_script_blob_decode(blob, len, counts, &restored, &active, &loop));
     const lumen_script_t *sc = lumen_script_get(&restored, 0);
     CHECK(sc != NULL);
@@ -6344,13 +6815,13 @@ static void test_script_two_layer_persist(void)
     CHECK(lumen_script_commit(&store, 0, counts, NULL, 0, NULL) == LUMEN_SCRIPT_COMMIT_OK);
 
     uint8_t blob[LUMEN_SCRIPT_BLOB_MAX];
-    size_t len = lumen_script_blob_encode(&store, 0, false, blob, sizeof(blob));
+    size_t len = lumen_script_blob_encode(&store, 0, LUMEN_LOOP_NONE, blob, sizeof(blob));
     CHECK(len > 8);
 
     lumen_script_store_t restored;
     lumen_script_store_init(&restored);
     uint8_t active = LUMEN_NO_SCRIPT;
-    bool loop = true;
+    uint8_t loop = LUMEN_LOOP_ALL;
     CHECK(lumen_script_blob_decode(blob, len, counts, &restored, &active, &loop));
     const lumen_script_t *sc = lumen_script_get(&restored, 0);
     CHECK(sc != NULL);
@@ -6569,7 +7040,7 @@ static void test_script_blob_encode_with_cleared(void)
 
     lumen_script_store_t decoded;
     uint8_t active = 0xFF;
-    bool loop = true;
+    uint8_t loop = LUMEN_LOOP_ALL;
     uint16_t counts[LUMEN_MAX_STRIPS] = {30, 0, 0, 0, 0, 0, 0, 0};
     CHECK(lumen_script_blob_decode(blob, cleared, counts, &decoded, &active, &loop));
     CHECK(!lumen_script_is_committed(&decoded, 2));
@@ -6753,17 +7224,17 @@ static void test_script_blob_roundtrip(void)
     CHECK(lumen_script_commit(&store, 1, counts, NULL, 0, NULL) == LUMEN_SCRIPT_COMMIT_OK);
 
     uint8_t blob[LUMEN_SCRIPT_BLOB_MAX];
-    size_t len = lumen_script_blob_encode(&store, 1, true, blob, sizeof(blob));
+    size_t len = lumen_script_blob_encode(&store, 1, LUMEN_LOOP_ALL, blob, sizeof(blob));
     CHECK(len > 8);
     CHECK(len <= sizeof(blob));
 
     lumen_script_store_t restored;
     lumen_script_store_init(&restored);
     uint8_t active = LUMEN_NO_SCRIPT;
-    bool loop = false;
+    uint8_t loop = LUMEN_LOOP_NONE;
     CHECK(lumen_script_blob_decode(blob, len, counts, &restored, &active, &loop));
     CHECK(active == 1);
-    CHECK(loop);
+    CHECK(loop == LUMEN_LOOP_ALL);
 
     CHECK(lumen_script_stage_count(&restored, 0) == 4);
     CHECK(lumen_script_stage_count(&restored, 1) == 2);
@@ -6827,11 +7298,12 @@ static void test_script_blob_roundtrip(void)
     /* 空 store：只有头，解码成功但没有任何剧本。 */
     lumen_script_store_t empty;
     lumen_script_store_init(&empty);
-    size_t empty_len = lumen_script_blob_encode(&empty, LUMEN_NO_SCRIPT, false, blob, sizeof(blob));
+    size_t empty_len =
+        lumen_script_blob_encode(&empty, LUMEN_NO_SCRIPT, LUMEN_LOOP_NONE, blob, sizeof(blob));
     CHECK(empty_len == 8 + LUMEN_MAX_SCRIPTS);
     CHECK(lumen_script_blob_decode(blob, empty_len, counts, &restored, &active, &loop));
     CHECK(active == LUMEN_NO_SCRIPT);
-    CHECK(!loop);
+    CHECK(loop == LUMEN_LOOP_NONE);
     for (uint8_t id = 0; id < LUMEN_MAX_SCRIPTS; ++id) {
         CHECK(!lumen_script_is_committed(&restored, id));
     }
@@ -6938,12 +7410,12 @@ static void test_script_prune_then_blob_roundtrip(void)
     CHECK(lumen_script_commit(&store, 3, before, NULL, 0, NULL) == LUMEN_SCRIPT_COMMIT_OK);
 
     uint8_t blob[LUMEN_SCRIPT_BLOB_MAX];
-    size_t len = lumen_script_blob_encode(&store, 3, false, blob, sizeof(blob));
+    size_t len = lumen_script_blob_encode(&store, 3, LUMEN_LOOP_NONE, blob, sizeof(blob));
     CHECK(len > 8);
 
     lumen_script_store_t restored;
     uint8_t active = LUMEN_NO_SCRIPT;
-    bool loop = false;
+    uint8_t loop = LUMEN_LOOP_NONE;
 
     /* 裁剪前：按 20 灯解码 → 整份拒收（这正是上电丢配置的路径）。 */
     lumen_script_store_init(&restored);
@@ -6951,7 +7423,7 @@ static void test_script_prune_then_blob_roundtrip(void)
 
     /* 裁剪后：同一份 store 重新编码就能按 20 灯解码成功。 */
     CHECK(lumen_script_store_prune_strip(&store, 0, 20) == 2);
-    len = lumen_script_blob_encode(&store, 3, false, blob, sizeof(blob));
+    len = lumen_script_blob_encode(&store, 3, LUMEN_LOOP_NONE, blob, sizeof(blob));
     CHECK(len > 8);
     lumen_script_store_init(&restored);
     CHECK(lumen_script_blob_decode(blob, len, after, &restored, &active, &loop));
@@ -7141,13 +7613,13 @@ static void test_two_layer_validation_matrix(void)
 
     /* 第 2 步：layer0 未知 type → 非法。 */
     lumen_segment_t unknown0 = ok;
-    unknown0.layer[0].type = 0x07;
+    unknown0.layer[0].type = 0x08;
     CHECK(lumen_segment_validate_shape(&unknown0) == LUMEN_RESULT_INVALID_PARAM);
 
     /* 第 3 步：layer1 未知 type → 非法。 */
     lumen_segment_t unknown1 = ok;
     layer_set(LUMEN_EFFECT_STATIC, 0, 128, 0, 0, 0, &unknown1.layer[0]);
-    unknown1.layer[1].type = 0x07;
+    unknown1.layer[1].type = 0x08;
     CHECK(lumen_segment_validate_shape(&unknown1) == LUMEN_RESULT_INVALID_PARAM);
 
     /* 第 3 步：空层的 param 非 0 → 非法（防未来语义漂移）。 */
@@ -7265,10 +7737,10 @@ static void test_layer_codec(void)
     CHECK(!lumen_layer_empty_params_zero(&empty));
 
     /* 未知 type：形状非法，但字节仍然完整复制（便于日志）。 */
-    uint8_t unknown_wire[9] = {0x07, 1, 2, 3, 4, 5, 6, 7, 9};
+    uint8_t unknown_wire[9] = {0x08, 1, 2, 3, 4, 5, 6, 7, 9};
     lumen_effect_layer_t unknown;
     CHECK(!lumen_layer_decode(unknown_wire, &unknown));
-    CHECK(unknown.type == 0x07);
+    CHECK(unknown.type == 0x08);
     CHECK(unknown.param[0] == 1 && unknown.param[6] == 7);
     CHECK(unknown.level == 9);
 
@@ -8057,6 +8529,9 @@ int main(int argc, char **argv)
     test_effects_rainbow_hue();
     test_effects_rainbow_pixel();
     test_effects_comet_gain();
+    test_effects_comet_density();
+    test_effects_comet_solid_tail();
+    test_effects_flicker();
     test_effects_strobe();
     test_effects_heartbeat();
     test_effects_off();
@@ -8089,6 +8564,10 @@ int main(int argc, char **argv)
     test_script_playback_advance();
     test_script_playback_pause_resume();
     test_script_playback_hold_during_selftest();
+    test_script_playback_loop_last();
+    test_loop_flag_layout();
+    test_loop_command_values();
+    test_script_loop_blob_roundtrip();
     test_script_blob_roundtrip();
     test_script_store_prune_strip();
     test_script_prune_then_blob_roundtrip();

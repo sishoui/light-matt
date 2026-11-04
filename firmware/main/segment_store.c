@@ -83,16 +83,48 @@ uint8_t lumen_segment_store_validate_params(uint8_t type, uint8_t flags, uint16_
         return LUMEN_RESULT_OK;
     }
     /*
-     * 彩虹 / 流光（effects-spec §2.3-§2.4）：
+     * 彩虹（effects-spec §2.3）：
      *   bit0 reverse（有实际意义）、**bit1-7 必须为 0**——比呼吸更严，因为
      *   这里没有 waveform 位可借；period_ms != 0 时必须 ≥ 200（5Hz）。
-     *   这两类是空间移动不是亮度闪烁，所以下限比呼吸宽松（D5）。
+     *   彩虹是空间移动不是亮度闪烁，所以下限比呼吸宽松（D5）。
      */
-    if (type == LUMEN_EFFECT_RAINBOW || type == LUMEN_EFFECT_COMET) {
+    if (type == LUMEN_EFFECT_RAINBOW) {
         if ((flags & 0xFEu) != 0) {
             return LUMEN_RESULT_INVALID_PARAM;
         }
         if (period_ms != 0 && period_ms < LUMEN_RAINBOW_MIN_PERIOD_MS) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        return LUMEN_RESULT_OK;
+    }
+    /*
+     * 流光（effects-spec §2.4 + #98）：
+     *   bit0 reverse、bit1 拖尾不衰减、bit2-3 头数量（0..3 ⇒ 1..4 个）、
+     *   **bit4-7 保留必须为 0**。周期下限与彩虹同一条（≥ 200ms）。
+     *
+     * 旧固件只认 bit0（`flags & 0xFE`），所以它遇到带 bit1-3 的流光会回
+     * InvalidParam 而不是静默丢掉密度——这正是我们要的「旧固件安全拒绝」。
+     */
+    if (type == LUMEN_EFFECT_COMET) {
+        if ((flags & LUMEN_COMET_FLAGS_RESERVED_MASK) != 0) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        if (period_ms != 0 && period_ms < LUMEN_RAINBOW_MIN_PERIOD_MS) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        return LUMEN_RESULT_OK;
+    }
+    if (type == LUMEN_EFFECT_FLICKER) {
+        /*
+         * 随机闪烁（#98）：
+         *   flags **必须为 0**（没有方向 / 波形 / 密度位）；duty 是 p5，0-255 全合法；
+         *   period_ms != 0 时必须 ≥ 334（3Hz，与呼吸同一条光敏性癫痫安全线）——
+         *   它是亮度闪烁而不是空间移动，不能借用彩虹的 200ms。
+         */
+        if (flags != 0) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        if (period_ms != 0 && period_ms < LUMEN_FLICKER_MIN_PERIOD_MS) {
             return LUMEN_RESULT_INVALID_PARAM;
         }
         return LUMEN_RESULT_OK;

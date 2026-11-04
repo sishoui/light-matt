@@ -1,45 +1,53 @@
 /*
  * 全局样式与设计变量。
  *
- * 主题：浅色为主（iOS「设置 / 家庭」观感），深色跟随系统或手动覆盖。
+ * 主题：**雾蓝冷灰**（#90 从橙换成雾蓝）。浅色为默认，深色跟随系统或手动覆盖。
  * 所有颜色都走 CSS 变量——页面 wxss **不要再写死 hex**，否则深色主题下
  * 会出现白底白字。
  *
  * 变量定义在 `.page` 上（每个页面的根节点），所以同一套变量也能被页内的
  * 自定义导航栏继承；`page` 只负责兜底底色。
  *
+ * **三处必须同步改**：本文件的 `.page`（浅色默认）、媒体查询里的 `.page`、
+ * 以及 `.page.theme-light` / `.page.theme-dark`。改一处漏两处就会出现某个
+ * 主题下的错色。同样三套值在 `components/nav-bar`、`custom-tab-bar` 与
+ * `theme.json` 里各抄了一份（组件样式隔离），`tests/theme.test.ts` 会统一校验。
+ *
+ * 原生 `slider` / `switch` 读不到这里的变量，激活色由
+ * `utils/control/theme.ts` 的 `accentColor()` 供页面数据传入。
+ *
  * 手动覆盖：页面根节点加 `theme-light` / `theme-dark`（见 utils/control/theme.ts）。
  * 未加 class 时由 `prefers-color-scheme` 决定。
  */
 
 page {
-  background: #f2f2f7;
-  color: #1c1c1e;
+  background: #f2f4f7;
+  color: #1c2430;
   font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue",
     "Microsoft YaHei", sans-serif;
 }
 
 .page {
   /* ---- 浅色（默认） ---- */
-  --bg: #f2f2f7;
+  --bg: #f2f4f7;
   --bg-elevated: #ffffff;
   --card: #ffffff;
-  --card-2: #f7f7fa;
-  --card-press: #efeff4;
-  --text: #1c1c1e;
-  --text-2: #6e6e73;
-  --text-3: #a1a1a6;
-  --border: rgba(60, 60, 67, 0.1);
-  --divider: rgba(60, 60, 67, 0.08);
-  --accent: #ff9500;
+  --card-2: #f6f8fa;
+  --card-press: #e9eef3;
+  --text: #1c2430;
+  --text-2: #64707f;
+  --text-3: #9aa4b1;
+  --border: rgba(60, 76, 94, 0.12);
+  --divider: rgba(60, 76, 94, 0.08);
+  --accent: #6B8CAE;
   --accent-ink: #ffffff;
-  --accent-soft: rgba(255, 149, 0, 0.12);
-  --blue: #007aff;
-  --blue-soft: rgba(0, 122, 255, 0.12);
-  --danger: #ff3b30;
-  --danger-soft: rgba(255, 59, 48, 0.1);
-  --ok: #34c759;
-  --ok-soft: rgba(52, 199, 89, 0.14);
+  --accent-soft: rgba(107, 140, 174, 0.14);
+  --blue: #5a7ea3;
+  --blue-soft: rgba(90, 126, 163, 0.14);
+  --danger: #e5544b;
+  --danger-soft: rgba(229, 84, 75, 0.1);
+  --ok: #3aa76d;
+  --ok-soft: rgba(58, 167, 109, 0.14);
   --shadow: 0 16rpx 48rpx rgba(0, 0, 0, 0.06);
   --shadow-card: 0 24rpx 64rpx rgba(0, 0, 0, 0.08);
   --radius-xl: 40rpx;
@@ -59,26 +67,26 @@ page {
 
 @media (prefers-color-scheme: dark) {
   page {
-    background: #000000;
-    color: #f5f5f7;
+    background: #0F1419;
+    color: #e8edf3;
   }
 
   .page {
-    --bg: #000000;
-    --bg-elevated: #1c1c1e;
-    --card: #1c1c1e;
-    --card-2: #2c2c2e;
-    --card-press: #3a3a3c;
-    --text: #f5f5f7;
-    --text-2: #a1a1a6;
-    --text-3: #6e6e73;
+    --bg: #0F1419;
+    --bg-elevated: #171d24;
+    --card: #171d24;
+    --card-2: #1f262f;
+    --card-press: #29323c;
+    --text: #e8edf3;
+    --text-2: #93a0ae;
+    --text-3: #6b7784;
     --border: rgba(255, 255, 255, 0.12);
     --divider: rgba(255, 255, 255, 0.08);
-    --accent: #ffb478;
-    --accent-ink: #1a1208;
-    --accent-soft: rgba(255, 180, 120, 0.16);
-    --blue: #4f8cff;
-    --blue-soft: rgba(79, 140, 255, 0.18);
+    --accent: #8FA9C4;
+    --accent-ink: #101820;
+    --accent-soft: rgba(143, 169, 196, 0.18);
+    --blue: #7fa3c9;
+    --blue-soft: rgba(127, 163, 201, 0.2);
     --danger: #ff8a8a;
     --danger-soft: rgba(255, 138, 138, 0.14);
     --ok: #4dd17a;
@@ -90,25 +98,25 @@ page {
 
 /* 手动覆盖必须放在媒体查询之后，靠源码顺序取胜。 */
 .page.theme-light {
-  --bg: #f2f2f7;
+  --bg: #f2f4f7;
   --bg-elevated: #ffffff;
   --card: #ffffff;
-  --card-2: #f7f7fa;
-  --card-press: #efeff4;
-  --text: #1c1c1e;
-  --text-2: #6e6e73;
-  --text-3: #a1a1a6;
-  --border: rgba(60, 60, 67, 0.1);
-  --divider: rgba(60, 60, 67, 0.08);
-  --accent: #ff9500;
+  --card-2: #f6f8fa;
+  --card-press: #e9eef3;
+  --text: #1c2430;
+  --text-2: #64707f;
+  --text-3: #9aa4b1;
+  --border: rgba(60, 76, 94, 0.12);
+  --divider: rgba(60, 76, 94, 0.08);
+  --accent: #6B8CAE;
   --accent-ink: #ffffff;
-  --accent-soft: rgba(255, 149, 0, 0.12);
-  --blue: #007aff;
-  --blue-soft: rgba(0, 122, 255, 0.12);
-  --danger: #ff3b30;
-  --danger-soft: rgba(255, 59, 48, 0.1);
-  --ok: #34c759;
-  --ok-soft: rgba(52, 199, 89, 0.14);
+  --accent-soft: rgba(107, 140, 174, 0.14);
+  --blue: #5a7ea3;
+  --blue-soft: rgba(90, 126, 163, 0.14);
+  --danger: #e5544b;
+  --danger-soft: rgba(229, 84, 75, 0.1);
+  --ok: #3aa76d;
+  --ok-soft: rgba(58, 167, 109, 0.14);
   --shadow: 0 16rpx 48rpx rgba(0, 0, 0, 0.06);
   --shadow-card: 0 24rpx 64rpx rgba(0, 0, 0, 0.08);
   background: var(--bg);
@@ -116,21 +124,21 @@ page {
 }
 
 .page.theme-dark {
-  --bg: #000000;
-  --bg-elevated: #1c1c1e;
-  --card: #1c1c1e;
-  --card-2: #2c2c2e;
-  --card-press: #3a3a3c;
-  --text: #f5f5f7;
-  --text-2: #a1a1a6;
-  --text-3: #6e6e73;
+  --bg: #0F1419;
+  --bg-elevated: #171d24;
+  --card: #171d24;
+  --card-2: #1f262f;
+  --card-press: #29323c;
+  --text: #e8edf3;
+  --text-2: #93a0ae;
+  --text-3: #6b7784;
   --border: rgba(255, 255, 255, 0.12);
   --divider: rgba(255, 255, 255, 0.08);
-  --accent: #ffb478;
-  --accent-ink: #1a1208;
-  --accent-soft: rgba(255, 180, 120, 0.16);
-  --blue: #4f8cff;
-  --blue-soft: rgba(79, 140, 255, 0.18);
+  --accent: #8FA9C4;
+  --accent-ink: #101820;
+  --accent-soft: rgba(143, 169, 196, 0.18);
+  --blue: #7fa3c9;
+  --blue-soft: rgba(127, 163, 201, 0.2);
   --danger: #ff8a8a;
   --danger-soft: rgba(255, 138, 138, 0.14);
   --ok: #4dd17a;

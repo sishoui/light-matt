@@ -407,6 +407,101 @@ addApp({
   result: 0x01, note: '熄灭层的 hue 必须为 0（参数全零）',
 });
 
+/*
+ * #98 流光密度 / 实色拖尾。
+ *
+ * 两者都挤在**已有的 flags 字节**里，所以层仍是 9 字节、段载荷仍是 23 / 25：
+ *   bit0 reverse、bit1 实色拖尾、bit2-3 头数量-1、bit4-7 保留 = 0。
+ */
+addApp({
+  name: 'set_segment_comet_heads_1', command: 0x10, commandName: 'SetSegment', seq: 75,
+  payload: segment(3, 1, 5, 60, 0x00, layerAnim(0x03, 30000, 255, 1200, 8, 0x00), layerEmpty()),
+  note: '#98：流光 1 个头（flags bit2-3 = 0），tail = 8，反向关',
+});
+addApp({
+  name: 'set_segment_comet_heads_2', command: 0x10, commandName: 'SetSegment', seq: 76,
+  payload: segment(3, 1, 5, 60, 0x00, layerAnim(0x03, 30000, 255, 1200, 8, 0x04), layerEmpty()),
+  note: '#98：流光 2 个头（bit2-3 = 1），沿整条均分',
+});
+addApp({
+  name: 'set_segment_comet_heads_4', command: 0x10, commandName: 'SetSegment', seq: 77,
+  payload: segment(3, 1, 5, 60, 0x00, layerAnim(0x03, 30000, 255, 1200, 8, 0x0C), layerEmpty()),
+  note: '#98：流光 4 个头（bit2-3 = 3），上限',
+});
+addApp({
+  name: 'set_segment_comet_solid_tail', command: 0x10, commandName: 'SetSegment', seq: 78,
+  payload: segment(3, 1, 5, 60, 0x00, layerAnim(0x03, 30000, 255, 1200, 8, 0x02), layerEmpty()),
+  note: '#98：实色拖尾（bit1），头与尾之间保留一颗的亮度台阶',
+});
+addApp({
+  name: 'set_segment_comet_heads4_solid_reverse', command: 0x10, commandName: 'SetSegment', seq: 79,
+  payload: segment(3, 1, 5, 60, 0x00, layerAnim(0x03, 30000, 255, 1200, 255, 0x0F), layerEmpty()),
+  note: '#98：4 头 + 实色拖尾 + 反向（bit0-3 全用上，bit4-7 仍为 0）',
+});
+addApp({
+  name: 'set_segment_bad_comet_flags_reserved', command: 0x10, commandName: 'SetSegment', seq: 80,
+  payload: segment(3, 1, 5, 60, 0x00, layerAnim(0x03, 30000, 255, 1200, 8, 0x10), layerEmpty()),
+  result: 0x01, note: '#98：流光 flags bit4-7 保留位必须为 0',
+});
+
+/*
+ * #98 随机闪烁 0x07。
+ *
+ * 新类型值，复用同一个 7 字节参数块：p5 = 同时亮着的比例，flags 必须 0，
+ * 周期 0 或 ≥ 334ms。旧固件不认识 0x07，按未知类型回 InvalidParam。
+ */
+addApp({
+  name: 'set_segment_single_flicker', command: 0x10, commandName: 'SetSegment', seq: 81,
+  payload: segment(2, 0, 0, 29, 0x00, layerAnim(0x07, 0, 255, 1000, 128, 0), layerEmpty()),
+  note: '#98 随机闪烁：period 1000ms、同时亮 128/255，确定性方波',
+});
+addApp({
+  name: 'set_segment_flicker_plus_static', command: 0x10, commandName: 'SetSegment', seq: 82,
+  payload: segment(
+    0, 7, 0, 15, 0x01,
+    layerStatic(0, 255),
+    layerAnim(0x07, 0, 255, 1000, 200, 0),
+  ),
+  note: '#98 叠加：静态打底 + 随机闪烁相乘（新类型可作 layer1）',
+});
+addApp({
+  name: 'set_segment_bad_flicker_period', command: 0x10, commandName: 'SetSegment', seq: 83,
+  payload: segment(2, 0, 0, 29, 0x00, layerAnim(0x07, 0, 255, 333, 128, 0), layerEmpty()),
+  result: 0x01, note: '#98：随机闪烁周期 333ms < 334ms 下限（闪烁不是空间移动）',
+});
+addApp({
+  name: 'set_segment_bad_flicker_flags', command: 0x10, commandName: 'SetSegment', seq: 84,
+  payload: segment(2, 0, 0, 29, 0x00, layerAnim(0x07, 0, 255, 1000, 128, 0x01), layerEmpty()),
+  result: 0x01, note: '#98：随机闪烁 flags 必须为 0（没有方向 / 波形位）',
+});
+
+/*
+ * #98 循环三值：0 不循环 / 1 全部循环 / 2 最后一步循环。
+ *
+ * 2 在旧固件上回 InvalidParam（它们原本就是 `loop > 1` 拒绝），所以这一扩展
+ * 不需要协议版本号变化；3 是新固件的越界值。
+ */
+addApp({
+  name: 'set_playback_loop_last', command: 0x13, commandName: 'SetPlayback', seq: 85,
+  payload: [1, 2],
+  note: '#98：loop = 2（最后一步循环），前 N-1 步各播一次后原地重播末步',
+});
+addApp({
+  name: 'activate_script_loop_last', command: 0x19, commandName: 'ActivateScript', seq: 86,
+  payload: [0, 2],
+  note: '#98：激活时直接指定最后一步循环',
+});
+addApp({
+  name: 'set_playback_loop_invalid', command: 0x13, commandName: 'SetPlayback', seq: 87,
+  payload: [1, 3], result: 0x01,
+  note: '#98：loop = 3 越界 → InvalidParam（三值只有 0/1/2）',
+});
+addApp({
+  name: 'activate_script_loop_invalid', command: 0x19, commandName: 'ActivateScript', seq: 88,
+  payload: [0, 3], result: 0x01,
+  note: '#98：ActivateScript 同样只接受 0/1/2',
+});
+
 // 段查询 / 清段
 addApp({ name: 'clear_segment', command: 0x11, commandName: 'ClearSegment', seq: 33, payload: [0, 3] });
 addApp({ name: 'query_strip_0', command: 0x12, commandName: 'QueryStrip', seq: 34, payload: [0] });
@@ -631,6 +726,22 @@ function buildState() {
   if (s.length !== 37) throw new Error(`State must be 37 bytes, got ${s.length}`);
   return s;
 }
+
+/* #98：同一份 State，但 flags = 0x07（循环中 + 有激活剧本 + 最后一步循环）。 */
+function buildStateLoopLast() {
+  const s = buildState();
+  s[7] = 0; // script_id = 0
+  s[9] = 1; // playback_state = 播放中
+  s[10] = 0x07; // bit0 循环中 + bit1 激活 + bit2 最后一步循环
+  if (s.length !== 37) throw new Error(`State must be 37 bytes, got ${s.length}`);
+  return s;
+}
+
+addDevice({
+  name: 'state_report_loop_last', command: 0x82, commandName: 'StateReport', seq: 89,
+  payload: buildStateLoopLast(),
+  note: '#98：flags = 0x07 —— bit0 循环中（旧语义）、bit1 有激活剧本、bit2 最后一步循环',
+});
 
 addDevice({
   name: 'state_report_default', command: 0x82, commandName: 'StateReport', seq: 52,

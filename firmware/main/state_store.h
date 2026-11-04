@@ -49,12 +49,15 @@ void lumen_state_store_request_save(const lumen_persist_t *snapshot, uint8_t com
  * 不并进 lumen_persist_t 的原因：一套剧本约 1KB，4 套 + 暂存放不进取快照的
  * 那条路径（它按值拷贝），且写 blob 的缓冲在存储任务栈上。
  *
- * 只存**已提交**剧本、激活 id 与 loop；**播放位置不持久化**
+ * 只存**已提交**剧本、激活 id 与 loop 模式；**播放位置不持久化**
  * （docs/protocol-v4.md §12 / 21-design §6：上电从第一阶段 + 停止态）。
+ *
+ * loop 是 lumen_loop_mode_t（0/1/2，#98），不是布尔——「最后一步循环」
+ * 必须跨断电保住，否则用户设好的循环方式会在重启后悄悄变成全循环。
  */
 bool lumen_state_store_load_scripts(const uint16_t strip_counts[LUMEN_MAX_STRIPS],
                                     lumen_script_store_t *store, uint8_t *active_script_id,
-                                    bool *loop);
+                                    uint8_t *loop);
 
 /*
  * 记录最新剧本 blob 并重置 500ms debounce。回调在存储任务里写 NVS。

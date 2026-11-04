@@ -7,7 +7,7 @@
  *  2. **切换类型保留颜色与亮度，其余回到新类型默认值**；
  *  3. **滑块刻度 ↔ 协议值**（色相度 / 饱和度百分比 / 周期秒 / 频率 Hz /
  *     节奏 BPM / 最低亮 / 跨度 / 尾长），以及右侧「数值 + 单位」的格式；
- *  4. **装配光区**：叠加层为空时叠加方式归一、只改选中那一个、别的光区一字不动；
+ *  4. **装配分区**：叠加层为空时叠加方式归一、只改选中那一个、别的分区一字不动；
  *  5. **本地预检**：频率过快、节奏过快或过慢都在本机拦住，不发帧；
  *     以及两条必须告知的事实与空态引导文案存在且不含禁用术语。
  */
@@ -104,15 +104,16 @@ function zone(segId: number, overrides: Partial<SegmentSpec> = {}): SegmentSpec 
 }
 
 describe("效果类型行", () => {
-  it("七个等宽按钮的顺序是 静态 / 呼吸 / 彩虹 / 流光 / 爆闪 / 心跳 / 熄灭", () => {
+  it("类型按钮的名字不带颜色，「熄灭」显示为「空」（#100）", () => {
     expect(PANEL_TYPE_OPTIONS.map((option) => option.name)).toEqual([
-      "静态",
+      "常亮",
       "呼吸",
       "彩虹",
-      "流光",
+      "流星",
       "爆闪",
       "心跳",
-      "熄灭",
+      "随机闪烁",
+      "空",
     ]);
     expect(PANEL_TYPE_OPTIONS.map((option) => option.type)).toEqual([
       "static",
@@ -121,14 +122,20 @@ describe("效果类型行", () => {
       "comet",
       "strobe",
       "heartbeat",
+      "flicker",
       "off",
     ]);
+    /* 界面上不出现「熄灭」「静态」「流光」这几个旧词。 */
+    const names = PANEL_TYPE_OPTIONS.map((option) => option.name);
+    expect(names).not.toContain("熄灭");
+    expect(names).not.toContain("静态");
+    expect(names).not.toContain("流光");
   });
 
   it("只有当前类型是高亮的", () => {
     const views = buildTypeViews("rainbow");
     expect(views.filter((view) => view.selected).map((view) => view.type)).toEqual(["rainbow"]);
-    expect(views).toHaveLength(7);
+    expect(views).toHaveLength(8);
   });
 
   it("类型与协议枚举一一对应（空层按静态、未知按静态）", () => {
@@ -255,6 +262,7 @@ describe("参数区按类型整体替换", () => {
       comet: ["hue", "sat", "level", "period", "tail"],
       strobe: ["hue", "sat", "frequency", "level"],
       heartbeat: ["hue", "sat", "bpm", "level"],
+      flicker: ["hue", "sat", "level", "period"],
       off: [],
     };
     for (const type of PANEL_TYPE_OPTIONS.map((option) => option.type)) {
@@ -348,7 +356,7 @@ describe("切换类型：保留颜色，其余按新类型默认值", () => {
 });
 
 describe("叠加层可选类型", () => {
-  it("六个选项：静态 / 呼吸 / 彩虹 / 流光 / 爆闪 / 心跳", () => {
+  it("七个选项：常亮 / 呼吸 / 彩虹 / 流星 / 爆闪 / 心跳 / 随机闪烁", () => {
     expect(PANEL_OVERLAY_TYPE_OPTIONS.map((option) => option.type)).toEqual([
       "static",
       "breathing",
@@ -356,14 +364,16 @@ describe("叠加层可选类型", () => {
       "comet",
       "strobe",
       "heartbeat",
+      "flicker",
     ]);
     expect(PANEL_OVERLAY_TYPE_OPTIONS.map((option) => option.name)).toEqual([
-      "静态",
+      "常亮",
       "呼吸",
       "彩虹",
-      "流光",
+      "流星",
       "爆闪",
       "心跳",
+      "随机闪烁",
     ]);
   });
 
@@ -753,8 +763,8 @@ describe("草稿 → 协议层", () => {
   });
 });
 
-describe("装配光区", () => {
-  it("只改选中的那个光区，别的光区一字不动", () => {
+describe("装配分区", () => {
+  it("只改选中的那个分区，别的分区一字不动", () => {
     const zones = [zone(0), zone(1), zone(2)];
     const next = applyPanelToZone(zones, 1, "comet", params({ hue: 43690, tail: 200 }));
     expect(next[0]).toBe(zones[0]);
@@ -822,7 +832,7 @@ describe("选择控件", () => {
 
 describe("摘要与两条事实", () => {
   it("摘要是人话，不含协议词", () => {
-    expect(panelSummary("static", params())).toContain("静态");
+    expect(panelSummary("static", params())).toContain("常亮");
     const breathing = panelSummary("breathing", params({ periodMs: 2000, minLevel: 102 }));
     expect(breathing).toContain("2 秒");
     expect(breathing).toContain("正弦");
@@ -860,7 +870,7 @@ describe("摘要与两条事实", () => {
   it("空方案 / 空步骤 / 没选中各有自己的引导（不是一片空白）", () => {
     for (const guide of [PANEL_EMPTY_PLAN_GUIDE, PANEL_EMPTY_STEP_GUIDE, PANEL_NO_ZONE_GUIDE]) {
       expect(guide.length).toBeGreaterThan(8);
-      expect(guide).toMatch(/光区/);
+      expect(guide).toMatch(/分区/);
       expect(guide).not.toMatch(/毫秒|阶段|剧本|下发|激活|blend|层/);
     }
     /* 三种场景不能共用同一句话，否则用户不知道下一步到底做什么。 */
@@ -897,22 +907,21 @@ describe("摘要与两条事实", () => {
 /* ================= 叠加层（#71 US49 / US50） ================= */
 
 describe("叠加层：选项、草稿与装配", () => {
-  it("叠加层选项是「关闭」+ 六种类型，且不含熄灭", () => {
+  it("叠加层选项是「关闭」+ 七种类型，且不含熄灭", () => {
     const values = OVERLAY_CHOICE_OPTIONS.map((option) => option.value);
     expect(values[0]).toBe("none");
     expect(values).toContain("strobe");
     expect(values).toContain("heartbeat");
     /* US50：叠加层里没有「熄灭」——叠一层黑等于没做事。 */
     expect(values).not.toContain("off");
-    expect(OVERLAY_CHOICE_OPTIONS).toHaveLength(7);
+    expect(OVERLAY_CHOICE_OPTIONS).toHaveLength(8);
   });
 
-  it("叠加方式只有覆盖 / 相乘 / 相加三种", () => {
-    expect(OVERLAY_BLEND_OPTIONS.map((option) => option.value)).toEqual([
-      BLEND.OVER,
-      BLEND.MULTIPLY,
-      BLEND.ADD,
-    ]);
+  it("混合方式只剩相加 / 覆盖两种（#100 移除了相乘）", () => {
+    expect(OVERLAY_BLEND_OPTIONS.map((option) => option.value)).toEqual([BLEND.ADD, BLEND.OVER]);
+    expect(OVERLAY_BLEND_OPTIONS.map((option) => option.name)).toEqual(["相加", "覆盖"]);
+    /* 界面上再也找不到「相乘」。 */
+    expect(OVERLAY_BLEND_OPTIONS.map((option) => option.name)).not.toContain("相乘");
   });
 
   it("默认草稿是关闭状态，且不产出任何叠加层", () => {
@@ -1023,7 +1032,7 @@ describe("叠加层：选项、草稿与装配", () => {
     expect(next[0].blend).toBe(BLEND.MULTIPLY);
   });
 
-  it("关闭叠加层后写出去的光区叠加方式归一为覆盖、layer1 为空层", () => {
+  it("关闭叠加层后写出去的分区叠加方式归一为覆盖、layer1 为空层", () => {
     const zones: SegmentSpec[] = [
       buildZoneSpec({
         stripId: 0,

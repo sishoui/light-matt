@@ -8,7 +8,7 @@
  *  2. 它有哪些灯组、各自亮着什么？（两列灯组卡片 + 每组自己的开关）
  *  3. 这台设备本身是什么？（固件 / 硬件号 / 灯组数 / 灯珠总数，只读）
  *
- * **任何灯效编辑都不在本页**：效果卡、参数、光区、步骤、方案都搬到
+ * **任何灯效编辑都不在本页**：效果卡、参数、分区、步骤、方案都搬到
  * `pages/strip/strip`（#64–#67 逐票实现）。协议也没有「逐灯组亮度」——
  * 只有全局 brightness 与逐组 strip_power_mask，所以本页不画逐组亮度。
  *
@@ -47,7 +47,16 @@ import { PAGE_ROUTES, pushTo, queryText } from "../../utils/control/routes";
 import { ControlSession } from "../../utils/control/session";
 import { getSession, isMockSession } from "../../utils/control/session-singleton";
 import { statusView } from "../../utils/control/status-view";
-import { loadTheme, themeClass, type ThemeMode } from "../../utils/control/theme";
+import { deviceKeyOf } from "../../utils/control/device-history";
+import {
+  resolveStripMetas,
+  setStripName,
+  setStripPhoto,
+  type ResolvedStripMeta,
+} from "../../utils/control/strip-meta";
+import { deleteDevicePhotoFile, pickDevicePhoto } from "../../utils/control/device-photo";
+import type { ThemeMode } from "../../utils/control/theme";
+import { pageThemeData } from "../../utils/control/page-theme";
 import {
   BRIGHTNESS_UI_INTERVAL_MS,
   brightnessHintText,
@@ -61,15 +70,19 @@ import type { DeviceState, LinkState, SegmentReport } from "../../utils/protocol
 interface StripCardView {
   /** 灯组号 0-7；既是导航参数也是开关命令的参数。 */
   stripId: number;
-  /** 「灯组 1」。 */
+  /** 展示名：用户起的名字，或默认「灯组 N」（#94）。 */
   label: string;
+  /** 展示封面：用户选的图，或按灯组号固定分配的占位图（#94）。 */
+  photo: string;
+  /** 封面是不是用户选的（决定长按菜单里「更换封面」的文案）。 */
+  photoIsCustom: boolean;
   /** 该组真实灯珠数（`State.stripCounts[stripId]`）。 */
   ledCount: number;
-  /** 当前效果摘要（设备读回的光区派生，不是本地草稿）。 */
+  /** 当前效果摘要（设备读回的分区派生，不是本地草稿）。 */
   summary: string;
   /** 该组自己的开关位（`State.stripPowerMask`）。 */
   on: boolean;
-  /** 该组当前有动画类光区（`State.stripAnimMask`，只作显示提示）。 */
+  /** 该组当前有动画类分区（`State.stripAnimMask`，只作显示提示）。 */
   animating: boolean;
   /** 这一组的开关命令还在路上。 */
   busy: boolean;
@@ -78,6 +91,10 @@ interface StripCardView {
 Page({
   data: {
     themeClass: "",
+    /** 实际深色（含「跟随系统」解析）。 */
+    dark: false,
+    /** 原生 slider / switch 的激活色（不读 CSS 变量）。 */
+    accentColor: "",
     mock: false,
 
     /* ---- 连接 ---- */
@@ -92,6 +109,12 @@ Page({
     /** 目标设备尚未连上时的提示（例如切换失败）。 */
     connectHint: "",
     connectBusy: false,
+
+    /**
+     * 标题下的副标题（#94）：连接状态收在这里，不再单独占一条状态栏。
+     * 点它可重连（未连接 / 连接失败时）。
+     */
+    navSubtitle: "未连接",
 
     /* 右上角下拉菜单（#61）：nav-bar 没有 slot，菜单在本页自建。 */
     menuOpen: false,
@@ -113,6 +136,13 @@ Page({
     /* ---- 灯组卡片 ---- */
     stripCards: [] as StripCardView[],
 
+    /* ---- 灯组长按菜单（#94） ---- */
+    stripMenuOpen: false,
+    /** 菜单当前针对的灯组号（-1 表示没有）。 */
+    stripMenuId: -1,
+    stripMenuName: "",
+    stripMenuPhotoIsCustom: false,
+
     /* ---- 只读设备摘要 ---- */
     firmwareText: "—",
     hwId: "—",
@@ -133,6 +163,8 @@ Page({
   lastBrightnessUiAt: 0,
   /** 菜单里的断开连接正在进行（防重复点击）。 */
   menuBusy: false,
+  /** 灯组长按 / 改名 / 换封面进行中（防重复提交）。 */
+  stripMetaBusy: false,
   /** 每条灯组的当前效果摘要（设备读回，按灯组缓存）。 */
   stripSummaries: new Map<number, string>(),
   /** 摘要刷新代次：并发刷新时旧一轮静默退出，不覆盖新一轮。 */
@@ -153,20 +185,22 @@ Page({
     this.autoConnectTried = false;
     this.lastBrightnessUiAt = 0;
     this.menuBusy = false;
+    this.stripMetaBusy = false;
     this.stripSummaries = new Map<number, string>();
     this.summaryEpoch = 0;
     this.stripBusyIds = new Set<number>();
 
     const storage = createWxStorage();
     this.storage = storage;
-    this.themeMode = loadTheme(storage);
+    const theme = pageThemeData(storage);
+    this.themeMode = theme.themeClass === "theme-dark" ? "dark" : theme.themeClass === "theme-light" ? "light" : "system";
     this.registry = loadRegistry(storage);
     this.targetKey = queryText(options, "key", "");
 
     this.session = getSession();
 
     this.setData({
-      themeClass: themeClass(this.themeMode),
+      ...theme,
       mock: isMockSession(),
       menuTop: this.navBottom(),
     });
@@ -190,6 +224,9 @@ Page({
   },
 
   onShow() {
+    /* 本页原来**完全**不刷新主题（#90 断点之二）：从「我的」页切完深色进来
+     * 仍是旧配色。现在每次显示都重读。 */
+    this.setData({ ...pageThemeData(this.storage ?? createWxStorage()) });
     this.subscribe();
     /* `syncFromSession` → `applyLink` 里会铺状态，并在 ready 时重读各灯组的
      * 效果摘要（用户可能在灯组页改过效果，返回本页要看到新的）。 */
@@ -368,7 +405,12 @@ Page({
       (session?.cachedDevice ?? null) !== null,
     );
     const ready = state === "ready";
-    this.setData({ ...view, ready });
+    this.setData({
+      ...view,
+      ready,
+      /* #94：连接状态收进副标题，不再单独占一条状态栏。 */
+      navSubtitle: this.navSubtitleOf(state, view, detail),
+    });
     if (!ready) {
       this.clearDeviceViews();
       if (state === "idle" && !this.autoConnectTried) {
@@ -381,7 +423,7 @@ Page({
     if (current !== null && current !== undefined) {
       this.applyDeviceState(current);
     }
-    /* 刚连上：光区列表由页面按需读（每条灯组一次），读回来才有「效果摘要」。 */
+    /* 刚连上：分区列表由页面按需读（每条灯组一次），读回来才有「效果摘要」。 */
     void this.refreshStripSummaries();
   },
 
@@ -401,6 +443,7 @@ Page({
       /* 未连接时不画卡片与摘要：`clearDeviceViews` 已经清空，连接过程中设备
        * 会先报几帧 State，这里不能把「上一次连接」的画面又填回来。 */
       stripCards: ready ? this.buildStripCards(state) : [],
+      ...(ready ? { navSubtitle: this.navSubtitleOf("ready", statusView("ready", "", undefined, false, this.data.ready), undefined, state.power) } : {}),
       ...(ready
         ? this.deviceSummaryPatch(state)
         : { firmwareText: "—", hwId: "—", stripCount: 0, ledTotal: 0 }),
@@ -451,15 +494,50 @@ Page({
     return enabledStripIds(this.registry ?? { devices: [] }, deviceId, state.stripCount);
   },
 
+  /**
+   * 当前设备的稳定标识（灯组元数据的存储键前缀）。
+   *
+   * hardwareId 优先（#94）：iOS 换 UUID 后灯组名与封面仍跟着走。
+   */
+  deviceKey(): string {
+    const deviceId = this.session?.transport.currentDeviceId ?? "";
+    const info = this.session?.deviceInfo ?? null;
+    const hardwareId =
+      info !== null && info.hwId.length > 0
+        ? info.hwId
+        : this.data.hwId !== "—"
+          ? this.data.hwId
+          : "";
+    return deviceKeyOf({ deviceId, hardwareId });
+  },
+
+  /** 灯组元数据的解析结果（名字 + 封面），按当前可见灯组一次算好。 */
+  stripMetaOf(stripIds: readonly number[]): Map<number, ResolvedStripMeta> {
+    const key = this.deviceKey();
+    const map = new Map<number, ResolvedStripMeta>();
+    if (key.length === 0 || this.storage === null) {
+      return map;
+    }
+    for (const meta of resolveStripMetas(this.storage, key, stripIds)) {
+      map.set(meta.stripId, meta);
+    }
+    return map;
+  },
+
   /** 按 State + 启用掩码生成灯组卡片（顺序 = 灯组号升序）。 */
   buildStripCards(state: DeviceState): StripCardView[] {
     const cards: StripCardView[] = [];
-    for (const stripId of this.visibleStripIds(state)) {
+    const ids = this.visibleStripIds(state);
+    const metas = this.stripMetaOf(ids);
+    for (const stripId of ids) {
       const ledCount = state.stripCounts[stripId] ?? 0;
       const cached = this.stripSummaries.get(stripId);
+      const meta = metas.get(stripId);
       cards.push({
         stripId,
-        label: `灯组 ${stripId + 1}`,
+        label: meta?.name ?? `灯组 ${stripId + 1}`,
+        photo: meta?.photo ?? "",
+        photoIsCustom: meta?.photoIsCustom ?? false,
         ledCount,
         summary:
           cached ??
@@ -482,9 +560,9 @@ Page({
   },
 
   /**
-   * 从设备读回**每一条可见灯组**的光区，刷新卡片上的效果摘要。
+   * 从设备读回**每一条可见灯组**的分区，刷新卡片上的效果摘要。
    *
-   * 光区不在 State 里，设备也不会主动上报，所以只能逐组 `QueryStrip`。
+   * 分区不在 State 里，设备也不会主动上报，所以只能逐组 `QueryStrip`。
    * 顺序发送（并发多帧重组会交错），并用代次号让旧一轮在 await 后静默退出。
    */
   async refreshStripSummaries(): Promise<void> {
@@ -524,12 +602,12 @@ Page({
   },
 
   /**
-   * 一组光区 → 卡片上的一行效果摘要。
+   * 一组分区 → 卡片上的一行效果摘要。
    *
-   * 单光区覆盖整组时只说效果名（最常见）；只覆盖一段时带区间；
-   * 多个光区时只说数量（卡片太窄，列不完）。
+   * 单分区覆盖整组时只说效果名（最常见）；只覆盖一段时带区间；
+   * 多个分区时只说数量（卡片太窄，列不完）。
    *
-   * 区间按**用户视角从 1 编号**（`1–15`），与灯组页的光区轴一致：协议里从 0
+   * 区间按**用户视角从 1 编号**（`1–15`），与灯组页的分区轴一致：协议里从 0
    * 编号只出现在灯珠弹窗的提示里一次，卡片上出现 `0–29` 会让人以为少了一颗。
    */
   summaryOfReports(reports: readonly SegmentReport[], ledCount: number): string {
@@ -537,7 +615,7 @@ Page({
       return "未设置灯效";
     }
     if (reports.length > 1) {
-      return `${reports.length} 个光区`;
+      return `${reports.length} 个分区`;
     }
     const only = reports[0];
     const base = modeNameOf(only.layer0.type);
@@ -566,6 +644,43 @@ Page({
     });
   },
 
+  /**
+   * 副标题的文案（#94）：连接状态收在这里。
+   *
+   * 未连接 / 连接中 / 已连接·灯光打开 / 已连接·灯光关闭 / 连接失败。
+   * 点副标题可重连——所以它就是「状态 + 重试入口」，不额外占一条状态栏。
+   */
+  navSubtitleOf(
+    state: LinkState,
+    view: ReturnType<typeof statusView>,
+    detail?: LinkDetail,
+    power?: 0 | 1,
+  ): string {
+    if (state === "connecting" || state === "initializing") {
+      const name = detail?.deviceName ?? "";
+      return name.length > 0 ? `正在连接 ${name}…` : "正在连接…";
+    }
+    if (state === "scanning") {
+      return "正在扫描…";
+    }
+    if (state === "ready") {
+      const on = (power ?? this.data.power) === 1;
+      return on ? "已连接 · 灯光打开" : "已连接 · 灯光关闭";
+    }
+    if (state === "failed") {
+      return view.statusSub.length > 0 ? `连接失败 · ${view.statusSub}` : "连接失败";
+    }
+    return "未连接 · 点这里重连";
+  },
+
+  /** 点副标题（nav-bar 的 subtitle 不可点，这里用页面内的状态条承接）。 */
+  onSubtitleTap() {
+    if (this.data.ready) {
+      return;
+    }
+    void this.onRetryConnect();
+  },
+
   // ---------------- 灯组卡片 ----------------
 
   /** 点卡片主体 → 进灯组页（带上灯组号）。 */
@@ -580,6 +695,151 @@ Page({
     }
     this.session?.setActiveStripId(stripId);
     pushTo(PAGE_ROUTES.strip, { strip: stripId });
+  },
+
+  /** 长按灯组卡片：弹出改名 / 换封面菜单（#94）。 */
+  onStripCardLongPress(e: WechatMiniprogram.TouchEvent) {
+    const stripId = Number(e.currentTarget.dataset.stripId ?? -1);
+    const card = this.data.stripCards.find((item) => item.stripId === stripId);
+    if (card === undefined) {
+      return;
+    }
+    wx.vibrateShort?.({ type: "light", fail: () => undefined });
+    this.setData({
+      stripMenuOpen: true,
+      stripMenuId: stripId,
+      stripMenuName: card.label,
+      stripMenuPhotoIsCustom: card.photoIsCustom,
+    });
+  },
+
+  onStripMenuClose() {
+    if (!this.data.stripMenuOpen) {
+      return;
+    }
+    this.setData({ stripMenuOpen: false });
+  },
+
+  /** 灯组菜单：改名。 */
+  async onStripMenuRename() {
+    const stripId = this.data.stripMenuId;
+    if (stripId < 0 || this.stripMetaBusy) {
+      return;
+    }
+    this.setData({ stripMenuOpen: false });
+    const current = this.data.stripCards.find((item) => item.stripId === stripId)?.label ?? "";
+    const name = await this.promptText({
+      title: "灯组名称",
+      value: current,
+      placeholder: "例如：书桌",
+      maxlength: 16,
+    });
+    if (name === null) {
+      return;
+    }
+    this.applyStripName(stripId, name);
+  },
+
+  /** 灯组菜单：换封面（相册）。 */
+  async onStripMenuPickPhoto() {
+    const stripId = this.data.stripMenuId;
+    if (stripId < 0 || this.stripMetaBusy || this.storage === null) {
+      return;
+    }
+    this.setData({ stripMenuOpen: false });
+    this.stripMetaBusy = true;
+    try {
+      const key = this.deviceKey();
+      const previous = this.data.stripCards.find((item) => item.stripId === stripId)?.photo ?? "";
+      const saved = await pickDevicePhoto(`${key}#strip${stripId}`, previous);
+      if (saved === null) {
+        return;
+      }
+      setStripPhoto(this.storage, key, stripId, saved);
+      this.renderStripCards();
+      wx.showToast({ title: "封面已更新", icon: "none" });
+    } finally {
+      this.stripMetaBusy = false;
+    }
+  },
+
+  /** 灯组菜单：移除封面，回到默认占位图。 */
+  onStripMenuClearPhoto() {
+    const stripId = this.data.stripMenuId;
+    /* 没有自定义封面时这一项是置灰的：点击直接忽略（WXML 里不能用动态
+     * 事件名——微信不支持，且会让整张菜单的绑定失效）。 */
+    if (stripId < 0 || this.storage === null || !this.data.stripMenuPhotoIsCustom) {
+      return;
+    }
+    const key = this.deviceKey();
+    const previous = this.data.stripCards.find((item) => item.stripId === stripId)?.photo ?? "";
+    if (this.data.stripMenuPhotoIsCustom) {
+      deleteDevicePhotoFile(previous);
+    }
+    setStripPhoto(this.storage, key, stripId, null);
+    this.setData({ stripMenuOpen: false });
+    this.renderStripCards();
+    wx.showToast({ title: "已恢复默认封面", icon: "none" });
+  },
+
+  /** 灯组改名落盘并重绘（单独拆出来，便于测试与复用）。 */
+  applyStripName(stripId: number, name: string): void {
+    if (this.storage === null) {
+      return;
+    }
+    setStripName(this.storage, this.deviceKey(), stripId, name);
+    this.renderStripCards();
+  },
+
+  /**
+   * 跨端一致的文本输入框。
+   *
+   * `wx.showModal` 的 `editable` 在部分基础库上不可用，所以优先用它；
+   * 不可用时退回一个「提示 + 默认值」的确认框（至少不会静默失败）。
+   */
+  promptText(input: {
+    title: string;
+    value: string;
+    placeholder: string;
+    maxlength: number;
+  }): Promise<string | null> {
+    return new Promise((resolve) => {
+      type EditableModal = typeof wx.showModal;
+      const modal = wx.showModal as unknown as EditableModal & {
+        (options: {
+          title: string;
+          editable?: boolean;
+          placeholderText?: string;
+          content?: string;
+          confirmText?: string;
+          cancelText?: string;
+          success?: (res: { confirm: boolean; content?: string }) => void;
+          fail?: () => void;
+        }): void;
+      };
+      try {
+        modal({
+          title: input.title,
+          editable: true,
+          placeholderText: input.placeholder,
+          content: input.value,
+          confirmText: "保存",
+          cancelText: "取消",
+          success: (res) => {
+            if (!res.confirm) {
+              resolve(null);
+              return;
+            }
+            const text = String(res.content ?? "").slice(0, input.maxlength).trim();
+            /* 空串是「恢复默认名」，不是取消：允许通过。 */
+            resolve(text);
+          },
+          fail: () => resolve(null),
+        });
+      } catch {
+        resolve(null);
+      }
+    });
   },
 
   /**
@@ -656,6 +916,14 @@ Page({
       const result = await session.setPower(this.data.power !== 1);
       if (result.kind === "ok") {
         this.applyDeviceState(result.state);
+        this.setData({
+          navSubtitle: this.navSubtitleOf(
+            "ready",
+            statusView("ready", "", undefined, false, true),
+            undefined,
+            result.state.power,
+          ),
+        });
         wx.vibrateShort?.({ type: "light", fail: () => undefined });
         return;
       }
@@ -736,12 +1004,6 @@ Page({
   /** 遮罩上的 touchmove：吞掉滚动，避免底层页面跟着动。 */
   onMenuNoop() {
     /* 故意为空：catchtouchmove 的目的就是阻止滚动穿透。 */
-  },
-
-  /** 添加设备 → 发现页（二级页，压栈；返回回到本页）。 */
-  onMenuDiscover() {
-    this.setData({ menuOpen: false });
-    pushTo(PAGE_ROUTES.discover);
   },
 
   /** 设备信息（未连接时给出提示，不压一个空页面上去）。 */

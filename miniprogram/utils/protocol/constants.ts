@@ -154,6 +154,11 @@ export const SEGMENT_TYPE = {
   HEARTBEAT: 0x05,
   /** #74 熄灭：参数全 0，永不发光（显式的「这里就是黑的」）。 */
   OFF: 0x06,
+  /**
+   * #98 随机闪烁：每颗灯按自己的哈希相位做确定性亮灭方波（不是逐帧白噪声）。
+   * p5 = 同时亮着的比例；flags 必须 0；周期 0 或 ≥ 334ms。
+   */
+  FLICKER: 0x07,
   /** 空层（只有 type 合法）。 */
   EMPTY: 0xff,
 } as const;
@@ -182,6 +187,7 @@ export const KNOWN_EFFECT_TYPES: readonly number[] = [
   SEGMENT_TYPE.STROBE,
   SEGMENT_TYPE.HEARTBEAT,
   SEGMENT_TYPE.OFF,
+  SEGMENT_TYPE.FLICKER,
 ];
 
 /** `type` 是否是真实灯效类型（空层 `0xFF` 不算）。 */
@@ -198,6 +204,7 @@ export const EFFECT_TYPE_NAMES: Record<number, string> = {
   [SEGMENT_TYPE.STROBE]: "爆闪",
   [SEGMENT_TYPE.HEARTBEAT]: "心跳",
   [SEGMENT_TYPE.OFF]: "熄灭",
+  [SEGMENT_TYPE.FLICKER]: "随机闪烁",
   [SEGMENT_TYPE.EMPTY]: "无",
 };
 
@@ -246,6 +253,54 @@ export const STROBE_MIN_PERIOD_MS = 100;
  */
 export const HEARTBEAT_MIN_PERIOD_MS = 500;
 export const HEARTBEAT_MAX_PERIOD_MS = 1500;
+
+/**
+ * 随机闪烁周期下限（#98）：334ms，与呼吸同一条光敏性癫痫安全线。
+ *
+ * 它**不是**空间移动而是亮度闪烁，所以不能借用彩虹 / 流光的 200ms。
+ * period_ms == 0 是「静止」：时间相位不动，画面冻结在一张固定分布上。
+ */
+export const FLICKER_MIN_PERIOD_MS = 334;
+
+/**
+ * 流光的 flags 位域（#98，全部挤在已有的 1 字节里，不新增字段）：
+ *   bit0 reverse / bit1 实色拖尾 / bit2-3 头数量-1 / bit4-7 保留 = 0
+ *
+ * 多个头在同一帧**取最大值**合成，绝不相加（固件侧实现），这里只负责编码。
+ */
+export const COMET_FLAG = {
+  REVERSE: 0x01,
+  SOLID_TAIL: 0x02,
+} as const;
+export const COMET_DENSITY_SHIFT = 2;
+export const COMET_DENSITY_MASK = 0x0c;
+export const COMET_HEADS_MIN = 1;
+export const COMET_HEADS_MAX = 4;
+/** 流光 flags 的保留位（bit4-7 必须为 0）。 */
+export const COMET_FLAGS_RESERVED = 0xf0;
+
+/**
+ * 循环模式（#98）：0 不循环 / 1 全部循环 / 2 最后一步循环。
+ *
+ * 取值就是线上字节，**不做重映射**；旧固件只接受 0/1，所以 2 会被它按
+ * InvalidParam 安全拒绝（不改任何配置）。
+ */
+export const LOOP = {
+  NONE: 0,
+  ALL: 1,
+  LAST: 2,
+} as const;
+export const LOOP_MAX = LOOP.LAST;
+
+/**
+ * State 字节 10 与 ScriptSummary 0x85 的 flags 位表（§7.5）：
+ * bit0 循环中（旧语义）、bit1 active、bit2 最后一步循环、bit3-7 保留 = 0。
+ */
+export const PLAYBACK_FLAG = {
+  LOOP: 0x01,
+  ACTIVE: 0x02,
+  LOOP_LAST: 0x04,
+} as const;
 
 /** 周期字段是 2 字节小端（D3）。 */
 export const MAX_PERIOD_MS = 0xffff;

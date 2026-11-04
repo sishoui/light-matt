@@ -51,7 +51,7 @@
   <view class="section">
     <view class="section-head">
       <text class="section-title">演示设备</text>
-      <switch checked="{{mock}}" color="#ff9500" bindchange="onToggleMock" />
+      <switch checked="{{mock}}" color="{{accentColor}}" bindchange="onToggleMock" />
     </view>
     <text class="section-hint">
       没有真机记录时默认开启：三台占位设备会出现在设备页，控制会真实改动它们的

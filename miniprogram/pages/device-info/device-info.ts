@@ -17,7 +17,6 @@ import { errorText, resultText } from "../../utils/ble/errors";
 import { createWxStorage } from "../../utils/control/device-cache";
 import {
   loadRegistry,
-  removeDevice,
   setRemark,
   setStripEnabled,
   type DeviceRegistry,
@@ -35,14 +34,12 @@ import {
   sumStripLeds,
 } from "../../utils/control/led-count-plan";
 import { ledCountResultHint } from "../../utils/control/ledCount";
-import {
-  clearPlanDraftsForDevice,
-  loadPlanDrafts,
-  savePlanDraft,
-} from "../../utils/control/plan-drafts";
+import { loadPlanDrafts, savePlanDraft } from "../../utils/control/plan-drafts";
+import { deleteDeviceFully } from "../../utils/control/delete-device";
 import { ControlSession } from "../../utils/control/session";
 import { getSession } from "../../utils/control/session-singleton";
-import { loadTheme, themeClass } from "../../utils/control/theme";
+import { pageThemeData } from "../../utils/control/page-theme";
+import { resolveStripMeta } from "../../utils/control/strip-meta";
 import { zonesFromReports } from "../../utils/control/zone-editor";
 import { MAX_LEDS, MIN_LEDS, MAX_STRIPS } from "../../utils/protocol/constants";
 import type { DeviceInfo, DeviceState, SegmentSpec, StripConfig } from "../../utils/protocol/types";
@@ -63,6 +60,10 @@ interface StripInfoRow {
 Page({
   data: {
     themeClass: "",
+    /** 实际深色（含「跟随系统」解析）。 */
+    dark: false,
+    /** 原生 slider / switch 的激活色（不读 CSS 变量）。 */
+    accentColor: "",
     ready: false,
     deviceName: "",
     deviceId: "",
@@ -108,13 +109,13 @@ Page({
     this.session = getSession();
     this.sync = new DeviceSync({ api: syncApiOf(getDeviceApi()), storage: createWxStorage() });
     this.reloadRegistry();
-    this.setData({ themeClass: themeClass(loadTheme(createWxStorage())) });
+    this.setData({ ...pageThemeData(createWxStorage()) });
     void this.reload();
   },
 
   onShow() {
     this.reloadRegistry();
-    this.setData({ themeClass: themeClass(loadTheme(createWxStorage())) });
+    this.setData({ ...pageThemeData(createWxStorage()) });
     void this.reload();
   },
 
@@ -181,9 +182,18 @@ Page({
       /* 拖动中的本地值优先：State 是 20Hz 的，跟着它走会让滑块在手指下跳。
        * 松手提交后 `ledDrafts` 清空，这里自然回到设备权威值。 */
       const draft = this.ledDrafts[stripId];
+      /* #94：设备信息页与设备页、灯组页读**同一个来源**的灯组名。 */
+      const meta =
+        this.data.deviceId.length > 0
+          ? resolveStripMeta(
+              createWxStorage(),
+              this.draftKeyOfDevice(),
+              stripId,
+            )
+          : null;
       stripRows.push({
         stripId,
-        label: `灯组 ${stripId + 1}`,
+        label: meta?.name ?? `灯组 ${stripId + 1}`,
         /* 逐带真实值：设备 State，不复制 strip 0。 */
         ledCount: draft ?? deviceCount,
         gpioText,
@@ -212,7 +222,7 @@ Page({
       limitsText:
         info === null
           ? "—"
-          : `灯珠 ${info.maxLeds} · 灯组 ${info.maxStrips} · 光区 ${info.maxSegments} · 步骤 ${info.maxStages} · 方案 ${info.maxScripts}`,
+          : `灯珠 ${info.maxLeds} · 灯组 ${info.maxStrips} · 分区 ${info.maxSegments} · 步骤 ${info.maxStages} · 方案 ${info.maxScripts}`,
     });
 
     /* hwId 由会话在 ready 后写入登记表；重读一次让备注字段反映最新记录。 */
@@ -288,7 +298,7 @@ Page({
   /**
    * 松手：新增 / 缩小 / 改大三条路径。
    *
-   * 缩小且这条灯组有越界的光区或草稿时，先弹二次确认（文案带数量）；
+   * 缩小且这条灯组有越界的分区或草稿时，先弹二次确认（文案带数量）；
    * 取消则设备与草稿都不动，滑块回到设备值。
    */
   async onLedCountChange(e: WechatMiniprogram.SliderChange) {
@@ -311,14 +321,14 @@ Page({
       return;
     }
 
-    /* 缩小才需要预检；改大永远不动任何已有光区（`planShrink` 对改大 0 命中）。 */
+    /* 缩小才需要预检；改大永远不动任何已有分区（`planShrink` 对改大 0 命中）。 */
     let knownZones: SegmentSpec[] = [];
     if (value < current) {
       const precheck = await this.shrinkPlanOf(stripId, value);
       knownZones = precheck.deviceZones;
       if (precheck.affected > 0) {
         const confirmed = await showConfirm(
-          "缩短灯组会截断光区",
+          "缩短灯组会截断分区",
           shrinkConfirmText(precheck.affected, value),
           "继续缩短",
         );
@@ -334,7 +344,7 @@ Page({
     if (applied !== true || value >= current) {
       return;
     }
-    /* 设备在数量变更时会 prune 掉越界的旧光区（不自动缩短），确认后把截断过
+    /* 设备在数量变更时会 prune 掉越界的旧分区（不自动缩短），确认后把截断过
      * 的那几条重新写回去，灯组仍能正常应用并播放。 */
     await this.rewriteClampedZones(stripId, knownZones, value);
   },
@@ -359,9 +369,9 @@ Page({
   },
 
   /**
-   * 缩小前的本地预检：这条灯组的设备光区 + 落盘草稿里有多少会越界。
+   * 缩小前的本地预检：这条灯组的设备分区 + 落盘草稿里有多少会越界。
    *
-   * **一帧都不发**。设备光区读不到时只按草稿算（读失败不该把缩小的路堵死，
+   * **一帧都不发**。设备分区读不到时只按草稿算（读失败不该把缩小的路堵死，
    * 也不该谎报「没有越界」——草稿那一半仍然会数）。
    */
   async shrinkPlanOf(
@@ -413,7 +423,7 @@ Page({
   /**
    * 下发新的灯珠数。
    *
-   * 成功：把落盘草稿里这条灯组越界的光区按新长度清理并写回，滑块交还设备值。
+   * 成功：把落盘草稿里这条灯组越界的分区按新长度清理并写回，滑块交还设备值。
    * 失败：**就地显示原因并保留原灯珠数**（草稿一个字节都不动——设备还是旧
    * 长度，先截断草稿就等于替用户丢编排）。
    */
@@ -434,7 +444,7 @@ Page({
           ledCount: applied,
           ledHint: `灯组 ${stripId + 1} 已设为 ${applied} 颗`,
         });
-        /* 只有缩小才可能让草稿里的光区越界；改大一个字节都不动。 */
+        /* 只有缩小才可能让草稿里的分区越界；改大一个字节都不动。 */
         if (applied < current) {
           await this.persistShrunkDrafts(stripId, applied);
         }
@@ -464,7 +474,7 @@ Page({
   },
 
   /**
-   * 把这条灯组落盘草稿里越界的光区按新长度清理并写回。
+   * 把这条灯组落盘草稿里越界的分区按新长度清理并写回。
    *
    * 只动这条灯组那一片（`shrinkDraft` 只碰 `stripId`）；其它灯组原样保留。
    * 落盘失败只影响本机草稿，不回滚已经成功的设备数量。
@@ -496,7 +506,7 @@ Page({
   },
 
   /**
-   * 把被截断的光区按新终点重新写回设备。
+   * 把被截断的分区按新终点重新写回设备。
    *
    * 设备在数量变更时已经把 `end >= new_count` 的段整段 prune 掉了
    * （protocol-v4 §7.2：不自动缩短，整段丢弃），所以确认后只需把「截断版」
@@ -521,13 +531,13 @@ Page({
         const ack = await session.setSegment(zone);
         if (!ack.ok) {
           this.patchStripRow(stripId, {
-            ledHint: `灯珠数已改；光区写回失败（${resultText(ack.resultCode)}）`,
+            ledHint: `灯珠数已改；分区写回失败（${resultText(ack.resultCode)}）`,
           });
           return;
         }
       }
     } catch (err) {
-      this.patchStripRow(stripId, { ledHint: `灯珠数已改；光区写回失败（${errorText(err)}）` });
+      this.patchStripRow(stripId, { ledHint: `灯珠数已改；分区写回失败（${errorText(err)}）` });
     }
   },
 
@@ -537,7 +547,7 @@ Page({
    * 灯组显隐开关（裁决 §7：从发现页搬到本页，与逐组灯珠数同页）。
    *
    * 这是**本机偏好**：WS2812B 无法回报物理接线，设备判断不了某条带是否真的
-   * 插着。隐藏只是从设备页的灯组切换器里去掉，设备上的光区配置一个字节都
+   * 插着。隐藏只是从设备页的灯组切换器里去掉，设备上的分区配置一个字节都
    * 不动，存储仍是 `lumen.deviceRegistry.v1` 的 `stripMask`。
    */
   async onTrimStrip(e: WechatMiniprogram.SwitchChange) {
@@ -641,25 +651,23 @@ Page({
     }
     const confirmed = await showConfirm(
       "删除这台设备？",
-      "只解除本机与后端的登记关系，设备上的灯光配置不受影响；重新扫描仍能连上。",
+      "本机会断开连接、清掉登记与封面；设备上的灯光配置不受影响，重新扫描仍能连上。",
     );
     if (!confirmed) {
       return;
     }
     this.setData({ deleteBusy: true });
     try {
-      const hardwareId = this.hardwareIdOf(deviceId) ?? undefined;
+      const hardwareId = this.hardwareIdOf(deviceId) ?? "";
       const backendId =
         this.registry?.devices.find((item) => item.deviceId === deviceId)?.backendId ?? null;
-      removeDevice(createWxStorage(), deviceId);
-      this.session?.forgetRecent(deviceId, hardwareId);
-      /* 方案草稿是本机数据，**只在这里清**：断线 / 切页都不清（那是「内容只
-       * 存在本机」这句承诺的另一半）。键可能是 hardwareId 或 deviceId，两个都清。 */
-      const storage = createWxStorage();
-      if (hardwareId !== undefined) {
-        clearPlanDraftsForDevice(storage, hardwareId);
-      }
-      clearPlanDraftsForDevice(storage, deviceId);
+      /* 删除是**一组动作**（#91）：与「我的」页走同一个实现，语义只有一份。 */
+      await deleteDeviceFully({
+        storage: createWxStorage(),
+        deviceId,
+        hardwareId,
+        session: this.session,
+      });
       this.reloadRegistry();
       this.setData({ remarkInput: "", hint: "已删除本机记录" });
       /* 后端只解除关联：设备行保留，重新扫描仍可登记。 */

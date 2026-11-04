@@ -40,14 +40,14 @@ const EXPECTED_PAYLOAD = new Map([
 ]);
 
 /*
- * #74：灯效类型的参数规则（契约 §7.1 第 8 步）。
+ * #74 / #98：灯效类型的参数规则（契约 §7.1 第 8 步）。
  *
  * 这里只校验**向量自身的字节与预期结果一致**，不实现完整校验器：
- *   - 合法帧里出现的 type 必须是已知七种之一；
+ *   - 合法帧里出现的 type 必须是已知八种之一；
  *   - 已知类型的 flags 保留位 / 周期区间必须落在契约内；
  *   - 熄灭层的 hue / sat / p5 / period / flags 必须全 0。
  */
-const KNOWN_TYPES = new Set([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+const KNOWN_TYPES = new Set([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]);
 const TYPE_STATIC = 0x00;
 const TYPE_BREATHING = 0x01;
 const TYPE_RAINBOW = 0x02;
@@ -55,11 +55,18 @@ const TYPE_COMET = 0x03;
 const TYPE_STROBE = 0x04;
 const TYPE_HEARTBEAT = 0x05;
 const TYPE_OFF = 0x06;
+const TYPE_FLICKER = 0x07;
 const STROBE_MIN_PERIOD_MS = 100;
 const HEARTBEAT_MIN_PERIOD_MS = 500;
 const HEARTBEAT_MAX_PERIOD_MS = 1500;
 const BREATHING_MIN_PERIOD_MS = 334;
 const ANIMATION_MIN_PERIOD_MS = 200;
+/* #98：随机闪烁是亮度闪烁，与呼吸同一条 3Hz 安全线。 */
+const FLICKER_MIN_PERIOD_MS = 334;
+/* #98：流光的 flags 位域（bit0 reverse / bit1 实色拖尾 / bit2-3 头数-1）。 */
+const COMET_FLAGS_RESERVED = 0xf0;
+const COMET_DENSITY_SHIFT = 2;
+const COMET_DENSITY_MASK = 0x0c;
 
 // 设备 → 小程序报告（§7.4）
 const EXPECTED_REPORT = new Map([
@@ -152,6 +159,12 @@ const INVALID_EXPECT = {
   set_segment_bad_heartbeat_period_high: 0x01,
   set_segment_bad_heartbeat_flags: 0x01,
   set_segment_bad_off_params: 0x01,
+  // #98 流光密度 / 实色拖尾 / 随机闪烁 / 循环三值
+  set_segment_bad_comet_flags_reserved: 0x01,
+  set_segment_bad_flicker_period: 0x01,
+  set_segment_bad_flicker_flags: 0x01,
+  set_playback_loop_invalid: 0x01,
+  activate_script_loop_invalid: 0x01,
 };
 for (const [name, code] of Object.entries(INVALID_EXPECT)) {
   const c = cases.find((x) => x.name === name);
@@ -274,10 +287,20 @@ for (const c of cases) {
         check((p.flags & 0xf8) === 0, `${c.name}: layer${li} breathing flags reserved bits set`);
         check(p.period === 0 || p.period >= BREATHING_MIN_PERIOD_MS,
           `${c.name}: layer${li} breathing period ${p.period} < ${BREATHING_MIN_PERIOD_MS}`);
-      } else if (type === TYPE_RAINBOW || type === TYPE_COMET) {
-        check((p.flags & 0xfe) === 0, `${c.name}: layer${li} animation flags reserved bits set`);
+      } else if (type === TYPE_RAINBOW) {
+        check((p.flags & 0xfe) === 0, `${c.name}: layer${li} rainbow flags reserved bits set`);
         check(p.period === 0 || p.period >= ANIMATION_MIN_PERIOD_MS,
           `${c.name}: layer${li} period ${p.period} < ${ANIMATION_MIN_PERIOD_MS}`);
+      } else if (type === TYPE_COMET) {
+        /* #98：bit0-3 有含义，只有 bit4-7 是保留位。 */
+        check((p.flags & COMET_FLAGS_RESERVED) === 0,
+          `${c.name}: layer${li} comet flags bit4-7 must be 0, got 0x${p.flags.toString(16)}`);
+        check(p.period === 0 || p.period >= ANIMATION_MIN_PERIOD_MS,
+          `${c.name}: layer${li} comet period ${p.period} < ${ANIMATION_MIN_PERIOD_MS}`);
+      } else if (type === TYPE_FLICKER) {
+        check(p.flags === 0, `${c.name}: layer${li} flicker flags must be 0, got ${p.flags}`);
+        check(p.period === 0 || p.period >= FLICKER_MIN_PERIOD_MS,
+          `${c.name}: layer${li} flicker period ${p.period} < ${FLICKER_MIN_PERIOD_MS}`);
       } else if (type === TYPE_STROBE) {
         check(p.flags === 0, `${c.name}: layer${li} strobe flags must be 0, got ${p.flags}`);
         check(p.period === 0 || p.period >= STROBE_MIN_PERIOD_MS,
@@ -404,6 +427,121 @@ for (const [name, want] of Object.entries(newTypeCases)) {
   const c = cases.find((x) => x.name === 'set_segment_bad_off_params');
   check(!!c && layerParams(c.payload_hex, 0, 0).hue !== 0,
     'set_segment_bad_off_params: OFF hue must be nonzero');
+}
+
+/* ---------------- #98：流光密度 / 实色拖尾 ---------------- */
+
+/*
+ * 流光条目必须真的把密度与拖尾写进 flags 字节（防止生成器把值写到别的位）。
+ */
+const cometCases = {
+  set_segment_comet_heads_1: { heads: 1, solid: false, reverse: false },
+  set_segment_comet_heads_2: { heads: 2, solid: false, reverse: false },
+  set_segment_comet_heads_4: { heads: 4, solid: false, reverse: false },
+  set_segment_comet_solid_tail: { heads: 1, solid: true, reverse: false },
+  set_segment_comet_heads4_solid_reverse: { heads: 4, solid: true, reverse: true },
+};
+for (const [name, want] of Object.entries(cometCases)) {
+  const c = cases.find((x) => x.name === name);
+  check(!!c, `missing comet case: ${name}`);
+  if (!c) {
+    continue;
+  }
+  check(c.frame_valid, `${name}: must be a valid frame`);
+  check(c.payload_len === SEGMENT_PAYLOAD, `${name}: payload must stay ${SEGMENT_PAYLOAD}B`);
+  check(layerType(c.payload_hex, 0, 0) === TYPE_COMET, `${name}: layer0 must be comet`);
+  const p = layerParams(c.payload_hex, 0, 0);
+  const heads = ((p.flags & COMET_DENSITY_MASK) >> COMET_DENSITY_SHIFT) + 1;
+  check(heads === want.heads, `${name}: heads ${heads} != ${want.heads}`);
+  check(((p.flags & 0x02) !== 0) === want.solid, `${name}: solid-tail bit wrong`);
+  check(((p.flags & 0x01) !== 0) === want.reverse, `${name}: reverse bit wrong`);
+  check((p.flags & COMET_FLAGS_RESERVED) === 0, `${name}: reserved comet bits set`);
+}
+
+/* 越界用例的字节必须真的把保留位点亮。 */
+{
+  const c = cases.find((x) => x.name === 'set_segment_bad_comet_flags_reserved');
+  check(!!c && (layerParams(c.payload_hex, 0, 0).flags & COMET_FLAGS_RESERVED) !== 0,
+    'set_segment_bad_comet_flags_reserved: flags bit4-7 must be set');
+}
+
+/* ---------------- #98：随机闪烁 ---------------- */
+
+{
+  const c = cases.find((x) => x.name === 'set_segment_single_flicker');
+  check(!!c, 'missing set_segment_single_flicker');
+  if (c) {
+    check(c.frame_valid, 'set_segment_single_flicker: must be a valid frame');
+    check(c.payload_len === SEGMENT_PAYLOAD,
+      'set_segment_single_flicker: new type must not widen the layer');
+    check(layerType(c.payload_hex, 0, 0) === TYPE_FLICKER,
+      'set_segment_single_flicker: layer0 must be flicker');
+    const p = layerParams(c.payload_hex, 0, 0);
+    check(p.period === 1000, 'set_segment_single_flicker: period must be 1000');
+    check(p.p5 === 128, 'set_segment_single_flicker: duty must be 128');
+    check(p.flags === 0, 'set_segment_single_flicker: flags must be 0');
+    check(layerLevel(c.payload_hex, 0, 0) === LAYER_LEVEL_MAX,
+      'set_segment_single_flicker: level should default to 100');
+  }
+}
+{
+  const c = cases.find((x) => x.name === 'set_segment_flicker_plus_static');
+  check(!!c, 'missing set_segment_flicker_plus_static');
+  if (c) {
+    check(c.frame_valid, 'set_segment_flicker_plus_static: must be a valid frame');
+    check(layerType(c.payload_hex, 0, 0) === TYPE_STATIC,
+      'set_segment_flicker_plus_static: layer0 must be static');
+    check(layerType(c.payload_hex, 0, 1) === TYPE_FLICKER,
+      'set_segment_flicker_plus_static: layer1 must be flicker');
+    check(parseInt(c.payload_hex.slice(8, 10), 16) === 0x01,
+      'set_segment_flicker_plus_static: blend must be multiply');
+  }
+}
+{
+  const c = cases.find((x) => x.name === 'set_segment_bad_flicker_period');
+  check(!!c && layerParams(c.payload_hex, 0, 0).period === 333,
+    'set_segment_bad_flicker_period: period must be 333');
+}
+{
+  const c = cases.find((x) => x.name === 'set_segment_bad_flicker_flags');
+  check(!!c && layerParams(c.payload_hex, 0, 0).flags !== 0,
+    'set_segment_bad_flicker_flags: flags must be nonzero');
+}
+
+/* ---------------- #98：循环三值 ---------------- */
+
+for (const name of ['set_playback_loop_last', 'activate_script_loop_last']) {
+  const c = cases.find((x) => x.name === name);
+  check(!!c, `missing loop-last case: ${name}`);
+  if (c) {
+    check(c.frame_valid, `${name}: must be a valid frame`);
+    check(c.payload_len === 2, `${name}: payload must stay 2 bytes`);
+    check(c.payload_hex.slice(2, 4) === '02', `${name}: loop byte must be 0x02`);
+  }
+}
+for (const name of ['set_playback_loop_invalid', 'activate_script_loop_invalid']) {
+  const c = cases.find((x) => x.name === name);
+  check(!!c, `missing loop-invalid case: ${name}`);
+  if (c) {
+    check(c.payload_hex.slice(2, 4) === '03', `${name}: loop byte must be 0x03`);
+  }
+}
+
+/*
+ * State flags 的位表（§7.5）：bit0 循环中、bit1 激活、bit2 最后一步循环。
+ * loop_last 用例必须真的是 0x07，默认用例必须仍是 0x00。
+ */
+{
+  const c = cases.find((x) => x.name === 'state_report_loop_last');
+  check(!!c, 'missing state_report_loop_last');
+  if (c) {
+    check(c.payload_len === STATE_BYTES, 'state_report_loop_last: must be 37 bytes');
+    const flags = parseInt(c.payload_hex.slice(20, 22), 16);
+    check(flags === 0x07, `state_report_loop_last: flags ${flags} != 0x07`);
+  }
+  const d = cases.find((x) => x.name === 'state_report_default');
+  check(!!d && parseInt(d.payload_hex.slice(20, 22), 16) === 0x00,
+    'state_report_default: flags must stay 0x00');
 }
 
 if (failures === 0) {

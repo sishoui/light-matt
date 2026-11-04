@@ -1,8 +1,8 @@
 /**
- * 光区布局（自定义档的「多分段」逻辑，纯函数）。
+ * 分区布局（自定义档的「多分段」逻辑，纯函数）。
  *
- * 一个灯组是一条连续灯珠，用户把它切成若干**光区**，每个光区有自己的
- * 主效果 / 叠加效果。协议要求**同一灯组内的光区不能重叠**（设备会回
+ * 一个灯组是一条连续灯珠，用户把它切成若干**分区**，每个分区有自己的
+ * 主效果 / 叠加效果。协议要求**同一灯组内的分区不能重叠**（设备会回
  * InvalidParam），所以重叠必须在本地就拦住——一帧都不发。
  *
  * ## 单一真相（#53）
@@ -23,9 +23,9 @@ import { MAX_LEDS, MAX_SEGMENTS } from "../protocol/constants";
 import type { SegmentReport, SegmentSpec } from "../protocol/types";
 import { rgbToHex, segmentHueSatToRgb } from "../color/hsv";
 
-/** 一个光区的区间（闭区间）。 */
+/** 一个分区的区间（闭区间）。 */
 export interface ZoneRange {
-  /** 槽位号 0-7（协议字段，界面显示为「光区 N」= 槽位+1）。 */
+  /** 槽位号 0-7（协议字段，界面显示为「分区 N」= 槽位+1）。 */
   segId: number;
   start: number;
   end: number;
@@ -95,7 +95,7 @@ export function rangesOverlap(a: { start: number; end: number }, b: { start: num
 }
 
 /**
- * 找出与给定区间冲突的其它光区（`ignoreSegId` 是正在编辑的那个，不与自己冲突）。
+ * 找出与给定区间冲突的其它分区（`ignoreSegId` 是正在编辑的那个，不与自己冲突）。
  *
  * 只比区间，不比灯效参数：设备只按区间判重叠。
  */
@@ -160,13 +160,13 @@ export function validateZone(
       ok: false,
       start: -1,
       end: -1,
-      message: `与光区 ${conflict.segId + 1}（${conflict.start}-${conflict.end}）重叠，同一灯组的光区不能重叠`,
+      message: `与分区 ${conflict.segId + 1}（${conflict.start}-${conflict.end}）重叠，同一灯组的分区不能重叠`,
     };
   }
   return range;
 }
 
-/** 光区数量上限（协议：每灯组 8 个槽位）。 */
+/** 分区数量上限（协议：每灯组 8 个槽位）。 */
 export function canAddZone(zones: readonly ZoneRange[]): boolean {
   return zones.length < MAX_SEGMENTS;
 }
@@ -174,7 +174,7 @@ export function canAddZone(zones: readonly ZoneRange[]): boolean {
 /**
  * 已占用槽位列表 → 第一个空闲槽位；占满返回 -1。
  *
- * 槽位是**设备概念**（每灯组 8 个），新建光区时占用最小空闲槽位，
+ * 槽位是**设备概念**（每灯组 8 个），新建分区时占用最小空闲槽位，
  * 绝不静默覆盖别人的段。
  */
 export function firstFreeSlot(usedSegIds: readonly number[]): number {
@@ -237,7 +237,7 @@ export function splitPreset(preset: SplitPreset, ledCount: number): { start: num
  * ——「哪一条带」是调用方（页面）显式给出的，本模块不替它猜。
  *
  * `draft` 是**正在划的那一段**（可能非法 → 传 null）。它优先于已有归属，
- * 这样「正在划的这段」永远看得见；与已有光区相交的部分标 `conflict`
+ * 这样「正在划的这段」永远看得见；与已有分区相交的部分标 `conflict`
  * （提交前就标出来，不发一帧必定被设备拒绝的配置）。
  */
 export interface OwnershipItem {
@@ -289,9 +289,9 @@ export function scanLedOwnership(
 export interface ZoneCell {
   /** 灯珠下标。 */
   index: number;
-  /** 归属的光区槽位；-1 表示未被任何光区覆盖（熄灭）。 */
+  /** 归属的分区槽位；-1 表示未被任何分区覆盖（熄灭）。 */
   ownerSegId: number;
-  /** 归属光区的展示色；无归属为空串。 */
+  /** 归属分区的展示色；无归属为空串。 */
   hex: string;
   /** 正在编辑的那一格（高亮描边）。 */
   editing: boolean;
@@ -302,8 +302,8 @@ export interface ZoneCell {
 /**
  * 逐灯珠生成归属视图。
  *
- * `draft` 是正在编辑的区间（可能非法 → 传 null）：它优先于已有光区，
- * 使「正在划的这段」永远看得见；与已有光区相交的部分标 conflict。
+ * `draft` 是正在编辑的区间（可能非法 → 传 null）：它优先于已有分区，
+ * 使「正在划的这段」永远看得见；与已有分区相交的部分标 conflict。
  */
 export function buildZoneCells(
   ledCount: number,
@@ -326,14 +326,14 @@ export function buildZoneCells(
 }
 
 
-/** 从设备读回的光区 → 区间列表（按槽位排序）。 */
+/** 从设备读回的分区 → 区间列表（按槽位排序）。 */
 export function zonesFromReports(reports: readonly SegmentReport[]): ZoneRange[] {
   return reports
     .map((report) => ({ segId: report.segId, start: report.start, end: report.end }))
     .sort((a, b) => a.segId - b.segId);
 }
 
-/** 光区的展示色（layer0 的色相/饱和度）。 */
+/** 分区的展示色（layer0 的色相/饱和度）。 */
 export function zoneColorMap(reports: readonly SegmentReport[]): Map<number, string> {
   const map = new Map<number, string>();
   for (const report of reports) {
@@ -349,7 +349,7 @@ export interface UncoveredRange {
 }
 
 /**
- * 未被任何光区覆盖的**连续区间**（光区轴上的灰条，#66）。
+ * 未被任何分区覆盖的**连续区间**（分区轴上的灰条，#66）。
  *
  * `uncoveredCount` 只回答「几颗不亮」，画轴需要知道「哪几颗、连成几段」。
  *
@@ -358,7 +358,7 @@ export interface UncoveredRange {
  *     ——把越界的 20..99 钳到最后一颗会在轴上画出一条假灰条；
  *  2. 相接（0–9 与 10–19）算**连续覆盖**，中间不插灰条；
  *  3. 输入允许乱序与重叠，输出按起点升序且互不相接；
- *  4. 没有任何光区 → 整条都是灰条；整条覆盖 → 空数组。
+ *  4. 没有任何分区 → 整条都是灰条；整条覆盖 → 空数组。
  *
  * 灯珠数按协议上限 `MAX_LEDS` 截断，与 `buildZoneCells` 一致。
  */
@@ -399,7 +399,7 @@ export function uncoveredRanges(
   return out;
 }
 
-/** 未被任何光区覆盖的灯珠数（即熄灭的灯珠）。 */
+/** 未被任何分区覆盖的灯珠数（即熄灭的灯珠）。 */
 export function uncoveredCount(ledCount: number, zones: readonly ZoneRange[]): number {
   const count = Math.max(0, Math.min(ledCount, MAX_LEDS));
   let covered = 0;
@@ -411,13 +411,13 @@ export function uncoveredCount(ledCount: number, zones: readonly ZoneRange[]): n
   return count - covered;
 }
 
-/** 光区摘要文案：「2 个光区 · 4 颗熄灭」。 */
+/** 分区摘要文案：「2 个分区 · 4 颗熄灭」。 */
 export function zonesSummary(ledCount: number, zones: readonly ZoneRange[]): string {
   if (zones.length === 0) {
-    return "还没有光区";
+    return "还没有分区";
   }
   const gap = uncoveredCount(ledCount, zones);
-  return gap > 0 ? `${zones.length} 个光区 · ${gap} 颗熄灭` : `${zones.length} 个光区 · 整组覆盖`;
+  return gap > 0 ? `${zones.length} 个分区 · ${gap} 颗熄灭` : `${zones.length} 个分区 · 整组覆盖`;
 }
 
 /** 从一个 spec 取区间（便于把设备读回的 spec 塞进布局逻辑）。 */

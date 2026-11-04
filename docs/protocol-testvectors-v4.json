@@ -846,6 +846,244 @@
       "note": "熄灭层的 hue 必须为 0（参数全零）"
     },
     {
+      "name": "set_segment_comet_heads_1",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 75,
+      "payload_hex": "0301053C00033075FFB004080064FF0000000000000000",
+      "payload_len": 23,
+      "frame_hex": "A604104B17000301053C00033075FFB004080064FF0000000000000000FC18",
+      "frame_len": 31,
+      "chunks_hex": [
+        "C0A604104B17000301053C00033075FFB004080064FF0000000000000000FC18"
+      ],
+      "frame_valid": true,
+      "result_code": 0,
+      "note": "#98：流光 1 个头（flags bit2-3 = 0），tail = 8，反向关"
+    },
+    {
+      "name": "set_segment_comet_heads_2",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 76,
+      "payload_hex": "0301053C00033075FFB004080464FF0000000000000000",
+      "payload_len": 23,
+      "frame_hex": "A604104C17000301053C00033075FFB004080464FF0000000000000000FF3C",
+      "frame_len": 31,
+      "chunks_hex": [
+        "C0A604104C17000301053C00033075FFB004080464FF0000000000000000FF3C"
+      ],
+      "frame_valid": true,
+      "result_code": 0,
+      "note": "#98：流光 2 个头（bit2-3 = 1），沿整条均分"
+    },
+    {
+      "name": "set_segment_comet_heads_4",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 77,
+      "payload_hex": "0301053C00033075FFB004080C64FF0000000000000000",
+      "payload_len": 23,
+      "frame_hex": "A604104D17000301053C00033075FFB004080C64FF00000000000000001032",
+      "frame_len": 31,
+      "chunks_hex": [
+        "C0A604104D17000301053C00033075FFB004080C64FF00000000000000001032"
+      ],
+      "frame_valid": true,
+      "result_code": 0,
+      "note": "#98：流光 4 个头（bit2-3 = 3），上限"
+    },
+    {
+      "name": "set_segment_comet_solid_tail",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 78,
+      "payload_hex": "0301053C00033075FFB004080264FF0000000000000000",
+      "payload_len": 23,
+      "frame_hex": "A604104E17000301053C00033075FFB004080264FF0000000000000000E885",
+      "frame_len": 31,
+      "chunks_hex": [
+        "C0A604104E17000301053C00033075FFB004080264FF0000000000000000E885"
+      ],
+      "frame_valid": true,
+      "result_code": 0,
+      "note": "#98：实色拖尾（bit1），头与尾之间保留一颗的亮度台阶"
+    },
+    {
+      "name": "set_segment_comet_heads4_solid_reverse",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 79,
+      "payload_hex": "0301053C00033075FFB004FF0F64FF0000000000000000",
+      "payload_len": 23,
+      "frame_hex": "A604104F17000301053C00033075FFB004FF0F64FF00000000000000005324",
+      "frame_len": 31,
+      "chunks_hex": [
+        "C0A604104F17000301053C00033075FFB004FF0F64FF00000000000000005324"
+      ],
+      "frame_valid": true,
+      "result_code": 0,
+      "note": "#98：4 头 + 实色拖尾 + 反向（bit0-3 全用上，bit4-7 仍为 0）"
+    },
+    {
+      "name": "set_segment_bad_comet_flags_reserved",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 80,
+      "payload_hex": "0301053C00033075FFB004081064FF0000000000000000",
+      "payload_len": 23,
+      "frame_hex": "A604105017000301053C00033075FFB004081064FF0000000000000000B4FD",
+      "frame_len": 31,
+      "chunks_hex": [
+        "C0A604105017000301053C00033075FFB004081064FF0000000000000000B4FD"
+      ],
+      "frame_valid": false,
+      "result_code": 1,
+      "note": "#98：流光 flags bit4-7 保留位必须为 0"
+    },
+    {
+      "name": "set_segment_single_flicker",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 81,
+      "payload_hex": "0200001D00070000FFE803800064FF0000000000000000",
+      "payload_len": 23,
+      "frame_hex": "A604105117000200001D00070000FFE803800064FF00000000000000002533",
+      "frame_len": 31,
+      "chunks_hex": [
+        "C0A604105117000200001D00070000FFE803800064FF00000000000000002533"
+      ],
+      "frame_valid": true,
+      "result_code": 0,
+      "note": "#98 随机闪烁：period 1000ms、同时亮 128/255，确定性方波"
+    },
+    {
+      "name": "set_segment_flicker_plus_static",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 82,
+      "payload_hex": "0007000F01000000FF0000000064070000FFE803C80064",
+      "payload_len": 23,
+      "frame_hex": "A604105217000007000F01000000FF0000000064070000FFE803C80064A625",
+      "frame_len": 31,
+      "chunks_hex": [
+        "C0A604105217000007000F01000000FF0000000064070000FFE803C80064A625"
+      ],
+      "frame_valid": true,
+      "result_code": 0,
+      "note": "#98 叠加：静态打底 + 随机闪烁相乘（新类型可作 layer1）"
+    },
+    {
+      "name": "set_segment_bad_flicker_period",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 83,
+      "payload_hex": "0200001D00070000FF4D01800064FF0000000000000000",
+      "payload_len": 23,
+      "frame_hex": "A604105317000200001D00070000FF4D01800064FF000000000000000075BD",
+      "frame_len": 31,
+      "chunks_hex": [
+        "C0A604105317000200001D00070000FF4D01800064FF000000000000000075BD"
+      ],
+      "frame_valid": false,
+      "result_code": 1,
+      "note": "#98：随机闪烁周期 333ms < 334ms 下限（闪烁不是空间移动）"
+    },
+    {
+      "name": "set_segment_bad_flicker_flags",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 84,
+      "payload_hex": "0200001D00070000FFE803800164FF0000000000000000",
+      "payload_len": 23,
+      "frame_hex": "A604105417000200001D00070000FFE803800164FF0000000000000000CBD6",
+      "frame_len": 31,
+      "chunks_hex": [
+        "C0A604105417000200001D00070000FFE803800164FF0000000000000000CBD6"
+      ],
+      "frame_valid": false,
+      "result_code": 1,
+      "note": "#98：随机闪烁 flags 必须为 0（没有方向 / 波形位）"
+    },
+    {
+      "name": "set_playback_loop_last",
+      "direction": "app_to_device",
+      "command": 19,
+      "command_name": "SetPlayback",
+      "seq": 85,
+      "payload_hex": "0102",
+      "payload_len": 2,
+      "frame_hex": "A604135502000102C0EA",
+      "frame_len": 10,
+      "chunks_hex": [
+        "C0A604135502000102C0EA"
+      ],
+      "frame_valid": true,
+      "result_code": 0,
+      "note": "#98：loop = 2（最后一步循环），前 N-1 步各播一次后原地重播末步"
+    },
+    {
+      "name": "activate_script_loop_last",
+      "direction": "app_to_device",
+      "command": 25,
+      "command_name": "ActivateScript",
+      "seq": 86,
+      "payload_hex": "0002",
+      "payload_len": 2,
+      "frame_hex": "A60419560200000221B1",
+      "frame_len": 10,
+      "chunks_hex": [
+        "C0A60419560200000221B1"
+      ],
+      "frame_valid": true,
+      "result_code": 0,
+      "note": "#98：激活时直接指定最后一步循环"
+    },
+    {
+      "name": "set_playback_loop_invalid",
+      "direction": "app_to_device",
+      "command": 19,
+      "command_name": "SetPlayback",
+      "seq": 87,
+      "payload_hex": "0103",
+      "payload_len": 2,
+      "frame_hex": "A60413570200010362BE",
+      "frame_len": 10,
+      "chunks_hex": [
+        "C0A60413570200010362BE"
+      ],
+      "frame_valid": false,
+      "result_code": 1,
+      "note": "#98：loop = 3 越界 → InvalidParam（三值只有 0/1/2）"
+    },
+    {
+      "name": "activate_script_loop_invalid",
+      "direction": "app_to_device",
+      "command": 25,
+      "command_name": "ActivateScript",
+      "seq": 88,
+      "payload_hex": "0003",
+      "payload_len": 2,
+      "frame_hex": "A604195802000003A86E",
+      "frame_len": 10,
+      "chunks_hex": [
+        "C0A604195802000003A86E"
+      ],
+      "frame_valid": false,
+      "result_code": 1,
+      "note": "#98：ActivateScript 同样只接受 0/1/2"
+    },
+    {
       "name": "clear_segment",
       "direction": "app_to_device",
       "command": 17,
@@ -1283,6 +1521,23 @@
       "frame_valid": true,
       "result_code": 0,
       "note": "StateReport 45 字节帧在 MTU 23（cap 20）下分 3 片；notify 侧同样要重组"
+    },
+    {
+      "name": "state_report_loop_last",
+      "direction": "device_to_app",
+      "command": 130,
+      "command_name": "StateReport",
+      "seq": 89,
+      "payload_hex": "0180FFB478C8020000010703011E003C000000000000000000000000000204000000000000",
+      "payload_len": 37,
+      "frame_hex": "A604825925000180FFB478C8020000010703011E003C00000000000000000000000000020400000000000011D9",
+      "frame_len": 45,
+      "chunks_hex": [
+        "C0A604825925000180FFB478C8020000010703011E003C00000000000000000000000000020400000000000011D9"
+      ],
+      "frame_valid": true,
+      "result_code": 0,
+      "note": "#98：flags = 0x07 —— bit0 循环中（旧语义）、bit1 有激活剧本、bit2 最后一步循环"
     },
     {
       "name": "state_report_default",

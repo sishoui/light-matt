@@ -338,18 +338,22 @@ static void prune_for_strip_locked(uint8_t strip_id, uint16_t new_count)
 }
 
 /*
- * 把播放状态镜像进 State 字节 10-13（**调用者必须持锁**）。
+ * 把播放状态镜像进 State 字节 7-10（**调用者必须持锁**）。
  *
  *  - script_id / stage_index / playback_state 直接来自播放时间轴；
- *  - flags bit0 = loop，bit1 = script_active（有激活剧本），bit2-7 恒 0。
+ *  - flags 走 script_store.h 的位表：bit0 循环中、bit1 有激活剧本、
+ *    bit2 最后一步循环、bit3-7 恒 0（#98）。
  */
 static void sync_script_state_locked(void)
 {
     s_state.script_id = s_playback.script_id;
     s_state.stage_index = s_playback.stage_index;
     s_state.playback_state = (uint8_t)s_playback.state;
-    s_state.flags = (uint8_t)((s_playback.loop ? 0x01u : 0x00u) |
-                              (s_playback.script_id != LUMEN_NO_SCRIPT ? 0x02u : 0x00u));
+    /* 位表见 script_store.h：bit0 循环中、bit1 有激活剧本、bit2 最后一步循环。 */
+    s_state.flags = (uint8_t)(lumen_loop_flags(s_playback.loop) |
+                              (s_playback.script_id != LUMEN_NO_SCRIPT
+                                   ? LUMEN_PLAYBACK_FLAG_ACTIVE
+                                   : 0x00u));
 }
 
 /*
@@ -1171,11 +1175,11 @@ esp_err_t lumen_led_engine_init(void)
         uint16_t counts_for_scripts[LUMEN_MAX_STRIPS];
         strip_counts_locked(counts_for_scripts);
         uint8_t active_id = LUMEN_NO_SCRIPT;
-        bool loop = false;
+        uint8_t loop = LUMEN_LOOP_NONE;
         if (lumen_state_store_load_scripts(counts_for_scripts, &s_scripts, &active_id, &loop)) {
             lumen_script_playback_select(&s_playback, active_id, loop, now_ms());
             ESP_LOGI(TAG, "剧本已恢复：active=%u loop=%u（从第一阶段、停止态开始）", active_id,
-                     loop ? 1 : 0);
+                     loop);
         } else {
             lumen_script_store_init(&s_scripts);
             lumen_script_playback_init(&s_playback);
@@ -1705,9 +1709,9 @@ uint8_t lumen_led_engine_clear_script(uint8_t script_id)
     return LUMEN_RESULT_OK;
 }
 
-uint8_t lumen_led_engine_activate_script(uint8_t script_id, bool loop)
+uint8_t lumen_led_engine_activate_script(uint8_t script_id, uint8_t loop)
 {
-    if (script_id >= LUMEN_MAX_SCRIPTS) {
+    if (script_id >= LUMEN_MAX_SCRIPTS || loop > LUMEN_LOOP_MAX) {
         return LUMEN_RESULT_INVALID_PARAM;
     }
 
@@ -1732,13 +1736,13 @@ uint8_t lumen_led_engine_activate_script(uint8_t script_id, bool loop)
     xSemaphoreGive(s_state_lock);
 
     xSemaphoreGive(s_render_signal);
-    ESP_LOGI(TAG, "ActivateScript id=%u loop=%u（播放头回 0，待播放）", script_id, loop ? 1 : 0);
+    ESP_LOGI(TAG, "ActivateScript id=%u loop=%u（播放头回 0，待播放）", script_id, loop);
     return LUMEN_RESULT_OK;
 }
 
-uint8_t lumen_led_engine_set_playback(uint8_t action, bool loop)
+uint8_t lumen_led_engine_set_playback(uint8_t action, uint8_t loop)
 {
-    if (action > 2) {
+    if (action > 2 || loop > LUMEN_LOOP_MAX) {
         return LUMEN_RESULT_INVALID_PARAM;
     }
 
@@ -1777,8 +1781,8 @@ uint8_t lumen_led_engine_set_playback(uint8_t action, bool loop)
     xSemaphoreGive(s_state_lock);
 
     xSemaphoreGive(s_render_signal);
-    ESP_LOGI(TAG, "SetPlayback action=%u loop=%u -> state=%u stage=%u script=%u", action,
-             loop ? 1 : 0, state_after, stage_after, script_after);
+    ESP_LOGI(TAG, "SetPlayback action=%u loop=%u -> state=%u stage=%u script=%u", action, loop,
+             state_after, stage_after, script_after);
     return LUMEN_RESULT_OK;
 }
 
@@ -1796,13 +1800,14 @@ bool lumen_led_engine_script_summary(uint8_t script_id, uint8_t *stage_count, ui
             *stage_count = script->stage_count;
         }
         if (flags != NULL) {
-            /* bit0 = loop（当前激活剧本的 loop），bit1 = active（是否就是激活的）。 */
+            /*
+             * 位表与 State 字节 10 一致（#98）：bit0 循环中、bit1 active、
+             * bit2 最后一步循环。只对激活剧本报循环位——未激活剧本没有独立
+             * 的循环存储位置（loop 是播放属性不是剧本属性）。
+             */
             uint8_t value = 0;
             if (s_playback.script_id == script_id) {
-                value |= 0x02u;
-                if (s_playback.loop) {
-                    value |= 0x01u;
-                }
+                value = (uint8_t)(LUMEN_PLAYBACK_FLAG_ACTIVE | lumen_loop_flags(s_playback.loop));
             }
             /*
              * 未激活剧本的 loop 没有独立存储位置（loop 是播放属性不是剧本属性），

@@ -10,6 +10,18 @@
  * 用法：每个 tab 页在 `onShow` 里调用
  *   `this.getTabBar()?.setData({ selected: 0 })`
  * 索引与 `app.json` 的 `tabBar.list` 顺序一致。
+ *
+ * ## 主题
+ *
+ * tabBar 是**全局单例**（所有 tab 页共用一个实例），`attached` 只跑一次。
+ * 所以它不能只在挂载时读主题：用户必须能在不重启小程序的情况下看到换色。
+ * 这里同时走三条路——
+ *  1. `attached` 读一次；
+ *  2. 系统主题变化（`wx.onThemeChange`）时重算；
+ *  3. 每个 tab 页在 `onShow` 里调 `refreshTheme()`（见 `syncTabBar` 的调用方），
+ *     覆盖「我的」页切完手动主题返回的情况。
+ *
+ * 第 3 条是权威：手动主题是 App 自己的存储，系统事件不会触发。
  */
 
 import { THEME_KEY } from "../utils/control/theme";
@@ -88,6 +100,14 @@ Component({
   },
 
   methods: {
+    /**
+     * 重算主题配色。**每个 tab 页的 `onShow` 都要调**——
+     * 手动主题存在 App 存储里，系统事件不会替我们通知。
+     */
+    refreshTheme() {
+      this.setData({ themeClass: resolveThemeClass() });
+    },
+
     onTabTap(e: WechatMiniprogram.TouchEvent) {
       const index = Number(e.currentTarget.dataset.index ?? -1);
       const tab = TABS[index];

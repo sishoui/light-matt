@@ -35,7 +35,7 @@ import { percentOf100, spanText, tailText } from "./segment-view";
  *  - `dark` = 熄灭（0x06），「这一段保持黑色」。
  *
  * 合并成一个会让设备页把一条熄灭的灯组显示成「关闭」——用户看到的是
- * 「这个光区没配」，而设备的真实状态是「这个光区被显式设成全黑」。
+ * 「这个分区没配」，而设备的真实状态是「这个分区被显式设成全黑」。
  */
 export type LayerMode =
   | "static"
@@ -254,7 +254,7 @@ export function layerView(
   const empty = layer.type === NO_EFFECT;
   const mode = layerModeOf(layer.type);
   return {
-    /* 术语（decisions §12）：界面只有「灯组 / 光区 / 步骤 / 方案」，「层」不能出现，
+    /* 术语（decisions §12）：界面只有「灯组 / 分区 / 步骤 / 方案」，「层」不能出现，
      * 所以两层改叫主效果 / 叠加效果。 */
     label: index === 0 ? "主效果（必填）" : "叠加效果（可选）",
     mode,

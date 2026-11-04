@@ -1,17 +1,17 @@
 /**
- * 灯效方案的编辑模型（#55 / #56）：方案槽位 → 步骤 → 光区 三级树。
+ * 灯效方案的编辑模型（#55 / #56）：方案槽位 → 步骤 → 分区 三级树。
  *
  * ## 为什么不新造一套数据结构
  *
  * 设备上的「方案」就是协议里的 script（4 槽位、每套 ≤8 阶段、每阶段若干段），
- * 「步骤」是阶段、「光区」是段。`script-view` 的 `ScriptDraft` 已经把
+ * 「步骤」是阶段、「分区」是段。`script-view` 的 `ScriptDraft` 已经把
  * 增删步骤 / 改时长 / 重排 / 槽位隔离这些规则实现并测过了，再写一套只会
  * 两处漂移（改了下发路径却忘了草稿路径——#48 就是这么丢配置的）。
  *
  * 所以本模块只补三件 `script-view` 没有、而自定义档必须有的东西：
- *  1. **按灯组切片**：自定义档一次只编辑「当前灯组」的光区，但一套方案可以
+ *  1. **按灯组切片**：自定义档一次只编辑「当前灯组」的分区，但一套方案可以
  *     跨多组；写入时必须只替换当前组、原样保留别组；
- *  2. **光区 ↔ SegmentSpec 的双向转换**（复用 `zone-editor` / `zone-model`）；
+ *  2. **分区 ↔ SegmentSpec 的双向转换**（复用 `zone-editor` / `zone-model`）；
  *  3. **方案级状态**：当前方案槽位 + 当前步骤下标，以及它们的合法化。
  *
  * 纯函数、不碰 wx / BLE。
@@ -68,7 +68,7 @@ export function isZoneSpec(segment: ScriptSegment): segment is SegmentSpec {
   return "layer0" in segment;
 }
 
-/** 只保留属于某灯组的光区，并归一成 `SegmentSpec`。 */
+/** 只保留属于某灯组的分区，并归一成 `SegmentSpec`。 */
 export function zonesOfStep(
   step: ScriptStageDraft | null,
   stripId: number,
@@ -112,10 +112,10 @@ export function zonesOfStep(
 }
 
 /**
- * 用新的光区列表替换「当前步骤 × 当前灯组」的那一片，**原样保留别组**。
+ * 用新的分区列表替换「当前步骤 × 当前灯组」的那一片，**原样保留别组**。
  *
  * 这是自定义档最容易出错的地方：如果直接把 `step.segments` 换成新数组，
- * 用户在多灯组设备上编辑第 1 组时会把第 2、3 组的光区一起清掉。
+ * 用户在多灯组设备上编辑第 1 组时会把第 2、3 组的分区一起清掉。
  */
 export function replaceStepZones(
   draft: ScriptDraft,
@@ -137,7 +137,7 @@ export function replaceStepZones(
 /**
  * 「步骤 × 灯组」替换的**列表层实现**（`replaceStepZones` 与进阶档的步骤草稿共用）。
  *
- * 进阶档（#66）只保存「每一步的光区列表」，没有完整的方案草稿；它需要的正是
+ * 进阶档（#66）只保存「每一步的分区列表」，没有完整的方案草稿；它需要的正是
  * 同一条语义：**只替换当前灯组那一片**。规则只在这里写一份，两条路径不会漂移。
  */
 export function replaceStepZonesInList(
@@ -166,12 +166,12 @@ export function stripsOfStep(step: ScriptStageDraft | null): number[] {
   return Array.from(new Set(step.segments.map((segment) => segment.stripId))).sort((a, b) => a - b);
 }
 
-/** 步骤里该灯组的光区数（步骤卡片上的摘要）。 */
+/** 步骤里该灯组的分区数（步骤卡片上的摘要）。 */
 export function zoneCountOfStep(step: ScriptStageDraft | null, stripId: number): number {
   return step === null ? 0 : step.segments.filter((segment) => segment.stripId === stripId).length;
 }
 
-/** 该方案是否一步都还没有光区（第一次进入自定义档时的空态判据）。 */
+/** 该方案是否一步都还没有分区（第一次进入自定义档时的空态判据）。 */
 export function planIsEmpty(draft: ScriptDraft | null): boolean {
   if (draft === null) {
     return true;
@@ -213,7 +213,7 @@ export function nearestDurationLabel(ms: number): string {
 export const MAX_PLAN_STEPS = MAX_STAGES;
 
 /**
- * 由设备读回的该组光区初始化一个步骤（预览起点 = 设备真实值）。
+ * 由设备读回的该组分区初始化一个步骤（预览起点 = 设备真实值）。
  */
 export function stepFromDeviceZones(zones: readonly SegmentSpec[]): ScriptStageDraft {
   return { durationInput: String(DEFAULT_STEP_MS), segments: zonesFromReports(zones as never) };
@@ -223,7 +223,7 @@ export function stepFromDeviceZones(zones: readonly SegmentSpec[]): ScriptStageD
  * 自定义档的「内容读不回来」说明（#56 票面要求界面如实告知）。
  *
  * v3 的查询只回 4 字节摘要（步骤数 / 是否启用 / 是否循环），拿不到步骤时长
- * 与光区内容。所以本地草稿是唯一记录——这一点必须写在界面上，否则用户会
+ * 与分区内容。所以本地草稿是唯一记录——这一点必须写在界面上，否则用户会
  * 以为能「从灯控把方案拉回来改」。
  */
 export const PLAN_READBACK_NOTE =
@@ -248,7 +248,7 @@ export function planMessageText(message: string): string {
   return message
     .replace(/剧本过大/g, "这套方案太大")
     .replace(/阶段数/g, "步骤数")
-    .replace(/段数/g, "光区数")
+    .replace(/段数/g, "分区数")
     .replace(/灯带数/g, "灯组数")
     .replace(/剧本/g, "方案")
     .replace(/阶段/g, "步骤")

@@ -42,8 +42,32 @@
         "value": "tests"
       },
       {
+        "type": "folder",
+        "value": ".auto"
+      },
+      {
+        "type": "folder",
+        "value": "typings"
+      },
+      {
         "type": "file",
         "value": "vitest.config.ts"
+      },
+      {
+        "type": "file",
+        "value": "vitest.e2e.config.ts"
+      },
+      {
+        "type": "file",
+        "value": "tsconfig.json"
+      },
+      {
+        "type": "file",
+        "value": "package.json"
+      },
+      {
+        "type": "file",
+        "value": "package-lock.json"
       }
     ],
     "include": []

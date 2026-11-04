@@ -15,12 +15,12 @@
 
 .nav-root {
   /* 浅色默认值（与 app.wxss 的 .page 同步） */
-  --nav-bg: #f2f2f7;
-  --nav-text: #1c1c1e;
-  --nav-text-2: #6e6e73;
-  --nav-text-3: #a1a1a6;
-  --nav-accent: #ff9500;
-  --nav-press: rgba(120, 120, 128, 0.12);
+  --nav-bg: #f2f4f7;
+  --nav-text: #1c2430;
+  --nav-text-2: #64707f;
+  --nav-text-3: #9aa4b1;
+  --nav-accent: #6B8CAE;
+  --nav-press: rgba(120, 132, 148, 0.14);
 
   /* 组件根节点：作为页面 flex 列的第一个子项，不参与拉伸。 */
   display: block;
@@ -30,11 +30,11 @@
 
 @media (prefers-color-scheme: dark) {
   .nav-root {
-    --nav-bg: #000000;
-    --nav-text: #f5f5f7;
-    --nav-text-2: #a1a1a6;
-    --nav-text-3: #6e6e73;
-    --nav-accent: #ffb478;
+    --nav-bg: #0F1419;
+    --nav-text: #e8edf3;
+    --nav-text-2: #93a0ae;
+    --nav-text-3: #6b7784;
+    --nav-accent: #8FA9C4;
     --nav-press: rgba(255, 255, 255, 0.12);
   }
 }
@@ -42,20 +42,20 @@
 /* 手动覆盖：组件样式隔离，外部 class 传不进来，所以由 JS 把 `theme` 属性
  * 挂到根节点的 class 上（见 nav-bar.ts 的 applyTheme）。 */
 .nav-root.use-light {
-  --nav-bg: #f2f2f7;
-  --nav-text: #1c1c1e;
-  --nav-text-2: #6e6e73;
-  --nav-text-3: #a1a1a6;
-  --nav-accent: #ff9500;
-  --nav-press: rgba(120, 120, 128, 0.12);
+  --nav-bg: #f2f4f7;
+  --nav-text: #1c2430;
+  --nav-text-2: #64707f;
+  --nav-text-3: #9aa4b1;
+  --nav-accent: #6B8CAE;
+  --nav-press: rgba(120, 132, 148, 0.14);
 }
 
 .nav-root.use-dark {
-  --nav-bg: #000000;
-  --nav-text: #f5f5f7;
-  --nav-text-2: #a1a1a6;
-  --nav-text-3: #6e6e73;
-  --nav-accent: #ffb478;
+  --nav-bg: #0F1419;
+  --nav-text: #e8edf3;
+  --nav-text-2: #93a0ae;
+  --nav-text-3: #6b7784;
+  --nav-accent: #8FA9C4;
   --nav-press: rgba(255, 255, 255, 0.12);
 }
 

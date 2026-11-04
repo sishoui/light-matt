@@ -1,7 +1,7 @@
 /**
- * 光区轴（#66）的纯布局单测。
+ * 分区轴（#66）的纯布局单测。
  *
- * 光区轴只有「看着对不对」这一条路能验证的话，比例定位与灰条这类边界就只能
+ * 分区轴只有「看着对不对」这一条路能验证的话，比例定位与灰条这类边界就只能
  * 靠肉眼。这里直接构造输入断言百分比与块顺序。
  */
 
@@ -82,7 +82,7 @@ describe("比例定位（axisRect）", () => {
 });
 
 describe("块列表（buildZoneAxis）", () => {
-  it("零光区：一根占满整条的灰条", () => {
+  it("零分区：一根占满整条的灰条", () => {
     const blocks = buildZoneAxis({ zones: [], ledCount: 30 });
     expect(blocks).toHaveLength(1);
     expect(blocks[0].kind).toBe("gap");
@@ -92,7 +92,7 @@ describe("块列表（buildZoneAxis）", () => {
     expect(blocks[0].hex).toBe("");
   });
 
-  it("整条覆盖：只有光区，没有灰条", () => {
+  it("整条覆盖：只有分区，没有灰条", () => {
     const blocks = buildZoneAxis({ zones: [zone(0, 0, 29)], ledCount: 30 });
     expect(blocks).toHaveLength(1);
     expect(blocks[0].kind).toBe("zone");
@@ -107,7 +107,7 @@ describe("块列表（buildZoneAxis）", () => {
     expect(blocks.filter((block) => block.kind === "gap")).toHaveLength(0);
   });
 
-  it("按位置排序：灰条夹在光区之间（不会被挤到两端）", () => {
+  it("按位置排序：灰条夹在分区之间（不会被挤到两端）", () => {
     const blocks = buildZoneAxis({
       zones: [zone(0, 0, 4), zone(1, 20, 29)],
       ledCount: 30,
@@ -119,7 +119,7 @@ describe("块列表（buildZoneAxis）", () => {
     ]);
   });
 
-  it("被乱序给出的光区仍然按起点排（渲染顺序稳定）", () => {
+  it("被乱序给出的分区仍然按起点排（渲染顺序稳定）", () => {
     const blocks = buildZoneAxis({
       zones: [zone(2, 20, 29), zone(0, 0, 4)],
       ledCount: 30,
@@ -145,11 +145,11 @@ describe("块列表（buildZoneAxis）", () => {
     expect(single.width).toBeLessThan(AXIS_LABEL_MIN_PERCENT);
   });
 
-  it("够宽的块画「光区 N」标题（槽位 1 起）", () => {
+  it("够宽的块画「分区 N」标题（槽位 1 起）", () => {
     const blocks = buildZoneAxis({ zones: [zone(2, 0, 29)], ledCount: 30 });
     const only = blocks.find((block) => block.kind === "zone")!;
     expect(only.showLabel).toBe(true);
-    expect(only.label).toBe("光区 3");
+    expect(only.label).toBe("分区 3");
     expect(only.rangeText).toBe("0–29");
   });
 
@@ -157,7 +157,7 @@ describe("块列表（buildZoneAxis）", () => {
     expect(buildZoneAxis({ zones: [zone(0, 0, 9)], ledCount: 0 })).toEqual([]);
   });
 
-  it("单颗灯组：一个光区 + 没有灰条", () => {
+  it("单颗灯组：一个分区 + 没有灰条", () => {
     const blocks = buildZoneAxis({ zones: [zone(0, 0, 0)], ledCount: 1 });
     expect(blocks).toHaveLength(1);
     expect(blocks[0].kind).toBe("zone");
@@ -193,14 +193,14 @@ describe("起止手柄（axisHandles， #77）", () => {
     expect(handles.some((handle) => handle.crowded)).toBe(false);
   });
 
-  it("单颗光区：两个手柄是两个不同的锚点（不会算出同一个位置）", () => {
+  it("单颗分区：两个手柄是两个不同的锚点（不会算出同一个位置）", () => {
     const handles = axisHandles(4, 4, 20);
     expect(handles[0].percent).not.toBe(handles[1].percent);
     expect(near(handles[0].percent, 20)).toBe(true);
     expect(near(handles[1].percent, 25)).toBe(true);
   });
 
-  it("单颗光区且灯珠很密：标记为拥挤（渲染层缩小手柄并向外错开）", () => {
+  it("单颗分区且灯珠很密：标记为拥挤（渲染层缩小手柄并向外错开）", () => {
     const dense = axisHandles(4, 4, 100);
     expect(dense.every((handle) => handle.crowded)).toBe(true);
     expect(dense[0].percent).toBeLessThan(dense[1].percent);
@@ -225,7 +225,7 @@ describe("起止手柄（axisHandles， #77）", () => {
 });
 
 describe("块上的手柄与区间文案（#77）", () => {
-  it("只有选中的光区带手柄，未选中 / 灰条都不带", () => {
+  it("只有选中的分区带手柄，未选中 / 灰条都不带", () => {
     const blocks = buildZoneAxis({
       zones: [zone(0, 0, 9), zone(1, 20, 29)],
       ledCount: 30,
@@ -258,18 +258,18 @@ describe("块上的手柄与区间文案（#77）", () => {
     expect(only.span).toBe(20);
   });
 
-  it("单颗光区的文案是「第 4–4 颗 · 1 颗」", () => {
+  it("单颗分区的文案是「第 4–4 颗 · 1 颗」", () => {
     const blocks = buildZoneAxis({ zones: [zone(0, 4, 4)], ledCount: 20 });
     const only = blocks.find((block) => block.kind === "zone")!;
     expect(only.rangeDetail).toBe("第 4–4 颗 · 1 颗");
   });
 
-  it("整条光区的文案覆盖完整区间", () => {
+  it("整条分区的文案覆盖完整区间", () => {
     const blocks = buildZoneAxis({ zones: [zone(0, 0, 29)], ledCount: 30 });
     expect(blocks[0].rangeDetail).toBe("第 0–29 颗 · 30 颗");
   });
 
-  it("灰条没有手柄、没有区间详情（点不动的那一段不冒充光区）", () => {
+  it("灰条没有手柄、没有区间详情（点不动的那一段不冒充分区）", () => {
     const blocks = buildZoneAxis({ zones: [zone(0, 10, 19)], ledCount: 30 });
     const gaps = blocks.filter((block) => block.kind === "gap");
     expect(gaps.map((gap) => [gap.start, gap.end])).toEqual([
@@ -284,15 +284,15 @@ describe("块上的手柄与区间文案（#77）", () => {
   });
 });
 
-describe("零光区引导（zoneAxisGuide）", () => {
-  it("零光区给引导而不是空白", () => {
+describe("零分区引导（zoneAxisGuide）", () => {
+  it("零分区给引导而不是空白", () => {
     const guide = zoneAxisGuide(0, 30);
     expect(guide.length).toBeGreaterThan(0);
     expect(guide).toContain("新增");
     expect(guide).toContain("30");
   });
 
-  it("有光区时没有引导（不重复提示）", () => {
+  it("有分区时没有引导（不重复提示）", () => {
     expect(zoneAxisGuide(1, 30)).toBe("");
   });
 
@@ -319,7 +319,7 @@ describe("渲染层：起止手柄与区间文案（#77）", () => {
     return wxss.slice(open + 1, close);
   }
 
-  it("选中的光区块内渲染两个手柄（start / end）", () => {
+  it("选中的分区块内渲染两个手柄（start / end）", () => {
     expect(wxml).toContain("item.selected");
     expect(wxml).toContain("item.handles");
     expect(wxml).toContain("zone-handle");
@@ -344,23 +344,23 @@ describe("渲染层：起止手柄与区间文案（#77）", () => {
     expect(rule(".zone-gap")).toMatch(/pointer-events:\s*none/);
   });
 
-  it("零光区渲染引导块", () => {
+  it("零分区渲染引导块", () => {
     expect(wxml).toContain("zoneGuide");
     expect(wxml).toContain("zone-guide");
   });
 });
 
 describe("摘要与上限", () => {
-  it("零光区写「还没有光区」并报全暗颗数", () => {
-    expect(zoneAxisSummary([], 30)).toBe("还没有光区 · 30 颗全暗");
+  it("零分区写「还没有分区」并报全暗颗数", () => {
+    expect(zoneAxisSummary([], 30)).toBe("还没有分区 · 30 颗全暗");
   });
 
   it("有未覆盖时报「N 颗未覆盖」", () => {
-    expect(zoneAxisSummary([zone(0, 0, 9)], 30)).toBe("1 个光区 · 20 颗未覆盖");
+    expect(zoneAxisSummary([zone(0, 0, 9)], 30)).toBe("1 个分区 · 20 颗未覆盖");
   });
 
   it("整组覆盖时明确说出来", () => {
-    expect(zoneAxisSummary([zone(0, 0, 29)], 30)).toBe("1 个光区 · 整组覆盖");
+    expect(zoneAxisSummary([zone(0, 0, 29)], 30)).toBe("1 个分区 · 整组覆盖");
   });
 
   it("8 个上限（与协议槽位数一致）", () => {
@@ -374,7 +374,7 @@ describe("摘要与上限", () => {
 describe("选中槽位的自愈（selectedZoneAfter）", () => {
   const zones = [zone(0, 0, 9), zone(2, 20, 29)];
 
-  it("原槽位还在 → 保持不变（改范围后仍是同一个光区）", () => {
+  it("原槽位还在 → 保持不变（改范围后仍是同一个分区）", () => {
     expect(selectedZoneAfter(zones, 2)).toBe(2);
   });
 
@@ -382,7 +382,7 @@ describe("选中槽位的自愈（selectedZoneAfter）", () => {
     expect(selectedZoneAfter(zones, 1)).toBe(-1);
   });
 
-  it("没有光区 → -1（没有可选的）", () => {
+  it("没有分区 → -1（没有可选的）", () => {
     expect(selectedZoneAfter([], 3)).toBe(-1);
   });
 });
