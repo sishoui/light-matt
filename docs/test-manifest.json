@@ -6,7 +6,7 @@
       "cheap": true,
       "requires": ["gcc", "node"],
       "missingHint": "缺 gcc 或 node",
-      "scan": ["firmware/test/test_skeleton.c"]
+      "scan": ["firmware/test/test_skeleton.c", "scripts/check-protocol-testvectors-v4.mjs"]
     },
     "mp": {
       "label": "小程序单测",
@@ -38,6 +38,11 @@
     }
   },
   "files": {
+    "scripts/check-protocol-testvectors-v4.mjs": {
+      "layer": "firmware",
+      "covers": "v4 向量与 protocol-v4.md 的独立一致性校验（帧宽、magic/version、分片重组、结果码、命令覆盖、逐层亮度规则）。不走生成器，专门抓生成器的错；断言数记在固件那层的 run-tests.cmd 输出里，不并入 13996"
+    },
+
     "firmware/test/test_skeleton.c": {
       "layer": "firmware",
       "covers": "固件 host 测试全量：v4 协议向量逐字节、命令 reducer 语义、state 与 CRC、分片重组、gamma、段校验矩阵、剧本容量与 blob 往返、灯效两层合成"

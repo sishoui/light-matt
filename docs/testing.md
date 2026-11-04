@@ -54,8 +54,9 @@ vitest 用 JSON reporter 写到临时文件（stdout 留给人读），`tsc --no
 > `tests/e2e/**/*.test.ts`，覆盖两个文件：`real-device.test.ts` 8 条（扫描连接、State、
 > 往返 ACK、段读回、非法参数、超灯珠数、每带开关、DeviceInfo）与 `complex-plan.test.ts`
 > 8 条（多阶段剧本下发、摘要、推进、两种 loop、逐阶段分区数、越界拒绝、其他引脚未被写入）。
-> 旧文写「8 项」是因为只数了 `real-device.test.ts` 一个文件。无设备时两个文件都会整片
-> skip，报告按 SKIP 记并写明缺真机。
+> 旧文写「8 项」是因为只数了 `real-device.test.ts` 一个文件。无设备时两条扫描用例
+> 会「顺利结束」（它们不 fail，只是没扫到东西），其余全部 skip。所以判定阈值是
+> 「至多 1 条通过 + 其余全跳过」→ SKIP，不能因为那一条通过就把整层染绿。
 
 ### 不属于五层的取证工具
 
@@ -103,9 +104,9 @@ vitest 用 JSON reporter 写到临时文件（stdout 留给人读），`tsc --no
 
 | 层 | 探测内容 |
 |---|---|
-| `firmware` | `where gcc` / `where node` |
+| `firmware` | 非 Windows 直接记「需要 Windows + cmd.exe」；Windows 上查 `gcc` / `node` |
 | `mp` / `server` | 对应目录的 `node_modules` 里有 vitest 与 typescript 的可执行文件 |
-| `ui` | 跑 `verify-v5.mjs --probe`，只建 TCP 连接（内部 3 秒超时，外壳 10 秒） |
+| `ui` | 跑 `verify-v5.mjs --probe`：先 3 秒 TCP 探测，再真做一次 WebSocket 握手并断开（8 秒预算）。只测 TCP 不够——窗口开着但没开自动化模式时 TCP 通、握手失败 |
 | `ble` | `drive.mjs` 在不在、`miniprogram/node_modules/vitest` 在不在、`python -c "import bleak"` 是否成功 |
 
 `ble` 刻意**不在这里扫设备**：`drive.mjs` 自己会跑 `doctor.py`，扫一次蓝牙要好几秒，

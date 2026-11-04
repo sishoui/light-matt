@@ -18,7 +18,8 @@
 | 向量校验 | `node scripts/check-protocol-testvectors-v4.mjs` | `OK: 93 vectors consistent` |
 
 > 这一轮的用例数写死会漂（后续每加测试都会变），所以只记「全绿」。
-> 当时的数字需要引用时，以 `docs/evidence/test-runs/` 里离 2026-11-04 最近的那份报告为准。
+> 要引用当时的数字，以 `docs/evidence/test-runs/` 下按时间排序最近的那份报告为准；
+> 该目录由 `node scripts/test-run.mjs --release` 生成，首次发布前它是空的。
 
 ### 本轮新增的测试文件
 
