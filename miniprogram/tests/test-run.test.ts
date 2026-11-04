@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -7,7 +7,9 @@ import {
   buildLayerSpecs,
   combineNodeLayerResults,
   describeFiles,
+  diffRuns,
   executeLayers,
+  findPreviousReportDir,
   parseDoctorFailures,
   parseE2eJson,
   parseFirmwareOutput,
@@ -16,6 +18,7 @@ import {
   parseTscOutput,
   parseUiOutput,
   parseVitestJson,
+  readPreviousReport,
   renderReport,
   summarizeBleRun,
   writeReport,
@@ -1263,5 +1266,264 @@ describe("ble 层接线（#107）", () => {
     expect(md).toContain("| 真机 e2e | ✅ PASS | 16 用例 | 55.4s |");
     expect(md).toContain("| `miniprogram/tests/e2e/complex-plan.test.ts` | 复杂剧本 | 8 |");
     expect(md).toContain("| `miniprogram/tests/e2e/real-device.test.ts` | 真机往返 | 8 |");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* 与上次运行的差异（#109）                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 差异节只做一件事：用例数变化。逐用例比对不在范围内——用例名会改，
+ * 逐条比对全是噪音，而「某个文件的用例数掉了 12 条」是能直接触发警觉的信号。
+ *
+ * 这里的样本直接写成 report.json 的形状（顶层 files + layers），
+ * 因为差异节的输入就是上一次落盘的那份 JSON，不是内存里的层结果。
+ */
+const mkRun = ({
+  runId = "2026-11-04T10-00-00-000",
+  startedAt = "2026-11-04T10:00:00.000Z",
+  files = [] as Array<{ path: string; layer: string; covers?: string; checks: number | null; fromOutput?: boolean }>,
+  layers = [] as Array<Record<string, unknown>>,
+} = {}) => ({
+  runId,
+  startedAt,
+  head: { commit: "abc1234", branch: "ticket/109", dirty: false, host: "h", platform: "win32", cpus: 8, layers: [] },
+  layers,
+  files: files.map((f) => ({ covers: "说明", ticket: null, fromOutput: f.checks !== null, ...f })),
+  conclusion: "PASS",
+});
+
+const file = (path: string, layer: string, checks: number | null) => ({ path, layer, checks });
+
+const okLayer = (name: string, checks: number, extra: Record<string, unknown> = {}) => ({
+  name,
+  label: `${name} 层`,
+  status: "PASS",
+  checks,
+  unit: "用例",
+  detail: "",
+  failures: [] as Array<Record<string, unknown>>,
+  skipReason: null,
+  skipped: [] as string[],
+  extra,
+});
+
+const skipLayer = (name: string, reason: string) => ({
+  ...okLayer(name, null as unknown as number),
+  status: "SKIP",
+  checks: null,
+  skipReason: reason,
+});
+
+describe("diffRuns 用例数变化", () => {
+  it("两次用例数相同 → 判为无变化", () => {
+    const current = mkRun({
+      files: [file("miniprogram/tests/a.test.ts", "mp", 10)],
+      layers: [okLayer("mp", 10)],
+    });
+    const previous = mkRun({
+      runId: "2026-11-03T10-00-00-000",
+      files: [file("miniprogram/tests/a.test.ts", "mp", 10)],
+      layers: [okLayer("mp", 10)],
+    });
+
+    const diff = diffRuns(current, previous);
+
+    expect(diff.unchanged).toBe(true);
+    expect(diff.files.changed).toEqual([]);
+    expect(renderReport({ ...current, previous: diff })).toContain("无变化");
+  });
+
+  it("只比本轮跑了的层，未触发的层不产生「无法比对」噪音", () => {
+    /* 只跑固件那一轮，不该拿上次全量报告的其它层来比：那样 77 个文件全进
+       「无法比对」，真正该看的那一个被淹掉。 */
+    const current = mkRun({
+      files: [file("firmware/test/test_skeleton.c", "firmware", 13996)],
+      layers: [okLayer("firmware", 13996)],
+    });
+    const previous = mkRun({
+      files: [
+        file("firmware/test/test_skeleton.c", "firmware", 13996),
+        file("miniprogram/tests/a.test.ts", "mp", 10),
+        file("server/tests/api.test.ts", "server", 13),
+      ],
+      layers: [okLayer("firmware", 13996), okLayer("mp", 10), okLayer("server", 13)],
+    });
+
+    const diff = diffRuns(current, previous);
+
+    expect(diff.notCompared).toEqual([]);
+    expect(diff.unchanged).toBe(true);
+    const md = renderReport({ ...current, previous: diff });
+    expect(md).not.toContain("miniprogram/tests/a.test.ts");
+    expect(md).not.toContain("无法比对");
+  });
+
+  it("某文件用例数减少时列出上次值、本次值与负差值", () => {
+    const current = mkRun({
+      files: [file("miniprogram/tests/a.test.ts", "mp", 12)],
+      layers: [okLayer("mp", 12)],
+    });
+    const previous = mkRun({
+      files: [file("miniprogram/tests/a.test.ts", "mp", 24)],
+      layers: [okLayer("mp", 24)],
+    });
+
+    const diff = diffRuns(current, previous);
+    const changed = diff.files.changed.find((f: { path: string }) => f.path.endsWith("a.test.ts"));
+
+    expect(changed).toMatchObject({ previous: 24, current: 12, delta: -12 });
+    expect(diff.unchanged).toBe(false);
+
+    const md = renderReport({ ...current, previous: diff });
+    expect(md).toContain("miniprogram/tests/a.test.ts");
+    expect(md).toContain("| 24 | 12 | -12 |");
+  });
+
+  it("新增文件与消失文件都标出来，不混进「变化」表", () => {
+    const current = mkRun({
+      files: [file("miniprogram/tests/a.test.ts", "mp", 5), file("miniprogram/tests/新增.test.ts", "mp", 3)],
+      layers: [okLayer("mp", 8)],
+    });
+    const previous = mkRun({
+      files: [file("miniprogram/tests/a.test.ts", "mp", 5), file("miniprogram/tests/消失.test.ts", "mp", 7)],
+      layers: [okLayer("mp", 12)],
+    });
+
+    const diff = diffRuns(current, previous);
+
+    expect(diff.files.added.map((f: { path: string }) => f.path)).toEqual(["miniprogram/tests/新增.test.ts"]);
+    expect(diff.files.removed.map((f: { path: string }) => f.path)).toEqual(["miniprogram/tests/消失.test.ts"]);
+    expect(diff.files.changed).toEqual([]);
+
+    const md = renderReport({ ...current, previous: diff });
+    expect(md).toContain("新增文件");
+    expect(md).toContain("miniprogram/tests/新增.test.ts");
+    expect(md).toContain("消失文件");
+    expect(md).toContain("miniprogram/tests/消失.test.ts");
+  });
+
+  it("新出现的 FAIL 与 SKIP 分开列出，上次就有的失败不再重复", () => {
+    const shared = { name: "旧失败", detail: "上次也红", location: "a.ts:1" };
+    const fresh = { name: "新失败", detail: "这次才红", location: "b.ts:2" };
+    const current = mkRun({
+      layers: [
+        { ...okLayer("mp", 3), status: "FAIL", failures: [shared, fresh] },
+        skipLayer("ui", "缺微信开发者工具自动化端口"),
+      ],
+    });
+    const previous = mkRun({
+      layers: [
+        { ...okLayer("mp", 3), status: "FAIL", failures: [shared] },
+        okLayer("ui", 49),
+      ],
+    });
+
+    const diff = diffRuns(current, previous);
+
+    expect(diff.newFailures.map((f: { name: string }) => f.name)).toEqual(["新失败"]);
+    expect(diff.newSkips.map((s: { reason: string }) => s.reason)).toEqual(["缺微信开发者工具自动化端口"]);
+
+    const md = renderReport({ ...current, previous: diff });
+    expect(md).toContain("新出现的失败");
+    expect(md).toContain("新失败");
+    expect(md).toContain("新出现的跳过");
+    expect(md).toContain("缺微信开发者工具自动化端口");
+  });
+
+  it("两次都没跑成同一层时不算「新出现的 SKIP」", () => {
+    const current = mkRun({ layers: [skipLayer("ui", "缺端口")] });
+    const previous = mkRun({ layers: [skipLayer("ui", "缺端口")] });
+
+    expect(diffRuns(current, previous).newSkips).toEqual([]);
+  });
+
+  it("上次根本没触发这一层时不算「新出现的 SKIP」", () => {
+    /* 日常只跑便宜三层、这次加了 --release 才会出现这种形状。
+       ui 本来就一直在未验证清单里，报到差异节只会稀释真信号。 */
+    const current = mkRun({ layers: [okLayer("mp", 5), skipLayer("ui", "缺端口")] });
+    const previous = mkRun({ layers: [okLayer("mp", 5)] });
+
+    expect(diffRuns(current, previous).newSkips).toEqual([]);
+  });
+
+  it("层状态从 PASS 掉到 SKIP 时层变化表里有它", () => {
+    const current = mkRun({ layers: [skipLayer("ui", "缺端口")] });
+    const previous = mkRun({ layers: [okLayer("ui", 49)] });
+
+    const changed = diffRuns(current, previous).layers;
+
+    expect(changed).toHaveLength(1);
+    expect(changed[0]).toMatchObject({ name: "ui", previousStatus: "PASS", currentStatus: "SKIP" });
+    expect(renderReport({ ...current, previous: diffRuns(current, previous) })).toContain("层变化");
+  });
+
+  it("任一文件拿不到逐文件数字时不拿 null 当 0 算差值", () => {
+    const current = mkRun({ files: [file("ble/a.test.ts", "ble", null)], layers: [okLayer("ble", null as unknown as number)] });
+    const previous = mkRun({ files: [file("ble/a.test.ts", "ble", null)], layers: [okLayer("ble", null as unknown as number)] });
+
+    const diff = diffRuns(current, previous);
+
+    expect(diff.files.changed).toEqual([]);
+    expect(diff.comparable).toBe(0);
+  });
+});
+
+describe("「上一次」报告的定位", () => {
+  const seed = (base: string, runIds: string[], { bad = "" } = {}) => {
+    for (const id of runIds) {
+      const target = join(base, id);
+      mkdirSync(target, { recursive: true });
+      writeFileSync(join(target, "report.json"), bad || JSON.stringify(mkRun({ runId: id })), "utf8");
+    }
+  };
+
+  it("取比当前 RUN_ID 小的最新一目录，忽略更新的目录", () => {
+    const base = join(dir, ".reports");
+    seed(base, ["2026-11-03T09-00-00-000", "2026-11-04T09-00-00-000", "2026-11-05T09-00-00-000"]);
+
+    expect(findPreviousReportDir(base, "2026-11-04T12-00-00-000")).toBe("2026-11-04T09-00-00-000");
+  });
+
+  it("没有更早的目录时返回 null（首次运行）", () => {
+    const base = join(dir, ".reports");
+    seed(base, ["2026-11-05T09-00-00-000"]);
+
+    expect(findPreviousReportDir(base, "2026-11-04T12-00-00-000")).toBeNull();
+  });
+
+  it("目录里没有 report.json 时跳过它，不把它当基线", () => {
+    const base = join(dir, ".reports");
+    seed(base, ["2026-11-03T09-00-00-000"]);
+    mkdirSync(join(base, "2026-11-04T09-00-00-000"), { recursive: true });
+
+    expect(findPreviousReportDir(base, "2026-11-04T12-00-00-000")).toBe("2026-11-03T09-00-00-000");
+  });
+
+  it("坏 JSON 与 schema 不兼容都返回原因，不抛错", () => {
+    const broken = join(dir, "broken");
+    mkdirSync(broken, { recursive: true });
+    writeFileSync(join(broken, "report.json"), "{ 不是 JSON", "utf8");
+
+    const badJson = readPreviousReport(broken);
+    expect(String(badJson.error)).toContain("JSON");
+    expect(() => readPreviousReport(broken)).not.toThrow();
+
+    const wrongShape = join(dir, "wrong-shape");
+    mkdirSync(wrongShape, { recursive: true });
+    writeFileSync(join(wrongShape, "report.json"), JSON.stringify({ layers: "不是数组" }), "utf8");
+
+    const badSchema = readPreviousReport(wrongShape);
+    expect(String(badSchema.error)).toContain("layers");
+    expect(() => renderReport({ ...mkRun(), previous: badSchema })).not.toThrow();
+  });
+
+  it("读得到时返回上一次的报告对象", () => {
+    const target = join(dir, "ok");
+    mkdirSync(target, { recursive: true });
+    writeFileSync(join(target, "report.json"), JSON.stringify(mkRun({ runId: "r1" })), "utf8");
+
+    expect(readPreviousReport(target).report.runId).toBe("r1");
   });
 });
