@@ -35,7 +35,7 @@
 
 ---
 
-## 2. 模拟器渲染验收（`node .auto/verify-v5.mjs`）
+## 2. 模拟器渲染验收（`node scripts/verify-v5.mjs`）
 
 **49 / 49 通过**（端口 `WS=ws://127.0.0.1:9502`）。
 

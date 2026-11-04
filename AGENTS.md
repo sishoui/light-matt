@@ -157,13 +157,16 @@ cd server && npm run typecheck                # 必须干净
 **渲染回归脚本（改页面后必跑；需要开发者工具开着自动化端口）**
 
 ```bash
-cd miniprogram && node .auto/verify-v5.mjs             # 49 项：主题三处同步 / 首页 / 设备页 /
+node scripts/verify-v5.mjs                             # 49 项：主题三处同步 / 首页 / 设备页 /
                                                        #   灯组页（拨盘 / 三套方案 / 一行式 / 滚轮）/
                                                        #   进阶页（气泡 / 循环三档 / 两层 / 预览条）
+node scripts/test-run.mjs ui                           # 同一批断言走编排器（记 PASS/FAIL/SKIP 与耗时）
 ```
 
 > 端口不是默认 9501 时用 `WS=ws://127.0.0.1:9502` 覆盖。
 > 脚本会自己切浅色 / 深色并复位，可以反复跑（幂等）。
+> 开发者工具没开时脚本打印 `SKIPPED: 缺微信开发者工具自动化端口` 并退出码 0——缺环境是常态，
+> 不该看起来像失败；编排器的 `ui` 层据此记 SKIP 而不是 FAIL。
 >
 > **已作废**（旧断言锁的是已删除的页面或已重写的控件，不要接进 CI）：
 > `verify-effect-editor.mjs`（九张色块卡 → 一行式）、`verify-redesign.mjs`（发现 tab）、

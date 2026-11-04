@@ -128,6 +128,147 @@ const runFirmware = () => {
 };
 
 /* ------------------------------------------------------------------ */
+/* 渲染回归（ui 层）：包住 scripts/verify-v5.mjs                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 解析渲染回归脚本的输出。
+ *
+ * 输出形状（脚本自己定的，别改两头对不上的格式）：
+ *   PASS  断言名
+ *   FAIL  断言名  — 差异描述
+ *   ===== 47 passed / 2 failed =====
+ *   缺环境时只有一行：SKIPPED: 原因
+ *
+ * 为什么数 PASS/FAIL 行而不是信末尾的汇总行：汇总行是脚本自己算的，
+ * 数行是编排器自己算的。两者不一致时以数行得到的失败项为准，因为
+ * 「失败详情里有断言名」是报告要能跳过去修的前提。
+ */
+export const parseUiOutput = (stdout, exitCode = 0) => {
+  const lines = stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  /* 缺环境优先于一切：端口没通时脚本一条断言都没跑，
+     把它记成 FAIL 会让「今天没开开发者工具」看起来像代码坏了。 */
+  const skipped = lines.find((line) => line.startsWith("SKIPPED:"));
+  if (skipped !== undefined) {
+    return {
+      status: SKIP,
+      checks: null,
+      unit: "断言",
+      detail: "",
+      failures: [],
+      skipReason: skipped.slice("SKIPPED:".length).trim(),
+    };
+  }
+
+  const failures = [];
+  let passed = 0;
+  for (const line of lines) {
+    const match = /^(PASS|FAIL)\s{2,}(.+)$/.exec(line);
+    if (match === null) continue;
+    const rest = match[2];
+    const splitAt = rest.indexOf("  — ");
+    const name = splitAt < 0 ? rest : rest.slice(0, splitAt);
+    const detail = splitAt < 0 ? "" : rest.slice(splitAt + "  — ".length);
+    if (match[1] === "PASS") passed += 1;
+    else failures.push({ name, detail });
+  }
+
+  const total = passed + failures.length;
+  if (total === 0) {
+    return {
+      status: FAIL,
+      checks: null,
+      unit: "断言",
+      detail: "输出里找不到断言行",
+      failures,
+    };
+  }
+
+  if (failures.length > 0) {
+    return {
+      status: FAIL,
+      checks: total,
+      unit: "断言",
+      detail: `${failures.length}/${total} 条断言失败`,
+      failures,
+    };
+  }
+
+  /* 断言全过但脚本非零退出，说明是脚本收尾时出的问题（例如断开连接失败）。
+     不能因为行都是 PASS 就判通过。 */
+  if (exitCode !== 0) {
+    return {
+      status: FAIL,
+      checks: total,
+      unit: "断言",
+      detail: `断言全过但退出码 ${exitCode}`,
+      failures,
+    };
+  }
+
+  return { status: PASS, checks: total, unit: "断言", detail: `${total} 条断言通过`, failures };
+};
+
+/** 脚本路径：与编排器同目录，不依赖 cwd。 */
+const UI_SCRIPT = join(HERE, "verify-v5.mjs");
+
+/**
+ * 主动探测自动化端口。
+ *
+ * 为什么要单独探一次而不是跑一遍再判断：49 项断言要跑一分多钟，
+ * 端口没通时那段时间纯属浪费，而且失败输出会被误读成「页面坏了」。
+ * 探测本身只建 TCP 连接（脚本的 `--probe` 分支，内部 3 秒超时），
+ * 与断言数无关；这里的 10 秒外壳只是兜住进程起不来的情况。
+ */
+const probeUi = () => {
+  const res = spawnSync(process.execPath, [UI_SCRIPT, "--probe"], {
+    cwd: REPO,
+    encoding: "utf8",
+    timeout: 10_000,
+    maxBuffer: 1024 * 1024,
+  });
+  const stdout = `${res.stdout ?? ""}${res.stderr ?? ""}`;
+  const skipped = stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.startsWith("SKIPPED:"));
+  if (skipped !== undefined) return [skipped.slice("SKIPPED:".length).trim()];
+  if (res.error) return [`自动化端口探测失败：${res.error.message}`];
+  if (/PORT: .* 可连/.test(stdout)) return [];
+  return [`自动化端口探测没有结论：${stdout.trim().slice(0, 200)}`];
+};
+
+/** 跑 49 项渲染断言。整轮要一分多钟，超时给到 10 分钟。 */
+const runUi = () => {
+  const started = Date.now();
+  const res = spawnSync(process.execPath, [UI_SCRIPT], {
+    cwd: REPO,
+    encoding: "utf8",
+    timeout: 600_000,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  const durationMs = Date.now() - started;
+  const stdout = `${res.stdout ?? ""}${res.stderr ?? ""}`;
+
+  if (res.error) {
+    return {
+      status: FAIL,
+      checks: null,
+      unit: "断言",
+      detail: String(res.error.message),
+      failures: [],
+      durationMs,
+    };
+  }
+
+  return { ...parseUiOutput(stdout, res.status ?? 0), durationMs };
+};
+
+/* ------------------------------------------------------------------ */
 /* 层规格：把清单里的层定义变成可执行的东西                            */
 /* ------------------------------------------------------------------ */
 
@@ -149,6 +290,16 @@ export function buildLayerSpecs(manifest) {
       return missing;
     },
     run: runFirmware,
+  };
+
+  specs.ui = {
+    name: "ui",
+    label: manifest.layers.ui?.label ?? "渲染回归",
+    /* 需要本机开着微信开发者工具，所以不进默认（不带参数）那一轮。 */
+    cheap: false,
+    unit: "断言",
+    probe: probeUi,
+    run: runUi,
   };
 
   return specs;

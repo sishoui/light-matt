@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 // @ts-expect-error -- 仓库根的工具脚本是 .mjs，没有类型声明
-import { executeLayers, parseFirmwareOutput, renderReport, writeReport } from "../../scripts/test-run.mjs";
+import { buildLayerSpecs, executeLayers, parseFirmwareOutput, parseUiOutput, renderReport, writeReport } from "../../scripts/test-run.mjs";
 
 /**
  * 编排器的外在行为有三面：报告的结论对不对、三态语义守不守、退出码对不对。
@@ -261,5 +261,104 @@ describe("固件输出解析", () => {
     const garbage = parseFirmwareOutput("gcc: error: something broke");
 
     expect(garbage.status).toBe("FAIL");
+  });
+});
+
+/**
+ * 渲染回归（ui 层）的输出解析。
+ *
+ * 样本是 `scripts/verify-v5.mjs` 真实输出的形状：每行 `PASS  名字` 或
+ * `FAIL  名字  — 差异`，末尾一行汇总。解析器必须自己数行——只信汇总行的话，
+ * 失败详情里就拿不到断言名，报告也就没法让人直接跳过去修。
+ */
+describe("渲染回归输出解析", () => {
+  const SAMPLE_PASS = [
+    "PASS  小程序启动、页面已注册",
+    "PASS  「我的」页切深色后根节点是 theme-dark  — theme-dark",
+    "PASS  原生滑块的激活色是深色主题色  — #8FA9C4",
+    "PASS  搜索框按名称过滤  — {\"searching\":true,\"hits\":1,\"name\":\"书桌\"}",
+    "PASS  圆盘刻度 1–100  — 100",
+    "",
+    "===== 5 passed / 0 failed =====",
+  ].join("\n");
+
+  const SAMPLE_FAIL = [
+    "PASS  小程序启动、页面已注册",
+    "PASS  首页有搜索框",
+    "FAIL  灯组卡片一列排布",
+    "FAIL  方案恰好三个圆形按钮  — 2",
+    "PASS  没有整条「已连接」状态栏",
+    "",
+    "===== 3 passed / 2 failed =====",
+  ].join("\n");
+
+  it("从真实输出里数出断言数并判 PASS", () => {
+    const ok = parseUiOutput(SAMPLE_PASS, 0);
+
+    expect(ok.status).toBe("PASS");
+    expect(ok.checks).toBe(5);
+    expect(ok.unit).toBe("断言");
+    expect(ok.failures).toEqual([]);
+  });
+
+  it("有 FAIL 时判失败，失败详情带断言名与差异描述", () => {
+    const failed = parseUiOutput(SAMPLE_FAIL, 1);
+
+    expect(failed.status).toBe("FAIL");
+    expect(failed.checks).toBe(5);
+    expect(failed.failures).toHaveLength(2);
+    expect(failed.failures[0].name).toBe("灯组卡片一列排布");
+    expect(failed.failures[0].detail).toBe("");
+    expect(failed.failures[1].name).toBe("方案恰好三个圆形按钮");
+    expect(failed.failures[1].detail).toBe("2");
+    expect(failed.detail).toContain("2/5");
+  });
+
+  it("SKIPPED: 前缀被识别成 SKIP 并带原因，不是 FAIL", () => {
+    const skipped = parseUiOutput("SKIPPED: 缺微信开发者工具自动化端口（ws://127.0.0.1:9501：ECONNREFUSED）\n", 0);
+
+    expect(skipped.status).toBe("SKIP");
+    expect(skipped.failures).toEqual([]);
+    expect(String(skipped.skipReason)).toContain("缺微信开发者工具自动化端口");
+  });
+
+  it("断言全过但退出码非零时判失败，不因行都是 PASS 就放过", () => {
+    expect(parseUiOutput(SAMPLE_PASS, 1).status).toBe("FAIL");
+  });
+
+  it("输出里一条断言行都没有时判失败，而不是默认通过", () => {
+    expect(parseUiOutput("Error: something blew up", 1).status).toBe("FAIL");
+  });
+});
+
+describe("ui 层接线", () => {
+  it("ui 层需要环境，不进默认那一轮", () => {
+    const specs = buildLayerSpecs(fakeManifest());
+
+    expect(specs.ui.name).toBe("ui");
+    expect(specs.ui.cheap).toBe(false);
+    expect(typeof specs.ui.probe).toBe("function");
+    expect(typeof specs.ui.run).toBe("function");
+  });
+
+  it("端口探不通时记 SKIP，且它的 run 根本不被调用", () => {
+    const specs = buildLayerSpecs(fakeManifest());
+    let ran = false;
+    const gated = {
+      ...specs.ui,
+      probe: () => ["缺微信开发者工具自动化端口"],
+      run: () => {
+        ran = true;
+        return { status: "FAIL", checks: null, unit: "断言", detail: "不该跑到这里", failures: [] };
+      },
+    };
+
+    const result = executeLayers([gated]);
+
+    expect(ran).toBe(false);
+    expect(result.layers[0].status).toBe("SKIP");
+    expect(result.layers[0].skipReason).toBe("缺微信开发者工具自动化端口");
+    /* SKIP 不影响退出码语义：全 SKIP 的一轮结论仍是 PASS。 */
+    expect(result.conclusion).toBe("PASS");
   });
 });
