@@ -668,11 +668,11 @@ python scripts/analyze-strips-video.py base.mp4
 > 照着做即可（含跑完烧回产品固件）。
 >
 > **另外两项也没验**：小程序切后台回前台的静默回连、改灯珠数量时的毫秒级黑屏。
-> 逐条见 [`end-to-end-acceptance.md`](../end-to-end-acceptance.md) §3。不要因为 §4 七条全绿就以为只剩 #7。
+> 逐条见 [`end-to-end-acceptance.md`](./end-to-end-acceptance.md) §3。不要因为 §4 七条全绿就以为只剩 #7。
 >
 > **iOS 已于 2026-10-30 用 iPad 补测通过**（完整七条 + deviceId 为 UUID、
 > 跳过 `setBLEMTU`、授权正常、无超长写异常、设备名显示正常）。详见
-> [`ble-notes.md`](../ble-notes.md) §iOS。iOS 后台扫描仍未测。
+> [`ble-notes.md`](./ble-notes.md) §iOS。iOS 后台扫描仍未测。
 
 验证基线（改代码后应保持）：
 
@@ -691,10 +691,10 @@ scripts\build-firmware.cmd
 ## 2. 现在在哪 / 下一步
 
 **MVP 已完成。** #14 七条全部通过，记录在
-[`docs/end-to-end-acceptance.md`](../end-to-end-acceptance.md) 第 1、4 节。
+[`docs/end-to-end-acceptance.md`](./end-to-end-acceptance.md) 第 1、4 节。
 
 **最大的未验证项是 #7（RMT × BLE 共存），用户决定跳过。** 这不是通过，是未验证。
-方案、实验固件、判定工具都留在 [`docs/rmt-ble-stability.md`](../rmt-ble-stability.md)，
+方案、实验固件、判定工具都留在 [`docs/rmt-ble-stability.md`](./rmt-ble-stability.md)，
 随时可以补跑：
 
 ```bat
@@ -865,13 +865,13 @@ python scripts/capture-serial.py COM6 10 --reset  # 先复位再抓启动日志
 
 | 想知道什么 | 去哪 |
 |---|---|
-| 七条验收怎么跑、记录表 | [`docs/end-to-end-acceptance.md`](../end-to-end-acceptance.md) |
+| 七条验收怎么跑、记录表 | [`docs/end-to-end-acceptance.md`](./end-to-end-acceptance.md) |
 | PC 当 central 跑协议验收 | `scripts/acceptance-probe.py` |
-| 字节级协议（唯一真相） | [`docs/protocol.md`](../protocol.md) + `protocol-testvectors.json` |
-| 固件分层、并发、各票增量 | [`docs/firmware-architecture.md`](../firmware-architecture.md) |
-| 灯带接线、供电、两个 bug 的记录 | [`docs/led-bringup.md`](../led-bringup.md) |
-| RMT × BLE 五组实验方案 | [`docs/rmt-ble-stability.md`](../rmt-ble-stability.md) |
-| 决策地图与 frontier | [`docs/wayfinding/map.md`](../wayfinding/map.md) |
+| 字节级协议（唯一真相） | [`docs/protocol.md`](./protocol.md) + `protocol-testvectors.json` |
+| 固件分层、并发、各票增量 | [`docs/firmware-architecture.md`](./firmware-architecture.md) |
+| 灯带接线、供电、两个 bug 的记录 | [`docs/led-bringup.md`](./led-bringup.md) |
+| RMT × BLE 五组实验方案 | [`docs/rmt-ble-stability.md`](./rmt-ble-stability.md) |
+| 决策地图与 frontier | [`docs/wayfinding/map.md`](wayfinding/map.md) |
 | 小程序侧实现笔记 | `C:\Users\13092\Desktop\项目\zcode\lumen-notes\app-implementation-notes.md`（仓库外） |
 
 ---
@@ -882,7 +882,7 @@ python scripts/capture-serial.py COM6 10 --reset  # 先复位再抓启动日志
 
 - **iOS 后台扫描未测**（前台七条已用 iPad 验完，2026-10-30）。iOS 后台只认广播包
   里的 UUID，而固件把名字放在扫描响应包；若将来做后台常驻 / 快速回连，需重新确认
-  发现率与设备名是否可见。详见 [`ble-notes.md`](../ble-notes.md) §iOS。
+  发现率与设备名是否可见。详见 [`ble-notes.md`](./ble-notes.md) §iOS。
 - **全白 255 的长期供电**没专门测，且已不成问题：亮度上限已定为
   `max_brightness=200`，不会输出 255。按亮度折算 64 灯全白约 **3.0A**（255 时实测
   3.8A，线性折算，未单独实测）。
