@@ -15,7 +15,15 @@
  * 前置条件靠主动探测，不是跑一遍失败再猜。
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { cpus, hostname, platform, release as osRelease, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -720,6 +728,230 @@ export function describeFiles(manifest, results, repoRoot = REPO) {
 }
 
 /* ------------------------------------------------------------------ */
+/* 与上次运行的差异（#109）                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 差异只比「用例数」，不逐条比用例名。
+ *
+ * 为什么不做逐条比对：用例名会改，改名会产生整屏噪音，把一个真信号（某个文件少了
+ * 12 条）淹掉。文件级的数字变化才是能直接触发警觉的东西。
+ *
+ * 这里只接受两份已落盘的 report.json 形状（顶层 files 数组 + layers 数组），
+ * 不接受内存里的层结果——差异节的语义就是「和上一次那份文件比」。
+ */
+const isCount = (value) => typeof value === "number" && Number.isFinite(value);
+const failureKey = (failure) => `${failure?.location ?? ""}|${failure?.name ?? ""}`;
+
+export function diffRuns(current, previous) {
+  const currentFiles = new Map((current?.files ?? []).map((file) => [file.path, file]));
+  const previousFiles = new Map((previous?.files ?? []).map((file) => [file.path, file]));
+
+  const changed = [];
+  const added = [];
+  const removed = [];
+  /* 一边拿得到数字、另一边拿不到时才记「无法比对」：这代表可比较性变了，
+     值得看一眼。两边都拿不到（该层两轮都没跑）说明这个文件本来就没有逐文件
+     数字，列出来只会把 80 行「—/—」塞进每一份报告里。 */
+  const notCompared = [];
+  let comparable = 0;
+
+  for (const [path, file] of currentFiles) {
+    const before = previousFiles.get(path);
+    if (before === undefined) {
+      added.push({ path, layer: file.layer, current: file.checks ?? null });
+      continue;
+    }
+    if (!isCount(file.checks) || !isCount(before.checks)) {
+      if (isCount(file.checks) !== isCount(before.checks)) {
+        notCompared.push({ path, layer: file.layer, previous: before.checks ?? null, current: file.checks ?? null });
+      }
+      continue;
+    }
+    comparable += 1;
+    if (file.checks !== before.checks) {
+      changed.push({
+        path,
+        layer: file.layer,
+        previous: before.checks,
+        current: file.checks,
+        delta: file.checks - before.checks,
+      });
+    }
+  }
+
+  for (const [path, file] of previousFiles) {
+    if (currentFiles.has(path)) continue;
+    removed.push({ path, layer: file.layer, previous: file.checks ?? null });
+  }
+
+  const currentLayers = (current?.layers ?? []).filter((layer) => layer && layer.name);
+  const previousLayers = new Map(
+    (previous?.layers ?? []).filter((layer) => layer && layer.name).map((layer) => [layer.name, layer]),
+  );
+
+  /* 上次就已经红的失败不该算「这次新出现的」——否则一条陈年失败每天都很刺眼，
+     真正的新失败反而看不出来。 */
+  const previousFailureKeys = new Set();
+  for (const layer of previousLayers.values()) {
+    for (const failure of layer.failures ?? []) previousFailureKeys.add(`${layer.name}|${failureKey(failure)}`);
+  }
+
+  /* SKIP 按层判：上次这层就没跑成，这次还是它，不算新增。
+     层内显式 skip（#108 的 SKIPPED 标签）单独按原因判——层可能照跑，只是少了一步。 */
+  const previousSkippedLayers = new Set(
+    [...previousLayers.values()].filter((layer) => layer.status === SKIP).map((layer) => layer.name),
+  );
+  const previousInnerSkips = new Set();
+  for (const layer of previousLayers.values()) {
+    for (const reason of layer.skipped ?? []) previousInnerSkips.add(`${layer.name}|${reason}`);
+  }
+
+  const newFailures = [];
+  const seenFailures = new Set();
+  const newSkips = [];
+  const seenSkips = new Set();
+  const layers = [];
+
+  for (const layer of currentLayers) {
+    const label = layer.label ?? layer.name;
+    for (const failure of layer.failures ?? []) {
+      const key = `${layer.name}|${failureKey(failure)}`;
+      if (previousFailureKeys.has(key) || seenFailures.has(key)) continue;
+      seenFailures.add(key);
+      newFailures.push({
+        layer: layer.name,
+        label,
+        name: failure.name ?? "未命名用例",
+        detail: failure.detail ?? "",
+        location: failure.location ?? null,
+      });
+    }
+
+    /* 只认「上次这一层真的跑了、这次没跑成」。上次根本没触发这一层
+       （例如日常只跑便宜三层、这次加了 --release）时不叫「新出现的跳过」——
+       它本来就一直在未验证清单里，重复报到差异节只会稀释真信号。 */
+    if (layer.status === SKIP && previousLayers.has(layer.name) && !previousSkippedLayers.has(layer.name)) {
+      const reason = layer.skipReason ?? "原因未记录";
+      const key = `${layer.name}|${reason}`;
+      if (!seenSkips.has(key)) {
+        seenSkips.add(key);
+        newSkips.push({ layer: layer.name, label, reason, kind: "layer" });
+      }
+    }
+    for (const reason of layer.skipped ?? []) {
+      if (!previousLayers.has(layer.name)) continue;
+      const key = `${layer.name}|${reason}`;
+      if (previousInnerSkips.has(key) || seenSkips.has(key)) continue;
+      seenSkips.add(key);
+      newSkips.push({ layer: layer.name, label, reason, kind: "inner" });
+    }
+
+    const before = previousLayers.get(layer.name);
+    if (before === undefined) continue;
+    /* 只在状态变了时列一层。用例数的变化在文件表里已经有了，层表再来一遍
+       会让单文件层（固件、渲染回归）把同一件事说两遍。 */
+    if (before.status === layer.status) continue;
+    layers.push({
+      name: layer.name,
+      label,
+      previousStatus: before.status,
+      currentStatus: layer.status,
+      previousChecks: before.checks ?? null,
+      currentChecks: layer.checks ?? null,
+    });
+  }
+
+  const byPath = (a, b) => a.path.localeCompare(b.path);
+  changed.sort(byPath);
+  added.sort(byPath);
+  removed.sort(byPath);
+  notCompared.sort(byPath);
+
+  return {
+    runId: current?.runId ?? null,
+    previousRunId: previous?.runId ?? null,
+    previousStartedAt: previous?.startedAt ?? null,
+    comparable,
+    files: { changed, added, removed },
+    notCompared,
+    layers,
+    newFailures,
+    newSkips,
+    /* 全都空才算「无变化」：某个文件降了、出现新红、出现新的没跑成，
+       任意一条都不该被一句「无变化」盖掉。可比较性变了（一边拿不到数字）
+       同样不算无变化——那意味着有一层没跑出逐文件结果。 */
+    unchanged:
+      changed.length === 0 &&
+      added.length === 0 &&
+      removed.length === 0 &&
+      notCompared.length === 0 &&
+      newFailures.length === 0 &&
+      newSkips.length === 0 &&
+      layers.length === 0,
+  };
+}
+
+/**
+ * 找「上一次」的报告目录。
+ *
+ * RUN_ID 是 ISO 时间戳变形（`2026-11-04T16-11-58-431`），时区统一是 Z，
+ * 所以字典序就是时间序。只取严格小于当前 RUN_ID 的目录——相等说明是同一轮
+ * （重跑同一目录），拿自己当基线会得到一份永远「无变化」的报告。
+ *
+ * 没有 report.json 的目录不当基线：写了一半的运行不能冒充上一次。
+ */
+export function findPreviousReportDir(baseDir, runId) {
+  let entries;
+  try {
+    entries = readdirSync(baseDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  const candidates = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .filter((name) => name < runId)
+    .filter((name) => existsSync(join(baseDir, name, "report.json")))
+    .sort();
+
+  return candidates.length === 0 ? null : candidates[candidates.length - 1];
+}
+
+/**
+ * 读上一次的报告。坏 JSON 与 schema 不兼容都不抛错——差异节是报告的一部分，
+ * 不能因为「上一份写坏了」就让整轮测试失败。
+ */
+export function readPreviousReport(dir) {
+  let raw;
+  try {
+    raw = readFileSync(join(dir, "report.json"), "utf8");
+  } catch (error) {
+    return { error: `读不到 report.json（${error.message ?? error}）` };
+  }
+
+  let report;
+  try {
+    report = JSON.parse(raw);
+  } catch (error) {
+    return { error: `report.json 不是合法 JSON（${error.message ?? error}）` };
+  }
+
+  if (report === null || typeof report !== "object" || Array.isArray(report)) {
+    return { error: "schema 不兼容：顶层不是对象" };
+  }
+  if (!Array.isArray(report.layers)) {
+    return { error: "schema 不兼容：layers 不是数组" };
+  }
+  if (report.files !== undefined && !Array.isArray(report.files)) {
+    return { error: "schema 不兼容：files 不是数组" };
+  }
+
+  return { report };
+}
+
+/* ------------------------------------------------------------------ */
 /* 渲染                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -870,17 +1102,125 @@ export function renderReport(report, { title = "测试报告" } = {}) {
     }
   }
 
-  /* 6. 与上次运行的差异 */
+  /* 6. 与上次运行的差异（#109）——只比用例数，不做逐用例比对 */
   lines.push("## 与上次运行", "");
   if (previous === null || previous === undefined) {
     lines.push("首次运行，无基线可比。", "");
   } else if (previous.error) {
     lines.push(`无法读取上次报告：${previous.error}`, "");
+  } else if (previous.summary) {
+    /* 兼容更早的占位形状（曾用 summary 字段），也方便外部直接塞一段文字。 */
+    lines.push(previous.summary, "");
   } else {
-    lines.push(previous.summary ?? "（差异计算未接入）", "");
+    lines.push(...renderDiff(previous), "");
   }
 
   return lines.join("\n");
+}
+
+/**
+ * 差异节的正文。
+ *
+ * 顺序是刻意的：先说「有没有变化」，再说新红与新没跑成（这两类最需要人动手），
+ * 最后才是逐文件的数字。用例数是一份统计，新失败是一个待办——待办放前面。
+ */
+function renderDiff(diff) {
+  const lines = [];
+  const { files } = diff;
+  const baseline = diff.previousRunId ? `\`${diff.previousRunId}\`` : "上一次运行";
+  lines.push(`对比基线：${baseline}${diff.previousStartedAt ? `（${diff.previousStartedAt}）` : ""}`, "");
+
+  if (diff.unchanged) {
+    lines.push(
+      `**无变化**：本次比对了 ${diff.comparable} 个测试文件的用例数，与上次一致；也没有新出现的失败或跳过。`,
+      "",
+    );
+    return lines;
+  }
+
+  if (diff.newFailures.length > 0) {
+    lines.push(`### 新出现的失败（${diff.newFailures.length} 条）`, "");
+    for (const failure of diff.newFailures) {
+      lines.push(
+        `- **${failure.label}** ${failure.name}${failure.detail ? ` — ${failure.detail}` : ""}${failure.location ? `（\`${failure.location}\`）` : ""}`,
+      );
+    }
+    lines.push("");
+  }
+
+  if (diff.newSkips.length > 0) {
+    lines.push(`### 新出现的跳过（${diff.newSkips.length} 项）`, "");
+    for (const item of diff.newSkips) {
+      const kind = item.kind === "inner" ? "层内步骤" : "整层";
+      lines.push(`- **${item.label}**（${kind}）：${item.reason}`);
+    }
+    lines.push("");
+  }
+
+  if (files.changed.length > 0) {
+    lines.push(`### 用例数变化（${files.changed.length} 个文件）`, "");
+    lines.push("| 文件 | 上次 | 本次 | 差值 |");
+    lines.push("|---|---|---|---|");
+    for (const item of files.changed) {
+      lines.push(`| \`${item.path}\` | ${item.previous} | ${item.current} | ${item.delta > 0 ? "+" : ""}${item.delta} |`);
+    }
+    lines.push("");
+  }
+
+  if (files.added.length > 0) {
+    lines.push(`### 新增文件（${files.added.length} 个）`, "");
+    for (const item of files.added) {
+      lines.push(`- \`${item.path}\`（${item.layer} 层，本次 ${item.current === null ? "—" : `${item.current} 用例`}）`);
+    }
+    lines.push("");
+  }
+
+  if (files.removed.length > 0) {
+    /* 消失的文件通常意味着清单查漏会报错，但差异节也要指名道姓：
+       只看到查漏失败的人不知道该去哪找。 */
+    lines.push(`### 消失文件（${files.removed.length} 个）`, "");
+    for (const item of files.removed) {
+      lines.push(`- \`${item.path}\`（${item.layer} 层，上次 ${item.previous === null ? "—" : `${item.previous} 用例`}）`);
+    }
+    lines.push("");
+  }
+
+  if (diff.layers && diff.layers.length > 0) {
+    lines.push(`### 层变化（${diff.layers.length} 层）`, "");
+    lines.push("| 层 | 上次 | 本次 | 上次用例数 | 本次用例数 |");
+    lines.push("|---|---|---|---|---|");
+    for (const item of diff.layers) {
+      lines.push(
+        `| ${item.label} | ${statusCell(item.previousStatus)} | ${statusCell(item.currentStatus)} | ${item.previousChecks ?? "—"} | ${item.currentChecks ?? "—"} |`,
+      );
+    }
+    lines.push("");
+  }
+
+  if (diff.notCompared && diff.notCompared.length > 0) {
+    /* 数字缺失时宁可说「没比」也不当成 0：伪造的差值比没有差值更糟。 */
+    lines.push(`### 无法比对（${diff.notCompared.length} 个文件）`, "");
+    for (const item of diff.notCompared) {
+      lines.push(`- \`${item.path}\`：上次 ${item.previous ?? "—"}，本次 ${item.current ?? "—"}（有一侧没拿到用例数）`);
+    }
+    lines.push("");
+  }
+
+  lines.push(`本次共比对 ${diff.comparable} 个测试文件的用例数。`);
+  return lines;
+}
+
+/**
+ * 找基线并算出差异。任何一步失败都只影响差异节，不影响本轮结论——
+ * 「上一份报告坏了」不是这次代码有问题。
+ */
+export function loadBaseline(baseDir, runId, current = null) {
+  const previousDir = findPreviousReportDir(baseDir, runId);
+  if (previousDir === null) return null;
+  const loaded = readPreviousReport(join(baseDir, previousDir));
+  if (loaded.error) return { error: `${previousDir}：${loaded.error}` };
+  if (current === null) return loaded.report;
+  return diffRuns(current, loaded.report);
 }
 
 export function writeReport(report, dir, { title } = {}) {
@@ -983,6 +1323,15 @@ function main() {
   const reportDir = release
     ? join(REPO, "docs", "evidence", "test-runs", result.runId)
     : join(REPO, ".reports", result.runId);
+
+  /* 基线与本次报告在同一个池子里找：日常报告只和日常报告比，发布归档只和
+     归档比。两条路径混着找会让「上次」变成一台机器上的私有历史，
+     归档里那几份反而永远没有基线。 */
+  const baselineRoot = release
+    ? join(REPO, "docs", "evidence", "test-runs")
+    : join(REPO, ".reports");
+  const previous = loadBaseline(baselineRoot, result.runId, result);
+  if (previous !== null) result.previous = previous;
 
   const written = writeReport(result, reportDir);
   result.reportPath = written.mdPath;
