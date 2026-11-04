@@ -56,10 +56,33 @@ function hasCommand(cmd) {
 /* 层执行器：每个返回 { status, checks, unit, detail, failures, extra } */
 /* ------------------------------------------------------------------ */
 
+/**
+ * 固件按测试函数的断言数（#108）。固件侧在每次 test_*() 前后各读一次 g_checks，
+ * 打一行 `TESTCOUNT <函数名> <断言数>`。这些行合成「按模块」的真实数字，
+ * 取代文档里靠估算的占比表。
+ *
+ * 只认行首前缀、行尾即是数字：这样 gcc 的报错里就算出现同名文本也不会被误算。
+ */
+export const parseTestCounts = (stdout) => {
+  const byTest = {};
+  let total = 0;
+  for (const raw of String(stdout ?? "").split("\n")) {
+    const match = raw.trim().match(/^TESTCOUNT\s+(\S+)\s+(\d+)$/);
+    if (!match) continue;
+    const name = match[1];
+    const count = Number(match[2]);
+    byTest[name] = (byTest[name] ?? 0) + count;
+    total += count;
+  }
+  return { byTest, total, count: Object.keys(byTest).length };
+};
+
 export const parseFirmwareOutput = (stdout) => {
   const checksMatch = stdout.match(/all (\d+) checks passed/);
   const failedMatch = stdout.match(/(\d+)\/(\d+) checks failed/);
   const vectorsMatch = stdout.match(/vectors: (\d+) cases/);
+  const counts = parseTestCounts(stdout);
+  const byTest = counts.count > 0 ? counts.byTest : null;
 
   const failures = [];
   for (const line of stdout.split("\n")) {
@@ -73,6 +96,7 @@ export const parseFirmwareOutput = (stdout) => {
       unit: "断言",
       detail: `${failedMatch[1]}/${failedMatch[2]} 条断言失败`,
       failures,
+      extra: { byTest },
     };
   }
   if (checksMatch) {
@@ -82,11 +106,23 @@ export const parseFirmwareOutput = (stdout) => {
       unit: "断言",
       detail: `${checksMatch[1]} 条断言通过`,
       failures,
-      extra: { vectors: vectorsMatch ? Number(vectorsMatch[1]) : null },
+      extra: { vectors: vectorsMatch ? Number(vectorsMatch[1]) : null, byTest },
     };
   }
-  return { status: FAIL, checks: null, unit: "断言", detail: "输出里找不到断言统计", failures: [] };
+  return { status: FAIL, checks: null, unit: "断言", detail: "输出里找不到断言统计", failures: [], extra: { byTest } };
 };
+
+/**
+ * 显式 skip 标签（#108）。固件入口在 node 缺失时打 "SKIPPED: <原因>"，退出码仍为 0。
+ * 它不是失败，但也绝不能是一句悄悄话——这里把它取出来，进该层的未验证项。
+ */
+export const parseSkippedTags = (stdout) =>
+  String(stdout ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("SKIPPED:"))
+    .map((line) => line.slice("SKIPPED:".length).trim())
+    .filter((reason) => reason.length > 0);
 
 const runFirmware = () => {
   const started = Date.now();
@@ -107,24 +143,157 @@ const runFirmware = () => {
   const durationMs = Date.now() - started;
   const parsed = parseFirmwareOutput(stdout);
 
-  /* 显式 skip 标签（#108 会把 run-tests.cmd 改成输出它）目前还不存在，
-     但编排器先认这个前缀，免得将来改了脚本这里还要动。 */
-  const skipLine = stdout
+  /* 显式 skip 标签（#108）：不是失败，但要作为可见记录进未验证清单。 */
+  const skipped = parseSkippedTags(stdout);
+
+  if (res.error) {
+    return { status: FAIL, checks: null, unit: "断言", detail: String(res.error.message), failures: [], skipped, durationMs };
+  }
+  if (res.status !== 0 && parsed.status === PASS) {
+    return { ...parsed, status: FAIL, detail: `退出码 ${res.status}`, skipped, durationMs };
+  }
+  return { ...parsed, skipped, durationMs };
+};
+
+/* ------------------------------------------------------------------ */
+/* 渲染回归（ui 层）：包住 scripts/verify-v5.mjs                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 解析渲染回归脚本的输出。
+ *
+ * 输出形状（脚本自己定的，别改两头对不上的格式）：
+ *   PASS  断言名
+ *   FAIL  断言名  — 差异描述
+ *   ===== 47 passed / 2 failed =====
+ *   缺环境时只有一行：SKIPPED: 原因
+ *
+ * 为什么数 PASS/FAIL 行而不是信末尾的汇总行：汇总行是脚本自己算的，
+ * 数行是编排器自己算的。两者不一致时以数行得到的失败项为准，因为
+ * 「失败详情里有断言名」是报告要能跳过去修的前提。
+ */
+export const parseUiOutput = (stdout, exitCode = 0) => {
+  const lines = stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  /* 缺环境优先于一切：端口没通时脚本一条断言都没跑，
+     把它记成 FAIL 会让「今天没开开发者工具」看起来像代码坏了。 */
+  const skipped = lines.find((line) => line.startsWith("SKIPPED:"));
+  if (skipped !== undefined) {
+    return {
+      status: SKIP,
+      checks: null,
+      unit: "断言",
+      detail: "",
+      failures: [],
+      skipReason: skipped.slice("SKIPPED:".length).trim(),
+    };
+  }
+
+  const failures = [];
+  let passed = 0;
+  for (const line of lines) {
+    const match = /^(PASS|FAIL)\s{2,}(.+)$/.exec(line);
+    if (match === null) continue;
+    const rest = match[2];
+    const splitAt = rest.indexOf("  — ");
+    const name = splitAt < 0 ? rest : rest.slice(0, splitAt);
+    const detail = splitAt < 0 ? "" : rest.slice(splitAt + "  — ".length);
+    if (match[1] === "PASS") passed += 1;
+    else failures.push({ name, detail });
+  }
+
+  const total = passed + failures.length;
+  if (total === 0) {
+    return {
+      status: FAIL,
+      checks: null,
+      unit: "断言",
+      detail: "输出里找不到断言行",
+      failures,
+    };
+  }
+
+  if (failures.length > 0) {
+    return {
+      status: FAIL,
+      checks: total,
+      unit: "断言",
+      detail: `${failures.length}/${total} 条断言失败`,
+      failures,
+    };
+  }
+
+  /* 断言全过但脚本非零退出，说明是脚本收尾时出的问题（例如断开连接失败）。
+     不能因为行都是 PASS 就判通过。 */
+  if (exitCode !== 0) {
+    return {
+      status: FAIL,
+      checks: total,
+      unit: "断言",
+      detail: `断言全过但退出码 ${exitCode}`,
+      failures,
+    };
+  }
+
+  return { status: PASS, checks: total, unit: "断言", detail: `${total} 条断言通过`, failures };
+};
+
+/** 脚本路径：与编排器同目录，不依赖 cwd。 */
+const UI_SCRIPT = join(HERE, "verify-v5.mjs");
+
+/**
+ * 主动探测自动化端口。
+ *
+ * 为什么要单独探一次而不是跑一遍再判断：49 项断言要跑一分多钟，
+ * 端口没通时那段时间纯属浪费，而且失败输出会被误读成「页面坏了」。
+ * 探测本身只建 TCP 连接（脚本的 `--probe` 分支，内部 3 秒超时），
+ * 与断言数无关；这里的 10 秒外壳只是兜住进程起不来的情况。
+ */
+const probeUi = () => {
+  const res = spawnSync(process.execPath, [UI_SCRIPT, "--probe"], {
+    cwd: REPO,
+    encoding: "utf8",
+    timeout: 10_000,
+    maxBuffer: 1024 * 1024,
+  });
+  const stdout = `${res.stdout ?? ""}${res.stderr ?? ""}`;
+  const skipped = stdout
     .split("\n")
     .map((line) => line.trim())
     .find((line) => line.startsWith("SKIPPED:"));
+  if (skipped !== undefined) return [skipped.slice("SKIPPED:".length).trim()];
+  if (res.error) return [`自动化端口探测失败：${res.error.message}`];
+  if (/PORT: .* 可连/.test(stdout)) return [];
+  return [`自动化端口探测没有结论：${stdout.trim().slice(0, 200)}`];
+};
 
-  if (skipLine) {
-    return { ...parsed, status: PASS, skipReason: skipLine.slice("SKIPPED:".length).trim(), durationMs };
-  }
+/** 跑 49 项渲染断言。整轮要一分多钟，超时给到 10 分钟。 */
+const runUi = () => {
+  const started = Date.now();
+  const res = spawnSync(process.execPath, [UI_SCRIPT], {
+    cwd: REPO,
+    encoding: "utf8",
+    timeout: 600_000,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  const durationMs = Date.now() - started;
+  const stdout = `${res.stdout ?? ""}${res.stderr ?? ""}`;
 
   if (res.error) {
-    return { status: FAIL, checks: null, unit: "断言", detail: String(res.error.message), failures: [], durationMs };
+    return {
+      status: FAIL,
+      checks: null,
+      unit: "断言",
+      detail: String(res.error.message),
+      failures: [],
+      durationMs,
+    };
   }
-  if (res.status !== 0 && parsed.status === PASS) {
-    return { ...parsed, status: FAIL, detail: `退出码 ${res.status}`, durationMs };
-  }
-  return { ...parsed, durationMs };
+
+  return { ...parseUiOutput(stdout, res.status ?? 0), durationMs };
 };
 
 /* ------------------------------------------------------------------ */
@@ -421,6 +590,16 @@ export function buildLayerSpecs(manifest, { repoRoot = REPO } = {}) {
     };
   }
 
+  specs.ui = {
+    name: "ui",
+    label: manifest.layers.ui?.label ?? "渲染回归",
+    /* 需要本机开着微信开发者工具，所以不进默认（不带参数）那一轮。 */
+    cheap: false,
+    unit: "断言",
+    probe: probeUi,
+    run: runUi,
+  };
+
   return specs;
 }
 
@@ -480,6 +659,9 @@ export function executeLayers(specs, { repoRoot = REPO, startedAt = nowIso() } =
       detail: out.detail ?? "",
       failures: out.failures ?? [],
       skipReason: out.skipReason ?? null,
+      /* 层整体 PASS 但内部有「本应跑却没跑」的步骤（#108 的 SKIPPED 标签）。
+         它不改变层状态，但必须出现在未验证清单里。 */
+      skipped: out.skipped ?? [],
       extra: out.extra ?? null,
       durationMs: out.durationMs ?? Date.now() - t0,
     });
@@ -554,6 +736,11 @@ export function renderReport(report, { title = "测试报告" } = {}) {
   const { head, layers, files = [], previous = null } = report;
   const skipped = layers.filter((l) => l.status === SKIP);
   const failed = layers.filter((l) => l.status === FAIL);
+  /* 层内被显式标成 SKIPPED 的步骤（#108）。层本身可能仍是 PASS，
+     所以不能只看层状态——「跑了一半」和「全跑了」必须显示得不一样。 */
+  const innerSkips = layers.flatMap((layer) =>
+    (layer.skipped ?? []).map((reason) => ({ layer, reason })),
+  );
   const lines = [];
 
   lines.push(`# ${title}`, "");
@@ -566,6 +753,9 @@ export function renderReport(report, { title = "测试报告" } = {}) {
   lines.push(`- **结论**：${report.conclusion === FAIL ? "❌ 有失败" : "✅ 通过"}`);
   if (skipped.length > 0) {
     lines.push(`- **本轮未验证**：${skipped.map((l) => l.label).join("、")}`);
+  }
+  if (innerSkips.length > 0) {
+    lines.push(`- **层内未验证**：${innerSkips.map((item) => `${item.layer.label}（${item.reason}）`).join("；")}`);
   }
   lines.push("");
 
@@ -583,17 +773,37 @@ export function renderReport(report, { title = "测试报告" } = {}) {
 
   /* 3. 未验证清单 —— 最重要的一段 */
   lines.push("## 未验证清单", "");
-  if (skipped.length === 0) {
+  if (skipped.length === 0 && innerSkips.length === 0) {
     lines.push("本轮没有未验证的层。", "");
   } else {
     for (const layer of skipped) {
       lines.push(`- **${layer.label}**：${layer.skipReason ?? "原因未记录"}`);
+    }
+    for (const item of innerSkips) {
+      lines.push(`- **${item.layer.label}**：${item.reason}`);
     }
     lines.push("");
   }
 
   /* 4. 明细 */
   lines.push("## 明细", "");
+
+  /* 4a. 固件按模块的断言数（#108）。取代文档里靠估算的占比表。 */
+  for (const layer of layers) {
+    const byTest = layer.extra?.byTest;
+    if (!byTest || Object.keys(byTest).length === 0) continue;
+    const entries = Object.entries(byTest).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    const total = entries.reduce((sum, [, count]) => sum + count, 0);
+    lines.push(`### ${layer.label}：按测试函数的断言数`, "");
+    lines.push(`共 ${entries.length} 个测试函数，${total} 条断言（按条数降序）。`, "");
+    lines.push("| 测试函数 | 断言数 |");
+    lines.push("|---|---|");
+    for (const [name, count] of entries) {
+      lines.push(`| \`${name}\` | ${count} |`);
+    }
+    lines.push("");
+  }
+
   if (files.length === 0) {
     lines.push("（清单为空）", "");
   } else {

@@ -50,9 +50,15 @@ REM v4 contract self-check: validates docs/protocol-testvectors-v4.json against
 REM docs/protocol-v4.md (frame widths, magic/version, chunk reassembly, result
 REM codes, command coverage, per-layer level rules). Independent of the
 REM generator, so it catches generator bugs such as a wrong field width.
+REM No node means the v4 vector self-check did NOT run. Print a fixed-prefix tag
+REM (scripts/test-run.mjs turns "SKIPPED:" into an unverified item in the report)
+REM instead of a free-form note, so "not run" is visible rather than silent.
+REM Exit code stays 0: it is not a failure, but it must be a record. ASCII only.
+REM Parentheses are escaped: an unescaped ")" inside this ( ) block would close it
+REM early and truncate the tag.
 where node >nul 2>nul
 if errorlevel 1 (
-  echo [run-tests] node not found, skipping v4 vector self-check
+  echo SKIPPED: v4 vector self-check ^(node not found^)
   exit /b 0
 )
 node "%~dp0..\..\scripts\check-protocol-testvectors-v4.mjs"

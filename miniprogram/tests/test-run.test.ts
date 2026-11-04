@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 // @ts-expect-error -- 仓库根的工具脚本是 .mjs，没有类型声明
 import {
@@ -9,7 +9,10 @@ import {
   describeFiles,
   executeLayers,
   parseFirmwareOutput,
+  parseSkippedTags,
+  parseTestCounts,
   parseTscOutput,
+  parseUiOutput,
   parseVitestJson,
   renderReport,
   writeReport,
@@ -615,4 +618,249 @@ describe("失败详情分清用例失败与类型错误", () => {
   });
 });
 
+/**
+ * #108：固件侧从「只有一个总数」变成「按测试函数的真实数字」，
+ * 以及 node 缺失时那个静默 skip 必须变成可见记录。
+ *
+ * 样本取自固件测试的真实输出（`TESTCOUNT <函数名> <断言数>`，一行一个函数）。
+ * 断言里刻意保留那条最大的 `vectors` 桶：向量阶段不在任何 test_*() 里跑，
+ * 不单独记就对不上总数。
+ */
+describe("固件按测试函数的断言数（#108）", () => {
+  const REAL_SAMPLE = [
+    "vectors: 93 cases from docs/protocol-testvectors-v4.json",
+    "TESTCOUNT vectors 2732",
+    "TESTCOUNT test_checksum 10",
+    "TESTCOUNT test_set_power_reducer 47",
+    "TESTCOUNT test_set_brightness_reducer 70",
+    "TESTCOUNT test_retired_commands 98",
+    "TESTCOUNT test_encode_ack_all_results 123",
+    "TESTCOUNT test_gamma 21",
+    "TESTCOUNT test_planar_null_safety 7",
+    "all 13996 checks passed",
+  ].join("\n");
 
+  /* 上面样本里各行的数字之和。写死它是故意的：改样本就会同时改这里的期望。 */
+  const SAMPLE_SUM = 2732 + 10 + 47 + 70 + 98 + 123 + 21 + 7;
+
+  it("按函数名分组解析出断言数", () => {
+    const counts = parseTestCounts(REAL_SAMPLE);
+
+    expect(counts.byTest["vectors"]).toBe(2732);
+    expect(counts.byTest["test_checksum"]).toBe(10);
+    expect(counts.byTest["test_set_power_reducer"]).toBe(47);
+    expect(counts.byTest["test_encode_ack_all_results"]).toBe(123);
+    expect(counts.count).toBe(8);
+  });
+
+  it("解析后的总数等于各行之和", () => {
+    const counts = parseTestCounts(REAL_SAMPLE);
+
+    expect(counts.total).toBe(SAMPLE_SUM);
+    expect(Object.values(counts.byTest).reduce((sum: number, n: unknown) => sum + Number(n), 0)).toBe(SAMPLE_SUM);
+  });
+
+  it("同一函数出现多次时累加，不静默覆盖", () => {
+    const counts = parseTestCounts(["TESTCOUNT test_a 5", "TESTCOUNT test_a 7"].join("\n"));
+
+    expect(counts.byTest["test_a"]).toBe(12);
+    expect(counts.total).toBe(12);
+    expect(counts.count).toBe(1);
+  });
+
+  it("只认行首前缀，行内出现同名单词不算", () => {
+    const counts = parseTestCounts(
+      ["gcc: error: TESTCOUNT test_x 99", "# TESTCOUNT test_y 5", "TESTCOUNT test_z 3"].join("\n"),
+    );
+
+    expect(Object.keys(counts.byTest)).toEqual(["test_z"]);
+    expect(counts.total).toBe(3);
+  });
+
+  it("统计行走真输出时，分组数字挂进层结果的 extra.byTest", () => {
+    const parsed = parseFirmwareOutput(REAL_SAMPLE);
+
+    expect(parsed.status).toBe("PASS");
+    expect(parsed.extra.byTest["vectors"]).toBe(2732);
+    expect(parsed.extra.vectors).toBe(93);
+    /* 分组之和必须能对上总数——总数由 all N checks passed 单独给出。
+       样本不是全量，所以这里比的是样本自身之和，不是 13996。 */
+    expect(Object.values(parsed.extra.byTest).reduce((sum: number, n: unknown) => sum + Number(n), 0)).toBe(SAMPLE_SUM);
+  });
+
+  it("没有统计行时 byTest 为 null，不伪造空分组", () => {
+    const parsed = parseFirmwareOutput("all 13996 checks passed");
+
+    expect(parsed.extra.byTest).toBeNull();
+  });
+
+  it("报告明细里出现按模块的数字表", () => {
+    const result = executeLayers([
+      layer("firmware", {
+        run: () => ({
+          status: "PASS",
+          checks: 13996,
+          unit: "断言",
+          detail: "13996 条断言通过",
+          failures: [],
+          extra: { vectors: 93, byTest: { vectors: 2732, test_checksum: 10 } },
+        }),
+      }),
+    ]);
+
+    const md = renderReport(result);
+    expect(md).toContain("按测试函数的断言数");
+    expect(md).toContain("`test_checksum`");
+    expect(md).toContain("2732");
+  });
+});
+
+describe("显式 skip 标签（#108）", () => {
+  const SKIPPED_LINE = "SKIPPED: v4 vector self-check (node not found)";
+
+  it("识别成未验证项而不是失败", () => {
+    const reasons = parseSkippedTags([SKIPPED_LINE, "all 13996 checks passed"].join("\n"));
+
+    expect(reasons).toEqual(["v4 vector self-check (node not found)"]);
+  });
+
+  it("标签只出现在行首才算，正文里提到不算", () => {
+    expect(parseSkippedTags("note: SKIPPED: not a tag")).toEqual([]);
+  });
+
+  it("空原因不记，避免出现「原因不明」的未验证项", () => {
+    expect(parseSkippedTags("SKIPPED:   ")).toEqual([]);
+  });
+
+  it("层仍是 PASS，但未验证清单里能看到它", () => {
+    const result = executeLayers([
+      layer("firmware", {
+        run: () => ({
+          status: "PASS",
+          checks: 13996,
+          unit: "断言",
+          detail: "13996 条断言通过",
+          failures: [],
+          skipped: ["v4 vector self-check (node not found)"],
+        }),
+      }),
+    ]);
+
+    expect(result.conclusion).toBe("PASS");
+    const md = renderReport(result);
+    expect(md).toContain("## 未验证清单");
+    expect(md).toContain("v4 vector self-check (node not found)");
+    expect(md).toContain("层内未验证");
+  });
+});
+
+/**
+ * 渲染回归（ui 层）的输出解析。
+ *
+ * 样本是 `scripts/verify-v5.mjs` 真实输出的形状：每行 `PASS  名字` 或
+ * `FAIL  名字  — 差异`，末尾一行汇总。解析器必须自己数行——只信汇总行的话，
+ * 失败详情里就拿不到断言名，报告也就没法让人直接跳过去修。
+ */
+describe("渲染回归输出解析", () => {
+  const SAMPLE_PASS = [
+    "PASS  小程序启动、页面已注册",
+    "PASS  「我的」页切深色后根节点是 theme-dark  — theme-dark",
+    "PASS  原生滑块的激活色是深色主题色  — #8FA9C4",
+    "PASS  搜索框按名称过滤  — {\"searching\":true,\"hits\":1,\"name\":\"书桌\"}",
+    "PASS  圆盘刻度 1–100  — 100",
+    "",
+    "===== 5 passed / 0 failed =====",
+  ].join("\n");
+
+  const SAMPLE_FAIL = [
+    "PASS  小程序启动、页面已注册",
+    "PASS  首页有搜索框",
+    "FAIL  灯组卡片一列排布",
+    "FAIL  方案恰好三个圆形按钮  — 2",
+    "PASS  没有整条「已连接」状态栏",
+    "",
+    "===== 3 passed / 2 failed =====",
+  ].join("\n");
+
+  it("从真实输出里数出断言数并判 PASS", () => {
+    const ok = parseUiOutput(SAMPLE_PASS, 0);
+
+    expect(ok.status).toBe("PASS");
+    expect(ok.checks).toBe(5);
+    expect(ok.unit).toBe("断言");
+    expect(ok.failures).toEqual([]);
+  });
+
+  it("有 FAIL 时判失败，失败详情带断言名与差异描述", () => {
+    const failed = parseUiOutput(SAMPLE_FAIL, 1);
+
+    expect(failed.status).toBe("FAIL");
+    expect(failed.checks).toBe(5);
+    expect(failed.failures).toHaveLength(2);
+    expect(failed.failures[0].name).toBe("灯组卡片一列排布");
+    expect(failed.failures[0].detail).toBe("");
+    expect(failed.failures[1].name).toBe("方案恰好三个圆形按钮");
+    expect(failed.failures[1].detail).toBe("2");
+    expect(failed.detail).toContain("2/5");
+  });
+
+  it("SKIPPED: 前缀被识别成 SKIP 并带原因，不是 FAIL", () => {
+    const skipped = parseUiOutput("SKIPPED: 缺微信开发者工具自动化端口（ws://127.0.0.1:9501：ECONNREFUSED）\n", 0);
+
+    expect(skipped.status).toBe("SKIP");
+    expect(skipped.failures).toEqual([]);
+    expect(String(skipped.skipReason)).toContain("缺微信开发者工具自动化端口");
+  });
+
+  it("断言全过但退出码非零时判失败，不因行都是 PASS 就放过", () => {
+    expect(parseUiOutput(SAMPLE_PASS, 1).status).toBe("FAIL");
+  });
+
+  it("输出里一条断言行都没有时判失败，而不是默认通过", () => {
+    expect(parseUiOutput("Error: something blew up", 1).status).toBe("FAIL");
+  });
+});
+
+describe("ui 层接线", () => {
+  it("ui 层需要环境，不进默认那一轮", () => {
+    const specs = buildLayerSpecs(fakeManifest());
+
+    expect(specs.ui.name).toBe("ui");
+    expect(specs.ui.cheap).toBe(false);
+    expect(typeof specs.ui.probe).toBe("function");
+    expect(typeof specs.ui.run).toBe("function");
+  });
+
+  it("端口探不通时记 SKIP，且它的 run 根本不被调用", () => {
+    const specs = buildLayerSpecs(fakeManifest());
+    let ran = false;
+    const gated = {
+      ...specs.ui,
+      probe: () => ["缺微信开发者工具自动化端口"],
+      run: () => {
+        ran = true;
+        return { status: "FAIL", checks: null, unit: "断言", detail: "不该跑到这里", failures: [] };
+      },
+    };
+
+    const result = executeLayers([gated]);
+
+    expect(ran).toBe(false);
+    expect(result.layers[0].status).toBe("SKIP");
+    expect(result.layers[0].skipReason).toBe("缺微信开发者工具自动化端口");
+    /* SKIP 不影响退出码语义：全 SKIP 的一轮结论仍是 PASS。 */
+    expect(result.conclusion).toBe("PASS");
+  });
+
+  it("脚本的 --probe 真的握手，而不是只测 TCP", async () => {
+    /* 端口开着但窗口没开自动化模式时，TCP 连得上、WebSocket 握手却失败。
+       只测 TCP 会让 probe 说「可连」、run 立刻 SKIP——同一份环境两个结论。
+       这条锁住 probe 走的是握手路径：输出要么是可连，要么带缺端口原因，
+       不会出现「探通但真连失败」那种沉默的第三种状态。 */
+    const script = readFileSync(resolve(__dirname, "../../scripts/verify-v5.mjs"), "utf8");
+
+    expect(script).toContain("await probeAutomator.connect");
+    const probeBlock = script.slice(script.indexOf('includes("--probe")'));
+    expect(probeBlock.slice(0, 1200)).toContain("connect");
+  });
+});
