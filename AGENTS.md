@@ -7,9 +7,9 @@
 **先读 [`docs/handoff.md`](docs/handoff.md)。** 它写清了当前在哪、哪些已完成、剩余工作卡在
 什么上。不要凭本文件的简短描述推断进度——项目已经过了三个大版本。
 
-> **当前状态：第五轮（UI / 交互）已在分支 `integration/ui-v5` 上实现完毕**，
-> 规格 [#85](https://github.com/sishoui/light-matt/issues/85)，实现票 #90–#101。
-> 它的上游是 `master`（`78e7fc5`）：#59 灯效编辑重构 → #70 导航重构 + 协议 v4
+> **当前状态：第五轮（UI / 交互）已合入 `master`（merge `ef295fe`）**，
+> 规格 [#85](https://github.com/sishoui/light-matt/issues/85)，实现票 #90–#101 全部关闭。
+> 上一条主线是 `78e7fc5`：#59 灯效编辑重构 → #70 导航重构 + 协议 v4
 > → #84 灯组进阶编辑器打磨。
 
 **第五轮**（规格 [#85](https://github.com/sishoui/light-matt/issues/85)，实现票 #90–#101）：
