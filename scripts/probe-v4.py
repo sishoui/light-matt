@@ -9,7 +9,7 @@
   §4 新灯效的边界：爆闪 <100ms 被拒、心跳 <500ms 被拒
   §5 逐光区亮度：同一带两个 level（100 / 25）分别读回
   §6 ClearScript 0x1E：提交一套方案后清空，摘要回 0 步
-  §7 #98：流光密度（1/4 个头）、实色拖尾、随机闪烁 0x07 的接受与越界
+  §7 #98：流星密度 1–4 全部头数、实色拖尾、随机闪烁 0x07 的接受与越界
   §8 收尾：把灯珠数与光区恢复成默认（不把测试现场留给用户）
 
 用法：
@@ -384,8 +384,11 @@ async def main():
         await dev.send(CMD["CLEAR_SEGMENT"], bytes([0, 0]))
         await dev.send(CMD["CLEAR_SEGMENT"], bytes([0, 1]))
 
+        # 密度位 (flags>>2)&0x3 → 头数 1..4（effects.c:860 的 +1）。
         comet_flags = [
             ("1 个头", 0x00),
+            ("2 个头", 0x04),
+            ("3 个头", 0x08),
             ("4 个头", 0x0C),
             ("实色拖尾", 0x02),
             ("4 头 + 实色 + 反向", 0x0F),
@@ -412,7 +415,7 @@ async def main():
 
         # 随机闪烁 0x07：p5 = 同时亮着的比例。
         await dev.send(CMD["CLEAR_SEGMENT"], bytes([0, 0]))
-        for label, duty in (("稀疏", 32), ("密集", 224)):
+        for label, duty in (("极稀疏", 16), ("中等", 128), ("密集", 240)):
             payload = segment(0, 0, 0, 14, layer_bytes(0x07, period=1000, p5=duty))
             code, _ = await dev.send(CMD["SET_SEGMENT"], payload)
             check(f"随机闪烁（{label} duty={duty}）被接受", code == 0x00, f"result=0x{code:02X}")
