@@ -744,8 +744,18 @@ const isCount = (value) => typeof value === "number" && Number.isFinite(value);
 const failureKey = (failure) => `${failure?.location ?? ""}|${failure?.name ?? ""}`;
 
 export function diffRuns(current, previous) {
-  const currentFiles = new Map((current?.files ?? []).map((file) => [file.path, file]));
-  const previousFiles = new Map((previous?.files ?? []).map((file) => [file.path, file]));
+  /* 只比本轮真正跑了的层。否则「这次只跑了固件」会拿上次的全量报告当基线，
+     其余 77 个文件全落进「无法比对」把真正要看的内容淹掉。
+     判据取本轮层的 status：没被触发的层在 report.json 里根本不存在。 */
+  const ranLayers = new Set((current?.layers ?? []).map((layer) => layer?.name).filter(Boolean));
+  const scopedToRun = (file) => ranLayers.has(file.layer);
+
+  const currentFiles = new Map(
+    (current?.files ?? []).filter(scopedToRun).map((file) => [file.path, file]),
+  );
+  const previousFiles = new Map(
+    (previous?.files ?? []).filter(scopedToRun).map((file) => [file.path, file]),
+  );
 
   const changed = [];
   const added = [];

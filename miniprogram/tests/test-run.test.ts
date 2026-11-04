@@ -934,6 +934,31 @@ describe("diffRuns 用例数变化", () => {
     expect(renderReport({ ...current, previous: diff })).toContain("无变化");
   });
 
+  it("只比本轮跑了的层，未触发的层不产生「无法比对」噪音", () => {
+    /* 只跑固件那一轮，不该拿上次全量报告的其它层来比：那样 77 个文件全进
+       「无法比对」，真正该看的那一个被淹掉。 */
+    const current = mkRun({
+      files: [file("firmware/test/test_skeleton.c", "firmware", 13996)],
+      layers: [okLayer("firmware", 13996)],
+    });
+    const previous = mkRun({
+      files: [
+        file("firmware/test/test_skeleton.c", "firmware", 13996),
+        file("miniprogram/tests/a.test.ts", "mp", 10),
+        file("server/tests/api.test.ts", "server", 13),
+      ],
+      layers: [okLayer("firmware", 13996), okLayer("mp", 10), okLayer("server", 13)],
+    });
+
+    const diff = diffRuns(current, previous);
+
+    expect(diff.notCompared).toEqual([]);
+    expect(diff.unchanged).toBe(true);
+    const md = renderReport({ ...current, previous: diff });
+    expect(md).not.toContain("miniprogram/tests/a.test.ts");
+    expect(md).not.toContain("无法比对");
+  });
+
   it("某文件用例数减少时列出上次值、本次值与负差值", () => {
     const current = mkRun({
       files: [file("miniprogram/tests/a.test.ts", "mp", 12)],
