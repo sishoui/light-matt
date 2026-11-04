@@ -15,8 +15,8 @@
 400s 压力（0 事件，判定 5/8 条带），**并用相机替代人眼实测了全部观感项**：
 相加白化、覆盖生效、单层回归、关带无残影、剧本两层一致。
 
-**§1.1–1.8 的 38 项，去掉 §1.7 多设备的 5 项（不作验收）后有效 32 项：
-✅ 32 / ◐ 0 / ☐ 0。** 全部闭环。
+**§1.1–1.8 的 38 项，去掉 §1.7 多设备的 5 项（不作验收）后有效 33 项：
+✅ 33 / ◐ 0 / ☐ 0。** 全部闭环（口径见 `acceptance-v3.md` §5.1）。
 
 **本轮新增的两个结论**：
 
@@ -24,7 +24,7 @@
    三条提交前提示的**实际文案**、剧本过大提示、日志面板连点打开，全部实测。
 2. **发现并修复一个阻断级缺陷**：`session-singleton.ts` 用了目录导入
    `from "../usage"`，小程序的模块解析器不认目录 `index`，导致**整个小程序白屏**
-   ——而 `tsc` 干净、604 个单测全过、`preview` 构建成功都没暴露。已加回归测试防复发。
+   ——而 `tsc` 干净、当轮全部单测通过、`preview` 构建成功都没暴露。已加回归测试防复发。
 
 ---
 
@@ -133,20 +133,26 @@
 
 **不要**让它从零探索代码库 —— 三端实现都已完成，剩下的都是点屏幕和看颜色。
 
-### 7.1 三端测试基线（本轮实测，文档旧值已过时）
+### 7.1 三端测试
+
+**数字不写在这里**：跑 `node scripts/test-run.mjs`，看最近一次报告。
+分层、改动映射与报告格式见 [`docs/testing.md`](testing.md)。
 
 ```bash
-cmd.exe //c "firmware\test\run-tests.cmd"   # 11053 项 + 58 向量
-cd miniprogram && npx vitest run            # 604 用例（不是 601）
-cd miniprogram && npx tsc --noEmit          # 干净
-cd server && npm test                       # 140 用例（不是 139）
-cd server && npm run typecheck              # 干净
+cmd.exe //c "firmware\test\run-tests.cmd"
+cd miniprogram && npx vitest run
+cd miniprogram && npx tsc --noEmit
+cd server && npm test
+cd server && npm run typecheck
 ```
 
 ### 7.2 真机脚本
 
 ```bash
-python scripts/probe-v3.py --serial COM6        # 协议字节 47 项
-python scripts/probe-v3-deep.py --serial COM6   # 行为语义 69 项（本轮新增）
+python scripts/probe-v3.py --serial COM6        # 协议字节与 ACK 往返
+python scripts/probe-v3-deep.py --serial COM6   # 行为语义（项数看末尾汇总行）
 python scripts/probe-v3-deep.py --serial COM6 --skip-heavy  # 跳过 ~900 帧大剧本
 ```
+
+> 探针的项数随用例增删而变，不在文档里写死。历史某一轮的实测条数在
+> `docs/evidence/` 的带日期文件里。

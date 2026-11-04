@@ -84,13 +84,16 @@ v1（MVP）的 wayfinder 地图与决策票仍在 `docs/wayfinding/`（历史产
 
 **实现进度**（集成分支 `integration/ui-refactor-v4`）
 
+> 下表的用例数是**当时那张票合入时**的数字，不是当前基线（会一直涨）。当前值看最近
+> 一次测试报告，见 [`docs/testing.md`](../testing.md)。
+
 | 票 | 状态 | 证据 |
 |---|---|---|
-| #61 | ✅ 已合入 | 928 用例；tsc 干净 |
-| #68 | ✅ 已合入 | 固件 11449 断言 / 64 向量；`docs/protocol-v4.md` |
-| #62 | ✅ 已合入 | 949 用例；模拟器 41/41 |
+| #61 | ✅ 已合入 | 单测全绿；tsc 干净 |
+| #68 | ✅ 已合入 | `docs/protocol-v4.md`；固件 host 测试与向量同步 |
+| #62 | ✅ 已合入 | 单测全绿；模拟器 41/41 |
 | #63 | ✅ 已合入 | 模拟器 26/26（两列卡片 + 逐组灯珠数） |
-| #64 | ✅ 已合入 | 973 用例；模拟器 57/57 |
+| #64 | ✅ 已合入 | 单测全绿；模拟器 57/57 |
 | #65 | ✅ 已合入 | `utils/control/timeline.ts` + `tests/timeline.test.ts`；模拟器时间轴段落 |
 | #66 | ✅ 已合入 | `utils/control/zone-axis.ts` / `led-picker.ts`；模拟器光区轴与灯珠弹窗段落 |
 | #67 | ✅ 已合入 | `utils/control/effect-panel.ts`；模拟器效果面板段落 |
@@ -100,7 +103,7 @@ v1（MVP）的 wayfinder 地图与决策票仍在 `docs/wayfinding/`（历史产
 下发到设备**（`downloadScript(…, { activate: true, loop })`；此前只写实时光区，
 导致第 2..N 步不可达、时长条对设备无作用）；方案草稿落盘 `lumen.planDrafts.v1`
 （键 `deviceKey#stripId#slot`，断线 / 切页不清，**只在删除设备时清**），
-「内容只存在本机」这句承诺才成立。小程序 **1169 用例 / 53 文件**。
+「内容只存在本机」这句承诺才成立。
 
 **协议 v4 尺寸（实现期裁决，规格原文笔误已修正）**：层 9 字节 → 段载荷 **23**、
 ScriptSegment **25**、SegmentReport **23**、State blob 段记录 22 / 总长 1440。
@@ -116,8 +119,9 @@ v3 的 State blob 版本号已是 4，协议 v4 用 **5**；脚本 blob version 
 
 **依赖形状（11 张票）**
 
-**实现状态**：除 #46 外全部已合入 `integration/lumen-v3`。三端测试：固件 host 11053 项
-断言 / 小程序 603 用例 / 后端 140 用例，`tsc --noEmit` 全干净。
+**实现状态**：除 #46 外全部已合入 `integration/lumen-v3`。三端测试全绿
+（固件 host / 小程序 / 后端），`tsc --noEmit` 干净；具体数字以最近一次测试报告为准，
+见 [`docs/testing.md`](../testing.md)。
 
 | 票 | 阻塞 | 交付 | 状态 |
 |---|---|---|---|

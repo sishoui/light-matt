@@ -2,8 +2,9 @@
 
 **状态**：**已实现（2026-11-03，分支 `feat/68-protocol-v4`；2026-11-04 原地扩展 #98）**。
 本文件取代 `docs/protocol-v3.md`（v3 保留为历史参考，不再维护）。
-固件 host 测试 13996 项断言与 `docs/protocol-testvectors-v4.json`（93 条向量）
-都对着本文件跑。
+固件 host 测试与 `docs/protocol-testvectors-v4.json` 的全部向量都对着本文件跑
+（向量条数以该文件为准，`scripts/check-protocol-testvectors-v4.mjs` 校验它与本文一致；
+断言数见最近一次测试报告，跑法见 [`docs/testing.md`](testing.md)）。
 **适用范围**：微信小程序 ↔ ESP32-C3 固件之间的 BLE 协议。
 **唯一真相**：本文件定义字节级契约，`docs/protocol-testvectors-v4.json` 是它的可执行副本。
 改协议 = 本文件 + 测试向量 + 两端实现进同一个 commit。

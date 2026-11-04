@@ -12,7 +12,7 @@ lumen 是**微信小程序 + BLE 直连 ESP32** 的项目。它的验证有三�
 |---|---|---|---|
 | 单元 / 类型 | `vitest` + `tsc` | 纯逻辑、编解码、模型 | 是（先跑，见 §1） |
 | **渲染层** | 微信开发者工具 + `miniprogram-automator` | 页面真的渲染、`bindtap` 真的有方法、点了之后**设备状态真的变了** | **是（本技能主体）** |
-| 真机 / 固件 | `probe-v4.py`、`npm run test:ble` | 真实 MTU / 分片 / CRC / ACK、实际观感 | 否，见 §5 |
+| 真机 / 固件 | `probe-v4.py`、`npm run test:ble` | 真实 MTU / 分片 / CRC / ACK、实际观感 | 否，见 §7 |
 
 **这一层的独有价值**（仓库踩过两次，都写进了 `AGENTS.md`）：`tsc` 干净 + 单测全绿 +
 构建成功，**都不能证明小程序能跑**。相对导入指向目录会让整个小程序白屏；
@@ -31,7 +31,7 @@ lumen 是**微信小程序 + BLE 直连 ESP32** 的项目。它的验证有三�
 
 ```bash
 cd miniprogram && npx tsc --noEmit          # 必须干净
-cd miniprogram && npx vitest run            # 单测（基线 1708 用例 / 68 文件）
+cd miniprogram && npx vitest run            # 单测（数字看最近一次报告，见 docs/testing.md）
 cd miniprogram && node .auto/check-bindings.mjs   # WXML binding 有对应 TS 方法
 ```
 
@@ -159,12 +159,14 @@ strip-advanced 6 + delete-device 6，每轮 22 项）。你在自己的环境发
 
 ## 7. 不覆盖的部分
 
-- **真机 BLE**：`cd miniprogram && npm run test:ble`（8 项，无设备自动 skip；
-  链路是 Node → `scripts/ble-gateway.py` → PC 蓝牙 → ESP32）。
-- **协议契约**：`python scripts/probe-v4.py [--address MAC]`（真机 22 项往返）。
-- **固件 host 测试**：`cmd.exe //c "firmware\test\run-tests.cmd"`。
-- **后端**：`cd server && npm test`。
+- **真机 BLE**：`cd miniprogram && npm run test:ble`（vitest 实际收集 16 条：`tests/e2e/`
+  下两个文件各 8 条；无设备时整片 skip。链路是 Node → `scripts/ble-gateway.py` → PC 蓝牙 → ESP32）。
+- **协议契约**：`python scripts/probe-v4.py [--address MAC]`（逐条发段并读回；通过 / 失败
+  数看脚本末尾的 `===== N passed / M failed =====`）。
+- **固件 host 测试**：`node scripts/test-run.mjs firmware`（或直接跑 `run-tests.cmd`）。
+- **后端**：`node scripts/test-run.mjs server`（或 `cd server && npm test`）。
 - **实际观感**（颜色、亮度、闪烁）：只能人眼 / 相机，`docs/pending-tasks.md` 有记录。
+- **分层、报告与清单维护**：[`docs/testing.md`](../../../docs/testing.md)。
 
 ## 8. 特性地图
 

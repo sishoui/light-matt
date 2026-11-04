@@ -24,7 +24,7 @@
 | #95 | 灯珠数拨盘 + 固定三套方案 | `strip-head.ts`（刻度 / 角度换算 / 三圆按钮） |
 | #96 | 一行式灯效 + 立即生效 | `simple-effects.ts`（八个灯效）；`writeQuick` 改成「停播 → 写 → 静默下发 → 恢复」 |
 | #97 | 分区改名 + 预览条 | 全仓 `光区 → 分区`；`zone-preview.ts`（逐颗颜色映射） |
-| #98 | 协议 + 固件扩展 | 流星密度与实色拖尾、随机闪烁 `0x07`、循环三值；向量 78 → **93**，断言 12701 → **13996** |
+| #98 | 协议 + 固件扩展 | 流星密度与实色拖尾、随机闪烁 `0x07`、循环三值；向量 78 → **93** 条，断言数同步增长 |
 | #99 | 时间轴 + 步骤气泡 + 循环三档 | `step-bubble.ts`；`ScriptDraft` 新增可选 `name` / `loop` |
 | #100 | 两层模型 + 八个灯效清单 | `advanced-layers.ts`；`effect-panel` 增加 `flicker`，混合只剩两种 |
 | #101 | 修跨灯组串扰 | `plan-fill.ts`（下发前补齐其它灯组切片，读回失败就不发） |
@@ -43,10 +43,9 @@
 
 ### 验证
 
-- 固件：`13996` 项断言 + `93` 条 v4 向量全绿（`run-tests.cmd`）
-- 小程序：`1708` 用例 / `68` 文件；`tsc --noEmit` 干净
-- 后端：`140` 用例；`typecheck` 干净
-- 模拟器：**`scripts/verify-v5.mjs` 49/49**
+- 固件 / 小程序 / 后端：三层全绿（`node scripts/test-run.mjs`）。数字不抄在这里，
+  以最近一次报告为准，见 [`docs/testing.md`](testing.md)。
+- 模拟器：`scripts/verify-v5.mjs` 全部通过（编进 `ui` 层）。
 - 真机：**已完成**（`Lumen-5662`，8 条灯带）。循环三档 **8 带 × 3 模式 = 24/24**，
   流星密度与实色拖尾的标志位均被设备接受，随机闪烁在密度 32/64/96 三档上机。
   记录见 [`docs/evidence/real-device-v5-2026-11-04.md`](evidence/real-device-v5-2026-11-04.md)。
@@ -194,17 +193,19 @@
 **测试与验收（本轮实测）**：
 
 ```bash
-cd miniprogram && npx vitest run                 # 47 文件 / 921 用例
+cd miniprogram && npx vitest run                 # 全绿
 cd miniprogram && npx tsc --noEmit               # 干净
 cd miniprogram && node .auto/check-bindings.mjs  # 零缺失
-cd miniprogram && node .auto/verify-effect-editor.mjs   # 48/48（新增，锁两档全部行为）
-cd miniprogram && node .auto/verify-redesign.mjs        # 26/26
-cd miniprogram && node .auto/verify-deep.mjs            # 27/27
-cd miniprogram && node .auto/verify-ui-interaction.mjs  # 7/7
+cd miniprogram && node .auto/verify-effect-editor.mjs   # 已作废，改跑 scripts/verify-v5.mjs
 ```
 
-`verify-effect-editor.mjs` 锁的是**只有渲染层能发现**的几件事：点卡片后设备状态真的变、
+> 这一轮的 `verify-redesign.mjs` / `verify-deep.mjs` / `verify-ui-interaction.mjs`
+> 都已作废（锁的是已删除的页面）；「点得动」的意图并入 `scripts/verify-v5.mjs`，
+> 见 [`docs/testing.md`](testing.md)。
+
+那一轮的 `verify-effect-editor.mjs` 锁的是**只有渲染层能发现**的几件事：点卡片后设备状态真的变、
 参数区只显示该卡的档位、均分切分互不重叠、切档后编排完整恢复、界面零协议词、两 tab。
+这几条现在由 `scripts/verify-v5.mjs` 守着。
 
 > **`.auto/verify-ui.mjs` 已删除**（它的目标页面 `pages/scripts` / `pages/segment-edit`
 > 已删除且跑必失败）。`utils/control/effect-mode.ts`（快捷↔自定义内存快照）与
@@ -238,7 +239,8 @@ cd miniprogram && node .auto/verify-ui-interaction.mjs  # 7/7
 - 设备自定义封面：用户相册选图存本地，按 hardwareId 隔离
 - 新增测试：`app-config` / `theme` / `home-view` / `mock-mode` / `mock-session` / `device-photo` / `page-fields`
 
-**当前基线**：`npx vitest run` → **769 通过**（42 文件）；`npx tsc --noEmit` 干净。
+**当轮基线**：小程序单测全绿（数字以最近一次报告为准，见 [`docs/testing.md`](testing.md)）；
+`npx tsc --noEmit` 干净。
 
 > **工作区未提交**：58 个文件改动 + 28 个新文件。新会话开始前请先确认这些改动是否已提交，
 > 否则 `git checkout` 类操作会丢掉整个 UI 改版。
@@ -272,14 +274,15 @@ cd miniprogram && node .auto/verify-ui-interaction.mjs  # 7/7
 
 | 项 | 结果 |
 |---|---|
-| `npx vitest run` | **665 用例**（原 618 + 首页派生 14 + mock 传输 21 + mock 会话 12） |
+| `npx vitest run` | 全绿 |
 | `npx tsc --noEmit` | 干净 |
-| `node .auto/verify-redesign.mjs` | **28/28**（页面树 / 大卡 / 小图切换 / 主题 / tabBar） |
+| `node .auto/verify-redesign.mjs` | 当轮 28/28（脚本已作废，意图并入 `scripts/verify-v5.mjs`） |
 | 截图 | `.auto/shots/`（浅色 + 深色各页） |
 
-**改页面后必须做的三件事**：跑 `tsc`、跑 `vitest`、跑 `verify-redesign.mjs`。
-后两者分别覆盖「TypeScript 看不出的运行时问题」和「只有渲染层能发现的问题」
-（白屏、bindtap 全失效、主题 class 没挂、tabBar 没渲染）。
+**改页面后必须做的三件事**：跑 `tsc`、跑单测、跑渲染回归。后两者分别覆盖
+「TypeScript 看不出的运行时问题」和「只有渲染层能发现的问题」
+（白屏、bindtap 全失效、主题 class 没挂、tabBar 没渲染）。现在一条命令搞定：
+`node scripts/test-run.mjs mp ui`。
 
 > **一个本轮踩到的坑**：自定义 tabBar 是 `position: fixed` 的，tab 页内容必须自己
 > 让出 `padding-bottom: calc(140rpx + env(safe-area-inset-bottom))`，否则底部内容
@@ -311,13 +314,13 @@ cd miniprogram && node .auto/verify-ui-interaction.mjs  # 7/7
 - `ui-acceptance-2026-11-02.md` —— **微信开发者工具自动化 UI 验收（19/19）**
 - `real-device-e2e-2026-11-02.md` —— **真机 BLE 全链路 8/8（无需手机）**
 
-**§1.1–1.8 的 38 项现在是 ✅ 32 / ◐ 0 / ☐ 0**（§1.7 多设备 5 项已决定不作验收）。
-**验收项全部闭环。**
+**§1.1–1.8 的 38 项现在是 ✅ 33 / ◐ 0 / ☐ 0**（§1.7 多设备 5 项已决定不作验收，
+38 − 5 = 33；口径见 `acceptance-v3.md` §5.1）。**验收项全部闭环。**
 
 ### 0.000 一个必须记住的教训：目录导入会让整个小程序白屏
 
 `miniprogram/utils/control/session-singleton.ts` 原本写 `from "../usage"`（目录导入）。
-TypeScript 能解析到 `index.ts`，`tsc --noEmit` 干净、607 个单测全过、
+TypeScript 能解析到 `index.ts`，`tsc --noEmit` 干净、全部单测通过、
 `cli preview` 也能成功构建 —— 但**小程序的运行时模块解析器不认目录 index**，
 抛 `module 'utils/usage.js' is not defined`。它位于 App 启动链上，一崩则
 **所有页面 `Page()` 都不执行，整个小程序白屏**。
@@ -346,8 +349,8 @@ TypeError: Cannot read properties of undefined (reading 'length')
 这类）不保证被复制到页面实例，运行时就是 `undefined`。TS 断言只是编译期语法。
 
 `onLoad` → `refreshLocal` → `applyListViews` 读 `this.remoteDevices.length`
-直接抛错，**页面初始化中断，所有 `bindtap` 都不再响应**。构建、`tsc`、618 个
-单测全绿——因为单测直接 `new ControlSession`，根本不经过 `Page()`。
+直接抛错，**页面初始化中断，所有 `bindtap` 都不再响应**。构建、`tsc`、当轮全部单测
+都绿——因为单测直接 `new ControlSession`，根本不经过 `Page()`。
 
 **修复**：五个页面的 `onLoad` 开头显式初始化全部私有字段（且必须在任何
 提前 `return` 之前，`segment-edit` 就有这种分支）。`unsubscribe` 等循环加 `?? []`。
@@ -392,8 +395,8 @@ TypeError: Cannot read properties of undefined (reading 'length')
 
 | 要验什么 | 用什么 |
 |---|---|
-| 真实扫描 / 连接 / 控制 | `npm run test:ble`（PC 蓝牙网关，8 项）或手机真机预览 |
-| 页面交互是否「点得动」 | `miniprogram-automator`（`.auto/verify-ui-interaction.mjs`） |
+| 真实扫描 / 连接 / 控制 | `npm run test:ble`（PC 蓝牙网关，两个 e2e 文件共 16 条）或手机真机预览 |
+| 页面交互是否「点得动」 | `miniprogram-automator`（现在统一在 `scripts/verify-v5.mjs`） |
 | 取消逻辑 | `.auto/verify-cancel-stub.mjs`（在页面上下文给 `createBLEConnection` 打桩让它悬住） |
 
 > **automator 每次跑之前要重新编译**，否则连的是旧代码（变异测试会假绿）。
@@ -409,19 +412,22 @@ TypeError: Cannot read properties of undefined (reading 'length')
 **所以：`analyze-strips-video.py` 的 `--reference` 必须是同一次会话、紧邻录的。**
 这也解释了「两组录像亮度差 31%」那条已知限制的实际影响 —— 它足以让判据翻转。
 
-### 0.00b 三端测试基线（本轮实测，文档旧值已过时）
+### 0.00b 三端测试基线
+
+**数字不写在这里**：跑 `node scripts/test-run.mjs`，看最近一次报告（`.reports/`）。
+怎么跑、分层依据、报告格式见 [`docs/testing.md`](testing.md)。
 
 ```bash
-cmd.exe //c "firmware\test\run-tests.cmd"   # 11053 项 + 58 向量
-cd miniprogram && npx vitest run            # 618 用例（不含 e2e）
-cd miniprogram && npm run test:ble          # 8 项真机 e2e（无设备自动 skip）
-cd miniprogram && npx tsc --noEmit          # 干净
-cd server && npm test                       # 140 用例
-cd server && npm run typecheck              # 干净
+cmd.exe //c "firmware\test\run-tests.cmd"
+cd miniprogram && npx vitest run
+cd miniprogram && npm run test:ble
+cd miniprogram && npx tsc --noEmit
+cd server && npm test
+cd server && npm run typecheck
 ```
 
-小程序侧从 607 涨到 **618**：取消连接 4 条 + 会话层 2 条 + already-opened 2 条
-+ 页面私有字段契约 3 条 + 原有 2 条。
+这一轮在四条命令之上还补了 4 组用例：取消连接、会话层、`already-opened` 回归、
+页面私有字段契约。补了多少条看当轮报告。
 
 ---
 
@@ -432,9 +438,12 @@ cd server && npm run typecheck              # 干净
 
 | 端 | 测试基线 |
 |---|---|
-| 固件 host | `cmd.exe //c "firmware\test\run-tests.cmd"` → **11053 项断言**，58 条 v3 向量 |
-| 小程序 | `cd miniprogram && npx vitest run` → **601 用例**；`npx tsc --noEmit` 干净 |
-| 后端 | `cd server && npm test` → **139 用例**；`npm run typecheck` 干净 |
+| 固件 host | `cmd.exe //c "firmware\test\run-tests.cmd"` |
+| 小程序 | `cd miniprogram && npx vitest run`；`npx tsc --noEmit` 干净 |
+| 后端 | `cd server && npm test`；`npm run typecheck` 干净 |
+
+> 当时的实测数字在 `docs/acceptance-v3.md` 与 `docs/evidence/` 里；**当前基线**看最近一次
+> 测试报告（`node scripts/test-run.mjs`，见 [`docs/testing.md`](testing.md)）。
 
 **已完成（不需再做）**
 
@@ -482,7 +491,7 @@ cd server && npm run typecheck              # 干净
 
 **两个可复用的脚本（本轮新写，已入库）**
 
-- `scripts/probe-v3.py` —— 协议层 47 项真机验证，PC 当 central
+- `scripts/probe-v3.py` —— 协议层真机验证，PC 当 central（当轮 47 项，之后随用例增删而变）
 - `scripts/stress-fragment-v3.py` —— §2.4 分片压力，强制 19B 数据片压重组路径
 
 ### 0.00b 2026-11-01 晚：摄像头测试链重做（未完成，卡在机位）
@@ -589,8 +598,8 @@ python scripts/analyze-strips-video.py base.mp4
 | **#50** | 设备身份两条路径不统一：登记表用 MAC、使用日志用广播名，同一设备可能聚合成两行 | `ConnectionIdentity` 加 `hardwareId`，从 `DeviceInfoReport` 的 hw_id 取值；上报时机改为 0x88 往返后（加 pendingUsage 快照 + epoch 防串号）；后端归一化并按 MAC 聚合 |
 | **#49** | §4.2 第三处修复（真实槽位）**修对了但守不住**：`led_engine.c` 根本不在 host 测试编译清单里 | 抽出纯逻辑到 `led_engine_slots.c`（无 RTOS 依赖）并纳入 host 测试，+60 项断言 |
 
-**新基线**：固件 **11053** 项 + 58 向量 / 小程序 **601** 用例 / 后端 **139** 用例，
-`tsc` 与 `typecheck` 均干净。
+**当轮基线**：三端全绿，`tsc` 与 `typecheck` 均干净。具体数字已过期，不再抄写——
+当前值看最近一次测试报告（[`docs/testing.md`](testing.md)）。
 
 > **验证方式值得沿用**：我对 #49 与 #48 都做了**变异测试** —— 把修复改回缺陷版本，
 > 确认断言真的会红（#49 红 8 项、#48 红 7 项），再还原。这比「测试通过」可靠得多。
@@ -668,11 +677,14 @@ python scripts/analyze-strips-video.py base.mp4
 验证基线（改代码后应保持）：
 
 ```bat
-cmd.exe //c "firmware\test\run-tests.cmd"   REM 1426 项
-cd miniprogram && npx vitest run            REM 159 个用例
+cmd.exe //c "firmware\test\run-tests.cmd"
+cd miniprogram && npx vitest run
 cd miniprogram && npx tsc --noEmit          REM 必须干净
-scripts\build-firmware.cmd                  REM 分区余量 62%
+scripts\build-firmware.cmd
 ```
+
+> 这是 v1 时期的命令清单，保留作历史。当前跑法见 [`docs/testing.md`](testing.md)：
+> 一条 `node scripts/test-run.mjs` 覆盖前三层，数字以最近一次报告为准。
 
 ---
 

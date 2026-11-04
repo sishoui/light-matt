@@ -10,12 +10,15 @@
 
 | 端 | 命令 | 结果 |
 |---|---|---|
-| 固件 | `cmd.exe //c "firmware\test\run-tests.cmd"` | **13996** 项断言通过 + **93** 条 v4 向量 |
-| 小程序 | `cd miniprogram && npx vitest run` | **1708** 用例 / 68 文件全绿 |
+| 固件 | `node scripts/test-run.mjs firmware` | 全绿（断言数与向量数以报告为准） |
+| 小程序 | `node scripts/test-run.mjs mp` | 全绿（用例数以报告为准） |
 | 小程序 | `cd miniprogram && npx tsc --noEmit` | 干净 |
-| 后端 | `cd server && npm test` | **140** 用例全绿 |
+| 后端 | `node scripts/test-run.mjs server` | 全绿 |
 | 后端 | `cd server && npm run typecheck` | 干净 |
 | 向量校验 | `node scripts/check-protocol-testvectors-v4.mjs` | `OK: 93 vectors consistent` |
+
+> 这一轮的用例数写死会漂（后续每加测试都会变），所以只记「全绿」。
+> 当时的数字需要引用时，以 `docs/evidence/test-runs/` 里离 2026-11-04 最近的那份报告为准。
 
 ### 本轮新增的测试文件
 

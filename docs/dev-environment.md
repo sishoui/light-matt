@@ -121,13 +121,14 @@ idf.py --version
 
 Git Bash 里不要直接 `source export.sh`；用包装脚本或 `cmd.exe //c`。
 
-## 验证基线（改代码后必须保持）
+## 验证（改代码后）
 
 ```bat
-cmd.exe //c "firmware\test\run-tests.cmd"   REM 1426 项
-cd miniprogram && npx vitest run            REM 159 个用例
-cd miniprogram && npx tsc --noEmit          REM 必须干净
-scripts\build-firmware.cmd                  REM 分区余量 67%
+node scripts/test-run.mjs                   REM 固件 / 小程序 / 后端三层
+scripts\build-firmware.cmd                  REM 只编译，分区余量看输出
 ```
 
-**v6.1 下四条全部通过，且固件源码无需任何改动**（2026-10-31 实测）。
+测试怎么分层、报告在哪、清单怎么维护见 [`docs/testing.md`](testing.md)。
+**这里不抄测试数字**——以最近一次报告为准。
+
+**v6.1 下上述检查全部通过，且固件源码无需任何改动**（2026-10-31 首次实测）。

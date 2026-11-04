@@ -25,7 +25,7 @@
 | 灯效 | 八个：空 / 常亮 / 呼吸 / 彩虹 / 流星 / 爆闪 / 心跳 / 随机闪烁（名字不带颜色） |
 | 协议（仍是 v4） | 流星可调密度与实色拖尾、新增**随机闪烁 `0x07`**、循环字节扩成三值 |
 | 修缺陷 | 删除设备现在是**一组动作**（断开 + 清六处存储 + 演示设备不再回来）；电源键三条静默返回都有反馈；灯效选中不再被迟到的读回覆盖；下发前补齐其它灯组切片，修掉跨灯组串扰 |
-| 新增单测 | `theme-sync` / `add-device` / `strip-meta` / `delete-device` / `home-actions` / `quick-selection` / `simple-effects` / `strip-head` / `zone-preview` / `advanced-layers` / `plan-fill`（共 **+200 项**） |
+| 新增单测 | `theme-sync` / `add-device` / `strip-meta` / `delete-device` / `home-actions` / `quick-selection` / `simple-effects` / `strip-head` / `zone-preview` / `advanced-layers` / `plan-fill` |
 
 **上一轮**（规格 [#71](https://github.com/sishoui/light-matt/issues/71)，实现票 #72–#83）：
 灯珠上限 64→100 且逐组滑块可调；时间轴固定宽度永不滚动、长按 300ms 抬起跟手重排；
@@ -38,16 +38,17 @@
 9 字节并新增逐分区亮度 `level`。`pages/devices`、`pages/scripts`、`pages/segment-edit`
 均已删除。
 
-**验收**：真机协议 22/22（`scripts/probe-v4.py`）、模拟器 `verify-v5.mjs` **49/49**、
-三端单测全绿；肉眼观感已确认。详见 [`docs/acceptance-v4.md`](docs/acceptance-v4.md)
-与 [`docs/acceptance-v5.md`](docs/acceptance-v5.md)。
+**验收**：真机探针（`scripts/probe-v4.py`）、模拟器渲染回归、三端单测全部通过，
+肉眼观感已确认。数字见 [`docs/acceptance-v4.md`](docs/acceptance-v4.md)、
+[`docs/acceptance-v5.md`](docs/acceptance-v5.md) 与最近一次测试报告。
 
 **上上轮**：v3 的 11 张实现票（#36–#45）与 4 张缺口票（#47–#50）全部关闭，
-**已合入 `master`**（PR #51，merge commit `f9f2fe3`）。**设备侧验收已全部跑完**：协议层 47 项 + 行为语义
-69 项（`scripts/probe-v3-deep.py`）+ 400s 压力（0 事件）均已在真机闭环。
+**已合入 `master`**（PR #51，merge commit `f9f2fe3`）。**设备侧验收已全部跑完**：协议层探针 + 行为语义探针
+（`scripts/probe-v3-deep.py`）+ 400s 压力（0 事件）均已在真机闭环。
 
 GitHub **#46** 已关闭且**验收项全部闭环**：§1.1–1.8 的 38 项里 §1.7 多设备的
-5 项决定不作验收（只有 1 台设备），有效 32 项 **✅ 32 / ◐ 0 / ☐ 0**。
+5 项决定不作验收（只有 1 台设备），有效 33 项 **✅ 33 / ◐ 0 / ☐ 0**（口径见
+[`docs/acceptance-v3.md`](docs/acceptance-v3.md) §5.1）。
 观感项用相机实测替代人眼，UI 提示文案用**微信开发者工具自动化**实测。
 
 > **写小程序代码时注意**：相对 import 不能指向目录（`from "../usage"`）。
@@ -141,41 +142,11 @@ SHA-256 索引、配置丢失记录。
 
 改任何字节布局 = 契约 + 向量 + 两端实现同一个 commit。
 
-## 测试基线（改代码后必须保持）
+## 测试
 
-```bash
-cmd.exe //c "firmware\\test\\run-tests.cmd"   # 13996 项断言 + 93 条 v4 向量
-cd miniprogram && npx vitest run              # 1708 用例 / 68 文件（不含 e2e）
-cd miniprogram && npm run test:ble            # 8 项真机 e2e（无设备自动 skip）
-cd miniprogram && npx tsc --noEmit            # 必须干净
-cd server && npm test                         # 140 用例
-cd server && npm run typecheck                # 必须干净
-```
-
-**模拟器 UI 回归**（改页面后必跑；需要微信开发者工具开着自动化端口）：
-
-**渲染回归脚本（改页面后必跑；需要开发者工具开着自动化端口）**
-
-```bash
-node scripts/verify-v5.mjs                             # 49 项：主题三处同步 / 首页 / 设备页 /
-                                                       #   灯组页（拨盘 / 三套方案 / 一行式 / 滚轮）/
-                                                       #   进阶页（气泡 / 循环三档 / 两层 / 预览条）
-node scripts/test-run.mjs ui                           # 同一批断言走编排器（记 PASS/FAIL/SKIP 与耗时）
-```
-
-> 端口不是默认 9501 时用 `WS=ws://127.0.0.1:9502` 覆盖。
-> 脚本会自己切浅色 / 深色并复位，可以反复跑（幂等）。
-> 开发者工具没开时脚本打印 `SKIPPED: 缺微信开发者工具自动化端口` 并退出码 0——缺环境是常态，
-> 不该看起来像失败；编排器的 `ui` 层据此记 SKIP 而不是 FAIL。
->
-> **已作废**（旧断言锁的是已删除的页面或已重写的控件，不要接进 CI）：
-> `verify-effect-editor.mjs`（九张色块卡 → 一行式）、`verify-redesign.mjs`（发现 tab）、
-> `verify-deep.mjs`（设备页自定义档）、`verify-ui-interaction.mjs`（`pages/devices`）。
-> 它们的「点得动」意图已并入 `verify-v5.mjs`。
-
-`verify-effect-editor.mjs` 锁的是「只有渲染层能发现」的问题：白屏、`bindtap` 全失效、
-点小图却发起了连接、主题 class 没挂上、tabBar 没渲染，以及**点效果卡 / 应用并播放后
-设备状态真的变了**（不是只改 data，且方案的步骤数真的到了设备）。改页面后**跑一次再交付**。
+**怎么跑、改哪类代码该跑哪层、报告在哪、清单怎么维护，全部见 [`docs/testing.md`](docs/testing.md)。**
+日常一条命令：`node scripts/test-run.mjs`（固件 / 小程序 / 后端三层，约 10 秒）。
+改页面再加 `node scripts/test-run.mjs ui`；发版前 `--release`。
 
 ## Agent skills
 
@@ -192,8 +163,8 @@ GitHub Issues（`sishoui/light-matt`）。**当前 effort 的规格父票是 `#6
 
 ## 真机工具
 
-- `scripts/probe-v3.py` —— 协议层 47 项真机验证（PC 当 central，需 bleak）
-- `scripts/probe-v3-deep.py` —— 行为语义 69 项（段回滚 / 逐带独立 / 剧本推进 /
+- `scripts/probe-v3.py` —— 协议层真机验证（PC 当 central，需 bleak；项数看末尾汇总行）
+- `scripts/probe-v3-deep.py` —— 行为语义验证（段回滚 / 逐带独立 / 剧本推进 /
   断连续播 / 过大回滚），`--skip-heavy` 跳过 ~900 帧大剧本下发
 - `scripts/ble-gateway.py` —— BLE 网关（bleak → JSON over stdio），**由 e2e 自动拉起**。
   让 Node 侧的小程序代码直连 PC 真实蓝牙，无需手机

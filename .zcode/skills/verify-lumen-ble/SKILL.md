@@ -87,12 +87,16 @@ node .zcode/skills/verify-lumen-ble/scripts/drive.mjs --list
 
 **没有按名字筛选的选项，这是刻意的**：这份 e2e 的第一条用例本身就是「扫到设备」，
 用 `vitest -t` 过滤会把它一起滤掉，`device` 永远为 null，其余用例全部 skip
-（本机实测 8/8 skipped，看起来像「跳过」实际是过滤器坏了）。要跑单条请临时加
+（本机实测全 skip，看起来像「跳过」实际是过滤器坏了）。要跑单条请临时加
 `.only`，跑完去掉。
 
 退出码：`0` 全过 / `1` 有真实失败 / `3` SKIP（没设备或全被跳过）。
 
-实测（2026-11-04，v4.0）：
+**用例数是实际收集数 16 条，不是 8 条。** `vitest.e2e.config.ts` 的 include 是
+`tests/e2e/**/*.test.ts`，覆盖两个文件：`real-device.test.ts` 8 条与
+`complex-plan.test.ts` 8 条。旧文只数了前者。编排器的 `ble` 层按实际收集数报。
+
+实测（2026-11-04，v4.0，当时仓库里只有 `real-device.test.ts`，故为 8 条）：
 
 ```
 ===== 8 passed / 0 failed / 0 skipped =====
@@ -132,7 +136,7 @@ node .zcode/skills/verify-lumen-ble/scripts/drive.mjs --list
 
 **什么不算**：
 
-- `npm run test:ble` 输出「8 passed」但**没看到 skipped 计数**——没设备时它应当显示
+- `npm run test:ble` 输出全 passed 但**没看到 skipped 计数**——没设备时它应当显示
   skipped，而不是悄悄变绿。
 - 只跑 doctor 就说「BLE 没问题」——doctor 只证明设备在、能读状态，不证明写入往返。
 - 改完代码直接跑 e2e 就宣布通过，而没跑 `tsc --noEmit` 与普通单测。
@@ -170,8 +174,8 @@ node .zcode/skills/verify-lumen-ble/scripts/drive.mjs --list
   本机实测这台设备：接受爆闪 / 心跳 / 熄灭（#74 已在），**拒绝随机闪烁 `0x07` 与
   流光的 `flags=0x0C`/`0x02`**（#98 不在）——它烧的是 #74 之后、#98 之前的构建。
 - **判断固件新旧只能靠行为**，不能靠版本号。跑 `python scripts/probe-v4.py`：它按灯效
-  逐条发段并读回，#98 那 10 条失败、其余 27 条通过，就是这个特征。**这不是协议 bug，
-  是固件没跟上源码**——先确认烧入的构建，再判断代码对错。
+  逐条发段并读回，早期构建会在 #98 新增的那批用例上回 `InvalidParam`、其余全过，
+  就是这个特征。**这不是协议 bug，是固件没跟上源码**——先确认烧入的构建，再判断代码对错。
 - **MTU 由系统协商，`setBLEMTU` 不能强制**。网关的 `set_mtu` 会如实回报当前值并注明
   「bleak 不主动协商」。本机实测 247。
 - **阈值是光敏性癫痫安全线**：呼吸 / 随机闪烁周期 `< 334ms`、彩虹 / 流星 `< 200ms`、
@@ -182,7 +186,8 @@ node .zcode/skills/verify-lumen-ble/scripts/drive.mjs --list
 ## 7. 不覆盖的部分
 
 - **渲染层**：`verify-lumen`（微信开发者工具 + miniprogram-automator）。
-- **固件 host 单测**：`cmd.exe //c "firmware\test\run-tests.cmd"`（13996 断言 + 93 条向量）。
-- **协议向量的静态校验**：`node scripts/check-protocol-testvectors-v4.mjs`。
+- **固件 host 单测**：`node scripts/test-run.mjs firmware`（或 `run-tests.cmd`）。
+- **协议向量的静态校验**：`node scripts/check-protocol-testvectors-v4.mjs`（固件层会跑它；
+  没有 node 时固件入口打印 `SKIPPED:` 标签而不是静默跳过）。
 - **实际观感**（颜色 / 亮度 / 闪烁是否好看）：人眼或相机。
 - **回连与 latest-wins 的竞态**：那是形式化验证的领域，不是本技能。

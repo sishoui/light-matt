@@ -404,8 +404,8 @@ python scripts/acceptance-probe.py --group persist  REM 写状态，供复位后
 
 `--group basic/selftest/persist/count/all` 各组均实测全通过。
 
-**本地基线**（改动后应保持）：固件 host 测试 1426 项、小程序 vitest 159 项、
-`tsc --noEmit` 干净。
+**测试基线**：不在这份文档里写数字（这一节的数字是 v1 时期的值，早就不成立）。
+当前跑法与最近一次报告见 [`docs/testing.md`](testing.md)。
 
 ### 验收中发现并修复的 bug
 
