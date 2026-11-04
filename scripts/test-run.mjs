@@ -41,6 +41,49 @@ const nowIso = () => new Date().toISOString();
 const runIdOf = (date = new Date()) =>
   date.toISOString().replace(/[:.]/g, "-").replace("Z", "");
 
+/**
+ * 两个报告池：日常运行写本地（被 gitignore），发布全量归档进 git。
+ *
+ * 分开的不只是目录，还有「上一次」的索敌范围：日常报告与归档互相当基线，
+ * 两边都会得到一个跟本轮无关的数字。而发布归档只有跟上一份归档比，
+ * 「这次比上次多跑了哪层」才有意义。
+ */
+export function reportRoots(release, repoRoot = REPO) {
+  const root = release
+    ? join(repoRoot, "docs", "evidence", "test-runs")
+    : join(repoRoot, ".reports");
+  return { runRoot: root, baselineRoot: root };
+}
+
+/**
+ * 同一毫秒内跑两次（脚本被循环调用、CI 缓存目录、时钟精度不足）会撞同一个
+ * 目录名。撞名就是静默覆盖——上一份证据还没进 git 就被这一份换掉了，
+ * 而报告里看不出任何异常。
+ *
+ * 序号补两位：`-02` 要排在 `-10` 前面，否则字典序就不再等于时间序，
+ * `findPreviousReportDir` 会挑错基线。
+ */
+export function uniqueRunId(baseId, taken = []) {
+  const used = new Set(taken);
+  if (!used.has(baseId)) return baseId;
+  for (let n = 2; n < 100; n += 1) {
+    const candidate = `${baseId}-${String(n).padStart(2, "0")}`;
+    if (!used.has(candidate)) return candidate;
+  }
+  throw new Error(`同一毫秒内运行次数过多：${baseId}`);
+}
+
+/** 在给定目录里挑一个没被占用的 RUN_ID。目录不存在时就是第一个。 */
+export function pickRunId(runRoot, date = new Date()) {
+  let taken = [];
+  try {
+    taken = readdirSync(runRoot);
+  } catch {
+    taken = [];
+  }
+  return uniqueRunId(runIdOf(date), taken);
+}
+
 function git(args, fallback = "") {
   try {
     return execFileSync("git", args, { cwd: REPO, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
@@ -1288,7 +1331,7 @@ const statusCell = (status) => {
 };
 
 /** 报告六段的 Markdown 渲染。给人读；机器读的是同一份结果对象的 JSON。 */
-export function renderReport(report, { title = "测试报告" } = {}) {
+export function renderReport(report, { title = "测试报告", release = false } = {}) {
   const { head, layers, files = [], previous = null } = report;
   const skipped = layers.filter((l) => l.status === SKIP);
   const failed = layers.filter((l) => l.status === FAIL);
@@ -1297,15 +1340,34 @@ export function renderReport(report, { title = "测试报告" } = {}) {
   const innerSkips = layers.flatMap((layer) =>
     (layer.skipped ?? []).map((reason) => ({ layer, reason })),
   );
+  /* 发布归档的「没覆盖到」必须单独成段、放在标题正下方。
+     普通顶部那行「本轮未验证」在长报告里只是一条列表项，而这一份是要
+     被半年后的自己当成「当时发版测过了」的东西——被误读成全绿比没归档更糟。
+     没有 SKIP 的层时不写这段：永远挂着的警告跟没有警告一样。 */
   const lines = [];
 
   lines.push(`# ${title}`, "");
+
+  if (release && skipped.length > 0) {
+    lines.push(
+      `> ⚠️ **发布级证据，但本轮发布未覆盖：${skipped.map((l) => l.label).join("、")}。**`,
+      ">",
+      `> ${skipped.map((l) => `${l.label}：${l.skipReason ?? "原因未记录"}`).join("；")}`,
+      ">",
+      "> 这些层本轮没有跑，不能按通过计。下面每一段都是在「上述层未验证」的前提下写的。",
+      "",
+    );
+  }
 
   /* 1. 头部 */
   lines.push(`- **运行**：${report.startedAt}`);
   lines.push(`- **commit**：\`${head.commit}\`（分支 \`${head.branch}\`${head.dirty ? "，**工作区有未提交改动**" : ""}）`);
   lines.push(`- **机器**：${head.host} · ${head.platform} · ${head.cpus} 核`);
   lines.push(`- **触发了**：${head.layers.length ? head.layers.join(" / ") : "（无）"}`);
+  if (release) {
+    /* 发布归档要能一眼数清五层各自的结果，不用往下翻表。 */
+    lines.push(`- **五层结果**：${layers.map((l) => `${l.label} ${statusCell(l.status)}`).join(" · ")}`);
+  }
   lines.push(`- **结论**：${report.conclusion === FAIL ? "❌ 有失败" : "✅ 通过"}`);
   if (skipped.length > 0) {
     lines.push(`- **本轮未验证**：${skipped.map((l) => l.label).join("、")}`);
@@ -1547,9 +1609,9 @@ export function loadBaseline(baseDir, runId, current = null) {
   return diffRuns(current, loaded.report);
 }
 
-export function writeReport(report, dir, { title } = {}) {
+export function writeReport(report, dir, { title, release = false } = {}) {
   mkdirSync(dir, { recursive: true });
-  const md = renderReport(report, { title });
+  const md = renderReport(report, { title, release });
   writeFileSync(join(dir, "report.md"), `${md}\n`, "utf8");
   writeFileSync(join(dir, "report.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
   return { dir, mdPath: join(dir, "report.md"), jsonPath: join(dir, "report.json") };
@@ -1644,24 +1706,28 @@ function main() {
     });
   }
 
-  const reportDir = release
-    ? join(REPO, "docs", "evidence", "test-runs", result.runId)
-    : join(REPO, ".reports", result.runId);
+  /* 两个池子分开：日常报告写本地（被 gitignore），发布全量归档进 git。
+     目录名带毫秒，但同毫秒撞名时补序号——覆盖掉一份还没进 git 的证据
+     是看不见的损失，补一位序号成本几乎为零。 */
+  const { runRoot, baselineRoot } = reportRoots(release, REPO);
+  result.runId = pickRunId(runRoot, new Date(result.startedAt));
+  result.release = release;
+  const reportDir = join(runRoot, result.runId);
 
   /* 基线与本次报告在同一个池子里找：日常报告只和日常报告比，发布归档只和
      归档比。两条路径混着找会让「上次」变成一台机器上的私有历史，
      归档里那几份反而永远没有基线。 */
-  const baselineRoot = release
-    ? join(REPO, "docs", "evidence", "test-runs")
-    : join(REPO, ".reports");
   const previous = loadBaseline(baselineRoot, result.runId, result);
   if (previous !== null) result.previous = previous;
 
-  const written = writeReport(result, reportDir);
+  const written = writeReport(result, reportDir, { release });
   result.reportPath = written.mdPath;
 
-  console.log(renderReport(result));
+  console.log(renderReport(result, { release }));
   console.log(`\n[test-run] 报告：${written.mdPath}`);
+  if (release) {
+    console.log("[test-run] 发布级证据：这份报告应随本次发布一起提交进 git。");
+  }
 
   process.exit(result.conclusion === FAIL ? 1 : 0);
 }

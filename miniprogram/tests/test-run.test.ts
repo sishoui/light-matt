@@ -10,6 +10,7 @@ import {
   diffRuns,
   executeLayers,
   findPreviousReportDir,
+  loadBaseline,
   parseDoctorFailures,
   parseE2eJson,
   parseFirmwareOutput,
@@ -18,9 +19,12 @@ import {
   parseTscOutput,
   parseUiOutput,
   parseVitestJson,
+  pickRunId,
   readPreviousReport,
   renderReport,
+  reportRoots,
   summarizeBleRun,
+  uniqueRunId,
   writeReport,
 } from "../../scripts/test-run.mjs";
 
@@ -1525,5 +1529,146 @@ describe("「上一次」报告的定位", () => {
     writeFileSync(join(target, "report.json"), JSON.stringify(mkRun({ runId: "r1" })), "utf8");
 
     expect(readPreviousReport(target).report.runId).toBe("r1");
+  });
+});
+
+describe("发布前全量归档（#110）", () => {
+  /* 五层都用真名字与真标签：报告里那句话是给人读的，「ui 层」和「渲染回归」
+     对半年后的自己是两种可信度。 */
+  const fiveLayers = (skips: string[] = []) =>
+    [
+      ["firmware", "固件 host 测试", "断言"],
+      ["mp", "小程序单测", "用例"],
+      ["server", "后端单测", "用例"],
+      ["ui", "渲染回归", "断言"],
+      ["ble", "真机 e2e", "用例"],
+    ].map(([name, label, unit]) =>
+      skips.includes(name)
+        ? { ...skipLayer(name, `缺${label}的前置条件`), label, unit }
+        : { ...okLayer(name, 10), label, unit },
+    );
+
+  const releaseReport = (skips: string[] = []) => {
+    const report = mkRun({ layers: fiveLayers(skips) });
+    report.head.layers = ["firmware", "mp", "server", "ui", "ble"];
+    return report;
+  };
+
+  it("有层 SKIP 时，标题正下方就写出「本轮发布未覆盖」", () => {
+    const md = renderReport(releaseReport(["ui", "ble"]), { release: true });
+
+    expect(md).toContain("本轮发布未覆盖：渲染回归、真机 e2e");
+    /* 位置是这条断言的重点：写在报告末尾等于没写，读者早就按「全绿」下了结论。 */
+    expect(md.indexOf("本轮发布未覆盖")).toBeLessThan(md.indexOf("## 分层结果"));
+    expect(md.indexOf("本轮发布未覆盖")).toBeLessThan(md.indexOf("**结论**"));
+  });
+
+  it("未覆盖段落写清每层缺什么，而不是只报层名", () => {
+    const md = renderReport(releaseReport(["ble"]), { release: true });
+
+    expect(md).toContain("缺真机 e2e的前置条件");
+  });
+
+  it("五层全 PASS 时没有这句警告——警告不能永远挂着", () => {
+    const md = renderReport(releaseReport(), { release: true });
+
+    expect(md).not.toContain("本轮发布未覆盖");
+    expect(md).not.toContain("发布级证据，但");
+  });
+
+  it("日常运行即使有 SKIP 也不产生发布级警告", () => {
+    const md = renderReport(releaseReport(["ui", "ble"]), { release: false });
+
+    expect(md).not.toContain("本轮发布未覆盖");
+    expect(md).toContain("本轮未验证");
+  });
+
+  it("归档报告仍带 commit、分支、时间与五层结果，不是精简摘要", () => {
+    const md = renderReport(releaseReport(), { release: true });
+
+    expect(md).toContain("abc1234");
+    expect(md).toContain("ticket/109");
+    expect(md).toContain("2026-11-04T10:00:00.000Z");
+    expect(md).toContain("五层结果");
+    for (const label of ["固件 host 测试", "小程序单测", "后端单测", "渲染回归", "真机 e2e"]) {
+      expect(md).toContain(label);
+    }
+  });
+
+  it("归档的报告是完整六段", () => {
+    const md = renderReport(releaseReport(["ui"]), { release: true });
+
+    for (const section of ["## 分层结果", "## 未验证清单", "## 明细", "## 失败详情", "## 与上次运行"]) {
+      expect(md).toContain(section);
+    }
+    expect(md.startsWith("# 测试报告")).toBe(true);
+  });
+
+  it("writeReport 会把这个选项带到落盘的 md 里", () => {
+    const target = join(dir, "release");
+    const written = writeReport(releaseReport(["ble"]), target, { release: true });
+
+    expect(readFileSync(written.mdPath, "utf8")).toContain("本轮发布未覆盖：真机 e2e");
+    /* json 是给机器比对的，不该为了渲染多塞一个派生字段。 */
+    const saved = JSON.parse(readFileSync(written.jsonPath, "utf8"));
+    expect(saved.layers.length).toBe(5);
+  });
+
+  it("两个报告池分开：日常写 .reports，发布写证据目录", () => {
+    const daily = reportRoots(false, dir);
+    const archive = reportRoots(true, dir);
+
+    expect(daily.runRoot.split("\\").join("/")).toContain("/.reports");
+    expect(archive.runRoot.split("\\").join("/")).toContain("docs/evidence/test-runs");
+    expect(daily.runRoot).not.toBe(archive.runRoot);
+  });
+
+  it("归档的基线池里看不到日常报告，反之亦然", () => {
+    const daily = reportRoots(false, dir);
+    const archive = reportRoots(true, dir);
+
+    writeReport(mkRun({ runId: "2026-11-01T00-00-00-000", layers: [okLayer("mp", 10)] }), join(daily.runRoot, "2026-11-01T00-00-00-000"));
+    writeReport(mkRun({ runId: "2026-11-02T00-00-00-000", layers: [okLayer("mp", 20)] }), join(archive.runRoot, "2026-11-02T00-00-00-000"));
+
+    const fromDaily = loadBaseline(daily.baselineRoot, "2026-11-05T00-00-00-000");
+    const fromArchive = loadBaseline(archive.baselineRoot, "2026-11-05T00-00-00-000");
+
+    expect(fromDaily.runId).toBe("2026-11-01T00-00-00-000");
+    expect(fromArchive.runId).toBe("2026-11-02T00-00-00-000");
+    /* 池子里一份都没有时是 null（首次运行），不会从另一个池子借一份来充数。 */
+    expect(loadBaseline(join(dir, "从来没有过的池"), "2026-11-05T00-00-00-000")).toBeNull();
+  });
+
+  it("连续两次运行的目录名，字典序就是时间序", () => {
+    const runRoot = join(dir, ".reports");
+    const first = pickRunId(runRoot, new Date("2026-11-05T09:00:00.000Z"));
+    writeReport(mkRun({ runId: first }), join(runRoot, first));
+
+    const second = pickRunId(runRoot, new Date("2026-11-05T09:00:01.000Z"));
+    writeReport(mkRun({ runId: second }), join(runRoot, second));
+
+    const sorted = [second, first].sort();
+
+    expect(sorted).toEqual([first, second]);
+  });
+
+  it("同一毫秒内两次运行不互相覆盖，且补的序号不会打乱排序", () => {
+    const runRoot = join(dir, ".reports");
+    const when = new Date("2026-11-05T09:00:00.000Z");
+
+    const first = pickRunId(runRoot, when);
+    writeReport(mkRun({ runId: first }), join(runRoot, first));
+    const second = pickRunId(runRoot, when);
+
+    expect(second).not.toBe(first);
+    writeReport(mkRun({ runId: second }), join(runRoot, second));
+    expect(findPreviousReportDir(runRoot, second)).toBe(first);
+
+    /* 第三次仍同一毫秒：再从序号里挑一个空的，而不是复用 02。 */
+    const third = pickRunId(runRoot, when);
+    expect([first, second]).not.toContain(third);
+    expect(uniqueRunId(first, [first, second])).toBe(third);
+    /* `-02` 必须排在 `-10` 前面，否则字典序不再等于时间序。 */
+    expect([`${first}-10`, `${first}-02`].sort()).toEqual([`${first}-02`, `${first}-10`]);
   });
 });
