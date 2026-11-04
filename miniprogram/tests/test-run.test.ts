@@ -3,7 +3,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 // @ts-expect-error -- 仓库根的工具脚本是 .mjs，没有类型声明
-import { buildLayerSpecs, executeLayers, parseFirmwareOutput, parseUiOutput, renderReport, writeReport } from "../../scripts/test-run.mjs";
+import {
+  buildLayerSpecs,
+  executeLayers,
+  parseFirmwareOutput,
+  parseSkippedTags,
+  parseTestCounts,
+  parseUiOutput,
+  renderReport,
+  writeReport,
+} from "../../scripts/test-run.mjs";
 
 /**
  * 编排器的外在行为有三面：报告的结论对不对、三态语义守不守、退出码对不对。
@@ -263,6 +272,143 @@ describe("固件输出解析", () => {
     expect(garbage.status).toBe("FAIL");
   });
 });
+
+/**
+ * #108：固件侧从「只有一个总数」变成「按测试函数的真实数字」，
+ * 以及 node 缺失时那个静默 skip 必须变成可见记录。
+ *
+ * 样本取自固件测试的真实输出（`TESTCOUNT <函数名> <断言数>`，一行一个函数）。
+ * 断言里刻意保留那条最大的 `vectors` 桶：向量阶段不在任何 test_*() 里跑，
+ * 不单独记就对不上总数。
+ */
+describe("固件按测试函数的断言数（#108）", () => {
+  const REAL_SAMPLE = [
+    "vectors: 93 cases from docs/protocol-testvectors-v4.json",
+    "TESTCOUNT vectors 2732",
+    "TESTCOUNT test_checksum 10",
+    "TESTCOUNT test_set_power_reducer 47",
+    "TESTCOUNT test_set_brightness_reducer 70",
+    "TESTCOUNT test_retired_commands 98",
+    "TESTCOUNT test_encode_ack_all_results 123",
+    "TESTCOUNT test_gamma 21",
+    "TESTCOUNT test_planar_null_safety 7",
+    "all 13996 checks passed",
+  ].join("\n");
+
+  /* 上面样本里各行的数字之和。写死它是故意的：改样本就会同时改这里的期望。 */
+  const SAMPLE_SUM = 2732 + 10 + 47 + 70 + 98 + 123 + 21 + 7;
+
+  it("按函数名分组解析出断言数", () => {
+    const counts = parseTestCounts(REAL_SAMPLE);
+
+    expect(counts.byTest["vectors"]).toBe(2732);
+    expect(counts.byTest["test_checksum"]).toBe(10);
+    expect(counts.byTest["test_set_power_reducer"]).toBe(47);
+    expect(counts.byTest["test_encode_ack_all_results"]).toBe(123);
+    expect(counts.count).toBe(8);
+  });
+
+  it("解析后的总数等于各行之和", () => {
+    const counts = parseTestCounts(REAL_SAMPLE);
+
+    expect(counts.total).toBe(SAMPLE_SUM);
+    expect(Object.values(counts.byTest).reduce((sum: number, n: unknown) => sum + Number(n), 0)).toBe(SAMPLE_SUM);
+  });
+
+  it("同一函数出现多次时累加，不静默覆盖", () => {
+    const counts = parseTestCounts(["TESTCOUNT test_a 5", "TESTCOUNT test_a 7"].join("\n"));
+
+    expect(counts.byTest["test_a"]).toBe(12);
+    expect(counts.total).toBe(12);
+    expect(counts.count).toBe(1);
+  });
+
+  it("只认行首前缀，行内出现同名单词不算", () => {
+    const counts = parseTestCounts(
+      ["gcc: error: TESTCOUNT test_x 99", "# TESTCOUNT test_y 5", "TESTCOUNT test_z 3"].join("\n"),
+    );
+
+    expect(Object.keys(counts.byTest)).toEqual(["test_z"]);
+    expect(counts.total).toBe(3);
+  });
+
+  it("统计行走真输出时，分组数字挂进层结果的 extra.byTest", () => {
+    const parsed = parseFirmwareOutput(REAL_SAMPLE);
+
+    expect(parsed.status).toBe("PASS");
+    expect(parsed.extra.byTest["vectors"]).toBe(2732);
+    expect(parsed.extra.vectors).toBe(93);
+    /* 分组之和必须能对上总数——总数由 all N checks passed 单独给出。
+       样本不是全量，所以这里比的是样本自身之和，不是 13996。 */
+    expect(Object.values(parsed.extra.byTest).reduce((sum: number, n: unknown) => sum + Number(n), 0)).toBe(SAMPLE_SUM);
+  });
+
+  it("没有统计行时 byTest 为 null，不伪造空分组", () => {
+    const parsed = parseFirmwareOutput("all 13996 checks passed");
+
+    expect(parsed.extra.byTest).toBeNull();
+  });
+
+  it("报告明细里出现按模块的数字表", () => {
+    const result = executeLayers([
+      layer("firmware", {
+        run: () => ({
+          status: "PASS",
+          checks: 13996,
+          unit: "断言",
+          detail: "13996 条断言通过",
+          failures: [],
+          extra: { vectors: 93, byTest: { vectors: 2732, test_checksum: 10 } },
+        }),
+      }),
+    ]);
+
+    const md = renderReport(result);
+    expect(md).toContain("按测试函数的断言数");
+    expect(md).toContain("`test_checksum`");
+    expect(md).toContain("2732");
+  });
+});
+
+describe("显式 skip 标签（#108）", () => {
+  const SKIPPED_LINE = "SKIPPED: v4 vector self-check (node not found)";
+
+  it("识别成未验证项而不是失败", () => {
+    const reasons = parseSkippedTags([SKIPPED_LINE, "all 13996 checks passed"].join("\n"));
+
+    expect(reasons).toEqual(["v4 vector self-check (node not found)"]);
+  });
+
+  it("标签只出现在行首才算，正文里提到不算", () => {
+    expect(parseSkippedTags("note: SKIPPED: not a tag")).toEqual([]);
+  });
+
+  it("空原因不记，避免出现「原因不明」的未验证项", () => {
+    expect(parseSkippedTags("SKIPPED:   ")).toEqual([]);
+  });
+
+  it("层仍是 PASS，但未验证清单里能看到它", () => {
+    const result = executeLayers([
+      layer("firmware", {
+        run: () => ({
+          status: "PASS",
+          checks: 13996,
+          unit: "断言",
+          detail: "13996 条断言通过",
+          failures: [],
+          skipped: ["v4 vector self-check (node not found)"],
+        }),
+      }),
+    ]);
+
+    expect(result.conclusion).toBe("PASS");
+    const md = renderReport(result);
+    expect(md).toContain("## 未验证清单");
+    expect(md).toContain("v4 vector self-check (node not found)");
+    expect(md).toContain("层内未验证");
+  });
+});
+
 
 /**
  * 渲染回归（ui 层）的输出解析。

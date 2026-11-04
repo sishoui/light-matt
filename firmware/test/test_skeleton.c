@@ -70,6 +70,27 @@ static int g_failures;
         }                                                                              \
     } while (0)
 
+/*
+ * 按测试函数统计断言数（#108）。
+ *
+ * 断言的唯一计数者是 g_checks。这里只在每个测试函数前后各读一次，把差值打出来，
+ * 前缀固定成 "TESTCOUNT <函数名> <断言数>"，编排器（scripts/test-run.mjs）按前缀解析。
+ *
+ * 关键约束：统计行只走 printf，绝不调用 CHECK / CHECK_BYTES，否则会把自己也算进去，
+ * 断言总数就不再是 13996 了。tests/test-run.test.ts 守着「各行之和 == 总数」。
+ */
+static void report_test_count(const char *label, int before)
+{
+    printf("TESTCOUNT %s %d\n", label, g_checks - before);
+}
+
+#define RUN_TEST(fn)                                                                   \
+    do {                                                                               \
+        int _before = g_checks;                                                        \
+        fn();                                                                          \
+        report_test_count(#fn, _before);                                               \
+    } while (0)
+
 /* ---------------- 十六进制 ---------------- */
 
 static size_t hex_to_bytes(const char *hex, uint8_t *out, size_t cap)
@@ -8463,128 +8484,132 @@ int main(int argc, char **argv)
     /* 默认路径只是兜底：run-tests.cmd 会显式传 v4 向量（docs/protocol-testvectors-v4.json）。 */
     const char *vectors = argc > 1 ? argv[1] : "docs/protocol-testvectors-v4.json";
 
+    /* 向量阶段不在任何 test_*() 里跑，单独记一条 "vectors"，否则各行之和会少掉
+       这一大块（约 2700 条），「各行之和 == 总数」这条对账就过不了。 */
+    int vector_before = g_checks;
     int cases = for_each_case(vectors, dispatch_case);
     CHECK(cases > 0);
     if (cases > 0) {
         printf("vectors: %d cases from %s\n", cases, vectors);
     }
+    report_test_count("vectors", vector_before);
 
-    test_checksum();
-    test_set_power_reducer();
-    test_set_brightness_reducer();
-    test_retired_commands();
-    test_encode_ack_all_results();
-    test_encode_event_storage_failed();
-    test_encode_limits();
-    test_decode_short();
-    test_decode_bad_frames_echo_header();
-    test_decode_max_payload();
-    test_reject_v2_protocol_frames();
-    test_state_defaults_and_clamp();
-    test_state_bytes_layout();
-    test_selftest_sequence();
-    test_selftest_late_wake();
-    test_selftest_restart();
-    test_selftest_cancel_rules();
-    test_selftest_leaves_state_untouched();
-    test_selftest_compose();
-    test_gamma();
-    test_gamma_hue_loss_clip();
-    test_two_layer_single_layer_regression();
-    test_blend_math();
-    test_two_layer_validation_matrix();
-    test_layer_codec();
-    test_apply_level_q8();
-    test_layer_level_static_steps();
-    test_layer_level_independent_per_layer();
-    test_level_times_brightness_then_gamma_once();
-    test_layer_level_validation();
-    test_script_segment_clear_slot_level();
-    test_script_store_clear_rejects_level();
-    test_breathing_floor_is_level_times_min_pct();
-    test_blend_gamma_once();
-    test_two_layer_shared_phase();
-    test_two_layer_ram_sizes();
-    test_two_layer_needs_frames();
-    test_clear_script_command();
-    test_set_led_count_reducer();
-    test_led_count_job();
-    test_save_scheduler();
-    test_state_blob();
-    test_effects_static_rgb();
-    test_effects_dispatch();
-    test_segment_store_compose();
-    test_segment_store_validate();
-    test_segment_store_state_summary();
-    test_segment_store_prune();
-    test_segment_store_needs_frames();
-    test_segment_real_slots();
-    test_segment_commands();
-    test_encode_segment_reports();
-    test_encode_strip_config_report();
-    test_encode_device_info_report();
-    test_effects_breathing_phase();
-    test_effects_breathing_envelope();
-    test_effects_breathing_gain_and_pixel();
-    test_effects_rainbow_hue();
-    test_effects_rainbow_pixel();
-    test_effects_comet_gain();
-    test_effects_comet_density();
-    test_effects_comet_solid_tail();
-    test_effects_flicker();
-    test_effects_strobe();
-    test_effects_heartbeat();
-    test_effects_off();
-    test_effects_new_types_validation();
-    test_effects_new_types_animation();
-    test_effects_rainbow_comet_coexist();
-    test_blob_strip_counts();
-    test_state_blob_100_leds();
-    test_set_segment_uses_own_strip_count();
-    test_state_blob_per_strip_bounds();
-    test_state_blob_v4_two_layers();
-    test_set_strip_power_command();
-    test_set_strip_power_validation_edges();
-    test_strip_mask_allows();
-    test_global_power_leaves_strip_mask();
-    test_strip_anim_mask();
-    test_strip_tdm_plan();
-    test_per_strip_led_counts_30_60_10();
-    test_per_strip_led_counts_100_24();
-    test_segment_store_compose_100();
-    test_reasm_single_chunk();
-    test_reasm_multi_chunk();
-    test_reasm_first_reentry();
-    test_reasm_overflow();
-    test_reasm_timeout();
-    test_reasm_orphan_and_helpers();
-    test_script_store_download();
-    test_script_commit_failure_keeps_previous();
-    test_script_multiple_scripts();
-    test_script_playback_advance();
-    test_script_playback_pause_resume();
-    test_script_playback_hold_during_selftest();
-    test_script_playback_loop_last();
-    test_loop_flag_layout();
-    test_loop_command_values();
-    test_script_loop_blob_roundtrip();
-    test_script_blob_roundtrip();
-    test_script_store_prune_strip();
-    test_script_prune_then_blob_roundtrip();
-    test_script_fade_roundtrip();
-    test_script_two_layer_persist();
-    test_script_clear_slot();
-    test_script_store_clear();
-    test_script_should_deactivate();
-    test_script_blob_encode_with_cleared();
-    test_script_commit_too_large();
-    test_script_commit_implies_persistable();
-    test_planar_parse_list();
-    test_planar_init_validation();
-    test_planar_round_robin();
-    test_planar_set_count();
-    test_planar_stats();
-    test_planar_null_safety();
+    RUN_TEST(test_checksum);
+    RUN_TEST(test_set_power_reducer);
+    RUN_TEST(test_set_brightness_reducer);
+    RUN_TEST(test_retired_commands);
+    RUN_TEST(test_encode_ack_all_results);
+    RUN_TEST(test_encode_event_storage_failed);
+    RUN_TEST(test_encode_limits);
+    RUN_TEST(test_decode_short);
+    RUN_TEST(test_decode_bad_frames_echo_header);
+    RUN_TEST(test_decode_max_payload);
+    RUN_TEST(test_reject_v2_protocol_frames);
+    RUN_TEST(test_state_defaults_and_clamp);
+    RUN_TEST(test_state_bytes_layout);
+    RUN_TEST(test_selftest_sequence);
+    RUN_TEST(test_selftest_late_wake);
+    RUN_TEST(test_selftest_restart);
+    RUN_TEST(test_selftest_cancel_rules);
+    RUN_TEST(test_selftest_leaves_state_untouched);
+    RUN_TEST(test_selftest_compose);
+    RUN_TEST(test_gamma);
+    RUN_TEST(test_gamma_hue_loss_clip);
+    RUN_TEST(test_two_layer_single_layer_regression);
+    RUN_TEST(test_blend_math);
+    RUN_TEST(test_two_layer_validation_matrix);
+    RUN_TEST(test_layer_codec);
+    RUN_TEST(test_apply_level_q8);
+    RUN_TEST(test_layer_level_static_steps);
+    RUN_TEST(test_layer_level_independent_per_layer);
+    RUN_TEST(test_level_times_brightness_then_gamma_once);
+    RUN_TEST(test_layer_level_validation);
+    RUN_TEST(test_script_segment_clear_slot_level);
+    RUN_TEST(test_script_store_clear_rejects_level);
+    RUN_TEST(test_breathing_floor_is_level_times_min_pct);
+    RUN_TEST(test_blend_gamma_once);
+    RUN_TEST(test_two_layer_shared_phase);
+    RUN_TEST(test_two_layer_ram_sizes);
+    RUN_TEST(test_two_layer_needs_frames);
+    RUN_TEST(test_clear_script_command);
+    RUN_TEST(test_set_led_count_reducer);
+    RUN_TEST(test_led_count_job);
+    RUN_TEST(test_save_scheduler);
+    RUN_TEST(test_state_blob);
+    RUN_TEST(test_effects_static_rgb);
+    RUN_TEST(test_effects_dispatch);
+    RUN_TEST(test_segment_store_compose);
+    RUN_TEST(test_segment_store_validate);
+    RUN_TEST(test_segment_store_state_summary);
+    RUN_TEST(test_segment_store_prune);
+    RUN_TEST(test_segment_store_needs_frames);
+    RUN_TEST(test_segment_real_slots);
+    RUN_TEST(test_segment_commands);
+    RUN_TEST(test_encode_segment_reports);
+    RUN_TEST(test_encode_strip_config_report);
+    RUN_TEST(test_encode_device_info_report);
+    RUN_TEST(test_effects_breathing_phase);
+    RUN_TEST(test_effects_breathing_envelope);
+    RUN_TEST(test_effects_breathing_gain_and_pixel);
+    RUN_TEST(test_effects_rainbow_hue);
+    RUN_TEST(test_effects_rainbow_pixel);
+    RUN_TEST(test_effects_comet_gain);
+    RUN_TEST(test_effects_comet_density);
+    RUN_TEST(test_effects_comet_solid_tail);
+    RUN_TEST(test_effects_flicker);
+    RUN_TEST(test_effects_strobe);
+    RUN_TEST(test_effects_heartbeat);
+    RUN_TEST(test_effects_off);
+    RUN_TEST(test_effects_new_types_validation);
+    RUN_TEST(test_effects_new_types_animation);
+    RUN_TEST(test_effects_rainbow_comet_coexist);
+    RUN_TEST(test_blob_strip_counts);
+    RUN_TEST(test_state_blob_100_leds);
+    RUN_TEST(test_set_segment_uses_own_strip_count);
+    RUN_TEST(test_state_blob_per_strip_bounds);
+    RUN_TEST(test_state_blob_v4_two_layers);
+    RUN_TEST(test_set_strip_power_command);
+    RUN_TEST(test_set_strip_power_validation_edges);
+    RUN_TEST(test_strip_mask_allows);
+    RUN_TEST(test_global_power_leaves_strip_mask);
+    RUN_TEST(test_strip_anim_mask);
+    RUN_TEST(test_strip_tdm_plan);
+    RUN_TEST(test_per_strip_led_counts_30_60_10);
+    RUN_TEST(test_per_strip_led_counts_100_24);
+    RUN_TEST(test_segment_store_compose_100);
+    RUN_TEST(test_reasm_single_chunk);
+    RUN_TEST(test_reasm_multi_chunk);
+    RUN_TEST(test_reasm_first_reentry);
+    RUN_TEST(test_reasm_overflow);
+    RUN_TEST(test_reasm_timeout);
+    RUN_TEST(test_reasm_orphan_and_helpers);
+    RUN_TEST(test_script_store_download);
+    RUN_TEST(test_script_commit_failure_keeps_previous);
+    RUN_TEST(test_script_multiple_scripts);
+    RUN_TEST(test_script_playback_advance);
+    RUN_TEST(test_script_playback_pause_resume);
+    RUN_TEST(test_script_playback_hold_during_selftest);
+    RUN_TEST(test_script_playback_loop_last);
+    RUN_TEST(test_loop_flag_layout);
+    RUN_TEST(test_loop_command_values);
+    RUN_TEST(test_script_loop_blob_roundtrip);
+    RUN_TEST(test_script_blob_roundtrip);
+    RUN_TEST(test_script_store_prune_strip);
+    RUN_TEST(test_script_prune_then_blob_roundtrip);
+    RUN_TEST(test_script_fade_roundtrip);
+    RUN_TEST(test_script_two_layer_persist);
+    RUN_TEST(test_script_clear_slot);
+    RUN_TEST(test_script_store_clear);
+    RUN_TEST(test_script_should_deactivate);
+    RUN_TEST(test_script_blob_encode_with_cleared);
+    RUN_TEST(test_script_commit_too_large);
+    RUN_TEST(test_script_commit_implies_persistable);
+    RUN_TEST(test_planar_parse_list);
+    RUN_TEST(test_planar_init_validation);
+    RUN_TEST(test_planar_round_robin);
+    RUN_TEST(test_planar_set_count);
+    RUN_TEST(test_planar_stats);
+    RUN_TEST(test_planar_null_safety);
 
     if (g_failures != 0) {
         fprintf(stderr, "\n%d/%d checks failed\n", g_failures, g_checks);
