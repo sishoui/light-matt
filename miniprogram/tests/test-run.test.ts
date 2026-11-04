@@ -8,6 +8,8 @@ import {
   combineNodeLayerResults,
   describeFiles,
   executeLayers,
+  parseDoctorFailures,
+  parseE2eJson,
   parseFirmwareOutput,
   parseSkippedTags,
   parseTestCounts,
@@ -15,6 +17,7 @@ import {
   parseUiOutput,
   parseVitestJson,
   renderReport,
+  summarizeBleRun,
   writeReport,
 } from "../../scripts/test-run.mjs";
 
@@ -862,5 +865,403 @@ describe("ui 层接线", () => {
     expect(script).toContain("await probeAutomator.connect");
     const probeBlock = script.slice(script.indexOf('includes("--probe")'));
     expect(probeBlock.slice(0, 1200)).toContain("connect");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* 真机层（ble，#107）                                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 样本取自 `vitest run --config vitest.e2e.config.ts --reporter=json` 的真实输出。
+ *
+ * 为什么样本是 16 条而不是文档里的「8 项」：配置收的是 `tests/e2e/**\/*.test.ts`，
+ * 实际命中两个文件（`real-device` 8 条 + `complex-plan` 8 条）。文档的 8 是只数了
+ * 其中一个文件得出的。这里按真实收集数写样本，正是要让这个差异无法再被抄错。
+ */
+const E2E_FILE_COMPLEX = "C:/repo/miniprogram/tests/e2e/complex-plan.test.ts";
+const E2E_FILE_DEVICE = "C:/repo/miniprogram/tests/e2e/real-device.test.ts";
+
+const e2eCase = (fullName: string, status: string, extra: Record<string, unknown> = {}) => ({
+  ancestorTitles: [fullName.split(" ")[0]],
+  fullName,
+  title: fullName.slice(fullName.indexOf(" ") + 1),
+  status,
+  duration: 12.5,
+  failureMessages: [],
+  meta: {},
+  ...extra,
+});
+
+const e2eReport = (files: Array<{ name: string; cases: Array<Record<string, unknown>> }>) => {
+  const all = files.flatMap((f) => f.cases);
+  return JSON.stringify({
+    numTotalTestSuites: files.length,
+    numPassedTestSuites: files.filter((f) => f.cases.every((c) => c.status === "passed")).length,
+    numFailedTestSuites: files.filter((f) => f.cases.some((c) => c.status === "failed")).length,
+    numPendingTestSuites: 0,
+    numTotalTests: all.length,
+    numPassedTests: all.filter((c) => c.status === "passed").length,
+    numFailedTests: all.filter((c) => c.status === "failed").length,
+    numPendingTests: all.filter((c) => c.status !== "passed" && c.status !== "failed").length,
+    numTodoTests: 0,
+    success: all.every((c) => c.status !== "failed"),
+    startTime: 1793813563119,
+    testResults: files.map((f) => ({
+      name: f.name,
+      status: f.cases.some((c) => c.status === "failed") ? "failed" : "passed",
+      message: "",
+      startTime: 1793813563119,
+      endTime: 1793813586233,
+      assertionResults: f.cases,
+    })),
+  });
+};
+
+/* 真实收集形状：两个文件各 8 条，全部通过。 */
+const E2E_JSON_PASS = e2eReport([
+  {
+    name: E2E_FILE_COMPLEX,
+    cases: Array.from({ length: 8 }, (_, i) => e2eCase(`小程序代理：复杂方案 用例 ${i}`, "passed")),
+  },
+  {
+    name: E2E_FILE_DEVICE,
+    cases: Array.from({ length: 8 }, (_, i) => e2eCase(`真机 e2e（PC 蓝牙 → ESP32-C3） 用例 ${i}`, "passed")),
+  },
+]);
+
+/* 全部 skip：doctor 说设备在，跑的时候设备没了。 */
+const E2E_JSON_ALL_SKIPPED = e2eReport([
+  {
+    name: E2E_FILE_DEVICE,
+    cases: Array.from({ length: 8 }, (_, i) => e2eCase(`真机 e2e（PC 蓝牙 → ESP32-C3） 用例 ${i}`, "skipped")),
+  },
+]);
+
+/* 真实无设备形状：第一条「扫到设备」用例没有设备时只是提前 return，会被记成 passed；
+   其余 7 条 ctx.skip()。整层不该因此变绿。 */
+const E2E_JSON_SCAN_ONLY = e2eReport([
+  {
+    name: E2E_FILE_DEVICE,
+    cases: [
+      e2eCase("真机 e2e（PC 蓝牙 → ESP32-C3） 网关能扫到 Lumen 设备", "passed"),
+      ...Array.from({ length: 7 }, (_, i) => e2eCase(`真机 e2e（PC 蓝牙 → ESP32-C3） 用例 ${i}`, "skipped")),
+    ],
+  },
+]);
+
+const E2E_JSON_FAIL = e2eReport([
+  {
+    name: E2E_FILE_DEVICE,
+    cases: [
+      e2eCase("真机 e2e（PC 蓝牙 → ESP32-C3） 网关能扫到 Lumen 设备", "passed"),
+      e2eCase("真机 e2e：协议语义（真 BLE） 段下发后读回逐字节一致", "failed", {
+        failureMessages: [
+          "AssertionError: expected [0,255,0] to deeply equal [0,254,0]\n    at C:\\repo\\miniprogram\\tests\\e2e\\real-device.test.ts:123:9\n    at file:///C:/repo/miniprogram/node_modules/@vitest/runner/dist/index.js:146:14",
+        ],
+      }),
+    ],
+  },
+]);
+
+const E2E_JSON_EMPTY = JSON.stringify({ numTotalTests: 0, success: true, testResults: [] });
+
+describe("真机 e2e JSON 解析（#107）", () => {
+  it("用例数取实际收集数（16），不是文档写的 8", () => {
+    const parsed = parseE2eJson(E2E_JSON_PASS, { root: "C:/repo/miniprogram" });
+
+    expect(parsed.status).toBe("PASS");
+    expect(parsed.checks).toBe(16);
+    expect(parsed.unit).toBe("用例");
+    expect(parsed.passedCount).toBe(16);
+    expect(parsed.skippedCount).toBe(0);
+  });
+
+  it("两个 e2e 文件各自拿到自己的用例数", () => {
+    const parsed = parseE2eJson(E2E_JSON_PASS, { root: "C:/repo/miniprogram", dir: "miniprogram" });
+
+    expect(parsed.files).toEqual([
+      { file: "miniprogram/tests/e2e/complex-plan.test.ts", checks: 8, status: "passed" },
+      { file: "miniprogram/tests/e2e/real-device.test.ts", checks: 8, status: "passed" },
+    ]);
+    expect(parsed.files.reduce((sum: number, f: { checks: number }) => sum + f.checks, 0)).toBe(parsed.checks);
+  });
+
+  it("全部跳过的运行是 SKIP，不是 FAIL——没设备不是代码回归", () => {
+    const parsed = parseE2eJson(E2E_JSON_ALL_SKIPPED, { root: "C:/repo/miniprogram" });
+
+    expect(parsed.status).toBe("SKIP");
+    expect(parsed.skippedCount).toBe(8);
+    expect(parsed.failures).toEqual([]);
+    expect(String(parsed.skipReason)).toContain("跳过");
+  });
+
+  it("只有一条扫描用例白过、其余全跳过时仍是 SKIP，不能把整层染绿", () => {
+    /* 扫描用例在没有设备时提前 return，vitest 记成 passed。只看「有没有 passed」
+       会把「设备不在」报成 PASS——这正是报告不能撒的谎。 */
+    const parsed = parseE2eJson(E2E_JSON_SCAN_ONLY, { root: "C:/repo/miniprogram" });
+
+    expect(parsed.status).toBe("SKIP");
+    expect(parsed.skippedCount).toBe(7);
+    expect(String(parsed.skipReason)).toContain("7/8");
+  });
+
+  it("有失败用例时 FAIL，失败详情带用例名与文件:行", () => {
+    const parsed = parseE2eJson(E2E_JSON_FAIL, { root: "C:/repo/miniprogram", dir: "miniprogram" });
+
+    expect(parsed.status).toBe("FAIL");
+    expect(parsed.checks).toBe(2);
+    expect(parsed.failures).toHaveLength(1);
+    expect(parsed.failures[0].name).toContain("段下发后读回逐字节一致");
+    expect(parsed.failures[0].detail).toContain("to deeply equal");
+    expect(parsed.failures[0].location).toBe("miniprogram/tests/e2e/real-device.test.ts:123");
+  });
+
+  it("一个用例都没收集到判失败，空跑不能看起来像通过", () => {
+    expect(parseE2eJson(E2E_JSON_EMPTY, { root: "C:/repo/miniprogram" }).status).toBe("FAIL");
+  });
+
+  it("读不动的 JSON 判失败并写明原因", () => {
+    const parsed = parseE2eJson("{ 不是 JSON", { root: "C:/repo/miniprogram" });
+
+    expect(parsed.status).toBe("FAIL");
+    expect(parsed.checks).toBeNull();
+    expect(parsed.detail).toContain("JSON");
+  });
+});
+
+describe("真机层结果合成：drive.mjs 退出码 + vitest JSON（#107）", () => {
+  it("退出码 3（drive 判 SKIP）时整层 SKIP，原因取自它的输出", () => {
+    const summary = summarizeBleRun({
+      exitCode: 3,
+      jsonText: null,
+      stdout: "SKIP  前置条件不满足（doctor 退出码 1）——设备不在或连不上。\n",
+      root: "C:/repo/miniprogram",
+      dir: "miniprogram",
+    });
+
+    expect(summary.status).toBe("SKIP");
+    expect(String(summary.skipReason)).toContain("前置条件不满足");
+    expect(summary.failures).toEqual([]);
+  });
+
+  it("doctor 说没扫到设备时，原因写「缺真机」而不是一句「前置条件不满足」", () => {
+    /* 这是本层最常被误读成代码回归的情形，原因必须直接点名缺什么。 */
+    const summary = summarizeBleRun({
+      exitCode: 3,
+      jsonText: null,
+      stdout: [
+        "扫描 Lumen-* …",
+        "NO   扫到 Lumen-* 设备  — 没有设备。检查：① 是否上电；② 是否已被别处连着",
+        "",
+        "SKIP  前置条件不满足（doctor 退出码 1）——设备不在或连不上。",
+      ].join("\n"),
+      root: "C:/repo/miniprogram",
+      dir: "miniprogram",
+    });
+
+    expect(summary.status).toBe("SKIP");
+    expect(String(summary.skipReason)).toContain("缺真机");
+  });
+
+  it("固件版本不对时 SKIP 并写明版本项，不当成失败", () => {
+    const summary = summarizeBleRun({
+      exitCode: 3,
+      jsonText: null,
+      stdout: [
+        "OK   扫到 Lumen-* 设备  — Lumen-5662 @ CC:8D:A2:C2:56:62",
+        "NO   固件是 v4（v3 帧会被断崖拒绝为 0x07）  — 0x0300 = v3.0",
+        "SKIP  前置条件不满足（doctor 退出码 1）——见上面的 NO 行。",
+      ].join("\n"),
+      root: "C:/repo/miniprogram",
+      dir: "miniprogram",
+    });
+
+    expect(summary.status).toBe("SKIP");
+    expect(String(summary.skipReason)).toContain("固件是 v4");
+    expect(String(summary.skipReason)).toContain("0x0300");
+  });
+
+  it("退出码 0 时用 JSON 的用例数，并把跳过数一起带出来", () => {
+    const summary = summarizeBleRun({
+      exitCode: 0,
+      jsonText: E2E_JSON_PASS,
+      stdout: "===== 16 passed / 0 failed / 0 skipped =====\n",
+      root: "C:/repo/miniprogram",
+      dir: "miniprogram",
+    });
+
+    expect(summary.status).toBe("PASS");
+    expect(summary.checks).toBe(16);
+    expect(summary.skippedCount).toBe(0);
+    expect(summary.extra.files).toHaveLength(2);
+  });
+
+  it("退出码 1 且有失败用例时 FAIL，failures 带测试名", () => {
+    const summary = summarizeBleRun({
+      exitCode: 1,
+      jsonText: E2E_JSON_FAIL,
+      stdout: "===== 1 passed / 1 failed / 0 skipped =====\n",
+      root: "C:/repo/miniprogram",
+      dir: "miniprogram",
+    });
+
+    expect(summary.status).toBe("FAIL");
+    expect(summary.failures.map((f: { name: string }) => f.name).join("")).toContain("段下发后读回逐字节一致");
+  });
+
+  it("drive 没产出 JSON 时判失败并写明退出码，而不是当作零用例通过", () => {
+    const summary = summarizeBleRun({
+      exitCode: 1,
+      jsonText: null,
+      stdout: "Error: 网关起不来\n",
+      root: "C:/repo/miniprogram",
+      dir: "miniprogram",
+    });
+
+    expect(summary.status).toBe("FAIL");
+    expect(summary.checks).toBeNull();
+    expect(summary.detail).toContain("vitest.json");
+  });
+
+  it("用例全过但退出码非零仍判失败——收尾出问题不能算过", () => {
+    const summary = summarizeBleRun({
+      exitCode: 1,
+      jsonText: E2E_JSON_PASS,
+      stdout: "",
+      root: "C:/repo/miniprogram",
+      dir: "miniprogram",
+    });
+
+    expect(summary.status).toBe("FAIL");
+    expect(summary.detail).toContain("退出码");
+  });
+
+  it("JSON 说全跳过而 drive 退出码为 3 时是 SKIP，不会掉进「退出码非零」的失败分支", () => {
+    const summary = summarizeBleRun({
+      exitCode: 3,
+      jsonText: E2E_JSON_ALL_SKIPPED,
+      stdout: "===== SKIP：8 条全部跳过（设备可能被别处占用）=====\n",
+      root: "C:/repo/miniprogram",
+      dir: "miniprogram",
+    });
+
+    expect(summary.status).toBe("SKIP");
+    expect(summary.failures).toEqual([]);
+  });
+});
+
+describe("doctor.py 体检输出解析（#107）", () => {
+  it("取出所有 NO 行，带名字与说明", () => {
+    const failures = parseDoctorFailures(
+      [
+        "扫描 Lumen-* …",
+        "NO   扫到 Lumen-* 设备  — 没有设备。检查：① 是否上电；② 是否已被别处连着",
+        "OK   连上设备",
+      ].join("\n"),
+    );
+
+    expect(failures).toHaveLength(1);
+    expect(failures[0].name).toContain("扫到 Lumen-* 设备");
+    expect(failures[0].detail).toContain("是否上电");
+  });
+
+  it("没有 NO 行时为空——体检通过不该被解析成缺条件", () => {
+    expect(parseDoctorFailures("OK   扫到 Lumen-* 设备  — Lumen-5662\n\n值得驱动：设备在、固件 v4。")).toEqual([]);
+  });
+
+  it("正文里以 NO 开头的英文词不算缺条件项", () => {
+    /* doctor 的前缀是 `NO` + 两个空格。松一点匹配会把「NOTE ...」这类行
+       也当成体检失败，于是明明有设备却 SKIP。 */
+    expect(parseDoctorFailures("NOTE 这台机器蓝牙正常\nNO 太窄\n")).toEqual([]);
+    expect(parseDoctorFailures("NO  固件是 v4  — 0x0300")).toHaveLength(1);
+  });
+});
+
+describe("ble 层接线（#107）", () => {
+  const bleManifest = () => ({
+    layers: {
+      mp: { label: "小程序单测", cheap: true },
+      ble: { label: "真机 e2e", cheap: false },
+    },
+    files: {},
+  });
+
+  it("ble 层已接入，且需要环境所以不进默认那一轮", () => {
+    const specs = buildLayerSpecs(bleManifest());
+
+    expect(specs.ble).toBeTruthy();
+    expect(specs.ble.name).toBe("ble");
+    expect(specs.ble.label).toBe("真机 e2e");
+    expect(specs.ble.cheap).toBe(false);
+    expect(typeof specs.ble.probe).toBe("function");
+    expect(typeof specs.ble.run).toBe("function");
+  });
+
+  it("doctor 不过时整层 SKIP 并写明缺真机，run 根本不被调用", () => {
+    /* 复用真实规格里的 run，只把 probe 换成「体检不过」——验的是门禁语义，
+       不会真去连设备。 */
+    const specs = buildLayerSpecs(bleManifest());
+    let ran = false;
+    const gated = {
+      ...specs.ble,
+      probe: () => ["缺真机（未扫到 Lumen-* 设备）"],
+      run: () => {
+        ran = true;
+        return { status: "PASS", checks: 16, unit: "用例", detail: "不该跑到这里", failures: [] };
+      },
+    };
+
+    const result = executeLayers([gated]);
+
+    expect(ran).toBe(false);
+    expect(result.layers[0].status).toBe("SKIP");
+    expect(result.layers[0].skipReason).toContain("缺真机");
+    /* SKIP 不影响退出码：没插设备的一轮仍是「通过（有未验证项）」。 */
+    expect(result.conclusion).toBe("PASS");
+  });
+
+  it("真机层 SKIP 时进未验证清单，且分层表里能看到它的原因", () => {
+    const specs = buildLayerSpecs(bleManifest());
+    const gated = { ...specs.ble, probe: () => ["固件版本不对（0x0300 = v3.0）"] };
+    const result = executeLayers([gated]);
+    const md = renderReport(result);
+
+    expect(md).toContain("## 未验证清单");
+    expect(md).toContain("固件版本不对");
+    expect(md).toContain("⏭️ SKIP");
+  });
+
+  it("真机层的用例数与耗时进报告，按文件分得开", () => {
+    const specs = buildLayerSpecs(bleManifest());
+    const ran = {
+      ...specs.ble,
+      run: () => ({
+        ...summarizeBleRun({
+          exitCode: 0,
+          jsonText: E2E_JSON_PASS,
+          root: "C:/repo/miniprogram",
+          dir: "miniprogram",
+        }),
+        durationMs: 55_400,
+      }),
+    };
+    const result = executeLayers([ran]);
+    result.files = describeFiles(
+      {
+        layers: bleManifest().layers,
+        files: {
+          "miniprogram/tests/e2e/complex-plan.test.ts": { layer: "ble", covers: "复杂剧本" },
+          "miniprogram/tests/e2e/real-device.test.ts": { layer: "ble", covers: "真机往返" },
+        },
+      },
+      result.layers,
+      "C:/repo",
+    );
+    const md = renderReport(result);
+
+    expect(md).toContain("| 真机 e2e | ✅ PASS | 16 用例 | 55.4s |");
+    expect(md).toContain("| `miniprogram/tests/e2e/complex-plan.test.ts` | 复杂剧本 | 8 |");
+    expect(md).toContain("| `miniprogram/tests/e2e/real-device.test.ts` | 真机往返 | 8 |");
   });
 });

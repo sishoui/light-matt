@@ -544,6 +544,310 @@ function runNodeLayer({ dirName, repoRoot }) {
 }
 
 /* ------------------------------------------------------------------ */
+/* 真机 e2e（ble 层）：包住既有执行器 drive.mjs                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 真机层为什么不自己跑 vitest、也不自己连 BLE：
+ *
+ * 仓库里已经有一个把这件事做完了的执行器
+ * （`.zcode/skills/verify-lumen-ble/scripts/drive.mjs`）：它先跑 `doctor.py` 做只读体检
+ * （设备在不在、固件是不是 v4、State 是否合法），再用 JSON reporter 跑 e2e，最后
+ * 收尾核对设备现场，并且**已经定义了退出码语义**：0 过 / 1 断言失败 / 3 SKIP。
+ *
+ * 那套语义正是这一层要的东西。再写一遍只会多出两套会各自漂移的判定，所以这里只做
+ * 「读懂它的输出」：退出码 3 一律 SKIP（环境问题不是代码回归），退出码 1 但用例全过
+ * 也判 FAIL（收尾出问题不能算过），其余按 JSON 里的真实收集数报。
+ *
+ * 它自己会写证据 JSON 到 `miniprogram/.auto/evidence-ble/<RUN_ID>/`。这里通过给
+ * 子进程传 `RUN_ID` 来拿到确定路径，不去猜它的时间戳——猜错就会把「没读到 JSON」
+ * 误报成「零用例失败」。
+ */
+const BLE_SKILL_DIR = join(".zcode", "skills", "verify-lumen-ble", "scripts");
+
+/**
+ * 解析真机 e2e 的 vitest JSON。
+ *
+ * 与 `parseVitestJson` 的差别只有三处，都是这一层特有的：
+ *   1. skipped 计数是主角。「没设备」与「设备被抢连」都表现为用例 skip，
+ *      必须能报成 SKIP 而不是 FAIL；
+ *   2. 只有扫描那条用例会在无设备时「顺利结束」（它自己提前 return），
+ *      所以「至多一条通过 + 其余跳过」也要判 SKIP，否则整层会被这一条染绿；
+ *   3. 用例数是**实际收集数**（两个 e2e 文件合计 16 条），不是文档里只数了一个
+ *      文件得出的 8。
+ */
+export const parseE2eJson = (jsonText, { root = ".", dir = "" } = {}) => {
+  let report;
+  try {
+    report = JSON.parse(jsonText);
+  } catch (error) {
+    return {
+      status: FAIL,
+      checks: null,
+      unit: "用例",
+      detail: `真机 e2e JSON 解析失败：${error.message ?? error}`,
+      failures: [],
+      files: [],
+      passedCount: 0,
+      skippedCount: 0,
+    };
+  }
+
+  const results = Array.isArray(report.testResults) ? report.testResults : [];
+  const repoPath = (abs) => `${dir ? `${dir}/` : ""}${toRel(root, abs)}`;
+
+  const failures = [];
+  const files = [];
+  let passed = 0;
+  let skipped = 0;
+  let seen = 0;
+
+  for (const item of results) {
+    const assertions = Array.isArray(item.assertionResults) ? item.assertionResults : [];
+    const fileSkipped = assertions.filter((a) => a.status === "skipped" || a.status === "pending" || a.status === "todo").length;
+    passed += assertions.filter((a) => a.status === "passed").length;
+    skipped += fileSkipped;
+    seen += assertions.length;
+
+    files.push({ file: repoPath(String(item.name ?? "")), checks: assertions.length, status: item.status ?? "unknown" });
+
+    /* 文件级加载失败（网关起不来、导入报错）时 assertionResults 是空的，
+       只有 message。不记下来这种失败会从报告里消失。 */
+    if (assertions.length === 0 && item.status === "failed") {
+      const firstLine = String(item.message ?? "").split("\n").find((line) => line.trim()) ?? "文件加载失败";
+      failures.push({
+        name: `文件加载失败 ${repoPath(String(item.name ?? ""))}`,
+        detail: firstLine.trim(),
+        location: repoPath(String(item.name ?? "")),
+        kind: "test",
+      });
+      continue;
+    }
+
+    for (const assertion of assertions) {
+      if (assertion.status !== "failed") continue;
+      const raw = (assertion.failureMessages ?? []).join("\n");
+      const firstLine = raw.split("\n").find((line) => line.trim()) ?? "断言失败";
+      failures.push({
+        name: assertion.fullName ?? assertion.title ?? "未命名用例",
+        detail: firstLine.trim(),
+        location: firstFrameLocation(raw, root, dir ? `${dir}/` : ""),
+        kind: "test",
+      });
+    }
+  }
+
+  const total = typeof report.numTotalTests === "number" ? report.numTotalTests : seen;
+  const base = { unit: "用例", files, passedCount: passed, skippedCount: skipped };
+
+  if (total === 0) {
+    return {
+      ...base,
+      status: FAIL,
+      checks: 0,
+      detail: "一个用例都没收集到",
+      failures: failures.length > 0 ? failures : [{ name: "收集结果为空", detail: "", location: null, kind: "test" }],
+    };
+  }
+
+  if (failures.length > 0 || report.numFailedTests > 0) {
+    const failed = typeof report.numFailedTests === "number" ? report.numFailedTests : failures.length;
+    return { ...base, status: FAIL, checks: total, detail: `${failed}/${total} 个用例失败`, failures };
+  }
+
+  /* 无设备时唯一能「跑完」的就是扫描那条用例（它自己提前 return，vitest 记成 passed）。
+     所以阈值是「至多一条通过」而不是「一条都没通过」。 */
+  if (skipped > 0 && passed <= 1) {
+    return {
+      ...base,
+      status: SKIP,
+      checks: total,
+      detail: "",
+      failures: [],
+      skipReason: `${skipped}/${total} 条用例跳过（设备不在或被别处占用），有效通过 ${passed} 条`,
+    };
+  }
+
+  /* 只跑了一部分：层仍然 PASS（没有失败），但没跑到的部分必须进未验证清单。 */
+  const innerSkips = skipped > 0 ? [`${skipped}/${total} 条用例跳过（运行中途设备不可用）`] : [];
+
+  return {
+    ...base,
+    status: PASS,
+    checks: total,
+    detail: `${passed}/${total} 个用例通过${skipped > 0 ? `，${skipped} 条跳过` : ""}`,
+    failures: [],
+    skipped: innerSkips,
+  };
+};
+
+/** 把 doctor.py 的 `NO  <项>  — <说明>` 行取出来，作为 SKIP 的原因。 */
+export const parseDoctorFailures = (stdout) => {
+  const failures = [];
+  for (const raw of String(stdout ?? "").split("\n")) {
+    const line = raw.trim();
+    /* 要求 NO 后面至少两个空格：doctor 的格式是 `NO  ` 前缀，这条约束
+       让正文里恰好以「NO」开头的英文单词不会被当成缺条件项。 */
+    if (!/^NO\s{2,}/.test(line)) continue;
+    const rest = line.replace(/^NO\s{2,}/, "");
+    const splitAt = rest.indexOf("  — ");
+    failures.push({
+      name: splitAt < 0 ? rest : rest.slice(0, splitAt).trim(),
+      detail: splitAt < 0 ? "" : rest.slice(splitAt + "  — ".length).trim(),
+    });
+  }
+  return failures;
+};
+
+/**
+ * 把 drive.mjs 的「不动」判定翻译成一句人能读的 SKIP 原因。
+ *
+ * 为什么不是直接抄它那行 `SKIP  前置条件不满足（doctor 退出码 1）`：那句话对
+ * 「用户该做什么」没有信息量。真正的时间顺序是 doctor 先列出哪个 `NO` 项不满足，
+ * 所以优先用 NO 项。最容易撞上的是「没插设备」——这一种要明说「缺真机」，
+ * 因为它是本层最常被误读成代码回归的情形。
+ */
+const bleSkipReason = (stdout, doctorFailures) => {
+  const missedScan = doctorFailures.find((item) => /扫到\s*Lumen/.test(item.name));
+  if (missedScan) {
+    return `缺真机（未扫到 Lumen-* 设备；检查上电、是否被别处连着、蓝牙适配器）`;
+  }
+  if (doctorFailures.length > 0) {
+    /* 固件版本、帧合法性之类：环境问题，同样不是代码回归。 */
+    return doctorFailures
+      .map((item) => `${item.name}${item.detail ? `（${item.detail.split("。")[0]}）` : ""}`)
+      .join("；");
+  }
+  const line = String(stdout)
+    .split("\n")
+    .map((raw) => raw.trim())
+    .find((raw) => raw.startsWith("SKIP"));
+  if (line) return line.replace(/^SKIP\s+/, "");
+  return "真机驱动判定前置条件不满足";
+};
+
+/**
+ * 合成 drive.mjs 的退出码与它写的 vitest JSON。
+ *
+ * 退出码优先：drive 判 SKIP 时即便 JSON 里有几条 passed，也只能记 SKIP——
+ * 那是它自己的语义（例如 doctor 通过但设备随后被抢连）。
+ */
+export function summarizeBleRun({ exitCode, jsonText, stdout = "", root = ".", dir = "" }) {
+  const parsed = jsonText ? parseE2eJson(jsonText, { root, dir }) : null;
+  const doctorFailures = parseDoctorFailures(stdout);
+
+  if (exitCode === 3) {
+    return {
+      status: SKIP,
+      checks: parsed?.checks ?? null,
+      unit: "用例",
+      detail: "",
+      failures: [],
+      skipReason: bleSkipReason(stdout, doctorFailures),
+      passedCount: parsed?.passedCount ?? 0,
+      skippedCount: parsed?.skippedCount ?? 0,
+      extra: { files: parsed?.files ?? [] },
+    };
+  }
+
+  if (parsed === null) {
+    return {
+      status: FAIL,
+      checks: null,
+      unit: "用例",
+      detail: `drive.mjs 没有产出 vitest.json（退出码 ${exitCode}）`,
+      failures: [],
+      files: [],
+    };
+  }
+
+  if (parsed.status === FAIL) {
+    return { ...parsed, extra: { files: parsed.files } };
+  }
+
+  /* 用例全过但非零退出：收尾（复位、断开）出问题了，不能算过。
+     用例全被跳过时走不到这里——那条路已经在上面按 SKIP 返回了。 */
+  if (exitCode !== 0) {
+    return {
+      ...parsed,
+      status: FAIL,
+      detail: `用例均未失败但 drive.mjs 退出码 ${exitCode}`,
+      extra: { files: parsed.files },
+    };
+  }
+
+  return { ...parsed, extra: { files: parsed.files } };
+}
+
+/** 真机驱动脚本与体检脚本的路径（随 skill 目录走，不依赖 cwd）。 */
+const bleScripts = (repoRoot) => ({
+  drive: join(repoRoot, BLE_SKILL_DIR, "drive.mjs"),
+  doctor: join(repoRoot, BLE_SKILL_DIR, "doctor.py"),
+});
+
+/**
+ * 探测真机层的前置条件：脚本在不在、依赖装没装、本机 python 能不能 import bleak。
+ *
+ * 刻意**不在这里扫设备**：drive.mjs 自己会跑 doctor.py，扫一次蓝牙要好几秒，
+ * 探两遍只是让每次 `--release` 多等一会儿。设备维度的判定全部交给 drive 的退出码 3。
+ */
+const probeBle = (repoRoot) => () => {
+  const scripts = bleScripts(repoRoot);
+  const missing = [];
+  if (!existsSync(scripts.drive)) missing.push(`缺真机驱动脚本 ${BLE_SKILL_DIR}/drive.mjs`);
+  if (!existsSync(join(repoRoot, "miniprogram", "node_modules", "vitest", "vitest.mjs"))) {
+    missing.push("miniprogram 缺 vitest（真机用例由它执行）");
+  }
+  if (missing.length > 0) return missing;
+
+  if (!hasCommand("python")) {
+    /* bleak 是网关的依赖；没有 python 就谈不上扫描。 */
+    missing.push("缺 python / bleak（真机网关依赖 bleak）");
+    return missing;
+  }
+  const res = spawnSync("python", ["-c", "import bleak"], { encoding: "utf8", timeout: 20_000 });
+  if (res.status !== 0) {
+    missing.push("缺 python / bleak（`import bleak` 失败）");
+  }
+  return missing;
+};
+
+/** 跑真机层。整轮（体检 + 16 条真机用例）在本机约一分钟，超时给到 10 分钟。 */
+const runBle = ({ repoRoot }) => {
+  const started = Date.now();
+  const scripts = bleScripts(repoRoot);
+  /* 给子进程一个确定的 RUN_ID，这样 JSON 落在已知目录里——否则只能猜它的时间戳，
+     猜错就会把「没读到 JSON」误报成「零用例失败」。 */
+  const RUN_ID = `orchestrator-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  const jsonPath = join(repoRoot, "miniprogram", ".auto", "evidence-ble", RUN_ID, "vitest.json");
+
+  const res = spawnSync(process.execPath, [scripts.drive, "--scenario", "all"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 600_000,
+    maxBuffer: 64 * 1024 * 1024,
+    env: { ...process.env, RUN_ID, FORCE_COLOR: "0" },
+  });
+  const durationMs = Date.now() - started;
+  const stdout = `${res.stdout ?? ""}${res.stderr ?? ""}`;
+
+  if (res.error) {
+    return { status: FAIL, checks: null, unit: "用例", detail: String(res.error.message), failures: [], durationMs };
+  }
+
+  const jsonText = existsSync(jsonPath) ? readFileSync(jsonPath, "utf8") : null;
+  const summary = summarizeBleRun({
+    exitCode: res.status ?? 1,
+    jsonText,
+    stdout,
+    root: join(repoRoot, "miniprogram"),
+    dir: "miniprogram",
+  });
+
+  return { ...summary, durationMs };
+};
+
+/* ------------------------------------------------------------------ */
 /* 层规格：把清单里的层定义变成可执行的东西                            */
 /* ------------------------------------------------------------------ */
 
@@ -598,6 +902,16 @@ export function buildLayerSpecs(manifest, { repoRoot = REPO } = {}) {
     unit: "断言",
     probe: probeUi,
     run: runUi,
+  };
+
+  specs.ble = {
+    name: "ble",
+    label: manifest.layers.ble?.label ?? "真机 e2e",
+    /* 需要插着 ESP32 且没被别处连着，不进默认那一轮。 */
+    cheap: false,
+    unit: "用例",
+    probe: probeBle(repoRoot),
+    run: () => runBle({ repoRoot }),
   };
 
   return specs;
