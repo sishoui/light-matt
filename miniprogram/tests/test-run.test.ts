@@ -1,4 +1,6 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -130,10 +132,11 @@ describe("executeLayers", () => {
   });
 
   it("计时是实测的，不是填零", () => {
+    const BUDGET_MS = 40;
     const result = executeLayers([
       layer("slow", {
         run: () => {
-          const until = Date.now() + 12;
+          const until = Date.now() + BUDGET_MS;
           while (Date.now() < until) {
             /* 空转一小会儿，制造可测的耗时 */
           }
@@ -142,8 +145,79 @@ describe("executeLayers", () => {
       }),
     ]);
 
-    expect(result.layers[0].durationMs).toBeGreaterThanOrEqual(0);
-    expect(typeof result.layers[0].durationMs).toBe("number");
+    /* 必须真的量到那段忙等。写成 >= 0 的话，把 durationMs 恒设成 0 这条
+       测试照样绿——那正是本仓库最忌讳的假绿。 */
+    expect(result.layers[0].durationMs).toBeGreaterThanOrEqual(BUDGET_MS);
+  });
+});
+
+describe("执行器兜异常（不因一层崩掉就丢整份报告）", () => {
+  it("probe 抛异常时降级成 FAIL，不影响其它层", () => {
+    const result = executeLayers([
+      layer("boom", {
+        probe: () => {
+          throw new Error("spawn ENOENT");
+        },
+      }),
+      layer("ok"),
+    ]);
+
+    expect(result.layers[0].status).toBe("FAIL");
+    expect(result.layers[0].detail).toContain("探测时异常");
+    expect(result.layers[1].status).toBe("PASS");
+    expect(result.conclusion).toBe("FAIL");
+  });
+
+  it("run 抛异常时降级成 FAIL 并带出原因", () => {
+    const result = executeLayers([
+      layer("boom", {
+        run: () => {
+          throw new Error("EACCES: 写只读目录");
+        },
+      }),
+    ]);
+
+    expect(result.layers[0].status).toBe("FAIL");
+    expect(result.layers[0].detail).toContain("EACCES");
+    expect(renderReport(result)).toContain("EACCES");
+  });
+
+  it("层返回非法状态时判 FAIL，而不是渲染成假绿", () => {
+    const result = executeLayers([layer("weird", { run: () => ({}) })]);
+
+    expect(result.layers[0].status).toBe("FAIL");
+    expect(result.layers[0].detail).toContain("非法状态");
+    expect(result.conclusion).toBe("FAIL");
+  });
+});
+
+describe("清单查漏的五类问题都要进失败详情", () => {
+  it("covers 为空也算问题，不会被数成「0 处不一致」",
+    async () => {
+      const { manifestIssues } = await import("../../scripts/test-run.mjs");
+      const issues = manifestIssues({
+        unregistered: [],
+        missing: [],
+        misplaced: [],
+        unknownLayer: [],
+        emptyCovers: [{ file: "a.test.ts" }],
+      });
+
+      expect(issues).toHaveLength(1);
+      expect(issues[0].name).toContain("缺少覆盖说明");
+    });
+
+  it("未知层与空说明都被列出来", async () => {
+    const { manifestIssues } = await import("../../scripts/test-run.mjs");
+    const issues = manifestIssues({
+      unknownLayer: [{ file: "b.test.ts", layer: "ghost" }],
+      emptyCovers: [{ file: "c.test.ts" }],
+    });
+
+    expect(issues.map((i: { name: string }) => i.name)).toEqual([
+      expect.stringContaining("未知层"),
+      expect.stringContaining("缺少覆盖说明"),
+    ]);
   });
 });
 
@@ -862,17 +936,34 @@ describe("ui 层接线", () => {
     expect(result.conclusion).toBe("PASS");
   });
 
-  it("脚本的 --probe 真的握手，而不是只测 TCP", async () => {
+  it("脚本的 --probe 走握手，而不是只测 TCP", async () => {
     /* 端口开着但窗口没开自动化模式时，TCP 连得上、WebSocket 握手却失败。
        只测 TCP 会让 probe 说「可连」、run 立刻 SKIP——同一份环境两个结论。
-       这条锁住 probe 走的是握手路径：输出要么是可连，要么带缺端口原因，
-       不会出现「探通但真连失败」那种沉默的第三种状态。 */
-    const script = readFileSync(resolve(__dirname, "../../scripts/verify-v5.mjs"), "utf8");
 
-    expect(script).toContain("await probeAutomator.connect");
-    const probeBlock = script.slice(script.indexOf('includes("--probe")'));
-    expect(probeBlock.slice(0, 1200)).toContain("connect");
-  });
+       断言要落在行为上：真的跑一次 --probe，看它对一个「TCP 能连但不讲
+       WebSocket」的端口报什么。只断言源码里出现某个字符串的话，把 --probe
+       改回只走 TCP、同时保留正式路径里的 connect，测试照样绿。 */
+    const server = createServer((socket) => {
+      /* 接住连接但不完成 WebSocket 握手：这正是「窗口开着但没开自动化」的样子。 */
+      socket.on("data", () => socket.destroy());
+    });
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    const { port } = server.address() as { port: number };
+
+    try {
+      const out = execFileSync(
+        process.execPath,
+        [resolve(__dirname, "../../scripts/verify-v5.mjs"), "--probe"],
+        { env: { ...process.env, WS: `ws://127.0.0.1:${port}` }, encoding: "utf8", timeout: 30000 },
+      );
+
+      /* 握手失败必须报成缺环境，不能报「可连」。 */
+      expect(out).toContain("SKIPPED:");
+      expect(out).not.toContain("可连");
+    } finally {
+      await new Promise<void>((done) => server.close(() => done()));
+    }
+  }, 40000);
 });
 
 /* ------------------------------------------------------------------ */

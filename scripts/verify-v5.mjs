@@ -38,6 +38,30 @@ const PORT = process.env.WS || "ws://127.0.0.1:9501";
    3 秒：开发者工具的 ws 端口要么立刻接受连接，要么本机直接 ECONNREFUSED。 */
 const PROBE_TIMEOUT_MS = 3000;
 
+/* 握手另给一个更长的预算：探通 TCP 之后，真实的 WebSocket 握手要来回几帧，
+   3 秒偏紧；但也不能无限等——半开端口会一直不应答。 */
+const HANDSHAKE_TIMEOUT_MS = 8000;
+
+/** 给不带宽限的 promise 加一个超时，避免探针挂死。 */
+function withTimeout(promise, ms, endpoint) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const timer = setTimeout(
+      () => rejectPromise(new Error(`${endpoint} ${ms}ms 内没完成握手`)),
+      ms,
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolvePromise(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        rejectPromise(error);
+      },
+    );
+  });
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** 缺环境时的固定前缀：编排器只认这一行，不看别的。 */
@@ -100,7 +124,9 @@ if (process.argv.includes("--probe")) {
     const requireFromMp = createRequire(resolve(REPO, "miniprogram", "package.json"));
     const probeMod = requireFromMp("miniprogram-automator");
     const probeAutomator = probeMod.default ?? probeMod;
-    const connection = await probeAutomator.connect({ wsEndpoint: PORT });
+    /* connect 本身不带超时：对「TCP 接得上但不讲 WebSocket」的端口会一直等，
+       把探针挂死。这种半开状态正是「窗口开着但没开自动化」，必须判成缺环境。 */
+    const connection = await withTimeout(probeAutomator.connect({ wsEndpoint: PORT }), HANDSHAKE_TIMEOUT_MS, PORT);
     await connection.disconnect();
     console.log(`PORT: ${PORT} 可连`);
   } catch (error) {
@@ -285,12 +311,12 @@ await sleep(300);
 
 // ---------------- 3. 设备页（#94） ----------------
 await connectDemo();
-const devicePage = await mp.navigateTo("/pages/device/device?key=A4%3ACF%3A12%3A9B%3E%3A01");
+const devicePage = await mp.navigateTo("/pages/device/device?key=A4%3ACF%3A12%3A9B%3A3E%3A01");
 await devicePage.waitFor(600);
 await sleep(2000);
 const dev = await pageState();
 if (dev.route !== "pages/device/device") {
-  await mp.navigateTo("/pages/device/device?key=A4%3ACF%3A12%3A9B%3E%3A01");
+  await mp.navigateTo("/pages/device/device?key=A4%3ACF%3A12%3A9B%3A3E%3A01");
   await sleep(2200);
 }
 rec("设备页打开", (await pageState()).route === "pages/device/device", (await pageState()).route);
@@ -425,7 +451,7 @@ await mp.evaluate(() => {
 await sleep(500);
 await mp.switchTab("/pages/home/home");
 await sleep(900);
-await mp.navigateTo("/pages/device/device?key=A4%3ACF%3A12%3A9B%3E%3A01");
+await mp.navigateTo("/pages/device/device?key=A4%3ACF%3A12%3A9B%3A3E%3A01");
 await sleep(1800);
 rec(
   "深色下设备页也是 theme-dark",

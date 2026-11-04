@@ -33,6 +33,38 @@ import { checkManifest, loadManifest } from "./check-test-manifest.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const REPO = resolve(HERE, "..");
 
+const errorMessage = (error) => String(error?.message ?? error);
+
+/** 层执行抛异常时降级成 FAIL，而不是让整轮无报告。 */
+const failedLayer = (spec, durationMs, detail) => ({
+  name: spec.name,
+  label: spec.label,
+  status: FAIL,
+  checks: null,
+  unit: spec.unit ?? "用例",
+  detail,
+  failures: [{ name: detail, detail: "" }],
+  skipReason: null,
+  skipped: [],
+  extra: null,
+  durationMs,
+});
+
+/** 把清单查漏的五类问题摊平成一份可渲染的失败清单。 */
+export function manifestIssues(check) {
+  return [
+    ...(check.unregistered ?? []).map((item) => ({ name: `未登记 ${item.file}`, detail: `应属 ${item.layer} 层` })),
+    ...(check.missing ?? []).map((item) => ({ name: `文件不存在 ${item.file}`, detail: `登记为 ${item.layer} 层` })),
+    ...(check.misplaced ?? []).map((item) => ({
+      name: `层不一致 ${item.file}`,
+      detail: `登记为 ${item.declared}，实际属 ${item.actual}`,
+    })),
+    ...(check.unknownLayer ?? []).map((item) => ({ name: `未知层 ${item.file}`, detail: `声明了 ${item.layer}` })),
+    ...(check.emptyCovers ?? []).map((item) => ({ name: `缺少覆盖说明 ${item.file}`, detail: "covers 是空的" })),
+  ];
+}
+
+const VALID_STATUSES = new Set(["PASS", "FAIL", "SKIP"]);
 const PASS = "PASS";
 const FAIL = "FAIL";
 const SKIP = "SKIP";
@@ -201,7 +233,22 @@ const runFirmware = () => {
     return { status: FAIL, checks: null, unit: "断言", detail: String(res.error.message), failures: [], skipped, durationMs };
   }
   if (res.status !== 0 && parsed.status === PASS) {
-    return { ...parsed, status: FAIL, detail: `退出码 ${res.status}`, skipped, durationMs };
+    /* 向量自检失败只退出码非零、不打 [FAIL] 前缀，断言统计照样是「全过」。
+       只写「退出码 1」会让失败详情段落空着——把 stderr 的尾巴带出来，
+       否则得手动重跑才知道哪条向量错了。 */
+    const tail = String(res.stderr ?? "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .slice(-8);
+    return {
+      ...parsed,
+      status: FAIL,
+      detail: `退出码 ${res.status}${tail.length > 0 ? `：${tail[tail.length - 1]}` : ""}`,
+      failures: tail.map((line) => ({ name: line, detail: "" })),
+      skipped,
+      durationMs,
+    };
   }
   return { ...parsed, skipped, durationMs };
 };
@@ -914,8 +961,11 @@ export function buildLayerSpecs(manifest, { repoRoot = REPO } = {}) {
     label: manifest.layers.firmware?.label ?? "固件",
     cheap: true,
     probe: () => {
+      /* 固件测试入口是 .cmd，只能在 cmd.exe 里跑。别的平台上把它交给 sh
+         必然失败，会被误判成「代码回归」——那是环境缺失，不是测试失败。 */
+      if (process.platform !== "win32") return ["固件层需要 Windows + cmd.exe"];
       const missing = [];
-      if (!hasCommand(process.platform === "win32" ? "gcc" : "gcc")) missing.push("gcc");
+      if (!hasCommand("gcc")) missing.push("gcc");
       if (!hasCommand("node")) missing.push("node");
       return missing;
     },
@@ -997,7 +1047,17 @@ export function executeLayers(specs, { repoRoot = REPO, startedAt = nowIso() } =
 
   for (const spec of specs) {
     const t0 = Date.now();
-    const missing = spec.probe ? spec.probe() : [];
+
+    /* 探测与执行都必须兜住异常。工具的核心承诺是「产出一份能自证的报告」，
+       而 readFileSync / spawn / 写只读目录都可能抛——让异常打穿到这里，
+       结果是一份报告都不写，连「哪层崩了」都留不下。 */
+    let missing;
+    try {
+      missing = spec.probe ? spec.probe() : [];
+    } catch (error) {
+      results.push(failedLayer(spec, Date.now() - t0, `探测时异常：${errorMessage(error)}`));
+      continue;
+    }
 
     if (missing.length > 0) {
       results.push({
@@ -1014,7 +1074,19 @@ export function executeLayers(specs, { repoRoot = REPO, startedAt = nowIso() } =
       continue;
     }
 
-    const out = spec.run();
+    let out;
+    try {
+      out = spec.run();
+    } catch (error) {
+      results.push(failedLayer(spec, Date.now() - t0, `执行时异常：${errorMessage(error)}`));
+      continue;
+    }
+    /* 状态只允许三态。缺省或拼错时降级成 FAIL 并写明——
+       否则 undefined 会渲染成「不是 FAIL 也不带原因」的假绿。 */
+    if (!VALID_STATUSES.has(out.status)) {
+      results.push(failedLayer(spec, Date.now() - t0, `层返回了非法状态：${String(out.status)}`));
+      continue;
+    }
     results.push({
       name: spec.name,
       label: spec.label,
@@ -1110,8 +1182,14 @@ export function diffRuns(current, previous) {
   const currentFiles = new Map(
     (current?.files ?? []).filter(scopedToRun).map((file) => [file.path, file]),
   );
+  /* 上次没跑这一层时，它的文件全都没有逐文件数字。那种情况不是「可比较性
+     变了」，是根本没得比——拿它记「无法比对」会把 unchanged 永久打成 false，
+     每次都报一堆假差异。 */
+  const previousRanLayers = new Set((previous?.layers ?? []).map((layer) => layer?.name).filter(Boolean));
   const previousFiles = new Map(
-    (previous?.files ?? []).filter(scopedToRun).map((file) => [file.path, file]),
+    (previous?.files ?? [])
+      .filter((file) => scopedToRun(file) && previousRanLayers.has(file.layer))
+      .map((file) => [file.path, file]),
   );
 
   const changed = [];
@@ -1693,15 +1771,11 @@ function main() {
       status: FAIL,
       checks: manifestCheck.total,
       unit: "文件",
-      detail: `有 ${manifestCheck.unregistered.length + manifestCheck.missing.length + manifestCheck.misplaced.length} 处不一致`,
-      failures: [
-        ...manifestCheck.unregistered.map((item) => ({ name: `未登记 ${item.file}`, detail: `应属 ${item.layer} 层` })),
-        ...manifestCheck.missing.map((item) => ({ name: `文件不存在 ${item.file}`, detail: `登记为 ${item.layer} 层` })),
-        ...manifestCheck.misplaced.map((item) => ({
-          name: `层不一致 ${item.file}`,
-          detail: `登记为 ${item.declared}，实际属 ${item.actual}`,
-        })),
-      ],
+      /* 五类问题必须全都列出来：只数三类会让「covers 全是空格」这种清单
+         变成「❌ FAIL / 有 0 处不一致 /（没有逐条失败信息）」——红了却说不出
+         为什么，而 --release 归档的正是这份报告。 */
+      detail: `有 ${manifestIssues(manifestCheck).length} 处不一致`,
+      failures: manifestIssues(manifestCheck),
       durationMs: 0,
     });
   }
