@@ -104,6 +104,7 @@
     "miniprogram/tests/theme-sync.test.ts": { "layer": "mp", "covers": "雾蓝主色、无橙色残留、原生控件激活色、显示时重读主题", "ticket": "#90" },
     "miniprogram/tests/theme.test.ts": { "layer": "mp", "covers": "双主题变量、无硬编码色、主题配置与 app.json 一致" },
     "miniprogram/tests/test-manifest.test.ts": { "layer": "mp", "covers": "测试清单查漏工具自身：通配收集、未登记/已删/层不一致/空说明四类问题，自带变异测试" },
+    "miniprogram/tests/test-run.test.ts": { "layer": "mp", "covers": "测试编排器自身：三态语义、报告六段、退出码、固件输出解析" },
     "miniprogram/tests/throttle.test.ts": { "layer": "mp", "covers": "20Hz latest-wins 节流" },
     "miniprogram/tests/timeline.test.ts": { "layer": "mp", "covers": "时间轴时长钳位、宽度比例、最小宽度、布局视图", "ticket": "#65" },
     "miniprogram/tests/transport.test.ts": { "layer": "mp", "covers": "分片与重组、MTU、状态读取回落、单帧查询" },

@@ -35,3 +35,6 @@ miniprogram/.auto/
 
 # 本地 BLE 验收产物（本机蓝牙地址与现场快照，不入库）
 .scratch/ble-test/
+
+# 本地测试报告（日常运行产物，不进 git；发布级报告归档到 docs/evidence）
+.reports/
