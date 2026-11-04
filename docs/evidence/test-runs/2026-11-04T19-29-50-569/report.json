@@ -1,9 +1,9 @@
 {
-  "runId": "2026-11-04T19-28-09-351",
-  "startedAt": "2026-11-04T19:28:09.351Z",
-  "finishedAt": "2026-11-04T19:29:36.900Z",
+  "runId": "2026-11-04T19-29-50-569",
+  "startedAt": "2026-11-04T19:29:50.569Z",
+  "finishedAt": "2026-11-04T19:31:16.647Z",
   "head": {
-    "commit": "b66b905",
+    "commit": "767b765",
     "branch": "integration/test-flow",
     "dirty": true,
     "host": "sishoui",
@@ -150,7 +150,7 @@
           "test_planar_null_safety": 7
         }
       },
-      "durationMs": 1377
+      "durationMs": 1375
     },
     {
       "name": "mp",
@@ -523,7 +523,7 @@
           }
         ]
       },
-      "durationMs": 15048
+      "durationMs": 15227
     },
     {
       "name": "server",
@@ -571,7 +571,7 @@
           }
         ]
       },
-      "durationMs": 4403
+      "durationMs": 2784
     },
     {
       "name": "ui",
@@ -582,7 +582,7 @@
       "detail": "",
       "failures": [],
       "skipReason": "缺微信开发者工具自动化端口（ws://127.0.0.1:9501：Failed connecting to ws://127.0.0.1:9501, check if target project window is opened with automation enabled）",
-      "durationMs": 342
+      "durationMs": 350
     },
     {
       "name": "ble",
@@ -608,7 +608,7 @@
           }
         ]
       },
-      "durationMs": 66074
+      "durationMs": 66024
     }
   ],
   "conclusion": "PASS",
@@ -1269,5 +1269,21 @@
     "missing": [],
     "misplaced": []
   },
-  "release": true
+  "release": true,
+  "previous": {
+    "runId": "2026-11-04T19-29-50-569",
+    "previousRunId": "2026-11-04T19-28-09-351",
+    "previousStartedAt": "2026-11-04T19:28:09.351Z",
+    "comparable": 81,
+    "files": {
+      "changed": [],
+      "added": [],
+      "removed": []
+    },
+    "notCompared": [],
+    "layers": [],
+    "newFailures": [],
+    "newSkips": [],
+    "unchanged": true
+  }
 }
