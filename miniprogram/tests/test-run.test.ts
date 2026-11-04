@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 // @ts-expect-error -- 仓库根的工具脚本是 .mjs，没有类型声明
 import {
@@ -506,5 +506,17 @@ describe("ui 层接线", () => {
     expect(result.layers[0].skipReason).toBe("缺微信开发者工具自动化端口");
     /* SKIP 不影响退出码语义：全 SKIP 的一轮结论仍是 PASS。 */
     expect(result.conclusion).toBe("PASS");
+  });
+
+  it("脚本的 --probe 真的握手，而不是只测 TCP", async () => {
+    /* 端口开着但窗口没开自动化模式时，TCP 连得上、WebSocket 握手却失败。
+       只测 TCP 会让 probe 说「可连」、run 立刻 SKIP——同一份环境两个结论。
+       这条锁住 probe 走的是握手路径：输出要么是可连，要么带缺端口原因，
+       不会出现「探通但真连失败」那种沉默的第三种状态。 */
+    const script = readFileSync(resolve(__dirname, "../../scripts/verify-v5.mjs"), "utf8");
+
+    expect(script).toContain("await probeAutomator.connect");
+    const probeBlock = script.slice(script.indexOf('includes("--probe")'));
+    expect(probeBlock.slice(0, 1200)).toContain("connect");
   });
 });

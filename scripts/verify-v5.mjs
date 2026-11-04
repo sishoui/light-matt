@@ -84,15 +84,27 @@ function probeAutomationPort(endpoint, timeoutMs = PROBE_TIMEOUT_MS) {
 
 /* ---------------- 只探测，不跑断言 ---------------- */
 
-/* 编排器的 ui 层用这一支做「主动探测」：只建 TCP 连接，不跑 49 项断言，
+/* 编排器的 ui 层用这一支做「主动探测」：真的握手一次再断开，不跑 49 项断言，
    所以探测的代价与断言数无关。
+   为什么不能只做 TCP 连接：端口开着但窗口没开「自动化」模式时 TCP 连得上、
+   WebSocket 握手却失败。只测 TCP 会让 probe 说「可连」、run 立刻 SKIP——
+   同一份环境得出两个结论，报告就自相矛盾了。
    退出码在这里也保持「0 = 没有断言失败」：不通不是失败，是缺环境。 */
 if (process.argv.includes("--probe")) {
   const reasons = await probeAutomationPort(PORT);
   if (reasons.length > 0) {
     console.log(skipLine(reasons.join("、")));
-  } else {
+    process.exit(0);
+  }
+  try {
+    const requireFromMp = createRequire(resolve(REPO, "miniprogram", "package.json"));
+    const probeMod = requireFromMp("miniprogram-automator");
+    const probeAutomator = probeMod.default ?? probeMod;
+    const connection = await probeAutomator.connect({ wsEndpoint: PORT });
+    await connection.disconnect();
     console.log(`PORT: ${PORT} 可连`);
+  } catch (error) {
+    console.log(skipLine(`缺微信开发者工具自动化端口（${PORT}：${String(error.message ?? error)}）`));
   }
   process.exit(0);
 }
