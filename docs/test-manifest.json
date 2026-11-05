@@ -86,7 +86,6 @@
     "miniprogram/tests/page-runtime.test.ts": { "layer": "mp", "covers": "页面测试底座自身：路径键、data 独立性、渲染期桩、waitFor 语义", "ticket": "#115" },
     "miniprogram/tests/plan-drafts.test.ts": { "layer": "mp", "covers": "方案草稿落盘键、读写、多灯组切片、旧键迁移" },
     "miniprogram/tests/plan-editor.test.ts": { "layer": "mp", "covers": "方案状态、步骤与灯组切片、空态、术语翻译" },
-    "miniprogram/tests/plan-fill.test.ts": { "layer": "mp", "covers": "下发前补齐其它灯组切片、读回失败不下发", "ticket": "#101" },
     "miniprogram/tests/plan-slots.test.ts": { "layer": "mp", "covers": "方案空位与最小空位、删除不重排、标签文案", "ticket": "#83" },
     "miniprogram/tests/profile.test.ts": { "layer": "mp", "covers": "本机身份（头像与昵称）的存储纯逻辑" },
     "miniprogram/tests/protocol-v98.test.ts": { "layer": "mp", "covers": "流星密度与实色拖尾、随机闪烁命令、循环三值", "ticket": "#98" },

@@ -20,7 +20,7 @@ import { MOCK_DEVICES } from "../utils/control/mock-devices";
 import { setSessionForTest } from "../utils/control/session-singleton";
 import { buildScriptPlan } from "../utils/control/script-plan";
 import { LOOP_MODE, resolveLoopMode } from "../utils/control/advanced-layers";
-import { PLAYBACK_FLAG, SEGMENT_TYPE } from "../utils/protocol/constants";
+import { CMD, PLAYBACK_FLAG, SEGMENT_TYPE } from "../utils/protocol/constants";
 import { createSessionStorage } from "./helpers/storage";
 import { installGlobals, instantiate } from "./helpers/page-runtime";
 
@@ -194,11 +194,12 @@ async function openPage() {
     (globalThis as any).wx = sharedWx;
   }
 
+  const transport = new MockTransport();
   const session = new ControlSession({
     platform: "other",
     devMode: false,
     storage: createSessionStorage(),
-    transportOverride: new MockTransport() as unknown as BleTransport,
+    transportOverride: transport as unknown as BleTransport,
     reconnectDelaysMs: [],
   });
   await session.connect(DEVICE.deviceId, DEVICE.broadcastName);
@@ -211,7 +212,7 @@ async function openPage() {
     await sleep(50);
   }
   expect(page.data.ready, "页面应当 ready").toBe(true);
-  return { page, session };
+  return { page, session, transport };
 }
 
 describe("#114 循环三档：页面点击链路", () => {
@@ -244,22 +245,22 @@ describe("#114 循环三档：页面点击链路", () => {
     }
   }, 120_000);
 
-  it("「继续播放」与「应用并播放」下发同一档位时设备收到相同的值", async () => {
+  it("「继续播放」保持设备原来那一档，不会被自动下发改掉（#125 去掉按钮后）", async () => {
     const { page, session } = await openPage();
     try {
       await addZone(page);
       page.onLoopTap(tap({ value: "2" }));
       await sleep(1200);
 
-      await page.onApplyAndPlay();
-      await sleep(1500);
+      /* #125：没有「应用并播放」按钮了——任何编辑都自动下发，所以这里
+       * 直接验证「设备上的档位就是刚点的那一档」。 */
       const viaApply = loopOf(session.deviceState!.flags);
 
       await page.activatePlan(0);
       await sleep(1200);
       const viaResume = loopOf(session.deviceState!.flags);
 
-      expect(viaApply, "应用并播放后").toBe(2);
+      expect(viaApply, "自动下发后").toBe(2);
       expect(viaResume, "继续播放后").toBe(2);
       expect(viaResume).toBe(viaApply);
     } finally {
@@ -468,7 +469,7 @@ describe("#117 进阶档点击路径", () => {
     }
   }, 180_000);
 
-  it("只编辑一条灯组并应用，其它灯组的分区与颜色逐字节不变", async () => {
+  it("只编辑一条灯组并应用，其它灯组的分区与颜色逐字节不变（#123 不补齐）", async () => {
     const { page, session } = await openPage();
     try {
       /* 先给 strip 1 布一个静态段，模拟「别的灯组本来有配置」。 */
@@ -520,9 +521,219 @@ describe("#117 进阶档点击路径", () => {
       /* 逐字节：颜色与区间都不许被碰。 */
       const key = (r: any) => `${r.start}-${r.end}|${r.layer0.type},${r.layer0.hue},${r.layer0.sat}`;
       expect(afterReports.map(key)).toEqual(beforeReports.map(key));
+
+      /*
+       * #123 真正的判据：下发的方案里**只有**用户编辑过的那条灯组。
+       *
+       * 旧实现会先 QueryStrip 其它带、把结果补进每个阶段（`fillOtherStripSlices`），
+       * 于是方案里出现 strip 1 的副本——那是**静态存储**里的陈旧内容，
+       * 却把 strip 1 绑上了自己方案的时间轴，正是「别的带跟着一起停」的成因。
+       *
+       * 这一条断言挡住了「把补齐逻辑加回来」这种回归：只要方案里再出现
+       * strip 1 的切片，它就是红的。
+       */
+      const uploaded = session.lastDownloadedScript;
+      expect(uploaded, "应当记下这次下发的方案").not.toBeNull();
+      const stripIds = new Set<number>();
+      for (const stage of uploaded!.stages) {
+        for (const segment of stage.segments) {
+          stripIds.add(segment.stripId);
+        }
+      }
+      expect(
+        [...stripIds].sort(),
+        "方案里只该有用户编辑过的 strip 0",
+      ).toEqual([0]);
     } finally {
       await session.disconnect();
     }
   }, 180_000);
 });
 
+/*
+ * #124：应用方案时「先传方案，再停播」。
+ *
+ * 旧顺序是「停播 → 写实时分区 → 上传 → 开播」。停播那一步让渲染源从当前
+ * 阶段掉回静态存储，而上传要 21~75 帧——真机实测 14 帧用了 420ms
+ * （30ms/帧），也就是 8.4 帧 @20fps 的画面错误窗口。
+ *
+ * 现在上传整体提到停播之前（ScriptBegin/Stage/Segment/Commit 只写 staging，
+ * 本来就不影响画面），窗口压缩到「停播 → 开播」之间的一帧。
+ *
+ * 这里锁的是**命令顺序**——那正是窗口大小的唯一决定因素。
+ */
+describe("#124 应用方案：上传在停播之前", () => {
+  it("ScriptCommit 先于 SetPlayback(stop)，且中间只隔一次 QueryStrip", async () => {
+    const { page, session, transport } = await openPage();
+    try {
+      /* 先让设备处于播放态：只有「本来在播」才会走到停播这一步。 */
+      page.onModeTap(tap({ mode: "advanced" }));
+      await sleep(150);
+      page.onZoneAdd();
+      await sleep(150);
+      page.onPickerCellTap(tap({ index: "0" }));
+      await sleep(80);
+      page.onPickerCellTap(tap({ index: "3" }));
+      await sleep(80);
+      page.onPickerConfirm();
+      await sleep(300);
+      await page.applyAdvanced();
+      await sleep(1500);
+      await session.setPlayback(1, 1);
+      await sleep(400);
+
+      const before = transport.log.snapshot().filter((e: any) => e.dir === "tx").length;
+
+      await page.applyAdvanced();
+      await sleep(2000);
+
+      const tx = transport.log
+        .snapshot()
+        .slice(before)
+        .filter((e: any) => e.dir === "tx");
+      /* 载荷在 hex 里（"13 00" = SetPlayback stop）：首字节是命令，第二个是 action。 */
+      const payloadByte = (e: any, index: number): number => {
+        const bytes = String(e.hex).split(" ").map((x: string) => parseInt(x, 16));
+        return bytes[index];
+      };
+
+      const commitAt = tx.findIndex((e: any) => e.command === CMD.SCRIPT_COMMIT);
+      const stopAt = tx.findIndex(
+        (e: any) => e.command === CMD.SET_PLAYBACK && payloadByte(e, 1) === 0,
+      );
+      const playAt = tx.findIndex(
+        (e: any) => e.command === CMD.SET_PLAYBACK && payloadByte(e, 1) === 1,
+      );
+
+      expect(commitAt, "这次下发里应当有 ScriptCommit").toBeGreaterThanOrEqual(0);
+      expect(stopAt, "播放中应用方案应当先停播").toBeGreaterThanOrEqual(0);
+      expect(playAt, "最后应当开播").toBeGreaterThanOrEqual(0);
+
+      expect(commitAt, "上传必须在停播之前（#124）").toBeLessThan(stopAt);
+      /* 停播与开播之间只允许夹 QueryStrip + SetSegment（写回落画面），
+       * 不允许再夹任何方案帧——那正是旧实现的错误窗口来源。 */
+      const between = tx.slice(stopAt + 1, playAt);
+      const scriptFramesBetween = between.filter((e: any) =>
+        [CMD.SCRIPT_BEGIN, CMD.SCRIPT_STAGE, CMD.SCRIPT_SEGMENT, CMD.SCRIPT_COMMIT].includes(
+          e.command,
+        ),
+      );
+      expect(
+        scriptFramesBetween.map((e: any) => e.command),
+        "停播与开播之间不该再有方案帧",
+      ).toEqual([]);
+    } finally {
+      await session.disconnect();
+    }
+  }, 180_000);
+});
+
+/*
+ * #125：进阶档改任何东西都自动下发，没有「应用」按钮。
+ *
+ * **经真实控件触发**：这些用例调的是 `onPanelTypeTap` / `onPanelSliderChange` /
+ * `onOverlayBlendTap` 这些事件处理器，不是绕过控件直接调 `applyAdvanced()`。
+ * 旧用例正是直接调 `applyAdvanced()`，所以「控件根本没接上下发」这个缺陷
+ * 一路绿着（#96 删掉按钮之后就这样活了很久）。
+ */
+describe("#125 进阶档：点一下就生效", () => {
+  /** 划一个分区并选中它，让面板可用。 */
+  async function readyZone(page: any) {
+    page.onModeTap(tap({ mode: "advanced" }));
+    await sleep(150);
+    page.onZoneAdd();
+    await sleep(150);
+    page.onPickerCellTap(tap({ index: "0" }));
+    await sleep(80);
+    page.onPickerCellTap(tap({ index: "9" }));
+    await sleep(80);
+    page.onPickerConfirm();
+    await sleep(1500);
+    const zones = page.currentZones();
+    page.onBubbleZoneTap(tap({ segId: String(zones[0].segId) }));
+    await sleep(300);
+  }
+
+  it("点效果类型，设备读回的层类型随之改变（不需要任何额外操作）", async () => {
+    const { page, session } = await openPage();
+    try {
+      await readyZone(page);
+
+      page.onPanelTypeTap(tap({ type: "breathing" }));
+      await sleep(1800);
+
+      const q = await session.queryStrip(0);
+      const types = q.kind === "ok" ? q.reports.map((r: any) => r.layer0.type) : [];
+      expect(types, "点了「呼吸」之后设备上应当是 0x01").toContain(SEGMENT_TYPE.BREATHING);
+    } finally {
+      await session.disconnect();
+    }
+  }, 180_000);
+
+  it("切换混合方式，设备读回的 blend 随之改变", async () => {
+    const { page, session } = await openPage();
+    try {
+      await readyZone(page);
+      /* 先给一个特效层，混合方式才有意义。 */
+      page.onOverlayTypeTap(tap({ value: "comet" }));
+      await sleep(1800);
+
+      page.onOverlayBlendTap(tap({ value: 2 }));
+      await sleep(1800);
+
+      const q = await session.queryStrip(0);
+      const blends = q.kind === "ok" ? q.reports.map((r: any) => r.blend) : [];
+      expect(blends, "混合方式应当变成相加 0x02").toContain(2);
+    } finally {
+      await session.disconnect();
+    }
+  }, 180_000);
+
+  it("滑块拖动过程中不写设备，松手才写（抓帧确认）", async () => {
+    const { page, session, transport } = await openPage();
+    try {
+      await readyZone(page);
+
+      const countTx = () =>
+        transport.log.snapshot().filter((e: any) => e.dir === "tx").length;
+
+      /* 拖动中：连发 5 次 changing，一帧都不该出去。 */
+      const before = countTx();
+      for (const value of [10, 30, 50, 70, 90]) {
+        page.onPanelSliderChanging({
+          currentTarget: { dataset: { key: "level" } },
+          detail: { value },
+        } as any);
+        await sleep(60);
+      }
+      const during = countTx();
+      expect(during - before, "拖动中不该有任何下发").toBe(0);
+
+      /* 松手：应当下发。 */
+      page.onPanelSliderChange({
+        currentTarget: { dataset: { key: "level" } },
+        detail: { value: 90 },
+      } as any);
+      await sleep(1800);
+      expect(countTx() - during, "松手后应当真的下发").toBeGreaterThan(0);
+    } finally {
+      await session.disconnect();
+    }
+  }, 180_000);
+
+  it("写入失败时页面顶部出现可读原因（applyError 有内容）", async () => {
+    const { page } = await openPage();
+    try {
+      /* 空方案是本地就能判定的失败：不给分区就点效果类型，预检会拦住。 */
+      page.onModeTap(tap({ mode: "advanced" }));
+      await sleep(150);
+      await page.applyAdvanced();
+      await sleep(600);
+
+      expect(page.data.applyError, "失败原因必须显示出来").not.toBe("");
+      expect(page.data.applyError).not.toMatch(/0x[0-9A-F]{2}|InvalidParam/);
+    } finally {
+      /* 这个用例没有连设备，直接丢掉页面即可。 */
+    }
+  }, 60_000);
+});

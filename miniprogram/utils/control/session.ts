@@ -342,6 +342,13 @@ export class ControlSession {
   /** v3：最近一次 QueryDeviceInfo 的结果（§9.1 第 3 步）。 */
   private deviceInfoCache: DeviceInfo | null = null;
   /**
+   * 最近一次成功下发的方案内容（#123）。
+   *
+   * 测试用它断言「方案里到底含哪几条灯组」——这是「不补齐其它灯组」唯一
+   * 可观察的地方（设备侧读不回方案内容，只有 4 字节摘要）。也供调试面板展示。
+   */
+  lastDownloadedScript: ScriptConfig | null = null;
+  /**
    * v3：逐带段列表缓存（§9.1 第 4 步，`QueryStrip(i)` 按需）。
    *
    * 下标 = stripId，元素是该带上一次读回的 SegmentReport。功能上只做「同一
@@ -1031,6 +1038,8 @@ export class ControlSession {
       return { kind: "stale" };
     }
     onProgress?.(scriptProgressView(plan, plan.frameCount));
+    /* #123：记下真正发出去的方案内容，供断言「方案里含哪几条灯组」。 */
+    this.lastDownloadedScript = script;
     /* 激活成功：把设备权威的 State 读回来（script_id / flags 已经变了）。 */
     const state = await this.refreshState().catch(() => this.latestState);
     return { kind: "ok", plan, state: state ?? this.latestState };

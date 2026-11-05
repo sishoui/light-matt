@@ -20,6 +20,16 @@
   </view>
 
   <!--
+    应用失败 / 被预检拦住的原因（#125）。
+    以前 `applyError` 有二十处赋值、wxml 里一处显示都没有——用户点了没反应，
+    还看不到任何原因。现在它固定在页面顶部，写完就出现，成功后自动消失。
+  -->
+  <view wx:if="{{applyError}}" class="apply-error">
+    <text class="apply-error-text">{{applyError}}</text>
+    <text class="apply-error-close" bindtap="onDismissApplyError">知道了</text>
+  </view>
+
+  <!--
     顶部（#95）：标题 = 灯组自定义名（不再重复一行标题块）。
     右侧是灯珠数胶囊（**长按**弹圆盘）与三个圆形方案按钮；灯的开关在设备页。
   -->
