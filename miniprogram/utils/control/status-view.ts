@@ -25,7 +25,22 @@ export function statusView(
   message?: string,
   reconnectPending = false,
   hasCachedDevice = false,
+  /**
+   * 扫描进行中但链路没拆（#131）。
+   *
+   * 此时 `state` 是 `ready`（连接还在），但用户眼前发生的是扫描。
+   * 状态条必须说「停止」，否则点了只会跳页面，而扫描照旧在跑。
+   */
+  scanning = false,
 ): StatusView {
+  if (scanning && (state === "ready" || state === "scanning")) {
+    return {
+      statusText: "扫描中…",
+      statusSub: message ?? "正在查找 Lumen 设备",
+      statusAction: "停止",
+      linkClass: "link-busy",
+    };
+  }
   switch (state) {
     case "ready":
       return {

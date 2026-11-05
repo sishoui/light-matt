@@ -522,11 +522,7 @@ export const WALKTHROUGH: readonly Step[] = [
     ticket: "#131",
     kind: "probe",
     does: "已连接时扫一次再停止，连接不该被拆掉",
-    expectation: {
-      kind: "known-divergence",
-      ticket: "#131",
-      note: "扫描把链路从 ready 打到 scanning，停扫后落到 idle 而不是 ready",
-    },
+    expectation: { kind: "must-hold" },
     async act(ctx) {
       await ctx.waitLink("ready");
       const discover = ctx.pages.discover;
@@ -567,24 +563,29 @@ export const WALKTHROUGH: readonly Step[] = [
     ticket: "#131",
     kind: "probe",
     does: "首页状态条写「停止」时点它，扫描真的停下",
-    expectation: {
-      kind: "known-divergence",
-      ticket: "#131",
-      note: "动作名是「停止」，`onStatusTap` 却只做「进设备页 / 进发现页」",
-    },
+    expectation: { kind: "must-hold" },
     async act(ctx) {
-      /* 上一条发现把链路留在 idle：先连回来。 */
+      /* 上一条可能把链路留在 scanning 或 idle：先归一，再从干净状态起扫。
+       * 这一行要验的是「文案与行为同源」，前提必须是**一次新的扫描**。 */
       await ctx.waitLink("ready").catch(() => undefined);
       const discover = ctx.pages.discover;
       discover.onShow();
       await ctx.sleep(200);
-      await discover.onScanTap();
-      await ctx.waitLink("scanning", 10_000).catch(() => undefined);
+      /* 还在扫就先停，否则下一次 onScanTap 是「停止」而不是「开始」。 */
+      if (!ctx.isScanning()) {
+        await discover.onScanTap();
+        await ctx.waitLink("scanning", 10_000).catch(() => undefined);
+      }
       const home = ctx.pages.home;
+      /* #131：已连接时的扫描不拆链路，`linkState` 是 scanning 而连接仍在。
+       * 首页要在**扫描进行中**那一刻重算状态条，才能看到「停止」。 */
       home.onShow();
       await ctx.sleep(300);
-      /* 这一刻 `statusAction` 应当是「停止」；点它。 */
-      if (String(home.data.statusAction) === "停止") {
+      /* 记下**点之前**那一刻的文案：点完之后扫描已经停了，状态条必然变成
+       * 「设备」——那不是不一致，那正是这一下生效了。 */
+      const tappedAction = String(home.data.statusAction);
+      remember("home.status-action-does-what-it-says.tappedAction", tappedAction);
+      if (tappedAction === "停止") {
         home.onStatusTap();
       }
       await ctx.sleep(1200);
@@ -594,7 +595,7 @@ export const WALKTHROUGH: readonly Step[] = [
     async observe(o) {
       const link = o.linkState();
       return {
-        ui: uiReading("home.statusAction", o.pages.home.data.statusAction),
+        ui: uiReading("home.statusAction（点击前）", recall("home.status-action-does-what-it-says.tappedAction") ?? ""),
         device: deviceReading("refreshState", "点完之后 linkState", link),
       };
     },
@@ -616,11 +617,7 @@ export const WALKTHROUGH: readonly Step[] = [
     ticket: "#131",
     kind: "probe",
     does: "发现页扫描中的空态提示不指向一个已经变成「停止扫描」的按钮",
-    expectation: {
-      kind: "known-divergence",
-      ticket: "#131",
-      note: "同一屏里「重新扫描」与「停止扫描」并存",
-    },
+    expectation: { kind: "must-hold" },
     async act(ctx) {
       const discover = ctx.pages.discover;
       discover.onShow();

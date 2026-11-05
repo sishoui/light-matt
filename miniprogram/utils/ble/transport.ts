@@ -213,6 +213,14 @@ export class BleTransport {
   private readonly scanner: DeviceScanner;
   /** 用户想扫描但适配器不可用：蓝牙打开后自动继续（spec 用户故事 8）。 */
   private scanRequested = false;
+  /**
+   * 扫描会不会顶掉一条**已连着的**链路（#131）。
+   *
+   * 用户的心智是「扫一下看看附近还有没有别的灯控」，不是「断开再配对」。
+   * 但 BLE 的扫描态以前直接覆盖 `ready`，停扫后落到 `idle`——界面说未连接，
+   * 设备其实一直连着。现在把「扫描前是 ready」记下来，停扫后恢复到 `ready`。
+   */
+  private scanKeptLink = false;
 
   private readonly writer: SerialWriter;
   private readonly ackWaiters = new AckWaiters();
@@ -280,6 +288,17 @@ export class BleTransport {
 
   get linkState(): LinkState {
     return this.link;
+  }
+
+  /**
+   * 扫描进行中，但**没有拆掉**那条已连接链路（#131）。
+   *
+   * `link` 在扫描期间是 `scanning`（界面要显示扫描态），而 `ready` 被
+   * `scanKeptLink` 记住。界面据此把状态条写成「停止」而不是「设备」：
+   * 用户点的是「停止扫描」，不是「进设备页」。
+   */
+  get scanningOverLink(): boolean {
+    return this.link === "scanning" && this.scanKeptLink;
   }
 
   get currentDeviceId(): string | null {
@@ -391,6 +410,9 @@ export class BleTransport {
 
     this.scanner.reset();
     this.scanner.setHint(null);
+    /* #131：已连接时扫描不拆链路。`link` 走 scanning 只为驱动界面与扫描提示，
+     * 连接句柄、ACK 等待者、State 都保持原样；停扫时恢复到 ready。 */
+    this.scanKeptLink = this.link === "ready";
     this.setLink("scanning", { message: "扫描中…" });
 
     try {
@@ -447,8 +469,11 @@ export class BleTransport {
       /* 停扫失败不影响后续流程 */
     }
     if (this.link === "scanning") {
-      this.setLink("idle");
+      /* #131：扫描是从「已连接」进去的，停扫要回到 ready，不是 idle。
+       * 落到 idle 会让界面显示未连接，而设备其实一直连着。 */
+      this.setLink(this.scanKeptLink ? "ready" : "idle");
     }
+    this.scanKeptLink = false;
     this.scanner.setHint(null);
   }
 

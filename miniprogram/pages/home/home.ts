@@ -270,6 +270,8 @@ Page({
       detail?.message,
       session?.reconnectPending ?? false,
       (session?.cachedDevice ?? null) !== null,
+      /* #131：已连接时扫描不拆链路，但状态条必须说「停止」。 */
+      session?.transport.scanningOverLink ?? false,
     );
     const ready = state === "ready";
     const connecting = state === "connecting" || state === "initializing";
@@ -376,7 +378,25 @@ Page({
   },
 
   /** 点状态条：已连接进详情，否则去发现页。 */
+  /**
+   * 点状态条：**行为必须与那条右侧文案一致**（#131）。
+   *
+   * 文案是 `statusAction`，由 `statusView` 按链路态派生：连接中是「取消」、
+   * 扫描中是「停止」、已连接是「设备」、其余是「发现」。以前这里只判
+   * `ready`，于是扫描中点写着「停止」的状态条会切到发现页，扫描照旧在跑——
+   * 文案承诺一个动作，代码做的是另一个。
+   */
   onStatusTap() {
+    const session = this.session;
+    const action = this.data.statusAction;
+    if (action === "停止") {
+      void session?.stopScan();
+      return;
+    }
+    if (action === "取消") {
+      session?.cancelConnect();
+      return;
+    }
     if (this.data.ready && this.data.current !== null) {
       pushTo(PAGE_ROUTES.device, { key: this.data.current.key });
       return;
