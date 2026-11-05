@@ -112,7 +112,12 @@ import {
   type BubbleZoneRow,
   type StepBubbleView,
 } from "../../utils/control/step-bubble";
-import { LOOP_MODE, clampLoopMode, type LoopMode } from "../../utils/control/advanced-layers";
+import {
+  LOOP_MODE,
+  clampLoopMode,
+  resolveLoopMode,
+  type LoopMode,
+} from "../../utils/control/advanced-layers";
 import {
   fillOtherStrips,
   missingSlices,
@@ -2238,7 +2243,10 @@ Page({
     const raw = Number(e.currentTarget.dataset.value);
     const mode: LoopMode = clampLoopMode(raw);
     const draft = this.currentDraft();
-    if (draftLoop(draft) === mode) {
+    /* 比的是**草稿里记着的原始值**，不是 `draftLoop` 的钳位结果：后者把
+     * `undefined` 当成 0，于是「设备在循环、草稿没选过」时点「不循环」会被
+     * 提前吞掉，设备继续循环（#114）。 */
+    if (draft.loop === mode) {
       return;
     }
     this.setDraft(withDraftLoop(draft, mode));
@@ -2731,8 +2739,12 @@ Page({
     if (session === null || !this.data.ready) {
       return;
     }
-    const state = session.deviceState;
-    const loopMode = state === null ? LOOP.NONE : stateLoopMode(state);
+    /* 播放的是 `id` 这一**套方案**，循环档位属于方案本身（草稿）。设备上报
+     * 只在用户从未为它选过档位时兜底（#114）。 */
+    const loopMode = resolveLoopMode(
+      advancedDraftOf(this.drafts, id).loop,
+      session.deviceState?.flags ?? null,
+    );
     this.setData({ planHint: "" });
     try {
       const activated = await session.activateScript(id, loopMode);
@@ -3317,7 +3329,7 @@ Page({
       ];
       /* #96：静默把整份方案也更新一次（进阶档的编排要能看到这一组的改动），
        * 再恢复播放。失败不覆盖「已生效」——实时分区已经写进去了。 */
-      await this.silentDownloadPlans();
+      await this.silentDownloadPlans(loopMode);
       if (wasPlaying) {
         await session.setPlayback(1, loopMode).catch(() => undefined);
       }
@@ -3354,7 +3366,7 @@ Page({
    * 与方案一致。**失败静默**：实时分区已经写成功，不该因为方案没提交就把
    * 用户的操作判成失败。
    */
-  async silentDownloadPlans(): Promise<void> {
+  async silentDownloadPlans(loop: LoopMode): Promise<void> {
     const session = this.session;
     if (session === null || !this.data.ready) {
       return;
@@ -3372,7 +3384,9 @@ Page({
       if (!capacity.ok) {
         return;
       }
-      await session.downloadScript(config, { activate: true, loop: false });
+      /* 循环档位由调用方给：这个旁路只许**保持**设备当前那一档。写死某个
+       * 档位会让简单档改个颜色就把设备的循环关掉（#114）。 */
+      await session.downloadScript(config, { activate: true, loop });
     } catch {
       /* 方案同步是旁路：实时分区已经生效，这里不覆盖用户看到的结果。 */
     }
@@ -3447,7 +3461,9 @@ Page({
         this.setData({ quickHint: "已经在播放了" });
         return;
       }
-      const loop = state !== null && (state.flags & 0x01) === 1;
+      /* 简单档没有循环三档：这一帧只是「开始播放」，必须保持设备原来那一档。
+       * 读草稿在这里是错的——`planSlot` 可能停在另一个方案上。 */
+      const loop: LoopMode = state === null ? LOOP.NONE : stateLoopMode(state);
       const result = await session.setPlayback(1, loop);
       if (result.kind === "ok") {
         if (result.state !== undefined && result.state !== null) {
@@ -3638,7 +3654,9 @@ Page({
       }
 
       const state = session.deviceState;
-      const loop = state !== null && (state.flags & 0x01) === 1;
+      /* #114：三档以**用户草稿**为准（点档位、改步骤都落进草稿），设备
+       * flags 只在草稿从未选过时兜底；三值原样往下传，不再压成布尔。 */
+      const loop = resolveLoopMode(effectiveDraft.loop, state?.flags ?? null);
       if (state !== null && state.playbackState !== 0) {
         await session.setPlayback(0, loop);
       }
