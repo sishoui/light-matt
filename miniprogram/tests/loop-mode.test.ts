@@ -297,5 +297,34 @@ describe("#114 循环三档：页面点击链路", () => {
       await session.disconnect();
     }
   }, 120_000);
+
+  it("草稿为空时，改循环档位一帧都不发（但用户的选择要留在草稿里）", async () => {
+    const { page, session } = await openPage();
+    try {
+      const sent: string[] = [];
+      for (const name of ["downloadScript", "setPlayback", "activateScript"]) {
+        const original = (session as any)[name].bind(session);
+        (session as any)[name] = async (...args: any[]) => {
+          sent.push(name);
+          return original(...args);
+        };
+      }
+      const before = session.deviceState!.flags;
+
+      page.onModeTap(tap({ mode: "advanced" }));
+      await sleep(300);
+      for (const mode of [1, 2, 0] as const) {
+        page.onLoopTap(tap({ value: String(mode) }));
+        await sleep(900);
+      }
+
+      expect(sent, "没有可下发的方案时不该碰设备").toEqual([]);
+      expect(session.deviceState!.flags, "设备状态不该被这次点击改动").toBe(before);
+      expect(page.currentDraft().loop, "用户的选择要记进草稿，等划出分区再下发").toBe(0);
+      expect(page.data.applyError, "要告诉用户为什么没下发").not.toBe("");
+    } finally {
+      await session.disconnect();
+    }
+  }, 120_000);
 });
 

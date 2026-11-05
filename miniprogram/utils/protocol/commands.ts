@@ -644,8 +644,12 @@ function assertDuration(durationMs: number): number {
 /**
  * 循环模式的线上字节校验（#98）：只接受 0 / 1 / 2。
  *
- * 兼容旧的布尔入参（true → 1、false → 0），因为页面在此之前一直传布尔值；
- * 三值语义是 `LOOP`。**不钳位**：3 会被固件按 InvalidParam 拒，这里先拒。
+ * 布尔入参是**编码器这一层的兼容**（true → 1、false → 0），只留给历史测试与
+ * 老调用点。#114 之后上层（`session.setPlayback` / `activateScript` /
+ * `ScriptPlanOptions.loop`）一律收 `LoopMode`，布尔在那里过不了编译——所以
+ * 这里折算不会成为一个「把三值压平」的推导点。
+ *
+ * **不钳位**：3 会被固件按 InvalidParam 拒，这里先拒。
  */
 function assertLoopMode(value: number | boolean): number {
   if (typeof value === "boolean") {
