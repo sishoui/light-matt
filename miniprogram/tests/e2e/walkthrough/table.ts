@@ -469,11 +469,7 @@ export const WALKTHROUGH: readonly Step[] = [
     ticket: "#130",
     kind: "probe",
     does: "掉线自动回连之后，首页电源键仍然能关灯",
-    expectation: {
-      kind: "known-divergence",
-      ticket: "#130",
-      note: "回连后 `busy` 粘住为 true，`onPowerTap` 静默返回，power 不翻转",
-    },
+    expectation: { kind: "must-hold" },
     async act(ctx) {
       await ctx.waitLink("ready");
       const home = ctx.pages.home;
