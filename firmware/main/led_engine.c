@@ -19,6 +19,7 @@
 #include "led_strip_owner.h"
 #include "protocol.h"
 #include "script_blob.h"
+#include "script_scope.h"
 #include "script_store.h"
 #include "segment_store.h"
 #include "selftest.h"
@@ -77,6 +78,16 @@ static lumen_persist_t s_render_persist;
 static lumen_segment_store_t s_render_segments;
 
 /*
+ * 这一帧归方案管的灯带位（#122）。与 s_render_segments 同寿命、同来源：
+ * 有方案接管时是整份方案的并集（Q10），否则 0。
+ *
+ * 下游（合成 / 推帧）靠它区分「这条归方案管但这一步没内容」（该步全黑）
+ * 与「这条根本不归方案管」（照常渲染实时分区）——这两种情况的段配置都是空，
+ * 只有归属位能把它们分开。
+ */
+static uint8_t s_render_script_mask;
+
+/*
  * 上一帧的实际渲染耗时（微秒）。帧循环用它做前馈：
  * 等待量 = 目标帧周期 − 上一帧耗时，这样「配置 20fps」才会真的得到 20fps，
  * 而不是「等 50ms 再花 20ms 渲染」得到的 14fps。
@@ -91,6 +102,9 @@ static uint32_t s_last_frame_us;
  */
 static lumen_persist_t s_commit_persist;
 static bool s_stage_valid;
+
+/* 上次打印过的 strip_anim_mask（只给「变化时打一行」的日志用，不参与任何判定）。 */
+static uint8_t s_anim_mask_logged = 0xFF;
 
 /*
  * 自检进度（协议 §11.2）。与 s_state 分开保存：自检是渲染层的临时覆盖，
@@ -170,20 +184,26 @@ static uint32_t now_ms(void)
  * 现有单灯带功能不退化，且与协议默认值（255,180,120 / seg_count 0，
  * 见 docs/protocol-v4.md §7.1 与共享向量 state_read_example_hex）一致。
  * 一旦有活动段，State 就完全由段配置决定。
+ *
+ * `script_mask`（#122）决定每条带取 `stage` 还是 `live`：摘要必须与这一帧
+ * **真正渲染的段配置**同源，否则方案只驱动 strip0 时 State 会按整份方案
+ * 报其余带的动画位，下一帧又被渲染循环改回来——那正是「闪一下就恢复」。
  */
-static void state_summary_apply(lumen_state_t *state, const lumen_segment_store_t *segments)
+static void state_summary_apply(lumen_state_t *state, const lumen_segment_store_t *stage,
+                                const lumen_segment_store_t *live, uint8_t script_mask)
 {
-    state->seg_count = lumen_segment_store_count(segments, 0);
+    const lumen_segment_store_t *strip0 = lumen_scope_source_for_strip(stage, live, script_mask, 0);
+    state->seg_count = lumen_segment_store_count(strip0, 0);
     /*
      * #38：动画位摘要与 seg_count 同源同寿命——段配置一变就重算，
      * 不必等下一帧渲染。门控不读它，所以这里只是让 State read 立刻准确。
      */
-    state->strip_anim_mask = lumen_strip_anim_mask(segments, state->strip_count);
+    state->strip_anim_mask = lumen_scope_anim_mask(stage, live, script_mask, state->strip_count);
     if (state->seg_count == 0) {
         return; /* 保持 v1 单色 */
     }
     uint8_t rgb[3];
-    lumen_segment_store_state_rgb(segments, 0, rgb);
+    lumen_segment_store_state_rgb(strip0, 0, rgb);
     state->r = rgb[0];
     state->g = rgb[1];
     state->b = rgb[2];
@@ -191,7 +211,8 @@ static void state_summary_apply(lumen_state_t *state, const lumen_segment_store_
 
 static void refresh_state_summary_locked(void)
 {
-    state_summary_apply(&s_state, &s_segments);
+    /* 静态配置路径没有方案接管：stage 为空、归属位 0。 */
+    state_summary_apply(&s_state, NULL, &s_segments, 0);
 }
 
 /*
@@ -206,10 +227,18 @@ static bool script_rendering_locked(void)
            (s_playback.state != LUMEN_PLAYBACK_STOPPED || s_playback.hold_last);
 }
 
-/* 当前生效的段配置（播放中 = 当前阶段，否则 = 静态配置；**调用者必须持锁**）。 */
-static const lumen_segment_store_t *active_segments_locked(void)
+/*
+ * 方案此刻覆盖哪些灯带（**调用者必须持锁**）。
+ *
+ * 并集口径（Q10）：整份方案里任一阶段的任一段出现过，这条带就归方案管，
+ * 中途不切换渲染源。没有方案接管画面时返回 0（全部按实时分区）。
+ */
+static uint8_t script_mask_locked(void)
 {
-    return script_rendering_locked() ? &s_stage_segments : &s_segments;
+    if (!script_rendering_locked()) {
+        return 0;
+    }
+    return lumen_script_strip_union_mask(lumen_script_get(&s_scripts, s_playback.script_id));
 }
 
 /*
@@ -219,7 +248,9 @@ static const lumen_segment_store_t *active_segments_locked(void)
  */
 static void refresh_state_summary_from_active_locked(void)
 {
-    state_summary_apply(&s_state, active_segments_locked());
+    /* 方案接管时 stage 是当前阶段，其余带取实时分区（#122 归属口径）。 */
+    state_summary_apply(&s_state, script_rendering_locked() ? &s_stage_segments : NULL, &s_segments,
+                        script_mask_locked());
     /*
      * 剧本播放中「这一阶段没给 strip 0 段」意味着该条应当熄灭，而不是沿用
      * 静态配置的 v1 单色。静态配置里 seg_count == 0 保留单色是刻意的向后
@@ -584,8 +615,14 @@ static void rebuild_led_count_if_pending(void)
         s_mailbox_dirty = false;
     }
     latest = s_state;
-    /* 剧本播放中按当前阶段重绘，避免改完数量后闪一帧静态配置。 */
-    s_render_segments = *(active_segments_locked());
+    /* 方案接管时按当前阶段重绘，避免改完数量后闪一帧静态配置（#122 逐条按归属合成）。 */
+    s_render_script_mask = script_rendering_locked() ? script_mask_locked() : 0;
+    if (script_rendering_locked()) {
+        lumen_scope_compose(&s_render_segments, &s_stage_segments, &s_segments,
+                            s_render_script_mask, s_state.strip_count);
+    } else {
+        s_render_segments = s_segments;
+    }
     /*
      * #32：剧本播放中相位基准是剧本时间轴（暂停时冻结），不是墙上时钟——
      * 否则「改灯珠数量」会让暂停的画面跳一下相位。在锁内取值，出锁后只用副本。
@@ -612,7 +649,7 @@ static void rebuild_led_count_if_pending(void)
     /* 自检激活时新句柄也该显示自检色（§11.2 第 4 条）。 */
     uint32_t redraw_now = script_phase ? phase_now : now_ms();
     lumen_led_render_snapshot(lumen_led_strip_owner_get(), &latest, &s_render_segments, &selftest,
-                              max_brightness(), redraw_now);
+                              max_brightness(), redraw_now, s_render_script_mask);
 
     /* 成功后才持久化（§11.3 第 2 条）；触发命令是 SetLedCount。 */
     lumen_state_store_request_save(&s_render_persist, LUMEN_CMD_SET_LED_COUNT);
@@ -642,7 +679,7 @@ static void rebuild_led_count_if_pending(void)
  * 所以不会残留黑帧、也不需要重设段。
  */
 static bool tdm_push_strip(uint8_t strip_id, const lumen_state_t *snapshot,
-                           const lumen_segment_store_t *segments,
+                           const lumen_segment_store_t *segments, uint8_t script_mask,
                            const lumen_selftest_t *selftest, bool force, uint32_t now_ms_value)
 {
     const lumen_planar_strip_t *cfg = lumen_planar_get(&s_planar, strip_id);
@@ -669,8 +706,8 @@ static bool tdm_push_strip(uint8_t strip_id, const lumen_state_t *snapshot,
 
     uint8_t frame[LUMEN_MAX_LEDS * 3];
     uint16_t n = lumen_led_render_compose_strip(snapshot, segments, selftest, max_brightness(),
-                                               now_ms_value, strip_id, cfg->count, frame,
-                                               sizeof(frame));
+                                               now_ms_value, strip_id, cfg->count, script_mask,
+                                               frame, sizeof(frame));
     if (n == 0) {
         return false;
     }
@@ -743,12 +780,13 @@ static bool tdm_push_strip(uint8_t strip_id, const lumen_state_t *snapshot,
  * 保证 v1 单灯带行为逐字节不变。
  */
 static void tdm_run_round(const lumen_state_t *snapshot, const lumen_segment_store_t *segments,
-                          const lumen_selftest_t *selftest, bool force, uint32_t now_ms_value)
+                          uint8_t script_mask, const lumen_selftest_t *selftest, bool force,
+                          uint32_t now_ms_value)
 {
     int64_t t0 = esp_timer_get_time();
     uint8_t pushed = 0;
     for (uint8_t i = 0; i < s_planar.strip_count; ++i) {
-        if (tdm_push_strip(i, snapshot, segments, selftest, force, now_ms_value)) {
+        if (tdm_push_strip(i, snapshot, segments, script_mask, selftest, force, now_ms_value)) {
             ++pushed;
         }
     }
@@ -975,21 +1013,55 @@ static void render_task(void *arg)
         snapshot.playback_state = s_state.playback_state;
         snapshot.flags = s_state.flags;
         /*
-         * 段配置与状态来自同一临界区，避免撕裂帧。播放中改用「当前阶段」的
-         * 段配置；停止时回到静态配置。两者都是整份拷贝（8×8×28 B ≈ 1.75 KB），
-         * 与 v1 同一代价。
+         * 段配置与状态来自同一临界区，避免撕裂帧。
+         *
+         * #122：不再整份取「当前阶段」或「静态配置」，而是逐条按归属合成
+         * （Q16）。参与的带取当前阶段的内容，其余带取自己的实时分区——
+         * 方案因此只驱动它包含的灯带，停播 / 播完 / 切步骤都碰不到别人。
+         * `script_mask` 与段配置同源同寿命，下游靠它区分「归方案管但没有段」
+         * （该步全黑）与「根本不归方案管」（照常渲实时分区）。
          */
-        s_render_segments = script_rendering ? s_stage_segments : s_segments;
+        s_render_script_mask = script_rendering ? script_mask_locked() : 0;
+        if (script_rendering) {
+            lumen_scope_compose(&s_render_segments, &s_stage_segments, &s_segments,
+                                s_render_script_mask, s_state.strip_count);
+        } else {
+            s_render_segments = s_segments;
+        }
         /*
          * #38：每帧维护 strip_anim_mask（State 字节 12）——bit i = 第 i 条带
          * 当前有动画类活动段。App 用它判断「这条是否在跑动画」，不需要逐带
-         * QueryStrip。以**这一帧真正要渲染**的段配置为准（播放中即当前阶段），
-         * 否则暂停/切阶段时 State 会报上一套的动画位。
+         * QueryStrip。以**这一帧真正要渲染**的段配置为准，否则暂停/切阶段时
+         * State 会报上一套的动画位。
+         *
+         * #122：必须按归属逐条取——未参与方案的带保留自己的动画位，这正是
+         * 「方案只驱动它包含的灯带」在 State 上的可观测证据。
          *
          * 只是摘要：渲染门控与 TDM 跳过都不读它，所以这里任意时刻的旧值
          * 都不会造成画面错误。
          */
-        s_state.strip_anim_mask = lumen_strip_anim_mask(&s_render_segments, s_state.strip_count);
+        uint8_t anim_mask = lumen_scope_anim_mask(
+            script_rendering ? &s_stage_segments : NULL, &s_segments, s_render_script_mask,
+            s_state.strip_count);
+        /*
+         * 变化时打一行（不变不打，避免淹掉串口）。这是「闪一下就恢复」唯一
+         * 帧级准确的证据：BLE 逐帧轮询最高只有 ~33Hz，而渲染是 20fps，
+         * 只存在一帧的瞬态正好落在采样间隙里。串口日志是每帧必到的。
+         *
+         * 用独立的 `s_anim_mask_logged` 而不是比较 `s_state.strip_anim_mask`：
+         * 阶段切换路径会在锁内顺手重算一次摘要并写进 s_state，渲染循环随后
+         * 看到的是「没变化」，于是 0xFF -> 0xFE 这一半永远不会被打印。
+         */
+        if (anim_mask != s_anim_mask_logged) {
+            const lumen_script_t *mask_script =
+                lumen_script_get(&s_scripts, s_playback.script_id);
+            ESP_LOGI(TAG, "anim_mask 0x%02X -> 0x%02X（scope=0x%02X stage=%u/%u pb=%u）",
+                     s_anim_mask_logged, anim_mask, s_render_script_mask, s_state.stage_index,
+                     mask_script != NULL ? mask_script->stage_count : 0,
+                     (unsigned)s_playback.state);
+            s_anim_mask_logged = anim_mask;
+        }
+        s_state.strip_anim_mask = anim_mask;
         /*
          * 推进自检步骤（持锁：与取消/重启自检的命令互斥），并把整份自检状态
          * 拷出来给渲染用——出锁后不能再用 s_selftest，BLE 回调随时可能改它。
@@ -1025,10 +1097,12 @@ static void render_task(void *arg)
          * 所以静态条不会因为别人的动画而空转刷帧。 */
         int64_t frame_t0 = esp_timer_get_time();
         if (s_planar.strip_count > 1) {
-            tdm_run_round(&snapshot, &s_render_segments, &selftest, force_round, render_now);
+            tdm_run_round(&snapshot, &s_render_segments, s_render_script_mask, &selftest, force_round,
+                          render_now);
         } else {
             lumen_led_render_snapshot(lumen_led_strip_owner_get(), &snapshot, &s_render_segments,
-                                      &selftest, max_brightness(), render_now);
+                                      &selftest, max_brightness(), render_now,
+                                      s_render_script_mask);
         }
         /*
          * 记这一帧的实际耗时，供下一轮的帧周期前馈使用（见上面的等待计算）。
@@ -1218,9 +1292,14 @@ void lumen_led_engine_state_bytes(uint8_t out[LUMEN_STATE_BYTES])
     uint8_t segs[LUMEN_MAX_STRIPS];
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
     strip_counts_locked(counts);
+    uint8_t mask = script_mask_locked();
     for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
-        /* State 报的是**当前生效**的段配置（剧本播放中即当前阶段）。 */
-        segs[i] = lumen_segment_store_count(active_segments_locked(), i);
+        /* State 报的是**这一帧真正要渲染的**段配置：#122 起逐条按归属取，
+         * 参与的带取当前阶段、其余取实时分区。 */
+        segs[i] = lumen_segment_store_count(
+            lumen_scope_source_for_strip(script_rendering_locked() ? &s_stage_segments : NULL,
+                                         &s_segments, mask, i),
+            i);
     }
     lumen_state_to_bytes(&s_state, max_brightness(), counts, segs, out);
     xSemaphoreGive(s_state_lock);
@@ -1252,11 +1331,17 @@ void lumen_led_engine_commit(const lumen_state_t *next, uint8_t command)
      */
     refresh_state_summary_locked();
     /*
-     * #38：动画位按**当前生效**的段配置算（播放中 = 当前阶段），与渲染任务
-     * 每帧的算法一致。命令快照里的旧值不能漏进 State read。
+     * #38：动画位按**这一帧真正要渲染的段配置**算——方案接管时逐条按归属取
+     * （参与的带取当前阶段、其余取实时分区），与渲染任务每帧的算法一致。
+     * 命令快照里的旧值不能漏进 State read。
+     *
+     * #122：这里必须与渲染循环同源，否则方案只驱动 strip0 时，命令到达那一
+     * 刻 State 会按整份方案报其余带的动画位，下一帧又被渲染循环改回来——
+     * 那正是「闪一下就恢复」的瞬态。
      */
-    s_state.strip_anim_mask =
-        lumen_strip_anim_mask(active_segments_locked(), s_state.strip_count);
+    s_state.strip_anim_mask = lumen_scope_anim_mask(
+        script_rendering_locked() ? &s_stage_segments : NULL, &s_segments, script_mask_locked(),
+        s_state.strip_count);
     /*
      * 剧本摘要字段（字节 10-13）**不**信任命令层快照：播放头可能刚被渲染任务
      * 推进，用旧快照会把 stage_index / playback_state 回退。以播放时间轴为准。

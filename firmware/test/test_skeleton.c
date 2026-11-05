@@ -32,6 +32,7 @@
 #include "protocol.h"
 #include "save_scheduler.h"
 #include "script_blob.h"
+#include "script_scope.h"
 #include "script_store.h"
 #include "segment_store.h"
 #include "selftest.h"
@@ -68,6 +69,27 @@ static int g_failures;
             fprintf(stderr, "\n");                                                     \
             ++g_failures;                                                              \
         }                                                                              \
+    } while (0)
+
+/*
+ * 按测试函数统计断言数（#108）。
+ *
+ * 断言的唯一计数者是 g_checks。这里只在每个测试函数前后各读一次，把差值打出来，
+ * 前缀固定成 "TESTCOUNT <函数名> <断言数>"，编排器（scripts/test-run.mjs）按前缀解析。
+ *
+ * 关键约束：统计行只走 printf，绝不调用 CHECK / CHECK_BYTES，否则会把自己也算进去，
+ * 断言总数就不再是 13996 了。tests/test-run.test.ts 守着「各行之和 == 总数」。
+ */
+static void report_test_count(const char *label, int before)
+{
+    printf("TESTCOUNT %s %d\n", label, g_checks - before);
+}
+
+#define RUN_TEST(fn)                                                                   \
+    do {                                                                               \
+        int _before = g_checks;                                                        \
+        fn();                                                                          \
+        report_test_count(#fn, _before);                                               \
     } while (0)
 
 /* ---------------- 十六进制 ---------------- */
@@ -5621,6 +5643,227 @@ static void test_strip_anim_mask(void)
 }
 
 /*
+ * 方案作用域（#122）：一条带只要在**任意一个步骤**里出现过，整份方案期间就归
+ * 剧本管；没出现过的带继续渲自己的实时分区。
+ *
+ * 四条验收项在纯逻辑层的对应：
+ *   1. 只含 strip0 的方案激活后，strip1..7 的动画位仍是它们自己的；
+ *   2. loop=0 走完停住（hold_last）时未参与的带动画位不变；
+ *   3. 参与方案但在这一步没有段的带 → 必须走分段路径（输出全黑），不是单色；
+ *   4. 未参与方案的带在方案全程拿到的是自己那份实时分区（逐条比对字节）。
+ *
+ * 真机侧的逐帧验证（State 第 12 字节 + 相机）由 scripts/verify-scope.py 做，
+ * 这里锁的是判据本身。
+ */
+static void build_one_strip_script(lumen_script_store_t *store, uint8_t script_id,
+                                   uint8_t stage_count, uint8_t strip_count,
+                                   uint8_t only_strip, uint8_t seg_type)
+{
+    lumen_script_store_init(store);
+    CHECK(lumen_script_begin(store, script_id, stage_count, strip_count));
+    for (uint8_t stage = 0; stage < stage_count; ++stage) {
+        CHECK(lumen_script_stage(store, script_id, stage, 1000, 0));
+        /* 只有 only_strip 在这两步里有内容：另一个步骤故意留空，用来验证
+         * 「参与方案但在某一步没段 → 该步全黑」。 */
+        if (stage == 0) {
+            lumen_segment_t seg = make_animated(
+                seg_type, 0, 9, (uint16_t)(stage * 1000), 255, 1000, 0, 0, 0);
+            uint16_t written = 0;
+            CHECK(lumen_script_segment(store, script_id, stage, only_strip, 0, &seg, &written));
+        }
+    }
+    uint16_t counts[LUMEN_MAX_STRIPS];
+    for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
+        counts[i] = 30;
+    }
+    uint8_t blob[LUMEN_SCRIPT_BLOB_MAX];
+    size_t len = 0;
+    CHECK(lumen_script_commit(store, script_id, counts, blob, sizeof(blob), &len) ==
+          LUMEN_SCRIPT_COMMIT_OK);
+}
+
+static void test_script_scope_union_mask(void)
+{
+    lumen_script_store_t store;
+
+    /* 只编排 strip0 的两步方案：并集只有 bit0。 */
+    build_one_strip_script(&store, 0, 2, 8, 0, LUMEN_EFFECT_BREATHING);
+    CHECK(lumen_script_strip_union_mask(lumen_script_get(&store, 0)) == 0x01);
+
+    /* 空表 / 未提交 / NULL 都是 0。 */
+    CHECK(lumen_script_strip_union_mask(NULL) == 0);
+
+    /* 只在**第二步**出现的带也算参与（并集口径，Q10：按整份方案算）。 */
+    lumen_script_store_init(&store);
+    CHECK(lumen_script_begin(&store, 0, 2, 8));
+    CHECK(lumen_script_stage(&store, 0, 0, 1000, 0));
+    CHECK(lumen_script_stage(&store, 0, 1, 1000, 0));
+    lumen_segment_t a = make_animated(LUMEN_EFFECT_RAINBOW, 0, 9, 0, 255, 500, 0, 0, 0);
+    uint16_t written = 0;
+    CHECK(lumen_script_segment(&store, 0, 0, 0, 0, &a, &written));
+    lumen_segment_t b = make_animated(LUMEN_EFFECT_RAINBOW, 0, 9, 0, 255, 500, 0, 0, 0);
+    CHECK(lumen_script_segment(&store, 0, 1, 5, 0, &b, &written));
+    uint16_t counts[LUMEN_MAX_STRIPS];
+    for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
+        counts[i] = 30;
+    }
+    uint8_t blob[LUMEN_SCRIPT_BLOB_MAX];
+    size_t len = 0;
+    CHECK(lumen_script_commit(&store, 0, counts, blob, sizeof(blob), &len) ==
+          LUMEN_SCRIPT_COMMIT_OK);
+    /* strip5 只在第 1 步出现 → 仍然整份方案期间归剧本管。 */
+    CHECK(lumen_script_strip_union_mask(lumen_script_get(&store, 0)) == 0x21);
+
+    /* 归属位判定的边界。 */
+    CHECK(lumen_scope_is_script_strip(0x21, 0));
+    CHECK(lumen_scope_is_script_strip(0x21, 5));
+    CHECK(!lumen_scope_is_script_strip(0x21, 1));
+    CHECK(!lumen_scope_is_script_strip(0x21, LUMEN_MAX_STRIPS));
+}
+
+/*
+ * 验收项 1 + 2：State 第 12 字节（strip_anim_mask）。
+ *
+ * 关键不是「终态对不对」，而是**任何时刻**都不能把未参与带报成方案的属性。
+ * 所以这里逐阶段推进播放头，每一步都核对。
+ */
+static void test_script_scope_anim_mask(void)
+{
+    lumen_script_store_t store;
+    lumen_segment_store_t live;
+    lumen_segment_store_t stage;
+
+    build_one_strip_script(&store, 0, 3, 8, 0, LUMEN_EFFECT_BREATHING);
+    const lumen_script_t *script = lumen_script_get(&store, 0);
+    CHECK(script != NULL);
+    uint8_t mask = lumen_script_strip_union_mask(script);
+    CHECK(mask == 0x01);
+
+    /* 实时分区：strip1..7 各跑一个呼吸（动画）。 */
+    lumen_segment_store_init(&live);
+    for (uint8_t s = 1; s < 8; ++s) {
+        live.slot[s][0] = make_animated(LUMEN_EFFECT_BREATHING, 0, 9, 0, 255, 1000, 0, 0, 0);
+    }
+    /* 静态配置本身在参与带上是空的（用户没给 strip0 划实时分区）。 */
+
+    /* 逐阶段：把该阶段的内容拷进 stage，模拟渲染任务的阶段重建。 */
+    for (uint8_t stage_index = 0; stage_index < script->stage_count; ++stage_index) {
+        lumen_segment_store_init(&stage);
+        for (uint8_t strip = 0; strip < LUMEN_MAX_STRIPS; ++strip) {
+            for (uint8_t seg = 0; seg < LUMEN_MAX_SEGMENTS; ++seg) {
+                if (script->stages[stage_index].segments[strip][seg].active) {
+                    stage.slot[strip][seg] = script->stages[stage_index].segments[strip][seg];
+                }
+            }
+        }
+        uint8_t got = lumen_scope_anim_mask(&stage, &live, mask, 8);
+        /* strip1..7 仍在跑各自的呼吸 → bit1..7 全在。 */
+        CHECK((got & 0xFE) == 0xFE);
+        /* strip0 只在 stage0 有呼吸段；stage1/2 没有 → 那一位跟着消失，
+         * 但它贡献的是黑而不是「回退实时分区」。 */
+        CHECK(got == (stage_index == 0 ? 0xFF : 0xFE));
+    }
+
+    /* 反例（这就是缺陷形态）：整份取 stage 时 strip0..7 只剩 strip0 的位。 */
+    lumen_segment_store_init(&stage);
+    stage.slot[0][0] = make_animated(LUMEN_EFFECT_BREATHING, 0, 9, 0, 255, 1000, 0, 0, 0);
+    CHECK(lumen_strip_anim_mask(&stage, 8) == 0x01);
+    /* 加上归属位之后，未参与的带把自己的动画位带了回来。 */
+    CHECK(lumen_scope_anim_mask(&stage, &live, 0x01, 8) == 0xFF);
+    /* 归属位为 0（没有方案接管）时就是实时分区自己的位。 */
+    CHECK(lumen_scope_anim_mask(&stage, &live, 0x00, 8) == 0xFE);
+
+    /* 播完停住（hold_last）时未参与带的动画位不受影响：归属位与播放头无关，
+     * 只由整份方案的内容决定（Q10 / Q8）。 */
+    CHECK(lumen_scope_anim_mask(&stage, &live, lumen_script_strip_union_mask(script), 8) == 0xFF);
+}
+
+/*
+ * 验收项 3：参与方案但在某一步没有段的带，该步输出**黑**。
+ *
+ * 判据在 `lumen_scope_uses_segments`：归属位让「零活动段」与「不归我管」
+ * 分开。这里锁的是判据本身，以及它退化为单色时会发生什么。
+ */
+static void test_script_scope_empty_step_is_black(void)
+{
+    /* 归方案管、这一段没有任何活动段 → 必须走分段路径（compose 会 memset 0）。 */
+    CHECK(lumen_scope_uses_segments(true, false, true, false));
+    /* 同样的空段表，但不归方案管 → 老行为（走 v1 单色，整条纯色）。 */
+    CHECK(!lumen_scope_uses_segments(false, false, true, false));
+    /* 有活动段：两条路径都走分段。 */
+    CHECK(lumen_scope_uses_segments(false, true, true, false));
+    CHECK(lumen_scope_uses_segments(true, true, true, false));
+    /* 总闸关 / 自检期间一律单色（渲染层原有规则不变）。 */
+    CHECK(!lumen_scope_uses_segments(true, true, false, false));
+    CHECK(!lumen_scope_uses_segments(true, true, true, true));
+
+    /* 端到端形态：空阶段配一个归属位，分段合成出来的就是全黑。 */
+    lumen_segment_store_t stage;
+    lumen_segment_store_init(&stage);
+    const uint8_t led_count = 10;
+    uint8_t buf[LUMEN_MAX_LEDS * 3];
+    memset(buf, 0xAA, sizeof(buf));
+    CHECK(lumen_segment_store_compose(&stage, 0, buf, led_count, 0) == led_count);
+    for (uint16_t i = 0; i < (uint16_t)led_count * 3u; ++i) {
+        CHECK(buf[i] == 0x00);
+    }
+}
+
+/*
+ * 验收项 4 的纯逻辑部分：未参与方案的带在方案全程拿到的是**自己那份**
+ * 实时分区，逐条、逐字节比。
+ */
+static void test_script_scope_compose(void)
+{
+    lumen_script_store_t store;
+    lumen_segment_store_t live;
+    lumen_segment_store_t stage;
+    lumen_segment_store_t out;
+
+    build_one_strip_script(&store, 0, 2, 8, 0, LUMEN_EFFECT_COMET);
+    const lumen_script_t *script = lumen_script_get(&store, 0);
+    uint8_t mask = lumen_script_strip_union_mask(script);
+
+    lumen_segment_store_init(&live);
+    for (uint8_t s = 1; s < 8; ++s) {
+        live.slot[s][0] = make_static(0, 9, (uint16_t)(s * 4000), 255);
+    }
+    lumen_segment_store_init(&stage);
+    stage.slot[0][0] = make_animated(LUMEN_EFFECT_COMET, 0, 9, 1234, 255, 1000, 0, 0, 0);
+
+    lumen_scope_compose(&out, &stage, &live, mask, 8);
+
+    /* strip0 取的是阶段内容（COMET），strip1..7 取的是实时分区（各自的 STATIC）。 */
+    CHECK(out.slot[0][0].active);
+    CHECK(out.slot[0][0].layer[0].type == LUMEN_EFFECT_COMET);
+    for (uint8_t s = 1; s < 8; ++s) {
+        CHECK(out.slot[s][0].active);
+        CHECK(out.slot[s][0].layer[0].type == LUMEN_EFFECT_STATIC);
+        CHECK(out.slot[s][0].layer[0].param[0] == live.slot[s][0].layer[0].param[0]);
+        CHECK(out.slot[s][0].layer[0].param[1] == live.slot[s][0].layer[0].param[1]);
+    }
+    /* 逐字节：未参与带的整条槽位与实时分区完全一致（不是「看起来一样」）。 */
+    for (uint8_t s = 1; s < 8; ++s) {
+        CHECK(memcmp(&out.slot[s][0], &live.slot[s][0], sizeof(out.slot[s][0])) == 0);
+    }
+
+    /* 阶段里故意不给 strip0 的第二步：归属位仍在 → 合成结果是空（该步全黑），
+     * 而 strip1..7 照旧。这就是验收项 3 与 4 同时成立的那一帧。 */
+    lumen_segment_store_init(&stage);
+    lumen_scope_compose(&out, &stage, &live, mask, 8);
+    CHECK(lumen_segment_store_count(&out, 0) == 0);
+    for (uint8_t s = 1; s < 8; ++s) {
+        CHECK(memcmp(&out.slot[s][0], &live.slot[s][0], sizeof(out.slot[s][0])) == 0);
+    }
+
+    /* 没有方案接管（归属位 0）时，合成结果就是实时分区本身。 */
+    lumen_scope_compose(&out, &stage, &live, 0, 8);
+    for (uint8_t s = 0; s < 8; ++s) {
+        CHECK(memcmp(&out.slot[s][0], &live.slot[s][0], sizeof(out.slot[s][0])) == 0);
+    }
+}
+
+/*
  * TDM 跳过决策真值表（§9.5）。四象限：
  *   持续出光 → PUSH；刚关 → 推黑再跳过；一直黑 → 直接跳过；刚开 → 强制推送。
  */
@@ -8463,128 +8706,137 @@ int main(int argc, char **argv)
     /* 默认路径只是兜底：run-tests.cmd 会显式传 v4 向量（docs/protocol-testvectors-v4.json）。 */
     const char *vectors = argc > 1 ? argv[1] : "docs/protocol-testvectors-v4.json";
 
+    /* 向量阶段不在任何 test_*() 里跑，单独记一条 "vectors"，否则各行之和会少掉
+       这一大块（约 2700 条），「各行之和 == 总数」这条对账就过不了。 */
+    int vector_before = g_checks;
     int cases = for_each_case(vectors, dispatch_case);
     CHECK(cases > 0);
     if (cases > 0) {
         printf("vectors: %d cases from %s\n", cases, vectors);
     }
+    report_test_count("vectors", vector_before);
 
-    test_checksum();
-    test_set_power_reducer();
-    test_set_brightness_reducer();
-    test_retired_commands();
-    test_encode_ack_all_results();
-    test_encode_event_storage_failed();
-    test_encode_limits();
-    test_decode_short();
-    test_decode_bad_frames_echo_header();
-    test_decode_max_payload();
-    test_reject_v2_protocol_frames();
-    test_state_defaults_and_clamp();
-    test_state_bytes_layout();
-    test_selftest_sequence();
-    test_selftest_late_wake();
-    test_selftest_restart();
-    test_selftest_cancel_rules();
-    test_selftest_leaves_state_untouched();
-    test_selftest_compose();
-    test_gamma();
-    test_gamma_hue_loss_clip();
-    test_two_layer_single_layer_regression();
-    test_blend_math();
-    test_two_layer_validation_matrix();
-    test_layer_codec();
-    test_apply_level_q8();
-    test_layer_level_static_steps();
-    test_layer_level_independent_per_layer();
-    test_level_times_brightness_then_gamma_once();
-    test_layer_level_validation();
-    test_script_segment_clear_slot_level();
-    test_script_store_clear_rejects_level();
-    test_breathing_floor_is_level_times_min_pct();
-    test_blend_gamma_once();
-    test_two_layer_shared_phase();
-    test_two_layer_ram_sizes();
-    test_two_layer_needs_frames();
-    test_clear_script_command();
-    test_set_led_count_reducer();
-    test_led_count_job();
-    test_save_scheduler();
-    test_state_blob();
-    test_effects_static_rgb();
-    test_effects_dispatch();
-    test_segment_store_compose();
-    test_segment_store_validate();
-    test_segment_store_state_summary();
-    test_segment_store_prune();
-    test_segment_store_needs_frames();
-    test_segment_real_slots();
-    test_segment_commands();
-    test_encode_segment_reports();
-    test_encode_strip_config_report();
-    test_encode_device_info_report();
-    test_effects_breathing_phase();
-    test_effects_breathing_envelope();
-    test_effects_breathing_gain_and_pixel();
-    test_effects_rainbow_hue();
-    test_effects_rainbow_pixel();
-    test_effects_comet_gain();
-    test_effects_comet_density();
-    test_effects_comet_solid_tail();
-    test_effects_flicker();
-    test_effects_strobe();
-    test_effects_heartbeat();
-    test_effects_off();
-    test_effects_new_types_validation();
-    test_effects_new_types_animation();
-    test_effects_rainbow_comet_coexist();
-    test_blob_strip_counts();
-    test_state_blob_100_leds();
-    test_set_segment_uses_own_strip_count();
-    test_state_blob_per_strip_bounds();
-    test_state_blob_v4_two_layers();
-    test_set_strip_power_command();
-    test_set_strip_power_validation_edges();
-    test_strip_mask_allows();
-    test_global_power_leaves_strip_mask();
-    test_strip_anim_mask();
-    test_strip_tdm_plan();
-    test_per_strip_led_counts_30_60_10();
-    test_per_strip_led_counts_100_24();
-    test_segment_store_compose_100();
-    test_reasm_single_chunk();
-    test_reasm_multi_chunk();
-    test_reasm_first_reentry();
-    test_reasm_overflow();
-    test_reasm_timeout();
-    test_reasm_orphan_and_helpers();
-    test_script_store_download();
-    test_script_commit_failure_keeps_previous();
-    test_script_multiple_scripts();
-    test_script_playback_advance();
-    test_script_playback_pause_resume();
-    test_script_playback_hold_during_selftest();
-    test_script_playback_loop_last();
-    test_loop_flag_layout();
-    test_loop_command_values();
-    test_script_loop_blob_roundtrip();
-    test_script_blob_roundtrip();
-    test_script_store_prune_strip();
-    test_script_prune_then_blob_roundtrip();
-    test_script_fade_roundtrip();
-    test_script_two_layer_persist();
-    test_script_clear_slot();
-    test_script_store_clear();
-    test_script_should_deactivate();
-    test_script_blob_encode_with_cleared();
-    test_script_commit_too_large();
-    test_script_commit_implies_persistable();
-    test_planar_parse_list();
-    test_planar_init_validation();
-    test_planar_round_robin();
-    test_planar_set_count();
-    test_planar_stats();
-    test_planar_null_safety();
+    RUN_TEST(test_checksum);
+    RUN_TEST(test_set_power_reducer);
+    RUN_TEST(test_set_brightness_reducer);
+    RUN_TEST(test_retired_commands);
+    RUN_TEST(test_encode_ack_all_results);
+    RUN_TEST(test_encode_event_storage_failed);
+    RUN_TEST(test_encode_limits);
+    RUN_TEST(test_decode_short);
+    RUN_TEST(test_decode_bad_frames_echo_header);
+    RUN_TEST(test_decode_max_payload);
+    RUN_TEST(test_reject_v2_protocol_frames);
+    RUN_TEST(test_state_defaults_and_clamp);
+    RUN_TEST(test_state_bytes_layout);
+    RUN_TEST(test_selftest_sequence);
+    RUN_TEST(test_selftest_late_wake);
+    RUN_TEST(test_selftest_restart);
+    RUN_TEST(test_selftest_cancel_rules);
+    RUN_TEST(test_selftest_leaves_state_untouched);
+    RUN_TEST(test_selftest_compose);
+    RUN_TEST(test_gamma);
+    RUN_TEST(test_gamma_hue_loss_clip);
+    RUN_TEST(test_two_layer_single_layer_regression);
+    RUN_TEST(test_blend_math);
+    RUN_TEST(test_two_layer_validation_matrix);
+    RUN_TEST(test_layer_codec);
+    RUN_TEST(test_apply_level_q8);
+    RUN_TEST(test_layer_level_static_steps);
+    RUN_TEST(test_layer_level_independent_per_layer);
+    RUN_TEST(test_level_times_brightness_then_gamma_once);
+    RUN_TEST(test_layer_level_validation);
+    RUN_TEST(test_script_segment_clear_slot_level);
+    RUN_TEST(test_script_store_clear_rejects_level);
+    RUN_TEST(test_breathing_floor_is_level_times_min_pct);
+    RUN_TEST(test_blend_gamma_once);
+    RUN_TEST(test_two_layer_shared_phase);
+    RUN_TEST(test_two_layer_ram_sizes);
+    RUN_TEST(test_two_layer_needs_frames);
+    RUN_TEST(test_clear_script_command);
+    RUN_TEST(test_set_led_count_reducer);
+    RUN_TEST(test_led_count_job);
+    RUN_TEST(test_save_scheduler);
+    RUN_TEST(test_state_blob);
+    RUN_TEST(test_effects_static_rgb);
+    RUN_TEST(test_effects_dispatch);
+    RUN_TEST(test_segment_store_compose);
+    RUN_TEST(test_segment_store_validate);
+    RUN_TEST(test_segment_store_state_summary);
+    RUN_TEST(test_segment_store_prune);
+    RUN_TEST(test_segment_store_needs_frames);
+    RUN_TEST(test_segment_real_slots);
+    RUN_TEST(test_segment_commands);
+    RUN_TEST(test_encode_segment_reports);
+    RUN_TEST(test_encode_strip_config_report);
+    RUN_TEST(test_encode_device_info_report);
+    RUN_TEST(test_effects_breathing_phase);
+    RUN_TEST(test_effects_breathing_envelope);
+    RUN_TEST(test_effects_breathing_gain_and_pixel);
+    RUN_TEST(test_effects_rainbow_hue);
+    RUN_TEST(test_effects_rainbow_pixel);
+    RUN_TEST(test_effects_comet_gain);
+    RUN_TEST(test_effects_comet_density);
+    RUN_TEST(test_effects_comet_solid_tail);
+    RUN_TEST(test_effects_flicker);
+    RUN_TEST(test_effects_strobe);
+    RUN_TEST(test_effects_heartbeat);
+    RUN_TEST(test_effects_off);
+    RUN_TEST(test_effects_new_types_validation);
+    RUN_TEST(test_effects_new_types_animation);
+    RUN_TEST(test_effects_rainbow_comet_coexist);
+    RUN_TEST(test_blob_strip_counts);
+    RUN_TEST(test_state_blob_100_leds);
+    RUN_TEST(test_set_segment_uses_own_strip_count);
+    RUN_TEST(test_state_blob_per_strip_bounds);
+    RUN_TEST(test_state_blob_v4_two_layers);
+    RUN_TEST(test_set_strip_power_command);
+    RUN_TEST(test_set_strip_power_validation_edges);
+    RUN_TEST(test_strip_mask_allows);
+    RUN_TEST(test_global_power_leaves_strip_mask);
+    RUN_TEST(test_strip_anim_mask);
+    RUN_TEST(test_strip_tdm_plan);
+    RUN_TEST(test_per_strip_led_counts_30_60_10);
+    RUN_TEST(test_per_strip_led_counts_100_24);
+    RUN_TEST(test_segment_store_compose_100);
+    RUN_TEST(test_reasm_single_chunk);
+    RUN_TEST(test_reasm_multi_chunk);
+    RUN_TEST(test_reasm_first_reentry);
+    RUN_TEST(test_reasm_overflow);
+    RUN_TEST(test_reasm_timeout);
+    RUN_TEST(test_reasm_orphan_and_helpers);
+    RUN_TEST(test_script_store_download);
+    RUN_TEST(test_script_commit_failure_keeps_previous);
+    RUN_TEST(test_script_multiple_scripts);
+    RUN_TEST(test_script_playback_advance);
+    RUN_TEST(test_script_playback_pause_resume);
+    RUN_TEST(test_script_playback_hold_during_selftest);
+    RUN_TEST(test_script_playback_loop_last);
+    RUN_TEST(test_loop_flag_layout);
+    RUN_TEST(test_loop_command_values);
+    RUN_TEST(test_script_loop_blob_roundtrip);
+    RUN_TEST(test_script_blob_roundtrip);
+    RUN_TEST(test_script_store_prune_strip);
+    RUN_TEST(test_script_prune_then_blob_roundtrip);
+    RUN_TEST(test_script_fade_roundtrip);
+    RUN_TEST(test_script_two_layer_persist);
+    RUN_TEST(test_script_clear_slot);
+    RUN_TEST(test_script_store_clear);
+    RUN_TEST(test_script_should_deactivate);
+    RUN_TEST(test_script_blob_encode_with_cleared);
+    RUN_TEST(test_script_commit_too_large);
+    RUN_TEST(test_script_commit_implies_persistable);
+    RUN_TEST(test_planar_parse_list);
+    RUN_TEST(test_planar_init_validation);
+    RUN_TEST(test_planar_round_robin);
+    RUN_TEST(test_planar_set_count);
+    RUN_TEST(test_planar_stats);
+    RUN_TEST(test_planar_null_safety);
+
+    RUN_TEST(test_script_scope_union_mask);
+    RUN_TEST(test_script_scope_anim_mask);
+    RUN_TEST(test_script_scope_empty_step_is_black);
+    RUN_TEST(test_script_scope_compose);
 
     if (g_failures != 0) {
         fprintf(stderr, "\n%d/%d checks failed\n", g_failures, g_checks);

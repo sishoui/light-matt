@@ -62,6 +62,7 @@ import {
 } from "../utils/control/effect-panel";
 import {
   BLEND,
+  FLICKER_MIN_PERIOD_MS,
   HEARTBEAT_MIN_PERIOD_MS,
   NO_EFFECT,
   SEGMENT_TYPE,
@@ -262,7 +263,7 @@ describe("参数区按类型整体替换", () => {
       comet: ["hue", "sat", "level", "period", "tail"],
       strobe: ["hue", "sat", "frequency", "level"],
       heartbeat: ["hue", "sat", "bpm", "level"],
-      flicker: ["hue", "sat", "level", "period"],
+      flicker: ["hue", "sat", "level", "period", "density"],
       off: [],
     };
     for (const type of PANEL_TYPE_OPTIONS.map((option) => option.type)) {
@@ -341,6 +342,8 @@ describe("切换类型：保留颜色，其余按新类型默认值", () => {
     expect(defaultParams("breathing").periodMs).toBeGreaterThanOrEqual(334);
     expect(defaultParams("rainbow").periodMs).toBeGreaterThanOrEqual(200);
     expect(defaultParams("comet").periodMs).toBeGreaterThanOrEqual(200);
+    /* #121：随机闪烁走 334 这条光敏线，默认周期不能是 0。 */
+    expect(defaultParams("flicker").periodMs).toBeGreaterThanOrEqual(334);
   });
 
   it("类型没变时返回同一个对象（引用相等 = 什么都没变）", () => {
@@ -674,8 +677,39 @@ describe("草稿 → 协议层", () => {
     expect(read.hue).toBe(999);
   });
 
-  it("熄灭层：参数全 0（协议硬约束），level 也归 0", () => {
-    const built = panelLayer("off", params({ hue: 1234, sat: 200, level: 80, periodMs: 3000 }));
+  it("随机闪烁层：类型是 0x07（不是常亮）,密度进 p5,flags 恒 0", () => {
+    /* #121：这里必须走真实装配路径。旧用例只断言「清单里有 flicker」
+     * 「滑块表里有它」,恰好放过了 panelLayer 缺 case 的缺陷。 */
+    expect(panelLayer("flicker", defaultParams("flicker")).type).toBe(SEGMENT_TYPE.FLICKER);
+    const built = panelLayer("flicker", params({ hue: 1234, sat: 200, density: 96, level: 40 }));
+    expect(built).toEqual({
+      type: SEGMENT_TYPE.FLICKER,
+      hue: 1234,
+      sat: 200,
+      /* params() 从 defaultParams("static") 起（periodMs 0 → 抬到滑块下限 500）。 */
+      periodMs: 500,
+      p5: 96,
+      flags: 0,
+      level: 40,
+    });
+    const read = paramsFromLayer("flicker", built);
+    expect(read.density).toBe(96);
+    expect(read.periodMs).toBe(500);
+  });
+
+  it("随机闪烁的默认周期不是 0（0 表示冻结在一张固定分布上）", () => {
+    const defaults = defaultParams("flicker");
+    expect(defaults.periodMs).not.toBe(0);
+    expect(defaults.density).toBeGreaterThan(0);
+    /* 周期从不低于 334 的光敏线。滑块网格从 500 起，所以下限由滑块兜住，
+     * 这里的 max(..., FLICKER_MIN_PERIOD_MS) 是给读回 / 落盘的越界值兜底。 */
+    expect(panelLayer("flicker", params({ periodMs: 200 })).periodMs).toBeGreaterThanOrEqual(
+      FLICKER_MIN_PERIOD_MS,
+    );
+    expect(panelLayer("flicker", params({ periodMs: 1000 })).periodMs).toBe(1000);
+  });
+
+  it("熄灭层：参数全 0（协议硬约束），level 也归 0", () => {    const built = panelLayer("off", params({ hue: 1234, sat: 200, level: 80, periodMs: 3000 }));
     expect(built).toEqual({
       type: SEGMENT_TYPE.OFF,
       hue: 0,

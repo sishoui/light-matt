@@ -206,7 +206,7 @@ describe("立即生效的顺序：停播 → 写 → 恢复", () => {
   });
 
   it("空方案不写设备（silentDownloadPlans 先判断 planIsEmpty）", () => {
-    const body = /\n {2}async silentDownloadPlans\(\): Promise<void> \{([\s\S]*?)\n {2}\},/.exec(
+    const body = /\n {2}async silentDownloadPlans\(loop: LoopMode\): Promise<void> \{([\s\S]*?)\n {2}\},/.exec(
       STRIP_TS,
     );
     expect(body).not.toBeNull();
@@ -215,6 +215,15 @@ describe("立即生效的顺序：停播 → 写 → 恢复", () => {
     const download = body![1].indexOf("downloadScript");
     expect(guard).toBeGreaterThanOrEqual(0);
     expect(download).toBeGreaterThan(guard);
+  });
+
+  it("旁路下发保持调用方给的循环档位（#114：写死档位会篡改设备）", () => {
+    const body = /\n {2}async silentDownloadPlans\(loop: LoopMode\): Promise<void> \{([\s\S]*?)\n {2}\},/.exec(
+      STRIP_TS,
+    );
+    expect(body).not.toBeNull();
+    expect(body![1]).toContain("{ activate: true, loop }");
+    expect(body![1]).not.toContain("loop: false");
   });
 });
 

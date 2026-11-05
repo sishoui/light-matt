@@ -176,17 +176,26 @@ TX notify 的所有权：`lumen_ble_link_notify()` 创建 mbuf 后交给 `ble_ga
 firmware\test\run-tests.cmd
 ```
 
-或手动：
+它做三件事：把 `test_skeleton.c` 与 `main/` 下能脱离 ESP-IDF 编译的源文件一起编到
+`%TEMP%`（不污染仓库）→ 跑可执行文件并传入 v4 向量路径 → 用
+`scripts/check-protocol-testvectors-v4.mjs` 把向量文件与 `docs/protocol-v4.md` 对一遍。
+没有 `node` 时最后一步打印 `SKIPPED: v4 vector self-check (node not found)` 并以 0 退出
+——「没跑」必须可见，不能和「跑过了」长得一样。
 
-```cmd
-gcc -std=c11 -Wall -Wextra -Werror -Ifirmware\main ^
-    firmware\test\test_skeleton.c firmware\main\protocol.c ^
-    firmware\main\command.c firmware\main\state.c firmware\main\gamma.c ^
-    -lm -o lumen_host_tests.exe
-lumen_host_tests.exe docs\protocol-testvectors.json
-```
+编译清单在 `run-tests.cmd` 里，当前是：`protocol.c` / `chunk_reasm.c` / `command.c` /
+`effects.c` / `segment_store.c` / `script_store.c` / `script_blob.c` / `strip_planar.c` /
+`strip_power.c` / `state.c` / `gamma.c` / `selftest.c` / `led_engine_slots.c` /
+`led_count_job.c` / `save_scheduler.c` / `state_blob.c`。
+`led_engine.c` 依赖 FreeRTOS 信号量与 `esp_timer`，不能编到 host 上；需要被 host 测试
+守住的那部分纯逻辑被抽到 `led_engine_slots.c`（`test_segment_real_slots()` 守它）。
 
-覆盖：`docs/protocol-testvectors.json` 全部 37 条用例（app 方向编码/解码与错误码、device 方向解码与 ACK / Event / StateReport 逐字节复现）、SetPower reducer 边界、未实现命令的 `0x02`、全部结果码的 ACK 编码与缓冲不足、State 默认值与 8 字节布局、gamma + 亮度乘算单调性。
+覆盖面：**v4 向量全部用例**逐字节（app 方向编码/解码与错误码、device 方向解码与
+ACK / Event / StateReport 复现、`chunks_hex` 分片重组），命令层 reducer 语义（开关 /
+亮度 / 灯珠数 / 退役命令回退），state 默认值与 37 字节布局与 CRC16，段存储与两层合成，
+灯效引擎（静态 / 呼吸 / 彩虹 / 流星 / 爆闪 / 心跳 / 随机闪烁）、gamma 与亮度乘算，
+剧本容量与 blob 往返。**断言数与每个测试函数各占多少，见最近一次测试报告的「明细」段**
+——`run-tests.cmd` 会按行首前缀 `TESTCOUNT <函数名> <断言数>` 输出，编排器据此汇总。
+跑法与报告位置见 [`docs/testing.md`](testing.md)。
 
 ### 固件构建
 
@@ -248,6 +257,10 @@ rx_access → handle_frame
 未知/保留命令字仍回 `0x02`。
 
 ### 9.4 Host 测试
+
+> **这一节写的是 #8 落地时的状态**（向量还是 v2 的 `docs/protocol-testvectors.json`）。
+> 现在的向量文件是 `docs/protocol-testvectors-v4.json`，用例数以该文件与最近一次测试
+> 报告为准；下面的「37 条」是该轮的数字，不作当前基线。见 [`docs/testing.md`](testing.md) §1。
 
 `firmware/test/test_skeleton.c` 直接读取 `docs/protocol-testvectors.json`（两端共用），
 对全部 37 条用例断言：

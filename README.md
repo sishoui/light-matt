@@ -38,6 +38,7 @@ lumen/
 **v1 / MVP（已完成）**
 
 - **接手/继续开发**：[docs/handoff.md](docs/handoff.md) —— 当前状态、下一步、必须知道的坑
+- **想跑测试**：[docs/testing.md](docs/testing.md) —— 五层定义、改动映射表、编排器、报告与清单
 - **想了解架构**：[docs/wayfinding/architecture-brief.md](docs/wayfinding/architecture-brief.md)（⚠️ v1 历史产物）
 - **想写 codec（v4，当前）**：[docs/protocol-v4.md](docs/protocol-v4.md) —— 字节级协议规格与测试向量
 - **想写 codec（v2，已作废）**：[docs/protocol.md](docs/protocol.md) —— 保留供对照
@@ -48,13 +49,9 @@ lumen/
 ## 现状
 
 **UI 重构 + 协议 v4 已实现，待合入 master 与真机验收。** 9 张实现票（#61–#69）都在
-集成分支 `integration/ui-refactor-v4`，三端测试全绿：
-
-| 端 | 规模 |
-|---|---|
-| 固件 host 测试 | **12701 项断言**，78 条 v4 向量（CRC16 / 分片重组 / 两层合成 / 逐层亮度 / blob v5 与 LMS4 / 剧本裁剪） |
-| 小程序 | **1485 个 vitest 用例**，57 个测试文件，`tsc --noEmit` 干净 |
-| 后端 | **140 个 vitest 用例**，6 个测试文件，`tsc --noEmit` 干净 |
+集成分支 `integration/ui-refactor-v4`，三端测试全绿。规模与耗时以**最近一次测试报告**
+为准（`node scripts/test-run.mjs`，报告落在 `.reports/`；发布级报告在
+`docs/evidence/test-runs/`）——文档不抄数字，见 [`docs/testing.md`](docs/testing.md)。
 
 本轮带来的变化：底部改为「设备 / 我的」两 tab，发现页降为二级页；设备页瘦身成总闸 +
 全局亮度 + 灯组两列卡片；**新增灯组详情页**（简单档六张成品卡 / 进阶档时间轴 + 光区轴 +
@@ -69,8 +66,8 @@ HSV 效果面板 + 灯珠弹窗）。协议 v4 把层编码从 8 字节扩到 **
 
 
 **MVP 已完成并通过真机验收。** 13 张实现票（#2–#13）全部落地，端到端验收 #14 七条
-全部通过（固件/代码侧 + 人眼/手机侧）。两端共用 37 条协议测试向量：固件 host 1426 项
-断言、小程序 159 个 vitest 用例、`tsc --noEmit` 干净，固件分区余量 67%（IDF v6.1 下实测）。
+全部通过（固件/代码侧 + 人眼/手机侧）。当时的测试规模记在验收记录里，不是当前基线；
+当前基线见最近一次测试报告。
 
 - **固件**：`ble_link → led_engine → state_store` 三层单向依赖；7 条命令全部实现
   （含 QueryState 的 StateReport、SetLedCount 的句柄重建与延迟 ACK、SelfTest 的临时覆盖）；

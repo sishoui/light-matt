@@ -21,6 +21,32 @@ let device = null;
 
 const NAME_PREFIX = "Lumen-";
 
+/**
+ * 连一次，失败就重连一次。
+ *
+ * Windows 的 BLE 栈偶发在订阅 notify 时抛
+ * `errCode=10000 … OSError: [WinError -2147023673] 操作已被用户取消`，
+ * 同一台设备同一条命令重连即可（实测：发布级那次 21 里红了 1 条，紧接着
+ * 整层重跑 21/21）。这是环境抖动，不是产品行为——但它会让整层在发布报告里
+ * 变成 ❌，和真实缺陷长得一模一样。所以在这里收敛：两次都失败才可能是真问题。
+ *
+ * **只在连接这一步重试**：断言失败绝不被重试掩盖。
+ */
+async function connectWithRetry(connect: () => Promise<any>, attempts = 2) {
+  let lastError: unknown = null;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await connect();
+    } catch (error) {
+      lastError = error;
+      if (i + 1 < attempts) {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+      }
+    }
+  }
+  throw lastError;
+}
+
 beforeAll(async () => {
   /*
    * 只创建一个 stub：它是全局 wx 的唯一实现，网关事件通过它派发给
@@ -87,7 +113,7 @@ describe("真机 e2e（PC 蓝牙 → ESP32-C3）", () => {
       log: new FrameLog({ mirrorToConsole: false }),
       platform: "android",
     });
-    const state = await transport.connect(device.deviceId, device.name);
+    const state = await connectWithRetry(() => transport.connect(device.deviceId, device.name));
 
     /* State 是 v3 契约的核心：37 字节、8 带。这些字段错一个，
      * 后续所有逐带 UI 都会跟着错。 */
@@ -115,7 +141,7 @@ describe("真机 e2e（PC 蓝牙 → ESP32-C3）", () => {
       }),
     });
 
-    await session.connect(device.deviceId, device.name);
+    await connectWithRetry(() => session.connect(device.deviceId, device.name));
 
     const power = await session.setPower(true);
     expect(power.kind).toBe("ok");
@@ -149,7 +175,7 @@ describe("真机 e2e：协议语义（真 BLE）", () => {
         platform: "android",
       }),
     });
-    await session.connect(device.deviceId, device.name);
+    await connectWithRetry(() => session.connect(device.deviceId, device.name));
   }, 90_000);
 
   afterAll(async () => {

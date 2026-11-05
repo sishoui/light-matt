@@ -18,6 +18,7 @@
  */
 
 import { BLEND, NO_EFFECT, SEGMENT_TYPE } from "../protocol/constants";
+import { loopModeFromFlags } from "../protocol/commands";
 import type { EffectLayer } from "../protocol/types";
 
 /* ---------------- 循环三档 ---------------- */
@@ -61,6 +62,30 @@ export function loopFlagsOf(mode: LoopMode): { loop: boolean; lastStep: boolean 
     loop: mode !== LOOP_MODE.NONE,
     lastStep: mode === LOOP_MODE.LAST,
   };
+}
+
+/**
+ * 下发时要用的循环档位（#114）：**草稿优先，设备兜底**。
+ *
+ * 判据是 `draftLoop !== undefined`，不是「草稿是否被编辑过」——后者在
+ * 加步骤 / 划分区 / 进一次进阶档时都会变真，于是「用户没选过」会被误读成
+ * 「用户选了不循环」，简单档改个颜色就能把设备上的循环关掉。
+ *
+ * @param draftLoop 草稿里的原始值；`undefined` = 从未选过（默认草稿、
+ *                  #99 之前落盘的草稿、坏值）。
+ * @param flags     设备最近一次上报的 flags；`null` = 没读到。
+ */
+export function resolveLoopMode(
+  draftLoop: number | undefined,
+  flags: number | null,
+): LoopMode {
+  if (isLoopMode(draftLoop)) {
+    return draftLoop;
+  }
+  if (flags !== null && Number.isInteger(flags)) {
+    return loopModeFromFlags(flags);
+  }
+  return LOOP_MODE.NONE;
 }
 
 /** 循环档的展示文案。 */

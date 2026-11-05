@@ -230,9 +230,21 @@ describe("小程序代理：复杂方案（多阶段 / 多分区 / 双层 / 循�
       const frozen = await session.refreshState();
       /* State 的 stripSegCounts 报的是「当前生效」配置。 */
       expect(frozen.stripSegCounts[0], `阶段 ${want_stage} 的 strip0 分区数`).toBe(want);
-      /* 其余 7 条带在这个剧本里没有段 —— 必须全为 0。 */
+      /*
+       * 其余 7 条带：剧本里没有它们，所以**不该被方案接管**（#122）。
+       *
+       * 以前这里断言「全为 0」——那是方案接管整个设备时的旧行为。现在未参与
+       * 的带报告的是**自己的实时分区数**（设备现场本来就有的，见 backupStrips），
+       * 所以正确的判据是「等于开工前那一条的段数」，不是 0。
+       *
+       * 这正好把两个行为钉在一起：方案不动别人（数量不变），而且 State 报的
+       * 是这一帧真正渲染的配置（不是整份方案）。
+       */
       for (let s = 1; s < 8; s++) {
-        expect(frozen.stripSegCounts[s], `阶段 ${want_stage} 的 strip${s} 应无段`).toBe(0);
+        const liveCount = (backupStrips[s] ?? []).length;
+        expect(frozen.stripSegCounts[s], `阶段 ${want_stage} 的 strip${s} 应保持实时分区数`).toBe(
+          liveCount,
+        );
       }
     }
   }, 180_000);

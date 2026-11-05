@@ -1,13 +1,135 @@
 # 交接：lumen 当前状态与下一步
 
-**最后更新**：2026-11-04　**分支**：`master`（第五轮已合入，merge `ef295fe`）
+**最后更新**：2026-11-05（第九轮）　**分支**：`integration/test-flow`（测试流程改造，待合入 `master`）
 
 这份文件是给**新会话**的入口。它只写「新会话必须知道、但代码和文档里读不到」的东西；
 其余一律给指针，不重复。
 
 ---
 
-## 0. 2026-11-04 第七轮：小程序 UI / 交互第五轮（**已合入 `master`**）
+## 0. 2026-11-05 第九轮：进阶灯效的方案作用域与自动下发（**已完成，未合入**）
+
+**规格 [#120](https://github.com/sishoui/light-matt/issues/120)，六张实现票 `#121`–`#126`。**
+
+### 为什么改
+
+进阶档有两个用户可见的坏行为，都在真机上复现过：
+
+1. **改了东西灯带不动**。#96 删掉「应用并播放」后只有循环三档还在写设备，
+   选灯效 / 划分区 / 调参数 / 改时长全部只进本地草稿，失败原因也从不显示
+   （`applyError` 有二十处赋值、wxml 里零处显示）。
+2. **调一条灯带会波及别的带**。固件只有一份播放头、一个 `stage_index`，
+   一套方案给所有带铺内容；App 又用 `fillOtherStripSlices` 把别的带读回来
+   塞进同一份方案，等于把它们绑上同一条时间轴。而它读回的是**静态存储**，
+   播放中的画面在阶段存储里、协议读不回来——补的永远是陈旧数据。
+
+### 交付了什么
+
+| 票 | 内容 | 落点 |
+|---|---|---|
+| #121 | 随机闪烁不再下发成常亮 | `effect-panel.ts` 补 `case "flicker"`；新增密度滑块与 `density` 字段 |
+| #122 | 方案只驱动它包含的带，其余继续渲实时分区 | 新模块 `firmware/main/script_scope.c`；`led_engine.c` 逐条按归属合成渲染源；`compose_frame` / `compose_strip` / `tdm_push_strip` / `snapshot` 各加一个 `script_mask` 参数 |
+| #123 | 删掉「补齐其它灯带」 | 删 `plan-fill.ts` 与其单测、方法的 import；方案只含用户编辑过的带；`session.lastDownloadedScript` 让测试能断言方案内容 |
+| #124 | 先传方案再停播 | `applyAdvanced` 重排：上传 → 停播 → 写回落画面 → 开播 |
+| #125 | 改动自动下发 + 失败可见 | `scheduleAdvancedApply(immediate)` + `advancedEpoch` / `advancedQueued` / `advancedBusy`；`applyError` 在 wxml 顶部渲染；删死代码 `onApplyAndPlay` |
+| #126 | 端到端验证与证据 | `scripts/verify-scope.py` / `verify-scope-camera.py` / `calibrate-scope-boxes.py`；证据见下 |
+
+### 实测数字
+
+| 项 | 结果 |
+|---|---|
+| 固件 host | **14127 断言**（117 桶 + 4 新桶），比上轮 +131 |
+| 小程序单测 | **1861 用例 / 72 文件**（`plan-fill.test.ts` 的 11 条随模块删除） |
+| 后端单测 | 140 用例（本轮未改动，随日常跑） |
+| 字节契约 | `probe-v4.py` **43/43**；93 条向量原样通过 |
+| 真机 e2e | BLE 层 **21/21**（66s） |
+| #121 真机读回 | `0x07` / period 1000 / p5 128（修复前 `0x00` / period 0） |
+| #124 窗口 | 上传 14 帧 = 420ms（30ms/帧）→ 停播到开播 **一帧** |
+
+证据归档：[`docs/evidence/advanced-scope-2026-11-05.md`](evidence/advanced-scope-2026-11-05.md)。
+
+### 本轮踩到的两个方法论坑
+
+1. **BLE 逐帧轮询抓不到「闪一下就恢复」。** 单发 `QUERY_STATE` 是 16Hz，批量
+   连发也只到 33Hz，而固件是 20fps——只存在一帧的瞬态正好落在采样间隙里。
+   最后靠**固件串口每帧打一行**（掩码变化时才打）拿到帧级无遗漏的证据。
+   任何「瞬态」类验收都该先想清楚采样频率和被测帧率的关系。
+2. **相机分不开靠得近的灯带。** 这台机位下 s2 与 s0 的采样框重叠 56%、s4 重叠
+   62%；把 strip0 调暗，其余七条的读数也各掉 7~39（光学串扰）。所以「逐带亮度
+   阈值」这条路走不通——改用**同内容对照**（两阶段 strip0 输出相同像素，只换
+   渲染源），差值必须 ≤0.41 才算无关。细节见证据文档 §3。
+
+### 遗留
+
+1. **`integration/test-flow` 仍未合入 `master`**（上轮遗留，与本轮无关）。
+2. `scripts/calibrate-scope-boxes.py` 产出的 `.scope-boxes.json` 绑定机位与
+   分辨率，是本地产物（已 gitignore）；换机位必须重跑标定。
+3. 单步方案下 `loop=1` 与 `loop=2` 行为雷同（#120 的 Q4，已知，不在本轮范围）。
+4. 电气耦合（8 带共用 5V 的电流阶跃）是物理限制，本轮缓解了触发源但没解决，
+   已写进 [`pending-tasks.md`](pending-tasks.md) §0.0。
+
+---
+
+## 0. 2026-11-05 第八轮：测试流程改造（**在集成分支，待 PR**）
+
+**规格 [#102](https://github.com/sishoui/light-matt/issues/102)，九张实现票 `#103`–`#111` 全部关闭。**
+
+### 为什么改
+
+不是覆盖不足——四层加起来早已过万条断言。问题是**数字没有来源**：文档里的测试基线
+全是人手抄的，同一事实出现过 4–5 个不同的值，`handoff.md` 一份文件里一处说真机跑完了、
+另一处说一项没跑。加上两个「悄悄消失」：固件入口在 node 缺失时静默成功退出；渲染回归
+脚本住在被 gitignore 的目录里，换台机器 clone 下来就没了。
+
+### 交付了什么
+
+一条命令跑完，产出一份能自证的报告，报告成为所有测试数字的唯一来源。
+
+| 票 | 内容 |
+|---|---|
+| #103 | `docs/test-manifest.json`：五层定义 + 81 个测试文件的中文覆盖说明；查漏脚本，五类问题全列，自带变异测试 |
+| #104 | `scripts/test-run.mjs`：三态语义（SKIP 不影响退出码）、六段报告、双写 md/json |
+| #105 | 小程序与后端层接入：用例数来自 vitest JSON，逐文件可见；tsc 失败计入该层 |
+| #106 | `scripts/verify-v5.mjs` 入库（原在 `.auto/`，未跟踪）；`--probe` 走真握手 |
+| #107 | 真机层复用 `drive.mjs` 的 doctor 与退出码语义；用例数是实际收集的 16 条，不是 8 |
+| #108 | 固件按测试函数输出 `TESTCOUNT`，117 个桶加总 = 13996；node 缺失输出 `SKIPPED` 标签 |
+| #109 | 差异节：只比本轮跑了的层，比用例数、标新增/消失文件与新失败新跳过 |
+| #110 | `--release`：未覆盖警告顶置、目录可排序且唯一、基线池与日常分开 |
+| #111 | 新增 `docs/testing.md`；`AGENTS.md` 压成指针；全仓旧数字改指针 |
+
+### 实测数字
+
+| 层 | 状态 | 实测 |
+|---|---|---|
+| 固件 | ✅ | 13996 断言（117 桶）+ 93 向量 |
+| 小程序 | ✅ | 1834 用例 / 71 文件 |
+| 后端 | ✅ | 140 用例 |
+| 渲染回归 | ⏭️ SKIP | 49 断言脚本已入库；**本机开发者工具服务端口未开，这一层没跑** |
+| 真机 e2e | ✅ | 16/16，66s |
+| 清单查漏 | ✅ | 81 个测试文件全登记 |
+
+发布级归档：`docs/evidence/test-runs/2026-11-04T19-31-31-415/`，顶部标注「本轮发布未覆盖：渲染回归」。
+
+### 遗留
+
+1. **49 项渲染回归没在本轮复跑。** 需要在开发者工具里开「设置 → 安全设置 → 服务端口」，
+   然后 `node scripts/test-run.mjs ui` 补一次。
+2. **删 worktree 时 `rmdir` 会顺着 junction 清空主仓库的 `node_modules`**（本轮踩了四次）。
+   正确做法：先 `git worktree remove`，再用 `cmd /c rmdir` 删 junction，不要反序。
+
+### 已修的真问题（值得记住的坑）
+
+- `verify-v5.mjs` 设备页 URL 的 MAC 编码写成 `%3E`（那是 `>`），解码成 `A4:CF:12:9B>:01`，
+  页面走「没有连接记录」分支——那几条断言验的不是它声称的入口
+- `--probe` 只测 TCP：TCP 通 ≠ 自动化可用，probe 说「可连」而 run 立刻 SKIP
+- `automator.connect` 无超时：半开端口会让探针挂死
+- 层执行器不兜异常：任一层抛错就整轮无报告
+- Windows 上 `core.autocrlf=true` 会把 `scripts/*.mjs` 签出成 CRLF，vitest 报
+  `SyntaxError` 且指向 importer——已加 `.gitattributes` 固定 LF
+
+---
+
+## 0.1 2026-11-04 第七轮：小程序 UI / 交互第五轮（**已合入 `master`**）
 
 **规格 [#85](https://github.com/sishoui/light-matt/issues/85) + 12 张实现票 `#90`–`#101`。**
 本地副本 `.scratch/ui-v5-spec.md`、`.scratch/ui-v5-tickets/`。
@@ -24,7 +146,7 @@
 | #95 | 灯珠数拨盘 + 固定三套方案 | `strip-head.ts`（刻度 / 角度换算 / 三圆按钮） |
 | #96 | 一行式灯效 + 立即生效 | `simple-effects.ts`（八个灯效）；`writeQuick` 改成「停播 → 写 → 静默下发 → 恢复」 |
 | #97 | 分区改名 + 预览条 | 全仓 `光区 → 分区`；`zone-preview.ts`（逐颗颜色映射） |
-| #98 | 协议 + 固件扩展 | 流星密度与实色拖尾、随机闪烁 `0x07`、循环三值；向量 78 → **93**，断言 12701 → **13996** |
+| #98 | 协议 + 固件扩展 | 流星密度与实色拖尾、随机闪烁 `0x07`、循环三值；向量 78 → **93** 条，断言数同步增长 |
 | #99 | 时间轴 + 步骤气泡 + 循环三档 | `step-bubble.ts`；`ScriptDraft` 新增可选 `name` / `loop` |
 | #100 | 两层模型 + 八个灯效清单 | `advanced-layers.ts`；`effect-panel` 增加 `flicker`，混合只剩两种 |
 | #101 | 修跨灯组串扰 | `plan-fill.ts`（下发前补齐其它灯组切片，读回失败就不发） |
@@ -43,10 +165,9 @@
 
 ### 验证
 
-- 固件：`13996` 项断言 + `93` 条 v4 向量全绿（`run-tests.cmd`）
-- 小程序：`1708` 用例 / `68` 文件；`tsc --noEmit` 干净
-- 后端：`140` 用例；`typecheck` 干净
-- 模拟器：**`.auto/verify-v5.mjs` 49/49**
+- 固件 / 小程序 / 后端：三层全绿（`node scripts/test-run.mjs`）。数字不抄在这里，
+  以最近一次报告为准，见 [`docs/testing.md`](testing.md)。
+- 模拟器：`scripts/verify-v5.mjs` 全部通过（编进 `ui` 层）。
 - 真机：**已完成**（`Lumen-5662`，8 条灯带）。循环三档 **8 带 × 3 模式 = 24/24**，
   流星密度与实色拖尾的标志位均被设备接受，随机闪烁在密度 32/64/96 三档上机。
   记录见 [`docs/evidence/real-device-v5-2026-11-04.md`](evidence/real-device-v5-2026-11-04.md)。
@@ -194,17 +315,19 @@
 **测试与验收（本轮实测）**：
 
 ```bash
-cd miniprogram && npx vitest run                 # 47 文件 / 921 用例
+cd miniprogram && npx vitest run                 # 全绿
 cd miniprogram && npx tsc --noEmit               # 干净
 cd miniprogram && node .auto/check-bindings.mjs  # 零缺失
-cd miniprogram && node .auto/verify-effect-editor.mjs   # 48/48（新增，锁两档全部行为）
-cd miniprogram && node .auto/verify-redesign.mjs        # 26/26
-cd miniprogram && node .auto/verify-deep.mjs            # 27/27
-cd miniprogram && node .auto/verify-ui-interaction.mjs  # 7/7
+cd miniprogram && node .auto/verify-effect-editor.mjs   # 已作废，改跑 scripts/verify-v5.mjs
 ```
 
-`verify-effect-editor.mjs` 锁的是**只有渲染层能发现**的几件事：点卡片后设备状态真的变、
+> 这一轮的 `verify-redesign.mjs` / `verify-deep.mjs` / `verify-ui-interaction.mjs`
+> 都已作废（锁的是已删除的页面）；「点得动」的意图并入 `scripts/verify-v5.mjs`，
+> 见 [`docs/testing.md`](testing.md)。
+
+那一轮的 `verify-effect-editor.mjs` 锁的是**只有渲染层能发现**的几件事：点卡片后设备状态真的变、
 参数区只显示该卡的档位、均分切分互不重叠、切档后编排完整恢复、界面零协议词、两 tab。
+这几条现在由 `scripts/verify-v5.mjs` 守着。
 
 > **`.auto/verify-ui.mjs` 已删除**（它的目标页面 `pages/scripts` / `pages/segment-edit`
 > 已删除且跑必失败）。`utils/control/effect-mode.ts`（快捷↔自定义内存快照）与
@@ -238,7 +361,8 @@ cd miniprogram && node .auto/verify-ui-interaction.mjs  # 7/7
 - 设备自定义封面：用户相册选图存本地，按 hardwareId 隔离
 - 新增测试：`app-config` / `theme` / `home-view` / `mock-mode` / `mock-session` / `device-photo` / `page-fields`
 
-**当前基线**：`npx vitest run` → **769 通过**（42 文件）；`npx tsc --noEmit` 干净。
+**当轮基线**：小程序单测全绿（数字以最近一次报告为准，见 [`docs/testing.md`](testing.md)）；
+`npx tsc --noEmit` 干净。
 
 > **工作区未提交**：58 个文件改动 + 28 个新文件。新会话开始前请先确认这些改动是否已提交，
 > 否则 `git checkout` 类操作会丢掉整个 UI 改版。
@@ -272,14 +396,15 @@ cd miniprogram && node .auto/verify-ui-interaction.mjs  # 7/7
 
 | 项 | 结果 |
 |---|---|
-| `npx vitest run` | **665 用例**（原 618 + 首页派生 14 + mock 传输 21 + mock 会话 12） |
+| `npx vitest run` | 全绿 |
 | `npx tsc --noEmit` | 干净 |
-| `node .auto/verify-redesign.mjs` | **28/28**（页面树 / 大卡 / 小图切换 / 主题 / tabBar） |
+| `node .auto/verify-redesign.mjs` | 当轮 28/28（脚本已作废，意图并入 `scripts/verify-v5.mjs`） |
 | 截图 | `.auto/shots/`（浅色 + 深色各页） |
 
-**改页面后必须做的三件事**：跑 `tsc`、跑 `vitest`、跑 `verify-redesign.mjs`。
-后两者分别覆盖「TypeScript 看不出的运行时问题」和「只有渲染层能发现的问题」
-（白屏、bindtap 全失效、主题 class 没挂、tabBar 没渲染）。
+**改页面后必须做的三件事**：跑 `tsc`、跑单测、跑渲染回归。后两者分别覆盖
+「TypeScript 看不出的运行时问题」和「只有渲染层能发现的问题」
+（白屏、bindtap 全失效、主题 class 没挂、tabBar 没渲染）。现在一条命令搞定：
+`node scripts/test-run.mjs mp ui`。
 
 > **一个本轮踩到的坑**：自定义 tabBar 是 `position: fixed` 的，tab 页内容必须自己
 > 让出 `padding-bottom: calc(140rpx + env(safe-area-inset-bottom))`，否则底部内容
@@ -311,13 +436,13 @@ cd miniprogram && node .auto/verify-ui-interaction.mjs  # 7/7
 - `ui-acceptance-2026-11-02.md` —— **微信开发者工具自动化 UI 验收（19/19）**
 - `real-device-e2e-2026-11-02.md` —— **真机 BLE 全链路 8/8（无需手机）**
 
-**§1.1–1.8 的 38 项现在是 ✅ 32 / ◐ 0 / ☐ 0**（§1.7 多设备 5 项已决定不作验收）。
-**验收项全部闭环。**
+**§1.1–1.8 的 38 项现在是 ✅ 33 / ◐ 0 / ☐ 0**（§1.7 多设备 5 项已决定不作验收，
+38 − 5 = 33；口径见 `acceptance-v3.md` §5.1）。**验收项全部闭环。**
 
 ### 0.000 一个必须记住的教训：目录导入会让整个小程序白屏
 
 `miniprogram/utils/control/session-singleton.ts` 原本写 `from "../usage"`（目录导入）。
-TypeScript 能解析到 `index.ts`，`tsc --noEmit` 干净、607 个单测全过、
+TypeScript 能解析到 `index.ts`，`tsc --noEmit` 干净、全部单测通过、
 `cli preview` 也能成功构建 —— 但**小程序的运行时模块解析器不认目录 index**，
 抛 `module 'utils/usage.js' is not defined`。它位于 App 启动链上，一崩则
 **所有页面 `Page()` 都不执行，整个小程序白屏**。
@@ -346,8 +471,8 @@ TypeError: Cannot read properties of undefined (reading 'length')
 这类）不保证被复制到页面实例，运行时就是 `undefined`。TS 断言只是编译期语法。
 
 `onLoad` → `refreshLocal` → `applyListViews` 读 `this.remoteDevices.length`
-直接抛错，**页面初始化中断，所有 `bindtap` 都不再响应**。构建、`tsc`、618 个
-单测全绿——因为单测直接 `new ControlSession`，根本不经过 `Page()`。
+直接抛错，**页面初始化中断，所有 `bindtap` 都不再响应**。构建、`tsc`、当轮全部单测
+都绿——因为单测直接 `new ControlSession`，根本不经过 `Page()`。
 
 **修复**：五个页面的 `onLoad` 开头显式初始化全部私有字段（且必须在任何
 提前 `return` 之前，`segment-edit` 就有这种分支）。`unsubscribe` 等循环加 `?? []`。
@@ -392,8 +517,8 @@ TypeError: Cannot read properties of undefined (reading 'length')
 
 | 要验什么 | 用什么 |
 |---|---|
-| 真实扫描 / 连接 / 控制 | `npm run test:ble`（PC 蓝牙网关，8 项）或手机真机预览 |
-| 页面交互是否「点得动」 | `miniprogram-automator`（`.auto/verify-ui-interaction.mjs`） |
+| 真实扫描 / 连接 / 控制 | `npm run test:ble`（PC 蓝牙网关，两个 e2e 文件共 16 条）或手机真机预览 |
+| 页面交互是否「点得动」 | `miniprogram-automator`（现在统一在 `scripts/verify-v5.mjs`） |
 | 取消逻辑 | `.auto/verify-cancel-stub.mjs`（在页面上下文给 `createBLEConnection` 打桩让它悬住） |
 
 > **automator 每次跑之前要重新编译**，否则连的是旧代码（变异测试会假绿）。
@@ -409,19 +534,22 @@ TypeError: Cannot read properties of undefined (reading 'length')
 **所以：`analyze-strips-video.py` 的 `--reference` 必须是同一次会话、紧邻录的。**
 这也解释了「两组录像亮度差 31%」那条已知限制的实际影响 —— 它足以让判据翻转。
 
-### 0.00b 三端测试基线（本轮实测，文档旧值已过时）
+### 0.00b 三端测试基线
+
+**数字不写在这里**：跑 `node scripts/test-run.mjs`，看最近一次报告（`.reports/`）。
+怎么跑、分层依据、报告格式见 [`docs/testing.md`](testing.md)。
 
 ```bash
-cmd.exe //c "firmware\test\run-tests.cmd"   # 11053 项 + 58 向量
-cd miniprogram && npx vitest run            # 618 用例（不含 e2e）
-cd miniprogram && npm run test:ble          # 8 项真机 e2e（无设备自动 skip）
-cd miniprogram && npx tsc --noEmit          # 干净
-cd server && npm test                       # 140 用例
-cd server && npm run typecheck              # 干净
+cmd.exe //c "firmware\test\run-tests.cmd"
+cd miniprogram && npx vitest run
+cd miniprogram && npm run test:ble
+cd miniprogram && npx tsc --noEmit
+cd server && npm test
+cd server && npm run typecheck
 ```
 
-小程序侧从 607 涨到 **618**：取消连接 4 条 + 会话层 2 条 + already-opened 2 条
-+ 页面私有字段契约 3 条 + 原有 2 条。
+这一轮在四条命令之上还补了 4 组用例：取消连接、会话层、`already-opened` 回归、
+页面私有字段契约。补了多少条看当轮报告。
 
 ---
 
@@ -432,9 +560,12 @@ cd server && npm run typecheck              # 干净
 
 | 端 | 测试基线 |
 |---|---|
-| 固件 host | `cmd.exe //c "firmware\test\run-tests.cmd"` → **11053 项断言**，58 条 v3 向量 |
-| 小程序 | `cd miniprogram && npx vitest run` → **601 用例**；`npx tsc --noEmit` 干净 |
-| 后端 | `cd server && npm test` → **139 用例**；`npm run typecheck` 干净 |
+| 固件 host | `cmd.exe //c "firmware\test\run-tests.cmd"` |
+| 小程序 | `cd miniprogram && npx vitest run`；`npx tsc --noEmit` 干净 |
+| 后端 | `cd server && npm test`；`npm run typecheck` 干净 |
+
+> 当时的实测数字在 `docs/acceptance-v3.md` 与 `docs/evidence/` 里；**当前基线**看最近一次
+> 测试报告（`node scripts/test-run.mjs`，见 [`docs/testing.md`](testing.md)）。
 
 **已完成（不需再做）**
 
@@ -482,7 +613,7 @@ cd server && npm run typecheck              # 干净
 
 **两个可复用的脚本（本轮新写，已入库）**
 
-- `scripts/probe-v3.py` —— 协议层 47 项真机验证，PC 当 central
+- `scripts/probe-v3.py` —— 协议层真机验证，PC 当 central（当轮 47 项，之后随用例增删而变）
 - `scripts/stress-fragment-v3.py` —— §2.4 分片压力，强制 19B 数据片压重组路径
 
 ### 0.00b 2026-11-01 晚：摄像头测试链重做（未完成，卡在机位）
@@ -589,8 +720,8 @@ python scripts/analyze-strips-video.py base.mp4
 | **#50** | 设备身份两条路径不统一：登记表用 MAC、使用日志用广播名，同一设备可能聚合成两行 | `ConnectionIdentity` 加 `hardwareId`，从 `DeviceInfoReport` 的 hw_id 取值；上报时机改为 0x88 往返后（加 pendingUsage 快照 + epoch 防串号）；后端归一化并按 MAC 聚合 |
 | **#49** | §4.2 第三处修复（真实槽位）**修对了但守不住**：`led_engine.c` 根本不在 host 测试编译清单里 | 抽出纯逻辑到 `led_engine_slots.c`（无 RTOS 依赖）并纳入 host 测试，+60 项断言 |
 
-**新基线**：固件 **11053** 项 + 58 向量 / 小程序 **601** 用例 / 后端 **139** 用例，
-`tsc` 与 `typecheck` 均干净。
+**当轮基线**：三端全绿，`tsc` 与 `typecheck` 均干净。具体数字已过期，不再抄写——
+当前值看最近一次测试报告（[`docs/testing.md`](testing.md)）。
 
 > **验证方式值得沿用**：我对 #49 与 #48 都做了**变异测试** —— 把修复改回缺陷版本，
 > 确认断言真的会红（#49 红 8 项、#48 红 7 项），再还原。这比「测试通过」可靠得多。
@@ -659,30 +790,33 @@ python scripts/analyze-strips-video.py base.mp4
 > 照着做即可（含跑完烧回产品固件）。
 >
 > **另外两项也没验**：小程序切后台回前台的静默回连、改灯珠数量时的毫秒级黑屏。
-> 逐条见 [`end-to-end-acceptance.md`](../end-to-end-acceptance.md) §3。不要因为 §4 七条全绿就以为只剩 #7。
+> 逐条见 [`end-to-end-acceptance.md`](./end-to-end-acceptance.md) §3。不要因为 §4 七条全绿就以为只剩 #7。
 >
 > **iOS 已于 2026-10-30 用 iPad 补测通过**（完整七条 + deviceId 为 UUID、
 > 跳过 `setBLEMTU`、授权正常、无超长写异常、设备名显示正常）。详见
-> [`ble-notes.md`](../ble-notes.md) §iOS。iOS 后台扫描仍未测。
+> [`ble-notes.md`](./ble-notes.md) §iOS。iOS 后台扫描仍未测。
 
 验证基线（改代码后应保持）：
 
 ```bat
-cmd.exe //c "firmware\test\run-tests.cmd"   REM 1426 项
-cd miniprogram && npx vitest run            REM 159 个用例
+cmd.exe //c "firmware\test\run-tests.cmd"
+cd miniprogram && npx vitest run
 cd miniprogram && npx tsc --noEmit          REM 必须干净
-scripts\build-firmware.cmd                  REM 分区余量 62%
+scripts\build-firmware.cmd
 ```
+
+> 这是 v1 时期的命令清单，保留作历史。当前跑法见 [`docs/testing.md`](testing.md)：
+> 一条 `node scripts/test-run.mjs` 覆盖前三层，数字以最近一次报告为准。
 
 ---
 
 ## 2. 现在在哪 / 下一步
 
 **MVP 已完成。** #14 七条全部通过，记录在
-[`docs/end-to-end-acceptance.md`](../end-to-end-acceptance.md) 第 1、4 节。
+[`docs/end-to-end-acceptance.md`](./end-to-end-acceptance.md) 第 1、4 节。
 
 **最大的未验证项是 #7（RMT × BLE 共存），用户决定跳过。** 这不是通过，是未验证。
-方案、实验固件、判定工具都留在 [`docs/rmt-ble-stability.md`](../rmt-ble-stability.md)，
+方案、实验固件、判定工具都留在 [`docs/rmt-ble-stability.md`](./rmt-ble-stability.md)，
 随时可以补跑：
 
 ```bat
@@ -853,13 +987,13 @@ python scripts/capture-serial.py COM6 10 --reset  # 先复位再抓启动日志
 
 | 想知道什么 | 去哪 |
 |---|---|
-| 七条验收怎么跑、记录表 | [`docs/end-to-end-acceptance.md`](../end-to-end-acceptance.md) |
+| 七条验收怎么跑、记录表 | [`docs/end-to-end-acceptance.md`](./end-to-end-acceptance.md) |
 | PC 当 central 跑协议验收 | `scripts/acceptance-probe.py` |
-| 字节级协议（唯一真相） | [`docs/protocol.md`](../protocol.md) + `protocol-testvectors.json` |
-| 固件分层、并发、各票增量 | [`docs/firmware-architecture.md`](../firmware-architecture.md) |
-| 灯带接线、供电、两个 bug 的记录 | [`docs/led-bringup.md`](../led-bringup.md) |
-| RMT × BLE 五组实验方案 | [`docs/rmt-ble-stability.md`](../rmt-ble-stability.md) |
-| 决策地图与 frontier | [`docs/wayfinding/map.md`](../wayfinding/map.md) |
+| 字节级协议（唯一真相） | [`docs/protocol.md`](./protocol.md) + `protocol-testvectors.json` |
+| 固件分层、并发、各票增量 | [`docs/firmware-architecture.md`](./firmware-architecture.md) |
+| 灯带接线、供电、两个 bug 的记录 | [`docs/led-bringup.md`](./led-bringup.md) |
+| RMT × BLE 五组实验方案 | [`docs/rmt-ble-stability.md`](./rmt-ble-stability.md) |
+| 决策地图与 frontier | [`docs/wayfinding/map.md`](wayfinding/map.md) |
 | 小程序侧实现笔记 | `C:\Users\13092\Desktop\项目\zcode\lumen-notes\app-implementation-notes.md`（仓库外） |
 
 ---
@@ -870,7 +1004,7 @@ python scripts/capture-serial.py COM6 10 --reset  # 先复位再抓启动日志
 
 - **iOS 后台扫描未测**（前台七条已用 iPad 验完，2026-10-30）。iOS 后台只认广播包
   里的 UUID，而固件把名字放在扫描响应包；若将来做后台常驻 / 快速回连，需重新确认
-  发现率与设备名是否可见。详见 [`ble-notes.md`](../ble-notes.md) §iOS。
+  发现率与设备名是否可见。详见 [`ble-notes.md`](./ble-notes.md) §iOS。
 - **全白 255 的长期供电**没专门测，且已不成问题：亮度上限已定为
   `max_brightness=200`，不会输出 255。按亮度折算 64 灯全白约 **3.0A**（255 时实测
   3.8A，线性折算，未单独实测）。

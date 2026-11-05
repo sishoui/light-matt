@@ -1,0 +1,1289 @@
+{
+  "runId": "2026-11-04T19-31-31-415",
+  "startedAt": "2026-11-04T19:31:31.415Z",
+  "finishedAt": "2026-11-04T19:32:57.747Z",
+  "head": {
+    "commit": "6c3b4f5",
+    "branch": "integration/test-flow",
+    "dirty": true,
+    "host": "sishoui",
+    "platform": "win32 10.0.26200",
+    "cpus": 12,
+    "layers": [
+      "firmware",
+      "mp",
+      "server",
+      "ui",
+      "ble"
+    ]
+  },
+  "layers": [
+    {
+      "name": "firmware",
+      "label": "固件 host 测试",
+      "status": "PASS",
+      "checks": 13996,
+      "unit": "断言",
+      "detail": "13996 条断言通过",
+      "failures": [],
+      "skipReason": null,
+      "skipped": [],
+      "extra": {
+        "vectors": 93,
+        "byTest": {
+          "vectors": 2732,
+          "test_checksum": 10,
+          "test_set_power_reducer": 47,
+          "test_set_brightness_reducer": 70,
+          "test_retired_commands": 98,
+          "test_encode_ack_all_results": 123,
+          "test_encode_event_storage_failed": 45,
+          "test_encode_limits": 5,
+          "test_decode_short": 4,
+          "test_decode_bad_frames_echo_header": 10,
+          "test_decode_max_payload": 9,
+          "test_reject_v2_protocol_frames": 15,
+          "test_state_defaults_and_clamp": 13,
+          "test_state_bytes_layout": 20,
+          "test_selftest_sequence": 30,
+          "test_selftest_late_wake": 5,
+          "test_selftest_restart": 10,
+          "test_selftest_cancel_rules": 32,
+          "test_selftest_leaves_state_untouched": 9,
+          "test_selftest_compose": 31,
+          "test_gamma": 285,
+          "test_gamma_hue_loss_clip": 20,
+          "test_two_layer_single_layer_regression": 76,
+          "test_blend_math": 15,
+          "test_two_layer_validation_matrix": 26,
+          "test_layer_codec": 30,
+          "test_apply_level_q8": 108,
+          "test_layer_level_static_steps": 3,
+          "test_layer_level_independent_per_layer": 2,
+          "test_level_times_brightness_then_gamma_once": 5,
+          "test_layer_level_validation": 12,
+          "test_script_segment_clear_slot_level": 6,
+          "test_script_store_clear_rejects_level": 5,
+          "test_breathing_floor_is_level_times_min_pct": 9,
+          "test_blend_gamma_once": 34,
+          "test_two_layer_shared_phase": 14,
+          "test_two_layer_ram_sizes": 4,
+          "test_two_layer_needs_frames": 9,
+          "test_clear_script_command": 23,
+          "test_set_led_count_reducer": 77,
+          "test_led_count_job": 46,
+          "test_save_scheduler": 41,
+          "test_state_blob": 84,
+          "test_effects_static_rgb": 1044,
+          "test_effects_dispatch": 47,
+          "test_segment_store_compose": 376,
+          "test_segment_store_validate": 42,
+          "test_segment_store_state_summary": 18,
+          "test_segment_store_prune": 10,
+          "test_segment_store_needs_frames": 11,
+          "test_segment_real_slots": 60,
+          "test_segment_commands": 95,
+          "test_encode_segment_reports": 29,
+          "test_encode_strip_config_report": 38,
+          "test_encode_device_info_report": 15,
+          "test_effects_breathing_phase": 260,
+          "test_effects_breathing_envelope": 134,
+          "test_effects_breathing_gain_and_pixel": 84,
+          "test_effects_rainbow_hue": 3378,
+          "test_effects_rainbow_pixel": 23,
+          "test_effects_comet_gain": 304,
+          "test_effects_comet_density": 419,
+          "test_effects_comet_solid_tail": 53,
+          "test_effects_flicker": 237,
+          "test_effects_strobe": 69,
+          "test_effects_heartbeat": 29,
+          "test_effects_off": 95,
+          "test_effects_new_types_validation": 28,
+          "test_effects_new_types_animation": 10,
+          "test_effects_rainbow_comet_coexist": 69,
+          "test_blob_strip_counts": 14,
+          "test_state_blob_100_leds": 10,
+          "test_set_segment_uses_own_strip_count": 9,
+          "test_state_blob_per_strip_bounds": 6,
+          "test_state_blob_v4_two_layers": 37,
+          "test_set_strip_power_command": 21,
+          "test_set_strip_power_validation_edges": 11,
+          "test_strip_mask_allows": 24,
+          "test_global_power_leaves_strip_mask": 9,
+          "test_strip_anim_mask": 10,
+          "test_strip_tdm_plan": 4,
+          "test_per_strip_led_counts_30_60_10": 19,
+          "test_per_strip_led_counts_100_24": 17,
+          "test_segment_store_compose_100": 105,
+          "test_reasm_single_chunk": 5,
+          "test_reasm_multi_chunk": 14,
+          "test_reasm_first_reentry": 8,
+          "test_reasm_overflow": 12,
+          "test_reasm_timeout": 14,
+          "test_reasm_orphan_and_helpers": 29,
+          "test_script_store_download": 41,
+          "test_script_commit_failure_keeps_previous": 32,
+          "test_script_multiple_scripts": 13,
+          "test_script_playback_advance": 33,
+          "test_script_playback_pause_resume": 23,
+          "test_script_playback_hold_during_selftest": 34,
+          "test_script_playback_loop_last": 78,
+          "test_loop_flag_layout": 10,
+          "test_loop_command_values": 17,
+          "test_script_loop_blob_roundtrip": 20,
+          "test_script_blob_roundtrip": 43,
+          "test_script_store_prune_strip": 35,
+          "test_script_prune_then_blob_roundtrip": 24,
+          "test_script_fade_roundtrip": 12,
+          "test_script_two_layer_persist": 15,
+          "test_script_clear_slot": 7,
+          "test_script_store_clear": 36,
+          "test_script_should_deactivate": 7,
+          "test_script_blob_encode_with_cleared": 17,
+          "test_script_commit_too_large": 1054,
+          "test_script_commit_implies_persistable": 732,
+          "test_planar_parse_list": 13,
+          "test_planar_init_validation": 12,
+          "test_planar_round_robin": 52,
+          "test_planar_set_count": 12,
+          "test_planar_stats": 10,
+          "test_planar_null_safety": 7
+        }
+      },
+      "durationMs": 1377
+    },
+    {
+      "name": "mp",
+      "label": "小程序单测",
+      "status": "PASS",
+      "checks": 1834,
+      "unit": "用例",
+      "detail": "1834 个用例通过，类型检查干净",
+      "failures": [],
+      "skipReason": null,
+      "skipped": [],
+      "extra": {
+        "typecheck": "PASS",
+        "typecheckFailures": 0,
+        "files": [
+          {
+            "file": "miniprogram/tests/add-device.test.ts",
+            "checks": 21,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/advanced-draft.test.ts",
+            "checks": 22,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/advanced-layers.test.ts",
+            "checks": 23,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/app-config.test.ts",
+            "checks": 10,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/brightness.test.ts",
+            "checks": 13,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/chunk.test.ts",
+            "checks": 24,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/codec.test.ts",
+            "checks": 20,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/color.test.ts",
+            "checks": 14,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/commands.test.ts",
+            "checks": 29,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/delete-device.test.ts",
+            "checks": 9,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/describe.test.ts",
+            "checks": 17,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/device-api.test.ts",
+            "checks": 36,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/device-list.test.ts",
+            "checks": 18,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/device-photo.test.ts",
+            "checks": 9,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/device-registry.test.ts",
+            "checks": 17,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/device-sync.test.ts",
+            "checks": 25,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/deviceSwitch.test.ts",
+            "checks": 33,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/effect-layout.test.ts",
+            "checks": 60,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/effect-panel.test.ts",
+            "checks": 87,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/effect-types.test.ts",
+            "checks": 6,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/effect-view.test.ts",
+            "checks": 39,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/errors.test.ts",
+            "checks": 9,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/home-actions.test.ts",
+            "checks": 21,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/home-view.test.ts",
+            "checks": 21,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/led-count-plan.test.ts",
+            "checks": 23,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/led-count-ui.test.ts",
+            "checks": 20,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/led-picker.test.ts",
+            "checks": 84,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/ledCount.test.ts",
+            "checks": 19,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/log-panel.test.ts",
+            "checks": 13,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/log.test.ts",
+            "checks": 3,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/mock-mode.test.ts",
+            "checks": 28,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/mock-session.test.ts",
+            "checks": 29,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/module-resolution.test.ts",
+            "checks": 3,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/page-fields.test.ts",
+            "checks": 3,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/plan-drafts.test.ts",
+            "checks": 36,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/plan-editor.test.ts",
+            "checks": 23,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/plan-fill.test.ts",
+            "checks": 11,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/plan-slots.test.ts",
+            "checks": 39,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/profile.test.ts",
+            "checks": 17,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/protocol-v98.test.ts",
+            "checks": 19,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/quick-effects.test.ts",
+            "checks": 49,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/quick-selection.test.ts",
+            "checks": 16,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/reconnect.test.ts",
+            "checks": 35,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/scan-filter.test.ts",
+            "checks": 9,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/script-capacity.test.ts",
+            "checks": 16,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/script-session.test.ts",
+            "checks": 20,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/script-view.test.ts",
+            "checks": 26,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/scripts.test.ts",
+            "checks": 23,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/segment-color.test.ts",
+            "checks": 16,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/segment-editor.test.ts",
+            "checks": 42,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/segments.test.ts",
+            "checks": 40,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/selftest.test.ts",
+            "checks": 6,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/session-strip.test.ts",
+            "checks": 13,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/session-v3.test.ts",
+            "checks": 15,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/simple-effects.test.ts",
+            "checks": 24,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/strip-head.test.ts",
+            "checks": 21,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/strip-meta.test.ts",
+            "checks": 19,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/strip-simple.test.ts",
+            "checks": 29,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/test-manifest.test.ts",
+            "checks": 15,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/test-run.test.ts",
+            "checks": 111,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/theme-sync.test.ts",
+            "checks": 20,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/theme.test.ts",
+            "checks": 7,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/throttle.test.ts",
+            "checks": 5,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/timeline.test.ts",
+            "checks": 119,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/transport.test.ts",
+            "checks": 21,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/usage.test.ts",
+            "checks": 44,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/writer.test.ts",
+            "checks": 3,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/zone-axis.test.ts",
+            "checks": 48,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/zone-editor.test.ts",
+            "checks": 34,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/zone-model.test.ts",
+            "checks": 20,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/zone-preview.test.ts",
+            "checks": 15,
+            "status": "passed"
+          }
+        ]
+      },
+      "durationMs": 15323
+    },
+    {
+      "name": "server",
+      "label": "后端单测",
+      "status": "PASS",
+      "checks": 140,
+      "unit": "用例",
+      "detail": "140 个用例通过，类型检查干净",
+      "failures": [],
+      "skipReason": null,
+      "skipped": [],
+      "extra": {
+        "typecheck": "PASS",
+        "typecheckFailures": 0,
+        "files": [
+          {
+            "file": "server/tests/aggregation.test.ts",
+            "checks": 15,
+            "status": "passed"
+          },
+          {
+            "file": "server/tests/api.test.ts",
+            "checks": 13,
+            "status": "passed"
+          },
+          {
+            "file": "server/tests/devices.test.ts",
+            "checks": 36,
+            "status": "passed"
+          },
+          {
+            "file": "server/tests/readonly.test.ts",
+            "checks": 44,
+            "status": "passed"
+          },
+          {
+            "file": "server/tests/schema-migration.test.ts",
+            "checks": 11,
+            "status": "passed"
+          },
+          {
+            "file": "server/tests/session.test.ts",
+            "checks": 21,
+            "status": "passed"
+          }
+        ]
+      },
+      "durationMs": 2731
+    },
+    {
+      "name": "ui",
+      "label": "渲染回归",
+      "status": "SKIP",
+      "checks": null,
+      "unit": "断言",
+      "detail": "",
+      "failures": [],
+      "skipReason": "缺微信开发者工具自动化端口（ws://127.0.0.1:9501：Failed connecting to ws://127.0.0.1:9501, check if target project window is opened with automation enabled）",
+      "durationMs": 345
+    },
+    {
+      "name": "ble",
+      "label": "真机 e2e",
+      "status": "PASS",
+      "checks": 16,
+      "unit": "用例",
+      "detail": "16/16 个用例通过",
+      "failures": [],
+      "skipReason": null,
+      "skipped": [],
+      "extra": {
+        "files": [
+          {
+            "file": "miniprogram/tests/e2e/complex-plan.test.ts",
+            "checks": 8,
+            "status": "passed"
+          },
+          {
+            "file": "miniprogram/tests/e2e/real-device.test.ts",
+            "checks": 8,
+            "status": "passed"
+          }
+        ]
+      },
+      "durationMs": 66254
+    }
+  ],
+  "conclusion": "PASS",
+  "files": [
+    {
+      "path": "miniprogram/tests/e2e/complex-plan.test.ts",
+      "layer": "ble",
+      "covers": "真机复杂剧本端到端：分片下发、大剧本、结束后复位设备",
+      "ticket": null,
+      "checks": 8,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/e2e/real-device.test.ts",
+      "layer": "ble",
+      "covers": "真机扫描连接、开关、亮度、颜色、断线重连后继续播放",
+      "ticket": null,
+      "checks": 8,
+      "fromOutput": true
+    },
+    {
+      "path": "firmware/test/test_skeleton.c",
+      "layer": "firmware",
+      "covers": "固件 host 测试全量：v4 协议向量逐字节、命令 reducer 语义、state 与 CRC、分片重组、gamma、段校验矩阵、剧本容量与 blob 往返、灯效两层合成",
+      "ticket": null,
+      "checks": 13996,
+      "fromOutput": false
+    },
+    {
+      "path": "scripts/check-protocol-testvectors-v4.mjs",
+      "layer": "firmware",
+      "covers": "v4 向量与 protocol-v4.md 的独立一致性校验（帧宽、magic/version、分片重组、结果码、命令覆盖、逐层亮度规则）。不走生成器，专门抓生成器的错；断言数记在固件那层的 run-tests.cmd 输出里，不并入 13996",
+      "ticket": null,
+      "checks": 13996,
+      "fromOutput": false
+    },
+    {
+      "path": "miniprogram/tests/add-device.test.ts",
+      "layer": "mp",
+      "covers": "发现页搜索匹配、名称预填、已添加判定与信号条",
+      "ticket": "#92",
+      "checks": 21,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/advanced-draft.test.ts",
+      "layer": "mp",
+      "covers": "进阶草稿纯逻辑：步骤时长、增删重排、多灯组隔离",
+      "ticket": "#65",
+      "checks": 22,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/advanced-layers.test.ts",
+      "layer": "mp",
+      "covers": "进阶档两层模型与八种灯效清单，含灯组页结构断言",
+      "ticket": "#100",
+      "checks": 23,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/app-config.test.ts",
+      "layer": "mp",
+      "covers": "app.json 配置契约、路由常量一致、WXML 绑定在脚本里有同名方法",
+      "ticket": null,
+      "checks": 10,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/brightness.test.ts",
+      "layer": "mp",
+      "covers": "亮度纯函数、100Hz 到 20Hz 的 latest-wins、亮度与开关解耦",
+      "ticket": "#9",
+      "checks": 13,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/chunk.test.ts",
+      "layer": "mp",
+      "covers": "分片容量计算、单帧构造、分片重组器",
+      "ticket": null,
+      "checks": 24,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/codec.test.ts",
+      "layer": "mp",
+      "covers": "v4 协议向量、CRC16、载荷与整帧边界",
+      "ticket": null,
+      "checks": 20,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/color.test.ts",
+      "layer": "mp",
+      "covers": "HSV 到用户空间 RGB 的换算、颜色语义纯函数、写进选中段",
+      "ticket": null,
+      "checks": 14,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/commands.test.ts",
+      "layer": "mp",
+      "covers": "命令构造器、状态帧解析、段载荷解析",
+      "ticket": null,
+      "checks": 29,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/delete-device.test.ts",
+      "layer": "mp",
+      "covers": "删除设备的六处清理，演示设备删除后不再回来",
+      "ticket": "#91",
+      "checks": 9,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/describe.test.ts",
+      "layer": "mp",
+      "covers": "命令、回执与状态的可读文案",
+      "ticket": null,
+      "checks": 17,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/device-api.test.ts",
+      "layer": "mp",
+      "covers": "设备接口请求形状、重试、身份头，以及断网时的降级",
+      "ticket": "#44",
+      "checks": 36,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/device-list.test.ts",
+      "layer": "mp",
+      "covers": "本地优先的设备列表合并、已知标记、扫描行派生",
+      "ticket": "#62",
+      "checks": 18,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/device-photo.test.ts",
+      "layer": "mp",
+      "covers": "设备封面存储映射",
+      "ticket": null,
+      "checks": 9,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/device-registry.test.ts",
+      "layer": "mp",
+      "covers": "设备登记表默认值、备注名、启用掩码",
+      "ticket": "#41",
+      "checks": 17,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/device-sync.test.ts",
+      "layer": "mp",
+      "covers": "本地先写再同步后端，同步失败不阻塞本地",
+      "ticket": "#44",
+      "checks": 25,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/deviceSwitch.test.ts",
+      "layer": "mp",
+      "covers": "设备切换状态机、失败路径、最近连过列表",
+      "ticket": "#33",
+      "checks": 33,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/effect-layout.test.ts",
+      "layer": "mp",
+      "covers": "效果区间校验、重叠拦截、默认切分、逐灯珠归属",
+      "ticket": null,
+      "checks": 60,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/effect-panel.test.ts",
+      "layer": "mp",
+      "covers": "进阶档效果面板纯逻辑：类型行、参数区、叠加层",
+      "ticket": null,
+      "checks": 87,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/effect-types.test.ts",
+      "layer": "mp",
+      "covers": "灯效类型清单与段类型枚举保持同步",
+      "ticket": null,
+      "checks": 6,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/effect-view.test.ts",
+      "layer": "mp",
+      "covers": "灯效选项表、层模式文案、应用层类型",
+      "ticket": null,
+      "checks": 39,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/errors.test.ts",
+      "layer": "mp",
+      "covers": "错误分流与面向用户的错误文案",
+      "ticket": null,
+      "checks": 9,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/home-actions.test.ts",
+      "layer": "mp",
+      "covers": "首页搜索、长按菜单、亮度防抖后再下发",
+      "ticket": "#93",
+      "checks": 21,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/home-view.test.ts",
+      "layer": "mp",
+      "covers": "首页卡片派生视图与封面图回退",
+      "ticket": null,
+      "checks": 21,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/led-count-plan.test.ts",
+      "layer": "mp",
+      "covers": "灯珠数收敛与方案收缩的四组输入、受影响分区数",
+      "ticket": "#79",
+      "checks": 23,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/led-count-ui.test.ts",
+      "layer": "mp",
+      "covers": "灯珠数滑块的界面契约（源码结构断言）",
+      "ticket": "#79",
+      "checks": 20,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/led-picker.test.ts",
+      "layer": "mp",
+      "covers": "灯珠弹窗纯规则：锚点、区间、取消，以及弹窗结构",
+      "ticket": null,
+      "checks": 84,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/ledCount.test.ts",
+      "layer": "mp",
+      "covers": "灯珠数输入校验、回执分支、超时处理",
+      "ticket": "#12",
+      "checks": 19,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/log-panel.test.ts",
+      "layer": "mp",
+      "covers": "点击序列模型与日志面板视图同源",
+      "ticket": null,
+      "checks": 13,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/log.test.ts",
+      "layer": "mp",
+      "covers": "帧日志环形缓冲",
+      "ticket": null,
+      "checks": 3,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/mock-mode.test.ts",
+      "layer": "mp",
+      "covers": "演示传输层与真机传输层同形、演示数据播种、开关收敛",
+      "ticket": null,
+      "checks": 28,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/mock-session.test.ts",
+      "layer": "mp",
+      "covers": "演示模式下的会话级链路",
+      "ticket": null,
+      "checks": 29,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/module-resolution.test.ts",
+      "layer": "mp",
+      "covers": "禁止相对导入指向目录（静态扫描全仓 import），自带变异测试",
+      "ticket": null,
+      "checks": 3,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/page-fields.test.ts",
+      "layer": "mp",
+      "covers": "页面的非 data 字段必须在 onLoad 初始化（静态扫描），自带变异测试",
+      "ticket": null,
+      "checks": 3,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/plan-drafts.test.ts",
+      "layer": "mp",
+      "covers": "方案草稿落盘键、读写、多灯组切片、旧键迁移",
+      "ticket": null,
+      "checks": 36,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/plan-editor.test.ts",
+      "layer": "mp",
+      "covers": "方案状态、步骤与灯组切片、空态、术语翻译",
+      "ticket": null,
+      "checks": 23,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/plan-fill.test.ts",
+      "layer": "mp",
+      "covers": "下发前补齐其它灯组切片、读回失败不下发",
+      "ticket": "#101",
+      "checks": 11,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/plan-slots.test.ts",
+      "layer": "mp",
+      "covers": "方案空位与最小空位、删除不重排、标签文案",
+      "ticket": "#83",
+      "checks": 39,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/profile.test.ts",
+      "layer": "mp",
+      "covers": "本机身份（头像与昵称）的存储纯逻辑",
+      "ticket": null,
+      "checks": 17,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/protocol-v98.test.ts",
+      "layer": "mp",
+      "covers": "流星密度与实色拖尾、随机闪烁命令、循环三值",
+      "ticket": "#98",
+      "checks": 19,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/quick-effects.test.ts",
+      "layer": "mp",
+      "covers": "快捷效果卡片表、档位到协议值、整组方案规格",
+      "ticket": null,
+      "checks": 49,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/quick-selection.test.ts",
+      "layer": "mp",
+      "covers": "灯效选中的权威来源，迟到的读回不覆盖刚选的",
+      "ticket": "#91",
+      "checks": 16,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/reconnect.test.ts",
+      "layer": "mp",
+      "covers": "断线反映、退避重连、重订阅通知、进前台静默回连",
+      "ticket": "#11",
+      "checks": 35,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/scan-filter.test.ts",
+      "layer": "mp",
+      "covers": "本产品设备名判定、扫描过滤、不带系统级服务",
+      "ticket": null,
+      "checks": 9,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/script-capacity.test.ts",
+      "layer": "mp",
+      "covers": "剧本容量预估四场景、段 id 唯一、帧序",
+      "ticket": "#45",
+      "checks": 16,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/script-session.test.ts",
+      "layer": "mp",
+      "covers": "剧本下发、播放控制、清空剧本命令",
+      "ticket": "#32",
+      "checks": 20,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/script-view.test.ts",
+      "layer": "mp",
+      "covers": "剧本草稿、状态字节的权威来源、进度文案",
+      "ticket": "#32",
+      "checks": 26,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/scripts.test.ts",
+      "layer": "mp",
+      "covers": "剧本命令与向量逐字节、下发计划、进度视图",
+      "ticket": "#32",
+      "checks": 23,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/segment-color.test.ts",
+      "layer": "mp",
+      "covers": "改色保留第二层与混合方式、无缓存时先查询",
+      "ticket": "#48",
+      "checks": 16,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/segment-editor.test.ts",
+      "layer": "mp",
+      "covers": "区间预检、同带重叠、周期下限、层合法性",
+      "ticket": "#42",
+      "checks": 42,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/segments.test.ts",
+      "layer": "mp",
+      "covers": "段编解码向量、逐分区亮度、扁平与两层模型互转",
+      "ticket": null,
+      "checks": 40,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/selftest.test.ts",
+      "layer": "mp",
+      "covers": "自检帧与会话自检入口",
+      "ticket": "#13",
+      "checks": 6,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/session-strip.test.ts",
+      "layer": "mp",
+      "covers": "灯组 id 必填、连接后重建、身份切换时清理",
+      "ticket": "#41",
+      "checks": 13,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/session-v3.test.ts",
+      "layer": "mp",
+      "covers": "逐带开关、引脚表、逐带灯珠数、当前灯组",
+      "ticket": "#40",
+      "checks": 15,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/simple-effects.test.ts",
+      "layer": "mp",
+      "covers": "八种灯效、空编码、一行式灯效与滚轮",
+      "ticket": "#96",
+      "checks": 24,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/strip-head.test.ts",
+      "layer": "mp",
+      "covers": "固定三套方案、拨盘刻度、灯珠数胶囊文案",
+      "ticket": "#95",
+      "checks": 21,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/strip-meta.test.ts",
+      "layer": "mp",
+      "covers": "灯组名称与封面存取、键与设备隔离",
+      "ticket": "#94",
+      "checks": 19,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/strip-simple.test.ts",
+      "layer": "mp",
+      "covers": "简单档纯派生、参数区可见性、读回后回填卡片",
+      "ticket": "#64",
+      "checks": 29,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/test-manifest.test.ts",
+      "layer": "mp",
+      "covers": "测试清单查漏工具自身：通配收集、未登记/已删/层不一致/空说明四类问题，自带变异测试",
+      "ticket": null,
+      "checks": 15,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/test-run.test.ts",
+      "layer": "mp",
+      "covers": "测试编排器自身：三态语义、报告六段、退出码，固件输出解析，vitest 结构化输出与 tsc 报错的按文件解析，以及发布级归档（未覆盖警告、目录唯一、基线池分开）",
+      "ticket": "#105",
+      "checks": 111,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/theme-sync.test.ts",
+      "layer": "mp",
+      "covers": "雾蓝主色、无橙色残留、原生控件激活色、显示时重读主题",
+      "ticket": "#90",
+      "checks": 20,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/theme.test.ts",
+      "layer": "mp",
+      "covers": "双主题变量、无硬编码色、主题配置与 app.json 一致",
+      "ticket": null,
+      "checks": 7,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/throttle.test.ts",
+      "layer": "mp",
+      "covers": "20Hz latest-wins 节流",
+      "ticket": null,
+      "checks": 5,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/timeline.test.ts",
+      "layer": "mp",
+      "covers": "时间轴时长钳位、宽度比例、最小宽度、布局视图",
+      "ticket": "#65",
+      "checks": 119,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/transport.test.ts",
+      "layer": "mp",
+      "covers": "分片与重组、MTU、状态读取回落、单帧查询",
+      "ticket": null,
+      "checks": 21,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/usage.test.ts",
+      "layer": "mp",
+      "covers": "使用日志写入、离线补报、幂等",
+      "ticket": "#34",
+      "checks": 44,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/writer.test.ts",
+      "layer": "mp",
+      "covers": "写入器单飞与先进先出",
+      "ticket": null,
+      "checks": 3,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/zone-axis.test.ts",
+      "layer": "mp",
+      "covers": "分区轴按比例定位、块列表、起止手柄",
+      "ticket": "#66",
+      "checks": 48,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/zone-editor.test.ts",
+      "layer": "mp",
+      "covers": "拖动划选、新增预检、快捷切分、增删改",
+      "ticket": "#55",
+      "checks": 34,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/zone-model.test.ts",
+      "layer": "mp",
+      "covers": "建读分区、两层模型、混合方式归一",
+      "ticket": "#53",
+      "checks": 20,
+      "fromOutput": true
+    },
+    {
+      "path": "miniprogram/tests/zone-preview.test.ts",
+      "layer": "mp",
+      "covers": "分区术语统一、预览条颜色、选中态、页面结构",
+      "ticket": "#97",
+      "checks": 15,
+      "fromOutput": true
+    },
+    {
+      "path": "server/tests/aggregation.test.ts",
+      "layer": "server",
+      "covers": "使用日志的聚合查询与视图数据",
+      "ticket": null,
+      "checks": 15,
+      "fromOutput": true
+    },
+    {
+      "path": "server/tests/api.test.ts",
+      "layer": "server",
+      "covers": "HTTP 路由与鉴权契约",
+      "ticket": null,
+      "checks": 13,
+      "fromOutput": true
+    },
+    {
+      "path": "server/tests/devices.test.ts",
+      "layer": "server",
+      "covers": "设备登记、归属与设备键归一",
+      "ticket": null,
+      "checks": 36,
+      "fromOutput": true
+    },
+    {
+      "path": "server/tests/readonly.test.ts",
+      "layer": "server",
+      "covers": "只读看板对写方法的拒绝",
+      "ticket": null,
+      "checks": 44,
+      "fromOutput": true
+    },
+    {
+      "path": "server/tests/schema-migration.test.ts",
+      "layer": "server",
+      "covers": "数据库结构与迁移",
+      "ticket": null,
+      "checks": 11,
+      "fromOutput": true
+    },
+    {
+      "path": "server/tests/session.test.ts",
+      "layer": "server",
+      "covers": "微信 code2session 与会话身份，注入假网络调用",
+      "ticket": null,
+      "checks": 21,
+      "fromOutput": true
+    }
+  ],
+  "manifest": {
+    "ok": true,
+    "total": 81,
+    "unregistered": [],
+    "missing": [],
+    "misplaced": []
+  },
+  "release": true,
+  "previous": {
+    "runId": "2026-11-04T19-31-31-415",
+    "previousRunId": "2026-11-04T19-29-50-569",
+    "previousStartedAt": "2026-11-04T19:29:50.569Z",
+    "comparable": 81,
+    "files": {
+      "changed": [],
+      "added": [],
+      "removed": []
+    },
+    "notCompared": [],
+    "layers": [],
+    "newFailures": [],
+    "newSkips": [],
+    "unchanged": true
+  }
+}

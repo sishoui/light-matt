@@ -15,7 +15,7 @@ import type { BleTransport } from "../utils/ble/transport";
 import { MOCK_DEVICES } from "../utils/control/mock-devices";
 import { seedMockDevices } from "../utils/control/mock-mode";
 import { createSessionStorage } from "./helpers/storage";
-import { SEGMENT_TYPE } from "../utils/protocol/constants";
+import { LOOP, SEGMENT_TYPE } from "../utils/protocol/constants";
 import {
   buildQuickCardViews,
   buildQuickSpec,
@@ -333,7 +333,7 @@ describe("演示模式：快捷档写入", () => {
           },
         ],
       },
-      { activate: true, loop: true },
+      { activate: true, loop: LOOP.ALL },
     );
     expect(played.kind).toBe("ok");
     const playing = await session.setPlayback(1, true);

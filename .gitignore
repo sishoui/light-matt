@@ -35,3 +35,18 @@ miniprogram/.auto/
 
 # 本地 BLE 验收产物（本机蓝牙地址与现场快照，不入库）
 .scratch/ble-test/
+
+# 本地测试报告（日常运行产物，不进 git；发布级报告归档到 docs/evidence）
+.reports/
+
+# 本机凭证：飞书应用 App ID / Secret，只留在这台机器上
+.env
+.env.local
+
+# 相机逐带采样框（绑定机位与分辨率，换机位必须重跑 calibrate-scope-boxes.py）
+.scope-boxes.json
+.scope-shots/
+.scope-boxes.overlap.json
+
+# 本地测试运行目录（adv-scope 录制、临时探针）
+.test-run-tmp/

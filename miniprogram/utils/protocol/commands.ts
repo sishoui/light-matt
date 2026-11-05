@@ -37,6 +37,7 @@ import {
   LAYER_LEVEL_MAX,
   LOOP,
   LOOP_MAX,
+  type LoopMode,
   MAX_LEDS,
   MAX_SCRIPTS,
   MAX_SEGMENTS,
@@ -643,8 +644,12 @@ function assertDuration(durationMs: number): number {
 /**
  * 循环模式的线上字节校验（#98）：只接受 0 / 1 / 2。
  *
- * 兼容旧的布尔入参（true → 1、false → 0），因为页面在此之前一直传布尔值；
- * 三值语义是 `LOOP`。**不钳位**：3 会被固件按 InvalidParam 拒，这里先拒。
+ * 布尔入参是**编码器这一层的兼容**（true → 1、false → 0），只留给历史测试与
+ * 老调用点。#114 之后上层（`session.setPlayback` / `activateScript` /
+ * `ScriptPlanOptions.loop`）一律收 `LoopMode`，布尔在那里过不了编译——所以
+ * 这里折算不会成为一个「把三值压平」的推导点。
+ *
+ * **不钳位**：3 会被固件按 InvalidParam 拒，这里先拒。
  */
 function assertLoopMode(value: number | boolean): number {
   if (typeof value === "boolean") {
@@ -1144,12 +1149,12 @@ export function stateLoop(state: DeviceState): boolean {
  * 位表见 §7.5：bit0 = 循环中、bit2 = 最后一步循环。bit2 单独出现（无 bit0）
  * 是矛盾编码，按不循环处理（与固件 `lumen_loop_from_flags` 一致）。
  */
-export function stateLoopMode(state: DeviceState): number {
+export function stateLoopMode(state: DeviceState): LoopMode {
   return loopModeFromFlags(state.flags);
 }
 
 /** flags → 循环模式（State 与 ScriptSummary 共用同一张位表）。 */
-export function loopModeFromFlags(flags: number): number {
+export function loopModeFromFlags(flags: number): LoopMode {
   if ((flags & PLAYBACK_FLAG.LOOP) === 0) {
     return LOOP.NONE;
   }

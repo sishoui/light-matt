@@ -7,6 +7,27 @@
 
 ---
 
+## 0.0 2026-11-05 补充：引脚 / 电源耦合是物理限制（#126）
+
+**结论：8 条灯带共用一个 RMT 通道（TDM 轮转）是设计，共用 5V 与地导致的电流
+阶跃是接线决定的。代码修不了，本轮也不宣称解决了。**
+
+本轮做了两件事，一件缓解、一件澄清：
+
+- **缓解**：消掉了触发源里最大的一类——「整条灯带突然亮起 / 熄灭」造成的电流
+  阶跃。方案作用域（#122）之后，只编排了一条带的方案不再让其余七条跟着亮起
+  再熄灭，这类阶跃在进阶档的常规使用里不再发生。
+- **没解决**：多条带同时做大幅度亮度变化时，共用 5V 上的电压跌落仍然存在，
+  表现为相邻灯带的瞬时偏色或轻微闪动。这不是固件能修的——需要每路独立供电
+  或加大储能，那是接线与电源方案的改动。
+
+真机侧的可复现现象与实测数据见
+[`docs/evidence/advanced-scope-2026-11-05.md`](./evidence/advanced-scope-2026-11-05.md)
+§4（关掉 strip0 时其余七条的读数也各掉 7~39，那是**光学串扰**，与电气耦合是
+两件事，别混为一谈）。
+
+---
+
 ## 0. 一句话现状
 
 **§1 的功能项与 5 项 UI 提示文案全部闭环。剩余验收项为零。**
@@ -15,8 +36,8 @@
 400s 压力（0 事件，判定 5/8 条带），**并用相机替代人眼实测了全部观感项**：
 相加白化、覆盖生效、单层回归、关带无残影、剧本两层一致。
 
-**§1.1–1.8 的 38 项，去掉 §1.7 多设备的 5 项（不作验收）后有效 32 项：
-✅ 32 / ◐ 0 / ☐ 0。** 全部闭环。
+**§1.1–1.8 的 38 项，去掉 §1.7 多设备的 5 项（不作验收）后有效 33 项：
+✅ 33 / ◐ 0 / ☐ 0。** 全部闭环（口径见 `acceptance-v3.md` §5.1）。
 
 **本轮新增的两个结论**：
 
@@ -24,7 +45,7 @@
    三条提交前提示的**实际文案**、剧本过大提示、日志面板连点打开，全部实测。
 2. **发现并修复一个阻断级缺陷**：`session-singleton.ts` 用了目录导入
    `from "../usage"`，小程序的模块解析器不认目录 `index`，导致**整个小程序白屏**
-   ——而 `tsc` 干净、604 个单测全过、`preview` 构建成功都没暴露。已加回归测试防复发。
+   ——而 `tsc` 干净、当轮全部单测通过、`preview` 构建成功都没暴露。已加回归测试防复发。
 
 ---
 
@@ -133,20 +154,26 @@
 
 **不要**让它从零探索代码库 —— 三端实现都已完成，剩下的都是点屏幕和看颜色。
 
-### 7.1 三端测试基线（本轮实测，文档旧值已过时）
+### 7.1 三端测试
+
+**数字不写在这里**：跑 `node scripts/test-run.mjs`，看最近一次报告。
+分层、改动映射与报告格式见 [`docs/testing.md`](testing.md)。
 
 ```bash
-cmd.exe //c "firmware\test\run-tests.cmd"   # 11053 项 + 58 向量
-cd miniprogram && npx vitest run            # 604 用例（不是 601）
-cd miniprogram && npx tsc --noEmit          # 干净
-cd server && npm test                       # 140 用例（不是 139）
-cd server && npm run typecheck              # 干净
+cmd.exe //c "firmware\test\run-tests.cmd"
+cd miniprogram && npx vitest run
+cd miniprogram && npx tsc --noEmit
+cd server && npm test
+cd server && npm run typecheck
 ```
 
 ### 7.2 真机脚本
 
 ```bash
-python scripts/probe-v3.py --serial COM6        # 协议字节 47 项
-python scripts/probe-v3-deep.py --serial COM6   # 行为语义 69 项（本轮新增）
+python scripts/probe-v3.py --serial COM6        # 协议字节与 ACK 往返
+python scripts/probe-v3-deep.py --serial COM6   # 行为语义（项数看末尾汇总行）
 python scripts/probe-v3-deep.py --serial COM6 --skip-heavy  # 跳过 ~900 帧大剧本
 ```
+
+> 探针的项数随用例增删而变，不在文档里写死。历史某一轮的实测条数在
+> `docs/evidence/` 的带日期文件里。

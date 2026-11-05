@@ -22,6 +22,8 @@ import {
 import { isSegmentSpec } from "../protocol/segment-shapes";
 import {
   BLEND,
+  LOOP,
+  type LoopMode,
   MAX_SCRIPTS,
   MAX_STAGES,
   MAX_STAGE_MS,
@@ -30,6 +32,7 @@ import {
   NO_EFFECT,
 } from "../protocol/constants";
 import type { CommandRequest, SegmentConfig, SegmentSpec } from "../protocol/types";
+import { loopLabel } from "./advanced-layers";
 
 /**
  * 剧本里的一条段：v3 允许两层（`SegmentSpec`），也继续接受扁平草稿
@@ -63,8 +66,13 @@ export interface ScriptConfig {
 export interface ScriptPlanOptions {
   /** 下发完是否 ActivateScript（默认 true：用户点「下发」就是要用它）。 */
   activate?: boolean;
-  /** 激活后的 loop 值（默认 true）。 */
-  loop?: boolean;
+  /**
+   * 激活后的循环模式（0 不循环 / 1 全部循环 / 2 最后一步循环，默认全部循环）。
+   *
+   * 三值，**不是布尔**（#114）：写成布尔时 `0 !== false` 与 `2 !== false`
+   * 都为真，不循环与最后一步循环会被一起判成「全部循环」。
+   */
+  loop?: LoopMode;
 }
 
 /** 下发计划的一步：一条待发命令 + 它属于哪一类（用于进度分组）。 */
@@ -273,10 +281,12 @@ export function buildScriptPlan(script: ScriptConfig, opts: ScriptPlanOptions = 
   });
 
   if (opts.activate !== false) {
+    /* 文案与载荷来自**同一个**规范化值：分头推导时连两者都可能不一致。 */
+    const loop: LoopMode = opts.loop ?? LOOP.ALL;
     steps.push({
       kind: "activate",
-      label: `激活剧本 ${script.scriptId}${opts.loop === false ? "（播一次）" : "（循环）"}`,
-      request: cmdActivateScript(script.scriptId, opts.loop !== false),
+      label: `激活剧本 ${script.scriptId}（${loopLabel(loop)}）`,
+      request: cmdActivateScript(script.scriptId, loop),
     });
   }
 

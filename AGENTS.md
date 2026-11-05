@@ -7,10 +7,9 @@
 **先读 [`docs/handoff.md`](docs/handoff.md)。** 它写清了当前在哪、哪些已完成、剩余工作卡在
 什么上。不要凭本文件的简短描述推断进度——项目已经过了三个大版本。
 
-> **当前状态：第五轮（UI / 交互）已合入 `master`（merge `ef295fe`）**，
-> 规格 [#85](https://github.com/sishoui/light-matt/issues/85)，实现票 #90–#101 全部关闭。
-> 上一条主线是 `78e7fc5`：#59 灯效编辑重构 → #70 导航重构 + 协议 v4
-> → #84 灯组进阶编辑器打磨。
+> **当前状态：第八轮（测试流程改造）在 `integration/test-flow`，待合入 `master`**，
+> 规格 [#102](https://github.com/sishoui/light-matt/issues/102)，实现票 #103–#111 全部关闭。
+> 上一条主线是第五轮（UI / 交互，规格 #85）已合入 `master`（merge `ef295fe`）。
 
 **第五轮**（规格 [#85](https://github.com/sishoui/light-matt/issues/85)，实现票 #90–#101）：
 
@@ -25,7 +24,7 @@
 | 灯效 | 八个：空 / 常亮 / 呼吸 / 彩虹 / 流星 / 爆闪 / 心跳 / 随机闪烁（名字不带颜色） |
 | 协议（仍是 v4） | 流星可调密度与实色拖尾、新增**随机闪烁 `0x07`**、循环字节扩成三值 |
 | 修缺陷 | 删除设备现在是**一组动作**（断开 + 清六处存储 + 演示设备不再回来）；电源键三条静默返回都有反馈；灯效选中不再被迟到的读回覆盖；下发前补齐其它灯组切片，修掉跨灯组串扰 |
-| 新增单测 | `theme-sync` / `add-device` / `strip-meta` / `delete-device` / `home-actions` / `quick-selection` / `simple-effects` / `strip-head` / `zone-preview` / `advanced-layers` / `plan-fill`（共 **+200 项**） |
+| 新增单测 | `theme-sync` / `add-device` / `strip-meta` / `delete-device` / `home-actions` / `quick-selection` / `simple-effects` / `strip-head` / `zone-preview` / `advanced-layers` / `plan-fill` |
 
 **上一轮**（规格 [#71](https://github.com/sishoui/light-matt/issues/71)，实现票 #72–#83）：
 灯珠上限 64→100 且逐组滑块可调；时间轴固定宽度永不滚动、长按 300ms 抬起跟手重排；
@@ -38,16 +37,17 @@
 9 字节并新增逐分区亮度 `level`。`pages/devices`、`pages/scripts`、`pages/segment-edit`
 均已删除。
 
-**验收**：真机协议 22/22（`scripts/probe-v4.py`）、模拟器 `verify-v5.mjs` **49/49**、
-三端单测全绿；肉眼观感已确认。详见 [`docs/acceptance-v4.md`](docs/acceptance-v4.md)
-与 [`docs/acceptance-v5.md`](docs/acceptance-v5.md)。
+**验收**：真机探针（`scripts/probe-v4.py`）、模拟器渲染回归、三端单测全部通过，
+肉眼观感已确认。数字见 [`docs/acceptance-v4.md`](docs/acceptance-v4.md)、
+[`docs/acceptance-v5.md`](docs/acceptance-v5.md) 与最近一次测试报告。
 
 **上上轮**：v3 的 11 张实现票（#36–#45）与 4 张缺口票（#47–#50）全部关闭，
-**已合入 `master`**（PR #51，merge commit `f9f2fe3`）。**设备侧验收已全部跑完**：协议层 47 项 + 行为语义
-69 项（`scripts/probe-v3-deep.py`）+ 400s 压力（0 事件）均已在真机闭环。
+**已合入 `master`**（PR #51，merge commit `f9f2fe3`）。**设备侧验收已全部跑完**：协议层探针 + 行为语义探针
+（`scripts/probe-v3-deep.py`）+ 400s 压力（0 事件）均已在真机闭环。
 
 GitHub **#46** 已关闭且**验收项全部闭环**：§1.1–1.8 的 38 项里 §1.7 多设备的
-5 项决定不作验收（只有 1 台设备），有效 32 项 **✅ 32 / ◐ 0 / ☐ 0**。
+5 项决定不作验收（只有 1 台设备），有效 33 项 **✅ 33 / ◐ 0 / ☐ 0**（口径见
+[`docs/acceptance-v3.md`](docs/acceptance-v3.md) §5.1）。
 观感项用相机实测替代人眼，UI 提示文案用**微信开发者工具自动化**实测。
 
 > **写小程序代码时注意**：相对 import 不能指向目录（`from "../usage"`）。
@@ -96,9 +96,14 @@ GitHub **#46** 已关闭且**验收项全部闭环**：§1.1–1.8 的 38 项里
 → 光区轴（按灯珠比例、未覆盖灰条、选中两端圆形手柄、≤8 光区）→ 效果面板（**七类型**：静态 / 呼吸 /
 彩虹 / 流光 / 爆闪 / 心跳 / 熄灭，参数区整体替换）。
 灯珠方格只在弹窗里出现（起点实心点 / 终点空心环 + 起止数字滚轮）。
-底部只有一个「应用并播放」，写入失败在按钮下方就地说明。
+**进阶档没有「应用」按钮**（#125）：离散动作点完即下发、滑块松手才下发，
+写入失败的原因显示在**页面顶部**（`applyError`）。
 **进阶档会把整份方案下发到灯控**（`session.downloadScript(script, { activate: true, loop })`）
-—— 只写实时光区的话第 2..N 步根本播不到。
+—— 只写实时光区的话第 2..N 步根本播不到。上传在**停播之前**（#124，只写 staging
+不影响画面），否则停播到开播之间会闪回旧画面。
+**方案只驱动它包含的灯带**（#122，`firmware/main/script_scope.c`）：没编排过的带
+继续渲自己的实时分区，停播 / 切步 / 播完都碰不到它。不要再「补齐其它灯带」——
+`QueryStrip` 读的是静态存储，播放中的画面协议读不回来。
 
 **交互契约**（`pages/home`）：点小图只切换大卡**不连接**；点大卡进 `pages/device`
 （在那里才连接）；卡上的电源键是 `catchtap` 快捷开关，未连接时先连上/切换。
@@ -141,56 +146,60 @@ SHA-256 索引、配置丢失记录。
 
 改任何字节布局 = 契约 + 向量 + 两端实现同一个 commit。
 
-## 测试基线（改代码后必须保持）
+## 测试
 
-```bash
-cmd.exe //c "firmware\\test\\run-tests.cmd"   # 13996 项断言 + 93 条 v4 向量
-cd miniprogram && npx vitest run              # 1708 用例 / 68 文件（不含 e2e）
-cd miniprogram && npm run test:ble            # 8 项真机 e2e（无设备自动 skip）
-cd miniprogram && npx tsc --noEmit            # 必须干净
-cd server && npm test                         # 140 用例
-cd server && npm run typecheck                # 必须干净
-```
-
-**模拟器 UI 回归**（改页面后必跑；需要微信开发者工具开着自动化端口）：
-
-**渲染回归脚本（改页面后必跑；需要开发者工具开着自动化端口）**
-
-```bash
-cd miniprogram && node .auto/verify-v5.mjs             # 49 项：主题三处同步 / 首页 / 设备页 /
-                                                       #   灯组页（拨盘 / 三套方案 / 一行式 / 滚轮）/
-                                                       #   进阶页（气泡 / 循环三档 / 两层 / 预览条）
-```
-
-> 端口不是默认 9501 时用 `WS=ws://127.0.0.1:9502` 覆盖。
-> 脚本会自己切浅色 / 深色并复位，可以反复跑（幂等）。
->
-> **已作废**（旧断言锁的是已删除的页面或已重写的控件，不要接进 CI）：
-> `verify-effect-editor.mjs`（九张色块卡 → 一行式）、`verify-redesign.mjs`（发现 tab）、
-> `verify-deep.mjs`（设备页自定义档）、`verify-ui-interaction.mjs`（`pages/devices`）。
-> 它们的「点得动」意图已并入 `verify-v5.mjs`。
-
-`verify-effect-editor.mjs` 锁的是「只有渲染层能发现」的问题：白屏、`bindtap` 全失效、
-点小图却发起了连接、主题 class 没挂上、tabBar 没渲染，以及**点效果卡 / 应用并播放后
-设备状态真的变了**（不是只改 data，且方案的步骤数真的到了设备）。改页面后**跑一次再交付**。
+**怎么跑、改哪类代码该跑哪层、报告在哪、清单怎么维护，全部见 [`docs/testing.md`](docs/testing.md)。**
+日常一条命令：`node scripts/test-run.mjs`（固件 / 小程序 / 后端三层，约 10 秒）。
+改页面再加 `node scripts/test-run.mjs ui`；发版前 `--release`。
 
 ## Agent skills
 
 ### Issue tracker
 
-GitHub Issues（`sishoui/light-matt`）。**当前 effort 的规格父票是 `#60`**（UI 重构 +
-协议 v4），9 张实现票 `#61`–`#69` **全部完成并在集成分支**。上一轮 v3 的父票 `#35`
-（`#36`–`#45` / `#46`）已关闭；v1 的 `#1` 与 v2 的 `#27` 是历史。
+GitHub Issues（`sishoui/light-matt`）。**最近一轮的规格父票是 `#102`**（测试流程改造），
+九张实现票 `#103`–`#111` **全部关闭**，改动在集成分支 `integration/test-flow`。
+上一轮的 `#85`（UI 第五轮，`#90`–`#101`）已合入 `master`；`#60`（UI 重构 + 协议 v4）
+与 v3 的 `#35` 已关闭；v1 的 `#1` 与 v2 的 `#27` 是历史。
 详见 `docs/agents/issue-tracker.md`。
 
 ### Domain docs
 
 单上下文布局（`GLOSSARY.md` + `docs/adr/`）。见 `docs/agents/domain.md`。
 
+### 会话收尾：发飞书总结
+
+**每次会话结束前必须发一条**，用 `scripts/notify-feishu.py` 把本轮做了什么、
+跑到什么数、卡在哪发到飞书群。这是硬规则：**「没发」和「发过了」必须长得不一样**。
+
+```bash
+# 凭证只放环境变量，永不写进仓库 / 文档 / commit
+export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx
+
+python scripts/notify-feishu.py --status green \
+  --title "lumen 会话总结 · <一句话结论>" \
+  --body-file .scratch/session-summary.md
+```
+
+| 项 | 要求 |
+|---|---|
+| 数字 | 引用**最近一次测试报告**的实际值（见 `docs/testing.md`），不抄旧数、不写「都正常」 |
+| 失败 | 有失败就用 `--status red`，写清哪层、哪条、报错原文 |
+| 未覆盖 | 明确列出没跑的层（如 `ui` 缺服务端口而 SKIP），**不许当通过** |
+| 凭证 | 只从 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 读；泄露过的 secret 要去后台重置 |
+| 目标群 | 默认 `oc_19c2c88a44e0ae537b82d72712afbf53`，换群用 `--chat-id` |
+| 验证 | 脚本会打印 `message_id`；要复核可 `GET /open-apis/im/v1/messages/{id}` |
+
+**为什么是应用凭证而不是自定义机器人 Webhook**：Webhook 只能发到「它被添加的那个群」，
+不能指定 `chat_id`；要发固定群就得走 `im/v1/messages`。
+**前提是应用已发布并开了 `im:message` 权限**，否则换得到 token 但发消息会报权限错。
+
+没配凭证时脚本退出码 `2` 并打印缺什么。**不要因此静默跳过**——在回复里明说
+「总结未发送：缺 FEISHU_APP_ID/SECRET」，让用户知道这事没做完。
+
 ## 真机工具
 
-- `scripts/probe-v3.py` —— 协议层 47 项真机验证（PC 当 central，需 bleak）
-- `scripts/probe-v3-deep.py` —— 行为语义 69 项（段回滚 / 逐带独立 / 剧本推进 /
+- `scripts/probe-v3.py` —— 协议层真机验证（PC 当 central，需 bleak；项数看末尾汇总行）
+- `scripts/probe-v3-deep.py` —— 行为语义验证（段回滚 / 逐带独立 / 剧本推进 /
   断连续播 / 过大回滚），`--skip-heavy` 跳过 ~900 帧大剧本下发
 - `scripts/ble-gateway.py` —— BLE 网关（bleak → JSON over stdio），**由 e2e 自动拉起**。
   让 Node 侧的小程序代码直连 PC 真实蓝牙，无需手机

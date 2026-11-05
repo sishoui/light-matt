@@ -37,6 +37,7 @@ import {
   ANIMATION_MIN_PERIOD_MS,
   BREATHING_MIN_PERIOD_MS,
   BLEND,
+  FLICKER_MIN_PERIOD_MS,
   HEARTBEAT_MAX_PERIOD_MS,
   HEARTBEAT_MIN_PERIOD_MS,
   SEGMENT_TYPE,
@@ -336,6 +337,8 @@ export interface EffectParams {
   duty: number;
   /** 心跳节奏 40-120 BPM（面板单位；编码时换成周期毫秒）。 */
   bpm: number;
+  /** 随机闪烁密度 0-255（协议 `p5`，同时亮着的比例）。 */
+  density: number;
 }
 
 /**
@@ -359,6 +362,7 @@ export function defaultParams(type: PanelType): EffectParams {
     frequencyHz: 4,
     duty: 90,
     bpm: 60,
+    density: 128,
   };
   switch (type) {
     case "breathing":
@@ -372,6 +376,10 @@ export function defaultParams(type: PanelType): EffectParams {
       return { ...base, periodMs: 0, frequencyHz: 4, duty: 90 };
     case "heartbeat":
       return { ...base, periodMs: 0, bpm: 60 };
+    case "flicker":
+      /* #121：周期默认 1 秒（滑块网格上的值，且远高于 334 的光敏线下限），
+       * 密度中档 128/255 ≈ 50%。 */
+      return { ...base, periodMs: 1000, density: 128 };
     case "off":
       return { ...base, periodMs: 0 };
     default:
@@ -397,6 +405,7 @@ export function normalizeParams(params: Partial<EffectParams>): EffectParams {
     frequencyHz: clampFrequency(merged.frequencyHz),
     duty: nearestDuty(merged.duty),
     bpm: clampBpm(merged.bpm),
+    density: clampByte(merged.density),
   };
 }
 
@@ -500,7 +509,8 @@ export type PanelSliderKey =
   | "span"
   | "tail"
   | "frequency"
-  | "bpm";
+  | "bpm"
+  | "density";
 
 /** 选择键（波形 / 方向 / 占空比）。 */
 export type PanelChoiceKey = "waveform" | "direction" | "duty";
@@ -520,7 +530,7 @@ export const SLIDER_KEYS: Record<PanelType, readonly PanelSliderKey[]> = {
   strobe: ["hue", "sat", "frequency", "level"],
   heartbeat: ["hue", "sat", "bpm", "level"],
   /* #100 随机闪烁：密度（p5）控制同时亮着的比例。 */
-  flicker: ["hue", "sat", "level", "period"],
+  flicker: ["hue", "sat", "level", "period", "density"],
   off: [],
 };
 
@@ -535,6 +545,7 @@ const ALL_SLIDER_KEYS: readonly PanelSliderKey[] = [
   "tail",
   "frequency",
   "bpm",
+  "density",
 ];
 
 /** 这个 key 是不是一个滑块键（来自渲染层的数据不算可信）。 */
@@ -756,6 +767,21 @@ export function sliderView(key: PanelSliderKey, params: EffectParams): PanelSlid
         note: "",
       };
     }
+    case "density": {
+      const percent = p5Percent(params.density);
+      return {
+        key,
+        label: "密度",
+        value: percent,
+        min: PERCENT_MIN,
+        max: PERCENT_MAX,
+        step: PERCENT_STEP,
+        display: `${percent}%`,
+        rainbow: false,
+        sends: true,
+        note: "",
+      };
+    }
     case "frequency": {
       const hz = clampFrequency(params.frequencyHz);
       return {
@@ -843,6 +869,8 @@ export function panelSummary(type: PanelType, params: EffectParams): string {
     );
   } else if (type === "rainbow") {
     parts.push(spanText(clampByte(params.span)), params.reverse ? "反转" : "正转");
+  } else if (type === "flicker") {
+    parts.push(`密度 ${p5Percent(params.density)}%`);
   } else {
     parts.push(tailText(clampByte(params.tail)), params.reverse ? "反转" : "正转");
   }
@@ -908,13 +936,17 @@ export function switchPanelType(
     hue: current.hue,
     sat: current.sat,
     level: current.level,
-    /* 呼吸 / 彩虹 / 流光的周期抬到协议下限之上（与 applyLayerType 一致）；
+    /* 呼吸 / 彩虹 / 流光 / 随机闪烁的周期抬到协议下限之上（与 applyLayerType 一致）；
      * 静态 / 熄灭恒 0；爆闪与心跳的周期由频率 / 节奏换算，草稿里也是 0。 */
     periodMs:
-      to === "breathing" || to === "rainbow" || to === "comet"
+      to === "breathing" || to === "rainbow" || to === "comet" || to === "flicker"
         ? Math.max(
             base.periodMs,
-            to === "breathing" ? BREATHING_MIN_PERIOD_MS : ANIMATION_MIN_PERIOD_MS,
+            to === "breathing"
+              ? BREATHING_MIN_PERIOD_MS
+              : to === "flicker"
+                ? FLICKER_MIN_PERIOD_MS
+                : ANIMATION_MIN_PERIOD_MS,
           )
         : 0,
   };
@@ -950,6 +982,8 @@ export function applySlider(
       return { ...params, frequencyHz: clampFrequency(next) };
     case "bpm":
       return { ...params, bpm: clampBpm(next) };
+    case "density":
+      return { ...params, density: p5FromPercent(next) };
     default:
       return { ...params, tail: p5FromPercent(next) };
   }
@@ -1066,6 +1100,20 @@ export function panelLayer(type: PanelType, params: EffectParams): EffectLayer {
         flags: HEARTBEAT_FLAGS,
         level,
       };
+    case "flicker":
+      /*
+       * 随机闪烁（#98 / #121）：flags 必须 0，周期为 0 或 ≥334ms（光敏线），
+       * p5 是密度（同时亮着的比例）。
+       */
+      return {
+        type: SEGMENT_TYPE.FLICKER,
+        hue,
+        sat,
+        periodMs: Math.max(clampPeriodMs(normalized.periodMs) || PERIOD_MIN_MS, FLICKER_MIN_PERIOD_MS),
+        p5: clampByte(normalized.density),
+        flags: 0,
+        level,
+      };
     case "off":
       /* 熄灭（#74）：参数块与 level 全 0——它本来就是黑的，亮度没有意义。 */
       return {
@@ -1174,6 +1222,16 @@ export function paramsFromLayer(type: PanelType, layer: EffectLayer): EffectPara
         sat: clampByte(layer.sat),
         level,
         bpm: period === 0 ? base.bpm : clampBpm(roundBpm(period)),
+      };
+    case "flicker":
+      /* 密度直接是 p5（0-255），周期为 0 时退回默认（0 = 冻结画面，滑块没有这一档）。 */
+      return {
+        ...base,
+        hue: clampHue(layer.hue),
+        sat: clampByte(layer.sat),
+        level,
+        periodMs: period === 0 ? base.periodMs : period,
+        density: clampByte(layer.p5),
       };
     case "off":
       /* 熄灭层没有任何参数（设备上全 0），草稿直接用默认值：切回别的类型时

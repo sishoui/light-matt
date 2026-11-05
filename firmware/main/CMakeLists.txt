@@ -7,6 +7,7 @@ idf_component_register(
         "effects.c"
         "segment_store.c"
         "script_store.c"
+        "script_scope.c"
         "script_blob.c"
         "strip_planar.c"
         "strip_power.c"

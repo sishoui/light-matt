@@ -1,0 +1,5 @@
+# 工具脚本必须保持 LF 签出。Windows 上 core.autocrlf=true 会把它们变成 CRLF，
+# 而 vitest 一碰到「shebang + CRLF + import」的文件就抛 SyntaxError，
+# 表现是 miniprogram/tests 里那几条 import scripts/*.mjs 的用例整片失败——
+# 与代码无关，换台机器复现不出来。这条约束只能靠 git 保证，不能靠人记得。
+*.mjs text eol=lf

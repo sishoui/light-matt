@@ -48,6 +48,7 @@ import {
   applyPanelToZone,
   applySlider,
   buildEffectPanel,
+  defaultParams,
   buildTypeViews,
   emptyOverlayDraft,
   overlayLayer,
@@ -66,6 +67,7 @@ import {
   PANEL_TYPE_OPTIONS,
   isPanelSliderKey,
   panelCheck,
+  panelLayer,
   panelTypeOf,
   paramsFromLayer,
   switchPanelType,
@@ -112,12 +114,12 @@ import {
   type BubbleZoneRow,
   type StepBubbleView,
 } from "../../utils/control/step-bubble";
-import { LOOP_MODE, clampLoopMode, type LoopMode } from "../../utils/control/advanced-layers";
 import {
-  fillOtherStrips,
-  missingSlices,
-  missingSlicesText,
-} from "../../utils/control/plan-fill";
+  LOOP_MODE,
+  clampLoopMode,
+  resolveLoopMode,
+  type LoopMode,
+} from "../../utils/control/advanced-layers";
 import { checkScriptBlobBytes } from "../../utils/control/script-plan";
 import { draftCapacityBytes, draftToScriptConfig } from "../../utils/control/script-view";
 import {
@@ -145,7 +147,6 @@ import {
 import {
   buildEffectRows,
   buildWheelOptions,
-  effectTypeOf,
   simpleEffectIdOfType,
   simpleEffectOf,
   type EffectRowView,
@@ -219,7 +220,6 @@ import { layerFromFlat } from "../../utils/control/segment-model";
 import {
   LOOP,
   MAX_LEDS,
-  MAX_STRIPS,
   MAX_SCRIPTS,
   MIN_LEDS,
   NO_EFFECT,
@@ -474,7 +474,7 @@ Page({
     /** 面板上的一次性反馈（切换类型 / 选控件）。 */
     panelHint: "",
 
-    /* ---- 底部：应用并播放 ---- */
+    /* ---- 下发状态（#125：没有「应用」按钮，改动自动下发） ---- */
     applying: false,
     applyError: "",
   },
@@ -505,6 +505,21 @@ Page({
   quickQueued: false,
   /** 防抖代次：旧一轮在 await 后静默退出。 */
   quickEpoch: 0,
+  /**
+   * 进阶档自动下发（#125）。
+   *
+   * 进阶档一次下发是**整机方案**（21~75 帧），比简单档贵得多，所以这里的
+   * 作废与补发必须做对，否则连续操作会互相打断：
+   *  - `advancedEpoch`：每次改动 +1。异步下发在 await 之后发现代次变了，
+   *    就丢弃这次结果，不覆盖用户更新的选择；
+   *  - `advancedQueued`：下发过程中又发生改动，收尾后补跑一次（只补最后一次）；
+   *  - `advancedTimer`：连续动作（滑块拖动）的防抖定时器。
+   */
+  advancedEpoch: 0,
+  advancedQueued: false,
+  advancedTimer: null as ReturnType<typeof setTimeout> | null,
+  /** 进阶档正在下发（与 `data.applying` 分开：后者是给按钮 / 进度用的）。 */
+  advancedBusy: false,
   /** 有改动还没成功写进设备（写失败 / 拖动中）。 */
   dirty: false,
   /** 4 个方案编号的步骤数（设备摘要）；null = 还没读回来。 */
@@ -638,6 +653,10 @@ Page({
     this.quickTimer = null;
     this.quickQueued = false;
     this.quickEpoch = 0;
+    this.advancedEpoch = 0;
+    this.advancedQueued = false;
+    this.advancedTimer = null;
+    this.advancedBusy = false;
     this.dirty = false;
     this.planStepCounts = null;
     this.planEpoch = 0;
@@ -816,6 +835,11 @@ Page({
     } finally {
       this.setData({ connectBusy: false });
     }
+  },
+
+  /** 收起顶部的失败提示（#125）。 */
+  onDismissApplyError() {
+    this.setData({ applyError: "" });
   },
 
   /** 提示条 / 状态条上的重连（已连接时什么都不做）。 */
@@ -1709,25 +1733,25 @@ Page({
      * 切换后的默认值一定在区间内，所以这里不会触发预检拒绝。 */
     this.panelParams = switchPanelType(this.panelParams, this.panelMode, type);
     this.panelMode = type;
-    /* 类型是离散动作：立刻落进草稿（但不写设备——写设备只走「应用并播放」）。 */
+    /* 类型是离散动作：落进草稿后**立刻下发**（#125，没有「应用」按钮）。 */
     if (this.commitPanel()) {
-      this.setPanelHint("颜色已经保留，其余参数按新效果重置了");
+      this.scheduleAdvancedApply(true);
     }
     this.renderTimeline();
   },
 
-  /** 滑块拖动中：只改本地草稿与预览色块（绝不逐帧写设备）。 */
+  /** 滑块拖动中：只改本地草稿与预览色块（绝不逐帧写设备，#125）。 */
   onPanelSliderChanging(e: WechatMiniprogram.SliderChanging) {
     this.applyPanelSlider(String((e.currentTarget.dataset as { key?: string }).key ?? ""), Number(e.detail.value));
   },
 
-  /** 松开滑块：落进草稿（写设备仍然只走「应用并播放」）。 */
+  /** 松开滑块：落进草稿并**立即下发**（#125；拖动中一帧都不写）。 */
   onPanelSliderChange(e: WechatMiniprogram.SliderChange) {
     const key = String((e.currentTarget.dataset as { key?: string }).key ?? "");
     if (this.applyPanelSlider(key, Number(e.detail.value))) {
-      /* 被预检拦住时保留原因（`commitPanel` 已经写进 hint），别在这里抹掉。 */
+      /* 松手才下发：拖动过程中一帧都不写（#125）。 */
       if (this.commitPanel()) {
-        this.clearPanelHint();
+        this.scheduleAdvancedApply(true);
       }
       this.renderTimeline();
     }
@@ -1749,7 +1773,7 @@ Page({
     return true;
   },
 
-  /** 波形 / 方向 / 占空比：点一下就是一次离散改动，直接落进草稿。 */
+  /** 波形 / 方向 / 占空比：离散改动，落进草稿后立即下发（#125）。 */
   onPanelChoiceTap(e: WechatMiniprogram.TouchEvent) {
     const key = String(e.currentTarget.dataset.key ?? "");
     const value = Number(e.currentTarget.dataset.value);
@@ -1761,7 +1785,7 @@ Page({
     }
     this.panelParams = applyChoice(this.panelParams, key, value);
     if (this.commitPanel()) {
-      this.clearPanelHint();
+      this.scheduleAdvancedApply(true);
     }
     this.renderTimeline();
   },
@@ -1784,7 +1808,7 @@ Page({
     }
     this.panelOverlay = switchOverlayType(this.panelOverlay, next);
     if (this.commitPanel()) {
-      this.setPanelHint(next === "none" ? "叠加效果已关闭" : "叠加效果已设置");
+      this.scheduleAdvancedApply(true);
     }
     this.renderTimeline();
   },
@@ -1800,12 +1824,12 @@ Page({
     }
     this.panelOverlay = { ...this.panelOverlay, blend: value as typeof this.panelOverlay.blend };
     if (this.commitPanel()) {
-      this.clearPanelHint();
+      this.scheduleAdvancedApply(true);
     }
     this.renderTimeline();
   },
 
-  /** 叠加层滑块拖动中：只改本地草稿与预览（绝不逐帧写设备）。 */
+  /** 叠加层滑块拖动中：只改本地草稿与预览（绝不逐帧写设备，#125）。 */
   onOverlaySliderChanging(e: WechatMiniprogram.SliderChanging) {
     this.applyOverlaySlider(
       String((e.currentTarget.dataset as { key?: string }).key ?? ""),
@@ -1813,12 +1837,12 @@ Page({
     );
   },
 
-  /** 叠加层滑块松手：落进草稿。 */
+  /** 叠加层滑块松手：落进草稿并立即下发（#125）。 */
   onOverlaySliderChange(e: WechatMiniprogram.SliderChange) {
     const key = String((e.currentTarget.dataset as { key?: string }).key ?? "");
     if (this.applyOverlaySlider(key, Number(e.detail.value))) {
       if (this.commitPanel()) {
-        this.clearPanelHint();
+        this.scheduleAdvancedApply(true);
       }
       this.renderTimeline();
     }
@@ -2105,7 +2129,12 @@ Page({
   },
 
   onDurationChange(e: WechatMiniprogram.SliderChange) {
+    const draft = this.currentDraft();
     this.applyDuration(Number(e.detail.value));
+    /* 松手即下发（拖动中 `onDurationChanging` 只改本地）。 */
+    if (this.currentDraft() !== draft) {
+      this.scheduleAdvancedApply(true);
+    }
   },
 
   /**
@@ -2238,7 +2267,10 @@ Page({
     const raw = Number(e.currentTarget.dataset.value);
     const mode: LoopMode = clampLoopMode(raw);
     const draft = this.currentDraft();
-    if (draftLoop(draft) === mode) {
+    /* 比的是**草稿里记着的原始值**，不是 `draftLoop` 的钳位结果：后者把
+     * `undefined` 当成 0，于是「设备在循环、草稿没选过」时点「不循环」会被
+     * 提前吞掉，设备继续循环（#114）。 */
+    if (draft.loop === mode) {
       return;
     }
     this.setDraft(withDraftLoop(draft, mode));
@@ -2502,6 +2534,8 @@ Page({
     this.closePicker({
       zoneHint: added ? "已新增一个分区" : "范围已更新",
     });
+    /* 确认分区是离散动作：关弹窗就下发（#125）。 */
+    this.scheduleAdvancedApply(true);
   },
 
   /** 删除：只对已有分区可用（新建状态下按钮隐藏）。 */
@@ -2519,6 +2553,7 @@ Page({
     this.applyStepZones(next);
     this.pickedSegId = -1;
     this.closePicker({ zoneHint: "已删掉这个分区" });
+    this.scheduleAdvancedApply(true);
   },
 
   /** 把分区列表写进「当前步骤 × 当前灯组」（多灯组语义只在这一处落地）。 */
@@ -2731,8 +2766,12 @@ Page({
     if (session === null || !this.data.ready) {
       return;
     }
-    const state = session.deviceState;
-    const loopMode = state === null ? LOOP.NONE : stateLoopMode(state);
+    /* 播放的是 `id` 这一**套方案**，循环档位属于方案本身（草稿）。设备上报
+     * 只在用户从未为它选过档位时兜底（#114）。 */
+    const loopMode = resolveLoopMode(
+      advancedDraftOf(this.drafts, id).loop,
+      session.deviceState?.flags ?? null,
+    );
     this.setData({ planHint: "" });
     try {
       const activated = await session.activateScript(id, loopMode);
@@ -3317,7 +3356,7 @@ Page({
       ];
       /* #96：静默把整份方案也更新一次（进阶档的编排要能看到这一组的改动），
        * 再恢复播放。失败不覆盖「已生效」——实时分区已经写进去了。 */
-      await this.silentDownloadPlans();
+      await this.silentDownloadPlans(loopMode);
       if (wasPlaying) {
         await session.setPlayback(1, loopMode).catch(() => undefined);
       }
@@ -3354,7 +3393,7 @@ Page({
    * 与方案一致。**失败静默**：实时分区已经写成功，不该因为方案没提交就把
    * 用户的操作判成失败。
    */
-  async silentDownloadPlans(): Promise<void> {
+  async silentDownloadPlans(loop: LoopMode): Promise<void> {
     const session = this.session;
     if (session === null || !this.data.ready) {
       return;
@@ -3372,7 +3411,9 @@ Page({
       if (!capacity.ok) {
         return;
       }
-      await session.downloadScript(config, { activate: true, loop: false });
+      /* 循环档位由调用方给：这个旁路只许**保持**设备当前那一档。写死某个
+       * 档位会让简单档改个颜色就把设备的循环关掉（#114）。 */
+      await session.downloadScript(config, { activate: true, loop });
     } catch {
       /* 方案同步是旁路：实时分区已经生效，这里不覆盖用户看到的结果。 */
     }
@@ -3387,85 +3428,13 @@ Page({
     if (this.effectId !== "flicker") {
       return base;
     }
-    /* 随机闪烁：色相 / 饱和度沿用用户选的（壳卡的默认色），密度用中档。 */
-    return {
-      ...base,
-      layer0: {
-        ...base.layer0,
-        type: effectTypeOf("flicker"),
-        periodMs: 1200,
-        p5: 96,
-        flags: 0,
-      },
-    } as SegmentSpec;
-  },
-
-  // ---------------- 应用并播放 ----------------
-
-  /**
-   * 底部唯一的主按钮。
-   *
-   * 简单档：有未写入的改动（或设备上不是「整组一张卡」）→ 先写入，成功后再播放。
-   * 进阶档：把当前步骤 × 当前灯组的分区写进设备（`replaceStepZonesInList`
-   * 语义：只替换这一片，别的灯组 / 别的步骤一字不动），再播放整套方案。
-   *
-   * 两种档位写入失败都在按钮下方就地显示原因，不弹模态。已经在播放时只给提示，
-   * 不重复发播放命令。
-   */
-  async onApplyAndPlay() {
-    const session = this.session;
-    const reason = this.disabledReason();
-    if (session === null || reason !== "") {
-      if (reason !== "") {
-        this.setData({ applyError: reason });
-      }
-      return;
-    }
-    if (this.data.applying) {
-      return;
-    }
-    if (this.data.mode === "advanced") {
-      await this.applyAdvanced();
-      return;
-    }
-    if (this.quickCardId === null) {
-      this.setData({ applyError: "先在上方选一张效果卡" });
-      return;
-    }
-    this.setData({ applying: true, applyError: "" });
-    try {
-      /* 写整组：有改动，或设备上不是「整组一张卡」（多分区 / 叠加层）。 */
-      if (this.dirty || this.segmentReports.length !== 1) {
-        await this.writeQuick();
-        if (this.dirty) {
-          this.setData({ applyError: this.data.quickHint || "写入失败，请稍后重试" });
-          return;
-        }
-      }
-      const state = session.deviceState;
-      if (state !== null && state.playbackState === 1) {
-        this.setData({ quickHint: "已经在播放了" });
-        return;
-      }
-      const loop = state !== null && (state.flags & 0x01) === 1;
-      const result = await session.setPlayback(1, loop);
-      if (result.kind === "ok") {
-        if (result.state !== undefined && result.state !== null) {
-          this.applyDeviceState(result.state);
-        }
-        this.setData({ quickHint: "正在播放" });
-        return;
-      }
-      if (result.kind === "ack-error") {
-        this.setData({ applyError: resultText(result.ack.resultCode) });
-        return;
-      }
-      if (result.kind === "error") {
-        this.setData({ applyError: result.message });
-      }
-    } finally {
-      this.setData({ applying: false });
-    }
+    /* 随机闪烁：色相 / 饱和度沿用用户选的（壳卡的默认色），周期与密度取该类型默认值。 */
+    const flicker = panelLayer("flicker", {
+      ...defaultParams("flicker"),
+      hue: base.layer0.hue,
+      sat: base.layer0.sat,
+    });
+    return { ...base, layer0: { ...flicker, level: base.layer0.level } } as SegmentSpec;
   },
 
   /**
@@ -3495,82 +3464,70 @@ Page({
    * 方案写入失败时**不还原**实时分区：那一步已经成功，用户想要的画面已经写进去了，
    * 只把「方案没提交」这个原因如实说出来。
    */
-  /**
-   * 读回其它灯组在各步骤的现有分区，补进草稿（#101）。
-   *
-   * 返回补齐后的草稿；任何一条读回失败都返回 null（并就地显示原因），
-   * 调用方据此**放弃这次下发**——绝不能发一份会把别的灯组刷空的方案。
-   */
-  async fillOtherStripSlices(draft: ScriptDraft, stripCount: number): Promise<ScriptDraft | null> {
-    const session = this.session;
-    if (session === null) {
-      return draft;
-    }
-    const targetStripId = this.data.stripId;
-    const otherIds: number[] = [];
-    for (let stripId = 0; stripId < Math.min(stripCount, MAX_STRIPS); stripId += 1) {
-      if (stripId !== targetStripId) {
-        otherIds.push(stripId);
-      }
-    }
-    if (otherIds.length === 0) {
-      return draft;
-    }
-
-    /* 每一步都要有其它灯组的切片：读回一次，按「灯组 × 步骤」摊开。 */
-    const slices = new Map<number, Array<readonly SegmentSpec[]>>();
-    const ledCounts = new Map<number, number>();
-    for (const stripId of otherIds) {
-      const result = await session.queryStrip(stripId);
-      if (result.kind !== "ok") {
-        this.setData({ applyError: missingSlicesText([stripId]) });
-        return null;
-      }
-      const zones = result.reports
-        .filter((report) => report.stripId === stripId)
-        .map((report) => ({
-          stripId: report.stripId,
-          segId: report.segId,
-          start: report.start,
-          end: report.end,
-          blend: report.blend,
-          layer0: { ...report.layer0 },
-          layer1: { ...report.layer1 },
-        }));
-      /* 设备上的现有分区对**每个步骤**都适用（它代表「这条灯组当前的样子」）。 */
-      slices.set(
-        stripId,
-        draft.stages.map(() => zones),
-      );
-      ledCounts.set(stripId, session.deviceState?.stripCounts[stripId] ?? 0);
-    }
-
-    const missing = missingSlices(
-      Array.from({ length: Math.min(stripCount, MAX_STRIPS) }, (_, index) => index),
-      targetStripId,
-      slices,
-    );
-    if (missing.length > 0) {
-      /* 读回成功但缺失（理论上不会发生）：仍然按「不下发」处理。 */
-      this.setData({ applyError: missingSlicesText(missing) });
-      return null;
-    }
-
-    const { draft: merged, filled } = fillOtherStrips({
-      draft,
-      targetStripId,
-      slices,
-      ledCounts,
-    });
-    if (filled.length > 0) {
-      this.setPanelHint(`已保留灯组 ${filled.map((id) => id + 1).join("、")} 的现有编排`);
-    }
-    return merged;
-  },
-
   async applyAdvanced(_opts: { silent?: boolean } = {}): Promise<void> {
     const session = this.session;
     if (session === null) {
+      return;
+    }
+    /* #125：这套调度保证「连续操作不会互相打断」。
+     *
+     * 一次下发是整机方案（21~75 帧，真机实测 30ms/帧），所以：
+     *  - 正在下发时又改了东西 → 记 `advancedQueued`，收尾后补跑最后那一次；
+     *  - 每次改动 +1 代次，await 之后代次变了就丢弃本次结果。
+     */
+    if (this.advancedBusy) {
+      this.advancedQueued = true;
+      return;
+    }
+    this.advancedBusy = true;
+    const epoch = this.advancedEpoch;
+    try {
+      await this.runAdvanced(epoch);
+    } finally {
+      this.advancedBusy = false;
+      if (this.advancedQueued) {
+        this.advancedQueued = false;
+        void this.applyAdvanced();
+      }
+    }
+  },
+
+  /**
+   * 改动落进草稿之后的统一下发入口（#125）。
+   *
+   * 节奏按动作类型分，与简单档 `scheduleQuickWrite` 同一模型：
+   *  - 离散动作（选灯效 / 确认分区 / 换循环档 / 改时长 / 选特效层 / 切混合）
+   *    点完立刻下发；
+   *  - 连续动作（滑块拖动）拖动中只改本地，松手才下发。
+   */
+  scheduleAdvancedApply(immediate: boolean) {
+    this.advancedEpoch += 1;
+    if (this.advancedTimer !== null) {
+      clearTimeout(this.advancedTimer);
+      this.advancedTimer = null;
+    }
+    if (immediate) {
+      void this.applyAdvanced();
+      return;
+    }
+    this.advancedTimer = setTimeout(() => {
+      this.advancedTimer = null;
+      void this.applyAdvanced();
+    }, 250);
+  },
+
+  /**
+   * 一次完整的进阶档下发。`epoch` 用来判断「这次的结果还作不作数」。
+   *
+   * 顺序见方法头注释：#124 起上传在停播之前。
+   */
+  async runAdvanced(epoch: number): Promise<void> {
+    const session = this.session;
+    if (session === null) {
+      return;
+    }
+    /* 代次已过期（用户在排队期间又改了别的）：这次不发了，补发会接管。 */
+    if (epoch !== this.advancedEpoch) {
       return;
     }
     const draft = this.currentDraft();
@@ -3588,20 +3545,18 @@ Page({
     let restore: SegmentSpec[] = [];
     try {
       /*
-       * ⓫ #101：补齐其它灯组的切片。
+       * #123：**不再补齐其它灯组**。
        *
-       * 方案是**设备级**的：一套方案覆盖所有灯组。草稿里通常只有当前灯组，
-       * 直接下发会让其它灯组退回基准单色（看起来就是「改一条串到别的灯组」）。
-       * 所以先读回其它灯组在各步骤的现有分区，补进草稿。
+       * 这里曾经读回其它灯组的实时分区、塞进每个阶段（#101）。那是错的：
+       * 读回的是**静态存储**，而播放中的画面在 `s_stage_segments` 里，协议
+       * 没有命令能读回来。所以补进去的永远是陈旧数据，既保不住别人，还把
+       * 别人的带绑上了自己方案的时间轴。
        *
-       * 任一条读回失败就**不下发**并给出原因：宁可这次不发，也不能把它们刷掉。
+       * 现在方案只含用户真正编辑过的灯组；固件按归属只驱动方案覆盖的带
+       * （#122），其余带继续渲自己的实时分区。
        */
       const stripCount = Math.max(1, session.deviceState?.stripCount ?? 1);
-      const filled = await this.fillOtherStripSlices(draft, stripCount);
-      if (filled === null) {
-        return;
-      }
-      const effectiveDraft = filled;
+      const effectiveDraft = draft;
 
       /* ⓪ 预检（纯本地）。草稿非法时一帧都不发，设备上的灯保持原样。 */
       const script = draftToScriptConfig(effectiveDraft, stripCount);
@@ -3638,12 +3593,46 @@ Page({
       }
 
       const state = session.deviceState;
-      const loop = state !== null && (state.flags & 0x01) === 1;
+      /* #114：三档以**用户草稿**为准（点档位、改步骤都落进草稿），设备
+       * flags 只在草稿从未选过时兜底；三值原样往下传，不再压成布尔。 */
+      const loop = resolveLoopMode(effectiveDraft.loop, state?.flags ?? null);
+
+      /*
+       * ① 整份方案**先上传**（#124）。
+       *
+       * `ScriptBegin/Stage/Segment/Commit` 只写 staging 区，本来就不影响画面，
+       * 所以它可以整体提到停播之前。这样「画面还是旧的、方案已经生效」这个
+       * 错误窗口就从整个上传时长（21~75 帧、0.5~4 秒）压缩到一帧。
+       *
+       * 以前的顺序是「停播 → 写实时分区 → 上传 → 开播」：停播那一步会让渲染
+       * 源从当前阶段掉回静态存储，而静态存储里往往还是上一次的内容，用户看到
+       * 的就是「闪一下再变」。
+       *
+       * 上传失败就直接返回：此时还没停播，画面完全没被动过。
+       */
+      const uploaded = await session.downloadScript(script, { activate: true, loop });
+      if (epoch !== this.advancedEpoch) {
+        /* 上传期间用户又改了东西：这次的结果已经过时，交给补发的那一轮。
+         * 不停播、不写实时分区——那些动作会覆盖用户的新选择。 */
+        return;
+      }
+      if (uploaded.kind !== "ok") {
+        this.setData({ applyError: this.scriptFailureText(uploaded) });
+        await this.refreshSegments();
+        return;
+      }
+
+      /*
+       * ② 只有确实要写实时分区时才停播。
+       *
+       * 停播是必需的：设备按方案渲染时实时分区不可见，且「停止」之后回落的
+       * 画面必须与草稿一致。但停播与写分区现在紧挨着，中间不再夹着上传。
+       */
       if (state !== null && state.playbackState !== 0) {
         await session.setPlayback(0, loop);
       }
 
-      /* ① 当前步骤 × 当前灯组：先读回、清掉这一组的旧分区，再逐个写。
+      /* ③ 当前步骤 × 当前灯组：先读回、清掉这一组的旧分区，再逐个写。
        * 这一步即使 `zones` 为空也照做——「这一步让这条灯组熄一下」是合法的
        * 编排，实时画面（停止播放后的回落）必须与草稿一致。 */
       try {
@@ -3678,15 +3667,7 @@ Page({
         return;
       }
 
-      /* ② 整份方案：写入即启用（`activate`），播放单独走下一帧。 */
-      const uploaded = await session.downloadScript(script, { activate: true, loop });
-      if (uploaded.kind !== "ok") {
-        this.setData({ applyError: this.scriptFailureText(uploaded) });
-        await this.refreshSegments();
-        return;
-      }
-
-      /* ③ 播放（读回的 State 是权威，用它刷播放态）。 */
+      /* ④ 播放（读回的 State 是权威，用它刷播放态）。 */
       const played = await session.setPlayback(1, loop);
       if (played.kind !== "ok") {
         this.setData({ applyError: this.scriptFailureText(played) });

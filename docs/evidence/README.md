@@ -76,22 +76,19 @@
 ## 2. 自动化的部分（每次改代码后应重跑）
 
 ```bash
-# 协议字节与 ACK（47 项）
+# 协议字节与 ACK 往返
 python scripts/probe-v3.py --serial COM6
 
 # 行为语义：段回滚 / 逐带独立 / 区间 / 四套剧本 / 阶段推进 / 断连续播 / 过大回滚
 python scripts/probe-v3-deep.py --serial COM6 --json .runs/v3/deep.json
 
-# 三端测试基线
-cmd.exe //c "firmware\test\run-tests.cmd"   # 11053 项 + 58 向量
-cd miniprogram && npx vitest run            # 604 用例
-cd miniprogram && npx tsc --noEmit          # 干净
-cd server && npm test                       # 140 用例
-cd server && npm run typecheck              # 干净
+# 三端测试（数字看最近一次报告，见 docs/testing.md）
+node scripts/test-run.mjs
 ```
 
-**注意**：`docs/handoff.md` 与 `AGENTS.md` 里写的「小程序 601 / 后端 139」
-已过时，本轮实测为 **604 / 140**。以实测为准。
+**注意**：本文其它段落里的用例数是**当轮实测的归档数字**，不是当前基线。
+当前基线只认最近一次测试报告（日常在 `.reports/`，发布级在
+`docs/evidence/test-runs/`）；跑法与分层见 [`docs/testing.md`](../testing.md)。
 
 ---
 
@@ -144,7 +141,7 @@ cd server && npm run typecheck              # 干净
 Page "pages/devices/devices" has not been registered yet.
 ```
 
-`tsc --noEmit` 干净、604 个单测全过、`cli preview` 构建成功——**都没有暴露它**。
+`tsc --noEmit` 干净、当轮全部单测通过、`cli preview` 构建成功——**都没有暴露它**。
 已修 + 加回归测试（变异验证过会红）。详见 `ui-acceptance-2026-11-02.md` §0。
 
 ---

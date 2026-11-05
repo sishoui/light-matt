@@ -41,7 +41,7 @@ const opt = (name, fallback = null) => {
 if (args.includes("--list")) {
   console.log(
     [
-      "all       跑整份真机 e2e（tests/e2e/real-device.test.ts，8 条用例）",
+      "all       跑整份真机 e2e（tests/e2e/ 下两个文件，共 16 条用例）",
       "",
       "前置：设备上电、未被别处连着、烧的是 v4 固件；本机装了 python + bleak。",
       "无设备时退出码 3（SKIP），不是失败。",

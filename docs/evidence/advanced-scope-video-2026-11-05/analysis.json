@@ -1,0 +1,2449 @@
+{
+  "camera": {
+    "frames": 1262,
+    "duration_s": 126.52,
+    "measured_fps": 10.16
+  },
+  "clips": [
+    {
+      "id": "01-mode-advanced",
+      "step": "01-mode-advanced",
+      "title": "点「进阶」",
+      "phase": "click",
+      "clip": "clips/01-mode-advanced.mp4",
+      "duration_s": 4.41,
+      "frames": 44,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 0,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [],
+        "overlayTypes": [],
+        "ranges": [],
+        "layers": []
+      },
+      "after": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 0,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [],
+        "overlayTypes": [],
+        "ranges": [],
+        "layers": []
+      },
+      "camera_before": {
+        "lit_px": 0,
+        "lit_max": 0,
+        "mean_v": 22.23,
+        "v_range": 0.04,
+        "hue": null,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 0,
+        "lit_max": 0,
+        "mean_v": 22.23,
+        "v_range": 0.23,
+        "hue": null,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "same",
+        "text": "这一步没有改变设备读回值：可能点的就是当前已有的值，或改的是协议读不回来的方案元数据（循环档 / 步骤时长）。要求只是「点完不报错、画面不被破坏」，已满足。"
+      }
+    },
+    {
+      "id": "02-step-add",
+      "step": "02-step-add",
+      "title": "点「加步骤」",
+      "phase": "click",
+      "clip": "clips/02-step-add.mp4",
+      "duration_s": 4.41,
+      "frames": 44,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 0,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [],
+        "overlayTypes": [],
+        "ranges": [],
+        "layers": []
+      },
+      "after": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 0,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [],
+        "overlayTypes": [],
+        "ranges": [],
+        "layers": []
+      },
+      "camera_before": {
+        "lit_px": 0,
+        "lit_max": 0,
+        "mean_v": 22.25,
+        "v_range": 0.12,
+        "hue": null,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 0,
+        "lit_max": 0,
+        "mean_v": 22.16,
+        "v_range": 0.3,
+        "hue": null,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "same",
+        "text": "这一步没有改变设备读回值：可能点的就是当前已有的值，或改的是协议读不回来的方案元数据（循环档 / 步骤时长）。要求只是「点完不报错、画面不被破坏」，已满足。"
+      }
+    },
+    {
+      "id": "03-zone-confirm",
+      "step": "03-zone-confirm",
+      "title": "画分区 0-29 → 确定（确认即下发）",
+      "phase": "click",
+      "clip": "clips/03-zone-confirm.mp4",
+      "duration_s": 4.41,
+      "frames": 44,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 0,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [],
+        "overlayTypes": [],
+        "ranges": [],
+        "layers": []
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 1,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 1538,
+        "lit_max": 8087,
+        "mean_v": 18.97,
+        "v_range": 9.77,
+        "hue": 36.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 7443,
+        "lit_max": 7758,
+        "mean_v": 27.52,
+        "v_range": 0.1,
+        "hue": 50.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "点完即下发，设备读回已改变。"
+      }
+    },
+    {
+      "id": "04-zone-select",
+      "step": "04-zone-select",
+      "title": "点分区气泡选中它",
+      "phase": "click",
+      "clip": "clips/04-zone-select.mp4",
+      "duration_s": 4.41,
+      "frames": 44,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 7793,
+        "lit_max": 7907,
+        "mean_v": 27.45,
+        "v_range": 0.09,
+        "hue": 52.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 7816,
+        "lit_max": 7861,
+        "mean_v": 27.42,
+        "v_range": 3.08,
+        "hue": 52.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "same",
+        "text": "这一步没有改变设备读回值：可能点的就是当前已有的值，或改的是协议读不回来的方案元数据（循环档 / 步骤时长）。要求只是「点完不报错、画面不被破坏」，已满足。"
+      }
+    },
+    {
+      "id": "05-effect-breathing",
+      "step": "05-effect-breathing",
+      "title": "点灯效「呼吸」（点完即下发）",
+      "phase": "click",
+      "clip": "clips/05-effect-breathing.mp4",
+      "duration_s": 4.41,
+      "frames": 44,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 1,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          1
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 1,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 2000,
+              "p5": 40,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 5739,
+        "lit_max": 7816,
+        "mean_v": 24.44,
+        "v_range": 15.76,
+        "hue": 52.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 37,
+        "lit_max": 41,
+        "mean_v": 15.57,
+        "v_range": 0.11,
+        "hue": 50.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "06-effect-rainbow",
+      "step": "06-effect-rainbow",
+      "title": "点灯效「彩虹」（点完即下发）",
+      "phase": "click",
+      "clip": "clips/06-effect-rainbow.mp4",
+      "duration_s": 4.41,
+      "frames": 44,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "animMask": 1,
+        "segCounts": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          1
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 1,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 2000,
+              "p5": 40,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 0,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          2
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 2,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 3000,
+              "p5": 255,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 26,
+        "lit_max": 1916,
+        "mean_v": 14.61,
+        "v_range": 4.6,
+        "hue": 48.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 1902,
+        "lit_max": 11555,
+        "mean_v": 20.98,
+        "v_range": 13.18,
+        "hue": 197.5,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "07-effect-comet",
+      "step": "07-effect-comet",
+      "title": "点灯效「流星」（点完即下发）",
+      "phase": "click",
+      "clip": "clips/07-effect-comet.mp4",
+      "duration_s": 4.41,
+      "frames": 44,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "animMask": 1,
+        "segCounts": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          2
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 2,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 3000,
+              "p5": 255,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 1,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          3
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 2000,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 31,
+        "lit_max": 2711,
+        "mean_v": 14.63,
+        "v_range": 4.91,
+        "hue": 48.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 246,
+        "lit_max": 8807,
+        "mean_v": 20.64,
+        "v_range": 13.31,
+        "hue": 44.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "08-effect-strobe",
+      "step": "08-effect-strobe",
+      "title": "点灯效「爆闪」（点完即下发）",
+      "phase": "click",
+      "clip": "clips/08-effect-strobe.mp4",
+      "duration_s": 4.41,
+      "frames": 44,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "animMask": 1,
+        "segCounts": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          3
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 2000,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 1,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          4
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 4,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 250,
+              "p5": 90,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 41,
+        "lit_max": 50,
+        "mean_v": 14.66,
+        "v_range": 16.47,
+        "hue": 54.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 71,
+        "lit_max": 9763,
+        "mean_v": 18.55,
+        "v_range": 13.25,
+        "hue": 48.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "09-effect-heartbeat",
+      "step": "09-effect-heartbeat",
+      "title": "点灯效「心跳」（点完即下发）",
+      "phase": "click",
+      "clip": "clips/09-effect-heartbeat.mp4",
+      "duration_s": 4.41,
+      "frames": 44,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "animMask": 1,
+        "segCounts": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          4
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 4,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 250,
+              "p5": 90,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 0,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          5
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 5,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 1000,
+              "p5": 60,
+              "flags": 1,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 5821,
+        "lit_max": 7618,
+        "mean_v": 24.45,
+        "v_range": 3.04,
+        "hue": 52.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 5729,
+        "lit_max": 5777,
+        "mean_v": 24.48,
+        "v_range": 0.06,
+        "hue": 52.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "10-effect-flicker",
+      "step": "10-effect-flicker",
+      "title": "点灯效「随机闪烁」（点完即下发）",
+      "phase": "click",
+      "clip": "clips/10-effect-flicker.mp4",
+      "duration_s": 4.41,
+      "frames": 44,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "animMask": 1,
+        "segCounts": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          5
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 5,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 1000,
+              "p5": 60,
+              "flags": 1,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 1,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          7
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 7,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 1000,
+              "p5": 128,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 5744,
+        "lit_max": 7739,
+        "mean_v": 24.46,
+        "v_range": 2.85,
+        "hue": 50.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 35,
+        "lit_max": 39,
+        "mean_v": 14.96,
+        "v_range": 0.08,
+        "hue": 48.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "11-effect-static",
+      "step": "11-effect-static",
+      "title": "点灯效「常亮」（点完即下发）",
+      "phase": "click",
+      "clip": "clips/11-effect-static.mp4",
+      "duration_s": 4.41,
+      "frames": 44,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "animMask": 1,
+        "segCounts": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          7
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 7,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 1000,
+              "p5": 128,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 1,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 16,
+        "lit_max": 60,
+        "mean_v": 14.71,
+        "v_range": 1.7,
+        "hue": 60.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 7274,
+        "lit_max": 7726,
+        "mean_v": 27.61,
+        "v_range": 0.14,
+        "hue": 51.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "12-param-level",
+      "step": "12-param-level",
+      "title": "亮度滑块松手 → 40",
+      "phase": "click",
+      "clip": "clips/12-param-level.mp4",
+      "duration_s": 4.41,
+      "frames": 44,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 1,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 5908,
+        "lit_max": 7939,
+        "mean_v": 24.49,
+        "v_range": 3.27,
+        "hue": 52.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 6676,
+        "lit_max": 6699,
+        "mean_v": 26.25,
+        "v_range": 0.14,
+        "hue": 52.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "13-param-hue",
+      "step": "13-param-hue",
+      "title": "色相滑块松手 → 210°",
+      "phase": "click",
+      "clip": "clips/13-param-hue.mp4",
+      "duration_s": 4.41,
+      "frames": 44,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 1,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 24456,
+        "lit_max": 24584,
+        "mean_v": 73.93,
+        "v_range": 74.33,
+        "hue": 230.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 23549,
+        "lit_max": 24903,
+        "mean_v": 71.81,
+        "v_range": 4.09,
+        "hue": 236.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "14-overlay-comet",
+      "step": "14-overlay-comet",
+      "title": "特效层选「流星」",
+      "phase": "click",
+      "clip": "clips/14-overlay-comet.mp4",
+      "duration_s": 4.41,
+      "frames": 44,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 0,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 23309,
+        "lit_max": 23360,
+        "mean_v": 71.2,
+        "v_range": 0.85,
+        "hue": 238.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 23366,
+        "lit_max": 24630,
+        "mean_v": 71.47,
+        "v_range": 4.25,
+        "hue": 234.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "15-overlay-blend",
+      "step": "15-overlay-blend",
+      "title": "混合方式改「相加」",
+      "phase": "click",
+      "clip": "clips/15-overlay-blend.mp4",
+      "duration_s": 4.41,
+      "frames": 44,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "animMask": 1,
+        "segCounts": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 1,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 23420,
+        "lit_max": 23578,
+        "mean_v": 71.48,
+        "v_range": 62.38,
+        "hue": 238.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 22998,
+        "lit_max": 24477,
+        "mean_v": 70.24,
+        "v_range": 4.79,
+        "hue": 234.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "16-loop-none",
+      "step": "16-loop-none",
+      "title": "循环「不循环」（已是这一档，幂等）",
+      "phase": "click",
+      "clip": "clips/16-loop-none.mp4",
+      "duration_s": 4.41,
+      "frames": 44,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "animMask": 1,
+        "segCounts": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 1,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 23367,
+        "lit_max": 23570,
+        "mean_v": 71.35,
+        "v_range": 1.32,
+        "hue": 238.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 23234,
+        "lit_max": 24436,
+        "mean_v": 71.02,
+        "v_range": 4.69,
+        "hue": 233.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "17-loop-all",
+      "step": "17-loop-all",
+      "title": "循环「全部循环」",
+      "phase": "click",
+      "clip": "clips/17-loop-all.mp4",
+      "duration_s": 4.41,
+      "frames": 44,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "animMask": 1,
+        "segCounts": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "after": {
+        "flags": 3,
+        "playback": 1,
+        "stage": 1,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 23490,
+        "lit_max": 23581,
+        "mean_v": 71.57,
+        "v_range": 1.85,
+        "hue": 238.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 0,
+        "lit_max": 23295,
+        "mean_v": 0.22,
+        "v_range": 71.34,
+        "hue": 234.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "18-loop-last",
+      "step": "18-loop-last",
+      "title": "循环「最后一步循环」",
+      "phase": "click",
+      "clip": "clips/18-loop-last.mp4",
+      "duration_s": 4.41,
+      "frames": 44,
+      "before": {
+        "flags": 3,
+        "playback": 1,
+        "stage": 0,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "after": {
+        "flags": 7,
+        "playback": 1,
+        "stage": 0,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 5,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 23311,
+        "lit_max": 23646,
+        "mean_v": 71.11,
+        "v_range": 2.7,
+        "hue": 238.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 23194,
+        "lit_max": 23557,
+        "mean_v": 70.99,
+        "v_range": 1.83,
+        "hue": 235.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "19-duration",
+      "step": "19-duration",
+      "title": "步骤时长松手 → 1.5 秒（时长读不回来，只验不报错）",
+      "phase": "click",
+      "clip": "clips/19-duration.mp4",
+      "duration_s": 4.41,
+      "frames": 44,
+      "before": {
+        "flags": 7,
+        "playback": 1,
+        "stage": 2,
+        "scriptId": 0,
+        "animMask": 1,
+        "segCounts": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 5,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "after": {
+        "flags": 7,
+        "playback": 1,
+        "stage": 1,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 5,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 23355,
+        "lit_max": 23509,
+        "mean_v": 71.44,
+        "v_range": 1.12,
+        "hue": 238.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 24172,
+        "lit_max": 24491,
+        "mean_v": 73.93,
+        "v_range": 31.21,
+        "hue": 222.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "same",
+        "text": "这一步没有改变设备读回值：可能点的就是当前已有的值，或改的是协议读不回来的方案元数据（循环档 / 步骤时长）。要求只是「点完不报错、画面不被破坏」，已满足。"
+      }
+    },
+    {
+      "id": "20-effect-off",
+      "step": "20-effect-off",
+      "title": "点灯效「空」",
+      "phase": "click",
+      "clip": "clips/20-effect-off.mp4",
+      "duration_s": 4.41,
+      "frames": 44,
+      "before": {
+        "flags": 7,
+        "playback": 1,
+        "stage": 2,
+        "scriptId": 0,
+        "animMask": 1,
+        "segCounts": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 5,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "after": {
+        "flags": 7,
+        "playback": 1,
+        "stage": 1,
+        "scriptId": 0,
+        "animMask": 0,
+        "segCounts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "loopFlags": 5,
+        "layerTypes": [
+          6
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 6,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 5546,
+        "lit_max": 10376,
+        "mean_v": 34.41,
+        "v_range": 43.62,
+        "hue": 218.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 65,
+        "lit_max": 127,
+        "mean_v": 21.22,
+        "v_range": 0.48,
+        "hue": 36.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    }
+  ]
+}

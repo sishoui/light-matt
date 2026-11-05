@@ -32,6 +32,34 @@
   flex-shrink: 0;
 }
 
+/*
+ * 应用失败的原因（#125）。与 notice-card 同一套配色，但贴在页面顶部：
+ * 进阶档现在改一下就下发，用户可能正看着灯带，原因必须在不滚动的位置。
+ */
+.apply-error {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20rpx;
+  padding: 22rpx 28rpx;
+  border-radius: var(--radius-lg);
+  background: var(--danger-soft);
+}
+
+.apply-error-text {
+  flex: 1;
+  font-size: 23rpx;
+  color: var(--danger);
+  line-height: 1.5;
+}
+
+.apply-error-close {
+  font-size: 23rpx;
+  font-weight: 600;
+  color: var(--danger);
+  flex-shrink: 0;
+}
+
 /* ---------------- 顶部：灯组名 + 方案槽位 ---------------- */
 
 .strip-head {
