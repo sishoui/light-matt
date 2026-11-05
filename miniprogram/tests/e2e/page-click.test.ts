@@ -75,7 +75,9 @@ beforeAll(async () => {
       platform: "android",
     }),
   });
-  await session.connect(device.deviceId, device.name);
+  /* Windows 的 BLE 栈偶发在订阅 notify 时取消（errCode=10000 / WinError
+   * -2147023673），同一台设备重连即可。连着重试两次都失败才判失败。 */
+  await connectWithRetry(() => session.connect(device.deviceId, device.name));
 
   /* 页面 onLoad 拿的是 App 级单例，必须先把它指向这条已连接的会话。 */
   setSessionForTest(session);
@@ -113,6 +115,28 @@ afterAll(async () => {
     gateway?.stop();
   }
 });
+
+/**
+ * 连一次，失败就重连一次（只在连接这一步重试，断言失败绝不被掩盖）。
+ *
+ * Windows 的 BLE 栈偶发在订阅 notify 时取消（`errCode=10000` /
+ * `WinError -2147023673 操作已被用户取消`）。实测发布级那次 21 里红了 1 条，
+ * 紧接着整层重跑 21/21——环境抖动，但它和真实缺陷在报告里长得一样。
+ */
+async function connectWithRetry(connect: () => Promise<any>, attempts = 2) {
+  let lastError: unknown = null;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await connect();
+    } catch (error) {
+      lastError = error;
+      if (i + 1 < attempts) {
+        await sleep(800);
+      }
+    }
+  }
+  throw lastError;
+}
 
 /** 只有扫到设备才跑；没有设备时 vitest 会计入 skipped，不会显示成通过。 */
 const itReal = (name: string, fn: () => unknown, timeout: number) =>
