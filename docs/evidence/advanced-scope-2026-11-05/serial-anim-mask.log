@@ -1,0 +1,999 @@
+[capture] COM6 已打开，抓取 70 秒…按 Ctrl+C 提前结束
+--- 65989 字节 / 997 行 ---
+I (7605) lumen_engine: tdm: strips=8 active=8 lit=8 round=9720us avg=9654us max=11624us pushed=1264 (每条间隔≈9654us)
+I (10015) lumen_engine: tdm: strips=8 active=8 lit=8 round=9573us avg=9645us max=11624us pushed=1684 (每条间隔≈9645us)
+I (10545) lumen_ble: mtu updated=247 chunk_data=243
+I (10575) lumen_ble: connected handle=0x0001 itvl=24 latency=0 timeout=400
+I (10575) lumen_ble: mtu=247 chunk_data=179
+I (10575) NimBLE: GAP procedure initiated:
+I (10575) NimBLE: connection parameter update; conn_handle=1 itvl_min=12 itvl_max=24 latency=0 supervision_timeout=400 min_ce_len=0 max_ce_len=0
+I (10595) NimBLE:
+I (10895) lumen_ble: conn updated itvl=24 latency=0 timeout=400
+I (11265) lumen_ble: conn updated itvl=12 latency=0 timeout=960
+I (11535) lumen_ble: TX notify enabled
+I (12375) lumen_ble: RX cmd=0x05 seq=0x01 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (12375) NimBLE: GATT procedure initiated: notify;
+I (12375) NimBLE: att_handle=18
+I (12385) NimBLE: GATT procedure initiated: notify;
+I (12385) NimBLE: att_handle=18
+I (12405) lumen_engine: SetPlayback action=0 loop=0 -> state=0 stage=0 script=255
+I (12405) lumen_ble: RX cmd=0x13 seq=0x02 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (12415) NimBLE: GATT procedure initiated: notify;
+I (12415) NimBLE: att_handle=18
+I (12435) lumen_ble: RX cmd=0x01 seq=0x03 len=1 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (12435) NimBLE: GATT procedure initiated: notify;
+I (12435) NimBLE: att_handle=18
+I (12485) lumen_engine: ClearSegment strip=0 seg=0 was_active=0 segs=0
+I (12485) lumen_ble: RX cmd=0x11 seq=0x04 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (12485) NimBLE: GATT procedure initiated: notify;
+I (12485) NimBLE: att_handle=18
+I (12505) lumen_engine: ClearSegment strip=0 seg=1 was_active=0 segs=0
+I (12515) lumen_ble: RX cmd=0x11 seq=0x05 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (12515) NimBLE: GATT procedure initiated: notify;
+I (12515) NimBLE: att_handle=18
+I (12535) lumen_engine: ClearSegment strip=0 seg=2 was_active=0 segs=0
+I (12545) lumen_ble: RX cmd=0x11 seq=0x06 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (12545) NimBLE: GATT procedure initiated: notify;
+I (12545) NimBLE: att_handle=18
+I (12565) lumen_engine: tdm: strips=8 active=8 lit=8 round=10622us avg=9809us max=24349us pushed=2104 (每条间隔≈9809us)
+I (12565) lumen_engine: ClearSegment strip=0 seg=3 was_active=0 segs=0
+I (12575) lumen_ble: RX cmd=0x11 seq=0x07 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (12575) NimBLE: GATT procedure initiated: notify;
+I (12585) NimBLE: att_handle=18
+I (12615) lumen_engine: ClearSegment strip=0 seg=4 was_active=0 segs=0
+I (12615) lumen_ble: RX cmd=0x11 seq=0x08 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (12615) NimBLE: GATT procedure initiated: notify;
+I (12625) NimBLE: att_handle=18
+I (12645) lumen_engine: ClearSegment strip=0 seg=5 was_active=0 segs=0
+I (12645) lumen_ble: RX cmd=0x11 seq=0x09 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (12645) NimBLE: GATT procedure initiated: notify;
+I (12655) NimBLE: att_handle=18
+I (12675) lumen_engine: ClearSegment strip=0 seg=6 was_active=0 segs=0
+I (12675) lumen_ble: RX cmd=0x11 seq=0x0A len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (12675) NimBLE: GATT procedure initiated: notify;
+I (12685) NimBLE: att_handle=18
+I (12705) lumen_engine: ClearSegment strip=0 seg=7 was_active=0 segs=0
+I (12705) lumen_ble: RX cmd=0x11 seq=0x0B len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (12705) NimBLE: GATT procedure initiated: notify;
+I (12715) NimBLE: att_handle=18
+I (12735) lumen_engine: ClearSegment strip=1 seg=0 was_active=1 segs=0
+I (12735) lumen_ble: RX cmd=0x11 seq=0x0C len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (12735) NimBLE: GATT procedure initiated: notify;
+I (12745) NimBLE: att_handle=18
+I (12745) lumen_engine: anim_mask 0xFE -> 0xFC（scope=0x00 stage=0/0 pb=0）
+I (12765) lumen_engine: ClearSegment strip=1 seg=1 was_active=0 segs=0
+I (12765) lumen_ble: RX cmd=0x11 seq=0x0D len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (12765) NimBLE: GATT procedure initiated: notify;
+I (12775) NimBLE: att_handle=18
+I (12795) lumen_engine: ClearSegment strip=1 seg=2 was_active=0 segs=0
+I (12795) lumen_ble: RX cmd=0x11 seq=0x0E len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (12795) NimBLE: GATT procedure initiated: notify;
+I (12805) NimBLE: att_handle=18
+I (12825) lumen_engine: ClearSegment strip=1 seg=3 was_active=0 segs=0
+I (12825) lumen_ble: RX cmd=0x11 seq=0x0F len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (12825) NimBLE: GATT procedure initiated: notify;
+I (12835) NimBLE: att_handle=18
+I (12855) lumen_engine: ClearSegment strip=1 seg=4 was_active=0 segs=0
+I (12855) lumen_ble: RX cmd=0x11 seq=0x10 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (12865) NimBLE: GATT procedure initiated: notify;
+I (12865) NimBLE: att_handle=18
+I (12885) lumen_engine: ClearSegment strip=1 seg=5 was_active=0 segs=0
+I (12885) lumen_ble: RX cmd=0x11 seq=0x11 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (12885) NimBLE: GATT procedure initiated: notify;
+I (12895) NimBLE: att_handle=18
+I (12915) lumen_engine: ClearSegment strip=1 seg=6 was_active=0 segs=0
+I (12915) lumen_ble: RX cmd=0x11 seq=0x12 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (12915) NimBLE: GATT procedure initiated: notify;
+I (12925) NimBLE: att_handle=18
+I (12945) lumen_engine: ClearSegment strip=1 seg=7 was_active=0 segs=0
+I (12945) lumen_ble: RX cmd=0x11 seq=0x13 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (12945) NimBLE: GATT procedure initiated: notify;
+I (12955) NimBLE: att_handle=18
+I (13005) lumen_ble: conn updated itvl=24 latency=0 timeout=400
+I (13005) lumen_engine: ClearSegment strip=2 seg=0 was_active=1 segs=0
+I (13005) lumen_ble: RX cmd=0x11 seq=0x14 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (13015) NimBLE: GATT procedure initiated: notify;
+I (13015) NimBLE: att_handle=18
+I (13025) lumen_engine: anim_mask 0xFC -> 0xF8（scope=0x00 stage=0/0 pb=0）
+I (13065) lumen_engine: ClearSegment strip=2 seg=1 was_active=0 segs=0
+I (13065) lumen_ble: RX cmd=0x11 seq=0x15 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (13065) NimBLE: GATT procedure initiated: notify;
+I (13075) NimBLE: att_handle=18
+I (13125) lumen_engine: ClearSegment strip=2 seg=2 was_active=0 segs=0
+I (13125) lumen_ble: RX cmd=0x11 seq=0x16 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (13125) NimBLE: GATT procedure initiated: notify;
+I (13135) NimBLE: att_handle=18
+I (13185) lumen_engine: ClearSegment strip=2 seg=3 was_active=0 segs=0
+I (13185) lumen_ble: RX cmd=0x11 seq=0x17 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (13185) NimBLE: GATT procedure initiated: notify;
+I (13195) NimBLE: att_handle=18
+I (13245) lumen_engine: ClearSegment strip=2 seg=4 was_active=0 segs=0
+I (13245) lumen_ble: RX cmd=0x11 seq=0x18 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (13245) NimBLE: GATT procedure initiated: notify;
+I (13255) NimBLE: att_handle=18
+I (13305) lumen_engine: ClearSegment strip=2 seg=5 was_active=0 segs=0
+I (13305) lumen_ble: RX cmd=0x11 seq=0x19 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (13305) NimBLE: GATT procedure initiated: notify;
+I (13315) NimBLE: att_handle=18
+I (13365) lumen_engine: ClearSegment strip=2 seg=6 was_active=0 segs=0
+I (13365) lumen_ble: RX cmd=0x11 seq=0x1A len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (13365) NimBLE: GATT procedure initiated: notify;
+I (13375) NimBLE: att_handle=18
+I (13425) lumen_engine: ClearSegment strip=2 seg=7 was_active=0 segs=0
+I (13425) lumen_ble: RX cmd=0x11 seq=0x1B len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (13425) NimBLE: GATT procedure initiated: notify;
+I (13435) NimBLE: att_handle=18
+I (13485) lumen_engine: ClearSegment strip=3 seg=0 was_active=1 segs=0
+I (13485) lumen_ble: RX cmd=0x11 seq=0x1C len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (13485) NimBLE: GATT procedure initiated: notify;
+I (13495) NimBLE: att_handle=18
+I (13505) lumen_engine: anim_mask 0xF8 -> 0xF0（scope=0x00 stage=0/0 pb=0）
+I (13545) lumen_engine: ClearSegment strip=3 seg=1 was_active=0 segs=0
+I (13545) lumen_ble: RX cmd=0x11 seq=0x1D len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (13545) NimBLE: GATT procedure initiated: notify;
+I (13555) NimBLE: att_handle=18
+I (13605) lumen_engine: ClearSegment strip=3 seg=2 was_active=0 segs=0
+I (13605) lumen_ble: RX cmd=0x11 seq=0x1E len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (13605) NimBLE: GATT procedure initiated: notify;
+I (13615) NimBLE: att_handle=18
+I (13665) lumen_engine: ClearSegment strip=3 seg=3 was_active=0 segs=0
+I (13665) lumen_ble: RX cmd=0x11 seq=0x1F len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (13665) NimBLE: GATT procedure initiated: notify;
+I (13675) NimBLE: att_handle=18
+I (13725) lumen_engine: ClearSegment strip=3 seg=4 was_active=0 segs=0
+I (13725) lumen_ble: RX cmd=0x11 seq=0x20 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (13725) NimBLE: GATT procedure initiated: notify;
+I (13735) NimBLE: att_handle=18
+I (13785) lumen_engine: ClearSegment strip=3 seg=5 was_active=0 segs=0
+I (13785) lumen_ble: RX cmd=0x11 seq=0x21 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (13785) NimBLE: GATT procedure initiated: notify;
+I (13795) NimBLE: att_handle=18
+I (13845) lumen_engine: ClearSegment strip=3 seg=6 was_active=0 segs=0
+I (13845) lumen_ble: RX cmd=0x11 seq=0x22 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (13845) NimBLE: GATT procedure initiated: notify;
+I (13855) NimBLE: att_handle=18
+I (13905) lumen_engine: ClearSegment strip=3 seg=7 was_active=0 segs=0
+I (13905) lumen_ble: RX cmd=0x11 seq=0x23 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (13905) NimBLE: GATT procedure initiated: notify;
+I (13915) NimBLE: att_handle=18
+I (13965) lumen_engine: ClearSegment strip=4 seg=0 was_active=1 segs=0
+I (13965) lumen_ble: RX cmd=0x11 seq=0x24 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (13965) NimBLE: GATT procedure initiated: notify;
+I (13975) NimBLE: att_handle=18
+I (13975) lumen_engine: anim_mask 0xF0 -> 0xE0（scope=0x00 stage=0/0 pb=0）
+I (14025) lumen_engine: ClearSegment strip=4 seg=1 was_active=0 segs=0
+I (14025) lumen_ble: RX cmd=0x11 seq=0x25 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (14025) NimBLE: GATT procedure initiated: notify;
+I (14035) NimBLE: att_handle=18
+I (14085) lumen_engine: ClearSegment strip=4 seg=2 was_active=0 segs=0
+I (14085) lumen_ble: RX cmd=0x11 seq=0x26 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (14085) NimBLE: GATT procedure initiated: notify;
+I (14095) NimBLE: att_handle=18
+I (14145) lumen_engine: ClearSegment strip=4 seg=3 was_active=0 segs=0
+I (14145) lumen_ble: RX cmd=0x11 seq=0x27 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (14145) NimBLE: GATT procedure initiated: notify;
+I (14155) NimBLE: att_handle=18
+I (14235) lumen_engine: ClearSegment strip=4 seg=4 was_active=0 segs=0
+I (14235) lumen_ble: RX cmd=0x11 seq=0x28 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (14235) NimBLE: GATT procedure initiated: notify;
+I (14245) NimBLE: att_handle=18
+I (14295) lumen_engine: ClearSegment strip=4 seg=5 was_active=0 segs=0
+I (14295) lumen_ble: RX cmd=0x11 seq=0x29 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (14295) NimBLE: GATT procedure initiated: notify;
+I (14305) NimBLE: att_handle=18
+I (14355) lumen_engine: ClearSegment strip=4 seg=6 was_active=0 segs=0
+I (14355) lumen_ble: RX cmd=0x11 seq=0x2A len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (14355) NimBLE: GATT procedure initiated: notify;
+I (14365) NimBLE: att_handle=18
+I (14415) lumen_engine: ClearSegment strip=4 seg=7 was_active=0 segs=0
+I (14415) lumen_ble: RX cmd=0x11 seq=0x2B len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (14415) NimBLE: GATT procedure initiated: notify;
+I (14425) NimBLE: att_handle=18
+I (14475) lumen_engine: ClearSegment strip=5 seg=0 was_active=1 segs=0
+I (14475) lumen_ble: RX cmd=0x11 seq=0x2C len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (14475) NimBLE: GATT procedure initiated: notify;
+I (14485) NimBLE: att_handle=18
+I (14485) lumen_engine: anim_mask 0xE0 -> 0xC0（scope=0x00 stage=0/0 pb=0）
+I (14495) lumen_engine: tdm: strips=8 active=8 lit=8 round=4644us avg=10062us max=27216us pushed=2372 (每条间隔≈10062us)
+I (14535) lumen_engine: ClearSegment strip=5 seg=1 was_active=0 segs=0
+I (14535) lumen_ble: RX cmd=0x11 seq=0x2D len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (14535) NimBLE: GATT procedure initiated: notify;
+I (14545) NimBLE: att_handle=18
+I (14595) lumen_engine: ClearSegment strip=5 seg=2 was_active=0 segs=0
+I (14595) lumen_ble: RX cmd=0x11 seq=0x2E len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (14595) NimBLE: GATT procedure initiated: notify;
+I (14605) NimBLE: att_handle=18
+I (14655) lumen_engine: ClearSegment strip=5 seg=3 was_active=0 segs=0
+I (14655) lumen_ble: RX cmd=0x11 seq=0x2F len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (14655) NimBLE: GATT procedure initiated: notify;
+I (14665) NimBLE: att_handle=18
+I (14715) lumen_engine: ClearSegment strip=5 seg=4 was_active=0 segs=0
+I (14715) lumen_ble: RX cmd=0x11 seq=0x30 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (14715) NimBLE: GATT procedure initiated: notify;
+I (14725) NimBLE: att_handle=18
+I (14775) lumen_engine: ClearSegment strip=5 seg=5 was_active=0 segs=0
+I (14775) lumen_ble: RX cmd=0x11 seq=0x31 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (14775) NimBLE: GATT procedure initiated: notify;
+I (14785) NimBLE: att_handle=18
+I (14835) lumen_engine: ClearSegment strip=5 seg=6 was_active=0 segs=0
+I (14835) lumen_ble: RX cmd=0x11 seq=0x32 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (14835) NimBLE: GATT procedure initiated: notify;
+I (14845) NimBLE: att_handle=18
+I (14895) lumen_engine: ClearSegment strip=5 seg=7 was_active=0 segs=0
+I (14895) lumen_ble: RX cmd=0x11 seq=0x33 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (14895) NimBLE: GATT procedure initiated: notify;
+I (14905) NimBLE: att_handle=18
+I (14955) lumen_engine: ClearSegment strip=6 seg=0 was_active=1 segs=0
+I (14955) lumen_ble: RX cmd=0x11 seq=0x34 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (14955) NimBLE: GATT procedure initiated: notify;
+I (14965) NimBLE: att_handle=18
+I (14965) lumen_engine: anim_mask 0xC0 -> 0x80（scope=0x00 stage=0/0 pb=0）
+I (15015) lumen_engine: ClearSegment strip=6 seg=1 was_active=0 segs=0
+I (15015) lumen_ble: RX cmd=0x11 seq=0x35 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (15015) NimBLE: GATT procedure initiated: notify;
+I (15025) NimBLE: att_handle=18
+I (15075) lumen_engine: ClearSegment strip=6 seg=2 was_active=0 segs=0
+I (15075) lumen_ble: RX cmd=0x11 seq=0x36 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (15075) NimBLE: GATT procedure initiated: notify;
+I (15085) NimBLE: att_handle=18
+I (15135) lumen_engine: ClearSegment strip=6 seg=3 was_active=0 segs=0
+I (15135) lumen_ble: RX cmd=0x11 seq=0x37 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (15135) NimBLE: GATT procedure initiated: notify;
+I (15145) NimBLE: att_handle=18
+I (15195) lumen_engine: ClearSegment strip=6 seg=4 was_active=0 segs=0
+I (15195) lumen_ble: RX cmd=0x11 seq=0x38 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (15195) NimBLE: GATT procedure initiated: notify;
+I (15205) NimBLE: att_handle=18
+I (15255) lumen_engine: ClearSegment strip=6 seg=5 was_active=0 segs=0
+I (15255) lumen_ble: RX cmd=0x11 seq=0x39 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (15255) NimBLE: GATT procedure initiated: notify;
+I (15265) NimBLE: att_handle=18
+I (15315) lumen_engine: ClearSegment strip=6 seg=6 was_active=0 segs=0
+I (15315) lumen_ble: RX cmd=0x11 seq=0x3A len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (15315) NimBLE: GATT procedure initiated: notify;
+I (15325) NimBLE: att_handle=18
+I (15375) lumen_engine: ClearSegment strip=6 seg=7 was_active=0 segs=0
+I (15375) lumen_ble: RX cmd=0x11 seq=0x3B len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (15375) NimBLE: GATT procedure initiated: notify;
+I (15385) NimBLE: att_handle=18
+I (15435) lumen_engine: ClearSegment strip=7 seg=0 was_active=1 segs=0
+I (15435) lumen_ble: RX cmd=0x11 seq=0x3C len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (15435) NimBLE: GATT procedure initiated: notify;
+I (15445) NimBLE: att_handle=18
+I (15445) lumen_engine: anim_mask 0x80 -> 0x00（scope=0x00 stage=0/0 pb=0）
+I (15455) lumen_engine: 帧循环模式 -> 静态（阻塞等待，不空转）（fps=20）已绘制=2420 跳过=716
+I (15495) lumen_engine: ClearSegment strip=7 seg=1 was_active=0 segs=0
+I (15495) lumen_ble: RX cmd=0x11 seq=0x3D len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (15495) NimBLE: GATT procedure initiated: notify;
+I (15505) NimBLE: att_handle=18
+I (15555) lumen_engine: ClearSegment strip=7 seg=2 was_active=0 segs=0
+I (15555) lumen_ble: RX cmd=0x11 seq=0x3E len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (15555) NimBLE: GATT procedure initiated: notify;
+I (15565) NimBLE: att_handle=18
+I (15615) lumen_engine: ClearSegment strip=7 seg=3 was_active=0 segs=0
+I (15615) lumen_ble: RX cmd=0x11 seq=0x3F len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (15615) NimBLE: GATT procedure initiated: notify;
+I (15625) NimBLE: att_handle=18
+I (15675) lumen_engine: ClearSegment strip=7 seg=4 was_active=0 segs=0
+I (15675) lumen_ble: RX cmd=0x11 seq=0x40 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (15675) NimBLE: GATT procedure initiated: notify;
+I (15685) NimBLE: att_handle=18
+I (15735) lumen_engine: ClearSegment strip=7 seg=5 was_active=0 segs=0
+I (15735) lumen_ble: RX cmd=0x11 seq=0x41 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (15735) NimBLE: GATT procedure initiated: notify;
+I (15745) NimBLE: att_handle=18
+I (15795) lumen_engine: ClearSegment strip=7 seg=6 was_active=0 segs=0
+I (15795) lumen_ble: RX cmd=0x11 seq=0x42 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (15795) NimBLE: GATT procedure initiated: notify;
+I (15805) NimBLE: att_handle=18
+I (15855) lumen_engine: ClearSegment strip=7 seg=7 was_active=0 segs=0
+I (15855) lumen_ble: RX cmd=0x11 seq=0x43 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (15855) NimBLE: GATT procedure initiated: notify;
+I (15865) NimBLE: att_handle=18
+I (15915) lumen_ble: RX cmd=0x02 seq=0x44 len=1 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (15915) NimBLE: GATT procedure initiated: notify;
+I (15915) NimBLE: att_handle=18
+I (15975) lumen_engine: ClearSegment strip=1 seg=0 was_active=0 segs=0
+I (15975) lumen_ble: RX cmd=0x11 seq=0x45 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (15975) NimBLE: GATT procedure initiated: notify;
+I (15985) NimBLE: att_handle=18
+I (16035) lumen_engine: SetSegment strip=1 seg=0 [0-9] l0=0x01 l1=0xFF blend=0 segs=0
+I (16035) lumen_ble: RX cmd=0x10 seq=0x46 len=23 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (16045) NimBLE: GATT procedure initiated: notify;
+I (16045) NimBLE: att_handle=18
+I (16045) lumen_engine: anim_mask 0x00 -> 0x02（scope=0x00 stage=0/0 pb=0）
+I (16055) lumen_engine: 帧循环模式 -> 动画（fps=20）已绘制=2421 跳过=787
+I (16095) lumen_engine: ClearSegment strip=2 seg=0 was_active=0 segs=0
+I (16095) lumen_ble: RX cmd=0x11 seq=0x47 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (16095) NimBLE: GATT procedure initiated: notify;
+I (16105) NimBLE: att_handle=18
+I (16155) lumen_engine: SetSegment strip=2 seg=0 [0-9] l0=0x01 l1=0xFF blend=0 segs=0
+I (16155) lumen_ble: RX cmd=0x10 seq=0x48 len=23 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (16165) NimBLE: GATT procedure initiated: notify;
+I (16165) NimBLE: att_handle=18
+I (16165) lumen_engine: anim_mask 0x02 -> 0x06（scope=0x00 stage=0/0 pb=0）
+I (16215) lumen_engine: ClearSegment strip=3 seg=0 was_active=0 segs=0
+I (16215) lumen_ble: RX cmd=0x11 seq=0x49 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (16215) NimBLE: GATT procedure initiated: notify;
+I (16225) NimBLE: att_handle=18
+I (16275) lumen_engine: SetSegment strip=3 seg=0 [0-9] l0=0x01 l1=0xFF blend=0 segs=0
+I (16275) lumen_ble: RX cmd=0x10 seq=0x4A len=23 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (16285) NimBLE: GATT procedure initiated: notify;
+I (16285) NimBLE: att_handle=18
+I (16285) lumen_engine: anim_mask 0x06 -> 0x0E（scope=0x00 stage=0/0 pb=0）
+I (16335) lumen_engine: ClearSegment strip=4 seg=0 was_active=0 segs=0
+I (16335) lumen_ble: RX cmd=0x11 seq=0x4B len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (16335) NimBLE: GATT procedure initiated: notify;
+I (16345) NimBLE: att_handle=18
+I (16395) lumen_engine: SetSegment strip=4 seg=0 [0-9] l0=0x01 l1=0xFF blend=0 segs=0
+I (16395) lumen_ble: RX cmd=0x10 seq=0x4C len=23 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (16405) NimBLE: GATT procedure initiated: notify;
+I (16405) NimBLE: att_handle=18
+I (16405) lumen_engine: anim_mask 0x0E -> 0x1E（scope=0x00 stage=0/0 pb=0）
+I (16455) lumen_engine: ClearSegment strip=5 seg=0 was_active=0 segs=0
+I (16455) lumen_ble: RX cmd=0x11 seq=0x4D len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (16455) NimBLE: GATT procedure initiated: notify;
+I (16465) NimBLE: att_handle=18
+I (16515) lumen_engine: SetSegment strip=5 seg=0 [0-9] l0=0x01 l1=0xFF blend=0 segs=0
+I (16515) lumen_ble: RX cmd=0x10 seq=0x4E len=23 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (16525) NimBLE: GATT procedure initiated: notify;
+I (16525) NimBLE: att_handle=18
+I (16535) lumen_engine: anim_mask 0x1E -> 0x3E（scope=0x00 stage=0/0 pb=0）
+I (16575) lumen_engine: ClearSegment strip=6 seg=0 was_active=0 segs=0
+I (16575) lumen_ble: RX cmd=0x11 seq=0x4F len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (16575) NimBLE: GATT procedure initiated: notify;
+I (16585) NimBLE: att_handle=18
+I (16635) lumen_engine: SetSegment strip=6 seg=0 [0-9] l0=0x01 l1=0xFF blend=0 segs=0
+I (16635) lumen_ble: RX cmd=0x10 seq=0x50 len=23 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (16645) NimBLE: GATT procedure initiated: notify;
+I (16645) NimBLE: att_handle=18
+I (16655) lumen_engine: anim_mask 0x3E -> 0x7E（scope=0x00 stage=0/0 pb=0）
+I (16695) lumen_engine: ClearSegment strip=7 seg=0 was_active=0 segs=0
+I (16695) lumen_ble: RX cmd=0x11 seq=0x51 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (16695) NimBLE: GATT procedure initiated: notify;
+I (16705) NimBLE: att_handle=18
+I (16755) lumen_engine: SetSegment strip=7 seg=0 [0-9] l0=0x01 l1=0xFF blend=0 segs=0
+I (16755) lumen_ble: RX cmd=0x10 seq=0x52 len=23 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (16765) NimBLE: GATT procedure initiated: notify;
+I (16765) NimBLE: att_handle=18
+I (16775) lumen_engine: anim_mask 0x7E -> 0xFE（scope=0x00 stage=0/0 pb=0）
+I (16785) lumen_engine: tdm: strips=8 active=8 lit=8 round=9888us avg=9244us max=27216us pushed=2492 (每条间隔≈9244us)
+I (16815) lumen_engine: ClearSegment strip=0 seg=0 was_active=0 segs=0
+I (16815) lumen_ble: RX cmd=0x11 seq=0x53 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (16815) NimBLE: GATT procedure initiated: notify;
+I (16825) NimBLE: att_handle=18
+I (17175) lumen_ble: RX cmd=0x12 seq=0x54 len=1 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (17175) NimBLE: GATT procedure initiated: notify;
+I (17175) NimBLE: att_handle=18
+I (17185) NimBLE: GATT procedure initiated: notify;
+I (17185) NimBLE: att_handle=18
+I (17185) NimBLE: GATT procedure initiated: notify;
+I (17195) NimBLE: att_handle=18
+I (17195) lumen_ble: QueryStrip strip=1 -> 1 SegmentReport + SegmentListEnd mask=0x01 seq=0x54
+I (18675) lumen_ble: RX cmd=0x12 seq=0x55 len=1 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (18675) NimBLE: GATT procedure initiated: notify;
+I (18675) NimBLE: att_handle=18
+I (18685) NimBLE: GATT procedure initiated: notify;
+I (18685) NimBLE: att_handle=18
+I (18685) NimBLE: GATT procedure initiated: notify;
+I (18695) NimBLE: att_handle=18
+I (18695) lumen_ble: QueryStrip strip=2 -> 1 SegmentReport + SegmentListEnd mask=0x01 seq=0x55
+I (19235) lumen_engine: tdm: strips=8 active=8 lit=8 round=9603us avg=9296us max=27216us pushed=2912 (每条间隔≈9296us)
+I (20175) lumen_ble: RX cmd=0x12 seq=0x56 len=1 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (20175) NimBLE: GATT procedure initiated: notify;
+I (20175) NimBLE: att_handle=18
+I (20185) NimBLE: GATT procedure initiated: notify;
+I (20185) NimBLE: att_handle=18
+I (20185) NimBLE: GATT procedure initiated: notify;
+I (20195) NimBLE: att_handle=18
+I (20195) lumen_ble: QueryStrip strip=3 -> 1 SegmentReport + SegmentListEnd mask=0x01 seq=0x56
+I (21655) lumen_engine: tdm: strips=8 active=8 lit=8 round=9611us avg=9333us max=27216us pushed=3331 (每条间隔≈9333us)
+I (21675) lumen_ble: RX cmd=0x12 seq=0x57 len=1 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (21675) NimBLE: GATT procedure initiated: notify;
+I (21675) NimBLE: att_handle=18
+I (21685) NimBLE: GATT procedure initiated: notify;
+I (21685) NimBLE: att_handle=18
+I (21685) NimBLE: GATT procedure initiated: notify;
+I (21695) NimBLE: att_handle=18
+I (21695) lumen_ble: QueryStrip strip=4 -> 1 SegmentReport + SegmentListEnd mask=0x01 seq=0x57
+I (23175) lumen_ble: RX cmd=0x12 seq=0x58 len=1 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (23175) NimBLE: GATT procedure initiated: notify;
+I (23175) NimBLE: att_handle=18
+I (23185) NimBLE: GATT procedure initiated: notify;
+I (23185) NimBLE: att_handle=18
+I (23185) NimBLE: GATT procedure initiated: notify;
+I (23195) NimBLE: att_handle=18
+I (23195) lumen_ble: QueryStrip strip=5 -> 1 SegmentReport + SegmentListEnd mask=0x01 seq=0x58
+I (24095) lumen_engine: tdm: strips=8 active=8 lit=8 round=9604us avg=9368us max=27216us pushed=3751 (每条间隔≈9368us)
+I (24675) lumen_ble: RX cmd=0x12 seq=0x59 len=1 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (24675) NimBLE: GATT procedure initiated: notify;
+I (24675) NimBLE: att_handle=18
+I (24685) NimBLE: GATT procedure initiated: notify;
+I (24685) NimBLE: att_handle=18
+I (24685) NimBLE: GATT procedure initiated: notify;
+I (24695) NimBLE: att_handle=18
+I (24695) lumen_ble: QueryStrip strip=6 -> 1 SegmentReport + SegmentListEnd mask=0x01 seq=0x59
+I (26175) lumen_ble: RX cmd=0x12 seq=0x5A len=1 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (26175) NimBLE: GATT procedure initiated: notify;
+I (26175) NimBLE: att_handle=18
+I (26185) NimBLE: GATT procedure initiated: notify;
+I (26185) NimBLE: att_handle=18
+I (26185) NimBLE: GATT procedure initiated: notify;
+I (26195) NimBLE: att_handle=18
+I (26195) lumen_ble: QueryStrip strip=7 -> 1 SegmentReport + SegmentListEnd mask=0x01 seq=0x5A
+I (26535) lumen_engine: tdm: strips=8 active=8 lit=8 round=9785us avg=9397us max=27216us pushed=4171 (每条间隔≈9397us)
+I (27675) lumen_engine: ClearScript id=3 已清空（未提交即成功）
+I (27675) lumen_ble: RX cmd=0x1E seq=0x5B len=1 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (27675) NimBLE: GATT procedure initiated: notify;
+I (27685) NimBLE: att_handle=18
+I (27735) lumen_engine: ScriptBegin id=3 stages=2 strips=8（暂存区已清空）
+I (27735) lumen_ble: RX cmd=0x14 seq=0x5C len=3 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (27745) NimBLE: GATT procedure initiated: notify;
+I (27745) NimBLE: att_handle=18
+I (27795) lumen_ble: RX cmd=0x15 seq=0x5D len=6 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (27795) NimBLE: GATT procedure initiated: notify;
+I (27795) NimBLE: att_handle=18
+I (27855) lumen_ble: RX cmd=0x16 seq=0x5E len=25 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (27855) NimBLE: GATT procedure initiated: notify;
+I (27855) NimBLE: att_handle=18
+I (27915) lumen_ble: RX cmd=0x15 seq=0x5F len=6 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (27915) NimBLE: GATT procedure initiated: notify;
+I (27915) NimBLE: att_handle=18
+I (27975) lumen_engine: ScriptCommit ok id=3 stages=2（已原子替换）
+I (27975) lumen_ble: RX cmd=0x17 seq=0x60 len=1 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (27985) NimBLE: GATT procedure initiated: notify;
+I (27985) NimBLE: att_handle=18
+I (28035) lumen_engine: ActivateScript id=3 loop=1（播放头回 0，待播放）
+I (28035) lumen_ble: RX cmd=0x19 seq=0x61 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (28045) NimBLE: GATT procedure initiated: notify;
+I (28045) NimBLE: att_handle=18
+I (28055) lumen_engine: 剧本 stage 1/2 开始（phase 重置）
+I (28095) lumen_engine: SetPlayback action=1 loop=1 -> state=1 stage=0 script=3
+I (28095) lumen_ble: RX cmd=0x13 seq=0x62 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (28105) NimBLE: GATT procedure initiated: notify;
+I (28105) NimBLE: att_handle=18
+I (28105) lumen_engine: anim_mask 0xFE -> 0xFF（scope=0x01 stage=0/2 pb=1）
+I (28635) lumen_ble: RX cmd=0x05 seq=0x63 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (28635) NimBLE: GATT procedure initiated: notify;
+I (28635) NimBLE: att_handle=18
+I (28645) NimBLE: GATT procedure initiated: notify;
+I (28645) NimBLE: att_handle=18
+I (28645) lumen_ble: RX cmd=0x05 seq=0x64 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (28655) NimBLE: GATT procedure initiated: notify;
+I (28665) NimBLE: att_handle=18
+I (28665) NimBLE: GATT procedure initiated: notify;
+I (28665) NimBLE: att_handle=18
+I (28675) lumen_ble: RX cmd=0x05 seq=0x65 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (28685) NimBLE: GATT procedure initiated: notify;
+I (28685) NimBLE: att_handle=18
+I (28695) NimBLE: GATT procedure initiated: notify;
+I (28695) NimBLE: att_handle=18
+I (28695) lumen_ble: RX cmd=0x05 seq=0x66 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (28705) NimBLE: GATT procedure initiated: notify;
+I (28715) NimBLE: att_handle=18
+I (28715) NimBLE: GATT procedure initiated: notify;
+I (28715) NimBLE: att_handle=18
+I (28725) lumen_ble: RX cmd=0x05 seq=0x67 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (28735) NimBLE: GATT procedure initiated: notify;
+I (28735) NimBLE: att_handle=18
+I (28735) NimBLE: GATT procedure initiated: notify;
+I (28745) NimBLE: att_handle=18
+I (28745) lumen_ble: RX cmd=0x05 seq=0x68 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (28755) NimBLE: GATT procedure initiated: notify;
+I (28755) NimBLE: att_handle=18
+I (28765) NimBLE: GATT procedure initiated: notify;
+I (28765) NimBLE: att_handle=18
+I (28775) lumen_ble: RX cmd=0x05 seq=0x69 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (28775) NimBLE: GATT procedure initiated: notify;
+I (28785) NimBLE: att_handle=18
+I (28785) NimBLE: GATT procedure initiated: notify;
+I (28795) NimBLE: att_handle=18
+I (28795) lumen_ble: RX cmd=0x05 seq=0x6A len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (28805) NimBLE: GATT procedure initiated: notify;
+I (28805) NimBLE: att_handle=18
+I (28815) NimBLE: GATT procedure initiated: notify;
+I (28815) NimBLE: att_handle=18
+I (28815) lumen_ble: RX cmd=0x05 seq=0x6B len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (28825) NimBLE: GATT procedure initiated: notify;
+I (28835) NimBLE: att_handle=18
+I (28835) NimBLE: GATT procedure initiated: notify;
+I (28835) NimBLE: att_handle=18
+I (28845) lumen_ble: RX cmd=0x05 seq=0x6C len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (28855) lumen_ble: ACK notify 失败 cmd=0x05 seq=0x6C result=0x00 err=ESP_ERR_NO_MEM
+W (28855) lumen_ble: StateReport 发送失败 seq=0x6C
+I (28865) lumen_ble: RX cmd=0x05 seq=0x6D len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (28875) lumen_ble: ACK notify 失败 cmd=0x05 seq=0x6D result=0x00 err=ESP_ERR_NO_MEM
+W (28885) lumen_ble: StateReport 发送失败 seq=0x6D
+I (28885) lumen_ble: RX cmd=0x05 seq=0x6E len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (28895) lumen_ble: ACK notify 失败 cmd=0x05 seq=0x6E result=0x00 err=ESP_ERR_NO_MEM
+W (28905) lumen_ble: StateReport 发送失败 seq=0x6E
+I (28905) lumen_ble: RX cmd=0x05 seq=0x6F len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (28915) lumen_ble: ACK notify 失败 cmd=0x05 seq=0x6F result=0x00 err=ESP_ERR_NO_MEM
+W (28925) lumen_ble: StateReport 发送失败 seq=0x6F
+I (28925) lumen_ble: RX cmd=0x05 seq=0x70 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (28935) lumen_ble: ACK notify 失败 cmd=0x05 seq=0x70 result=0x00 err=ESP_ERR_NO_MEM
+W (28945) lumen_ble: StateReport 发送失败 seq=0x70
+I (28945) lumen_ble: RX cmd=0x05 seq=0x71 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (28955) lumen_ble: ACK notify 失败 cmd=0x05 seq=0x71 result=0x00 err=ESP_ERR_NO_MEM
+W (28965) lumen_ble: StateReport 发送失败 seq=0x71
+I (28975) lumen_ble: RX cmd=0x05 seq=0x72 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (28975) lumen_ble: ACK notify 失败 cmd=0x05 seq=0x72 result=0x00 err=ESP_ERR_NO_MEM
+W (28985) lumen_ble: StateReport 发送失败 seq=0x72
+I (29405) lumen_engine: tdm: strips=8 active=8 lit=8 round=10955us avg=9516us max=27216us pushed=4612 (每条间隔≈9516us)
+I (29605) lumen_engine: 剧本 stage 2/2 开始（phase 重置）
+I (29605) lumen_engine: anim_mask 0xFF -> 0xFE（scope=0x01 stage=1/2 pb=1）
+I (31125) lumen_engine: 剧本 stage 1/2 开始（phase 重置）
+I (31125) lumen_engine: anim_mask 0xFE -> 0xFF（scope=0x01 stage=0/2 pb=1）
+I (31125) lumen_ble: RX cmd=0x05 seq=0x73 len=0 result=0x00 power=1 brightness=150 rgb=255,170,0 segs=1
+I (31135) NimBLE: GATT procedure initiated: notify;
+I (31135) NimBLE: att_handle=18
+I (31135) NimBLE: GATT procedure initiated: notify;
+I (31145) NimBLE: att_handle=18
+I (31145) lumen_ble: RX cmd=0x05 seq=0x74 len=0 result=0x00 power=1 brightness=150 rgb=255,170,0 segs=1
+I (31155) NimBLE: GATT procedure initiated: notify;
+I (31165) NimBLE: att_handle=18
+I (31165) NimBLE: GATT procedure initiated: notify;
+I (31165) NimBLE: att_handle=18
+I (31175) lumen_ble: RX cmd=0x05 seq=0x75 len=0 result=0x00 power=1 brightness=150 rgb=255,170,0 segs=1
+I (31185) NimBLE: GATT procedure initiated: notify;
+I (31185) NimBLE: att_handle=18
+I (31185) NimBLE: GATT procedure initiated: notify;
+I (31195) NimBLE: att_handle=18
+I (31195) lumen_ble: RX cmd=0x05 seq=0x76 len=0 result=0x00 power=1 brightness=150 rgb=255,170,0 segs=1
+I (31205) NimBLE: GATT procedure initiated: notify;
+I (31205) NimBLE: att_handle=18
+I (31215) NimBLE: GATT procedure initiated: notify;
+I (31215) NimBLE: att_handle=18
+I (31225) lumen_ble: RX cmd=0x05 seq=0x77 len=0 result=0x00 power=1 brightness=150 rgb=255,170,0 segs=1
+I (31225) NimBLE: GATT procedure initiated: notify;
+I (31235) NimBLE: att_handle=18
+I (31235) NimBLE: GATT procedure initiated: notify;
+I (31245) NimBLE: att_handle=18
+I (31245) lumen_ble: RX cmd=0x05 seq=0x78 len=0 result=0x00 power=1 brightness=150 rgb=255,170,0 segs=1
+I (31255) NimBLE: GATT procedure initiated: notify;
+I (31255) NimBLE: att_handle=18
+I (31265) NimBLE: GATT procedure initiated: notify;
+I (31265) NimBLE: att_handle=18
+I (31265) lumen_ble: RX cmd=0x05 seq=0x79 len=0 result=0x00 power=1 brightness=150 rgb=255,170,0 segs=1
+I (31275) NimBLE: GATT procedure initiated: notify;
+I (31285) NimBLE: att_handle=18
+I (31285) NimBLE: GATT procedure initiated: notify;
+I (31295) NimBLE: att_handle=18
+I (31295) lumen_ble: RX cmd=0x05 seq=0x7A len=0 result=0x00 power=1 brightness=150 rgb=255,170,0 segs=1
+I (31305) NimBLE: GATT procedure initiated: notify;
+I (31305) NimBLE: att_handle=18
+I (31315) NimBLE: GATT procedure initiated: notify;
+I (31315) NimBLE: att_handle=18
+I (31315) lumen_ble: RX cmd=0x05 seq=0x7B len=0 result=0x00 power=1 brightness=150 rgb=255,170,0 segs=1
+I (31325) NimBLE: GATT procedure initiated: notify;
+I (31335) NimBLE: att_handle=18
+I (31335) NimBLE: GATT procedure initiated: notify;
+I (31335) NimBLE: att_handle=18
+I (31345) lumen_ble: RX cmd=0x05 seq=0x7C len=0 result=0x00 power=1 brightness=150 rgb=255,170,0 segs=1
+W (31355) lumen_ble: ACK notify 失败 cmd=0x05 seq=0x7C result=0x00 err=ESP_ERR_NO_MEM
+W (31365) lumen_ble: StateReport 发送失败 seq=0x7C
+I (31365) lumen_ble: RX cmd=0x05 seq=0x7D len=0 result=0x00 power=1 brightness=150 rgb=255,170,0 segs=1
+W (31375) lumen_ble: ACK notify 失败 cmd=0x05 seq=0x7D result=0x00 err=ESP_ERR_NO_MEM
+W (31385) lumen_ble: StateReport 发送失败 seq=0x7D
+I (31385) lumen_ble: RX cmd=0x05 seq=0x7E len=0 result=0x00 power=1 brightness=150 rgb=255,170,0 segs=1
+W (31395) lumen_ble: ACK notify 失败 cmd=0x05 seq=0x7E result=0x00 err=ESP_ERR_NO_MEM
+W (31405) lumen_ble: StateReport 发送失败 seq=0x7E
+I (31405) lumen_ble: RX cmd=0x05 seq=0x7F len=0 result=0x00 power=1 brightness=150 rgb=255,170,0 segs=1
+W (31415) lumen_ble: ACK notify 失败 cmd=0x05 seq=0x7F result=0x00 err=ESP_ERR_NO_MEM
+W (31425) lumen_ble: StateReport 发送失败 seq=0x7F
+I (31435) lumen_ble: RX cmd=0x05 seq=0x80 len=0 result=0x00 power=1 brightness=150 rgb=255,170,0 segs=1
+W (31435) lumen_ble: ACK notify 失败 cmd=0x05 seq=0x80 result=0x00 err=ESP_ERR_NO_MEM
+W (31445) lumen_ble: StateReport 发送失败 seq=0x80
+I (31455) lumen_ble: RX cmd=0x05 seq=0x81 len=0 result=0x00 power=1 brightness=150 rgb=255,170,0 segs=1
+W (31465) lumen_ble: ACK notify 失败 cmd=0x05 seq=0x81 result=0x00 err=ESP_ERR_NO_MEM
+W (31465) lumen_ble: StateReport 发送失败 seq=0x81
+I (31475) lumen_ble: RX cmd=0x05 seq=0x82 len=0 result=0x00 power=1 brightness=150 rgb=255,170,0 segs=1
+W (31485) lumen_ble: ACK notify 失败 cmd=0x05 seq=0x82 result=0x00 err=ESP_ERR_NO_MEM
+W (31495) lumen_ble: StateReport 发送失败 seq=0x82
+I (32245) lumen_engine: tdm: strips=8 active=8 lit=8 round=11033us avg=10038us max=382502us pushed=5051 (每条间隔≈10038us)
+I (32635) lumen_engine: 剧本 stage 2/2 开始（phase 重置）
+I (32635) lumen_engine: anim_mask 0xFF -> 0xFE（scope=0x01 stage=1/2 pb=1）
+I (33465) lumen_ble: RX cmd=0x05 seq=0x83 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (33465) NimBLE: GATT procedure initiated: notify;
+I (33465) NimBLE: att_handle=18
+I (33475) NimBLE: GATT procedure initiated: notify;
+I (33475) NimBLE: att_handle=18
+I (33475) lumen_ble: RX cmd=0x05 seq=0x84 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (33485) NimBLE: GATT procedure initiated: notify;
+I (33495) NimBLE: att_handle=18
+I (33495) NimBLE: GATT procedure initiated: notify;
+I (33495) NimBLE: att_handle=18
+I (33505) lumen_ble: RX cmd=0x05 seq=0x85 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (33515) NimBLE: GATT procedure initiated: notify;
+I (33515) NimBLE: att_handle=18
+I (33515) NimBLE: GATT procedure initiated: notify;
+I (33525) NimBLE: att_handle=18
+I (33525) lumen_ble: RX cmd=0x05 seq=0x86 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (33535) NimBLE: GATT procedure initiated: notify;
+I (33545) NimBLE: att_handle=18
+I (33545) NimBLE: GATT procedure initiated: notify;
+I (33545) NimBLE: att_handle=18
+I (33555) lumen_ble: RX cmd=0x05 seq=0x87 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (33565) NimBLE: GATT procedure initiated: notify;
+I (33565) NimBLE: att_handle=18
+I (33565) NimBLE: GATT procedure initiated: notify;
+I (33575) NimBLE: att_handle=18
+I (33575) lumen_ble: RX cmd=0x05 seq=0x88 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (33585) NimBLE: GATT procedure initiated: notify;
+I (33585) NimBLE: att_handle=18
+I (33595) NimBLE: GATT procedure initiated: notify;
+I (33595) NimBLE: att_handle=18
+I (33605) lumen_ble: RX cmd=0x05 seq=0x89 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (33605) NimBLE: GATT procedure initiated: notify;
+I (33615) NimBLE: att_handle=18
+I (33615) NimBLE: GATT procedure initiated: notify;
+I (33625) NimBLE: att_handle=18
+I (33625) lumen_ble: RX cmd=0x05 seq=0x8A len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (33635) NimBLE: GATT procedure initiated: notify;
+I (33635) NimBLE: att_handle=18
+I (33645) NimBLE: GATT procedure initiated: notify;
+I (33645) NimBLE: att_handle=18
+I (33645) lumen_ble: RX cmd=0x05 seq=0x8B len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (33655) NimBLE: GATT procedure initiated: notify;
+I (33665) NimBLE: att_handle=18
+I (33665) NimBLE: GATT procedure initiated: notify;
+I (33665) NimBLE: att_handle=18
+I (33675) lumen_ble: RX cmd=0x05 seq=0x8C len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (33685) lumen_ble: ACK notify 失败 cmd=0x05 seq=0x8C result=0x00 err=ESP_ERR_NO_MEM
+W (33685) lumen_ble: StateReport 发送失败 seq=0x8C
+I (33695) lumen_ble: RX cmd=0x05 seq=0x8D len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (33705) lumen_ble: ACK notify 失败 cmd=0x05 seq=0x8D result=0x00 err=ESP_ERR_NO_MEM
+W (33715) lumen_ble: StateReport 发送失败 seq=0x8D
+I (33715) lumen_ble: RX cmd=0x05 seq=0x8E len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (33725) lumen_ble: ACK notify 失败 cmd=0x05 seq=0x8E result=0x00 err=ESP_ERR_NO_MEM
+W (33735) lumen_ble: StateReport 发送失败 seq=0x8E
+I (33735) lumen_ble: RX cmd=0x05 seq=0x8F len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (33745) lumen_ble: ACK notify 失败 cmd=0x05 seq=0x8F result=0x00 err=ESP_ERR_NO_MEM
+W (33755) lumen_ble: StateReport 发送失败 seq=0x8F
+I (33755) lumen_ble: RX cmd=0x05 seq=0x90 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (33765) lumen_ble: ACK notify 失败 cmd=0x05 seq=0x90 result=0x00 err=ESP_ERR_NO_MEM
+W (33775) lumen_ble: StateReport 发送失败 seq=0x90
+I (33775) lumen_ble: RX cmd=0x05 seq=0x91 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (33785) lumen_ble: ACK notify 失败 cmd=0x05 seq=0x91 result=0x00 err=ESP_ERR_NO_MEM
+W (33795) lumen_ble: StateReport 发送失败 seq=0x91
+I (33805) lumen_ble: RX cmd=0x05 seq=0x92 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (33805) lumen_ble: ACK notify 失败 cmd=0x05 seq=0x92 result=0x00 err=ESP_ERR_NO_MEM
+W (33815) lumen_ble: StateReport 发送失败 seq=0x92
+I (34105) lumen_engine: 剧本 stage 1/2 开始（phase 重置）
+I (34105) lumen_engine: anim_mask 0xFE -> 0xFF（scope=0x01 stage=0/2 pb=1）
+I (35125) lumen_engine: tdm: strips=8 active=8 lit=8 round=9703us avg=10063us max=382502us pushed=5502 (每条间隔≈10063us)
+I (35625) lumen_engine: 剧本 stage 2/2 开始（phase 重置）
+I (35625) lumen_engine: anim_mask 0xFF -> 0xFE（scope=0x01 stage=1/2 pb=1）
+I (35925) lumen_ble: RX cmd=0x12 seq=0x93 len=1 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (35925) NimBLE: GATT procedure initiated: notify;
+I (35925) NimBLE: att_handle=18
+I (35935) NimBLE: GATT procedure initiated: notify;
+I (35935) NimBLE: att_handle=18
+I (35935) NimBLE: GATT procedure initiated: notify;
+I (35945) NimBLE: att_handle=18
+I (35945) lumen_ble: QueryStrip strip=1 -> 1 SegmentReport + SegmentListEnd mask=0x01 seq=0x93
+I (37125) lumen_engine: 剧本 stage 1/2 开始（phase 重置）
+I (37125) lumen_engine: anim_mask 0xFE -> 0xFF（scope=0x01 stage=0/2 pb=1）
+I (37365) lumen_ble: RX cmd=0x12 seq=0x94 len=1 result=0x00 power=1 brightness=150 rgb=255,170,0 segs=1
+I (37365) NimBLE: GATT procedure initiated: notify;
+I (37365) NimBLE: att_handle=18
+I (37375) NimBLE: GATT procedure initiated: notify;
+I (37375) NimBLE: att_handle=18
+I (37375) NimBLE: GATT procedure initiated: notify;
+I (37385) NimBLE: att_handle=18
+I (37385) lumen_ble: QueryStrip strip=2 -> 1 SegmentReport + SegmentListEnd mask=0x01 seq=0x94
+I (37665) lumen_engine: tdm: strips=8 active=8 lit=8 round=9807us avg=10070us max=382502us pushed=5944 (每条间隔≈10070us)
+I (38605) lumen_engine: 剧本 stage 2/2 开始（phase 重置）
+I (38605) lumen_engine: anim_mask 0xFF -> 0xFE（scope=0x01 stage=1/2 pb=1）
+I (38865) lumen_ble: RX cmd=0x12 seq=0x95 len=1 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (38865) NimBLE: GATT procedure initiated: notify;
+I (38865) NimBLE: att_handle=18
+I (38875) NimBLE: GATT procedure initiated: notify;
+I (38875) NimBLE: att_handle=18
+I (38875) NimBLE: GATT procedure initiated: notify;
+I (38885) NimBLE: att_handle=18
+I (38885) lumen_ble: QueryStrip strip=3 -> 1 SegmentReport + SegmentListEnd mask=0x01 seq=0x95
+I (40105) lumen_engine: 剧本 stage 1/2 开始（phase 重置）
+I (40105) lumen_engine: anim_mask 0xFE -> 0xFF（scope=0x01 stage=0/2 pb=1）
+I (40205) lumen_engine: tdm: strips=8 active=8 lit=8 round=10953us avg=10078us max=382502us pushed=6387 (每条间隔≈10078us)
+I (40365) lumen_ble: RX cmd=0x12 seq=0x96 len=1 result=0x00 power=1 brightness=150 rgb=255,170,0 segs=1
+I (40365) NimBLE: GATT procedure initiated: notify;
+I (40365) NimBLE: att_handle=18
+I (40375) NimBLE: GATT procedure initiated: notify;
+I (40375) NimBLE: att_handle=18
+I (40375) NimBLE: GATT procedure initiated: notify;
+I (40385) NimBLE: att_handle=18
+I (40385) lumen_ble: QueryStrip strip=4 -> 1 SegmentReport + SegmentListEnd mask=0x01 seq=0x96
+I (41635) lumen_engine: 剧本 stage 2/2 开始（phase 重置）
+I (41635) lumen_engine: anim_mask 0xFF -> 0xFE（scope=0x01 stage=1/2 pb=1）
+I (41865) lumen_ble: RX cmd=0x12 seq=0x97 len=1 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (41865) NimBLE: GATT procedure initiated: notify;
+I (41865) NimBLE: att_handle=18
+I (41875) NimBLE: GATT procedure initiated: notify;
+I (41875) NimBLE: att_handle=18
+I (41875) NimBLE: GATT procedure initiated: notify;
+I (41885) NimBLE: att_handle=18
+I (41885) lumen_ble: QueryStrip strip=5 -> 1 SegmentReport + SegmentListEnd mask=0x01 seq=0x97
+I (42785) lumen_engine: tdm: strips=8 active=8 lit=8 round=9597us avg=10124us max=382502us pushed=6837 (每条间隔≈10124us)
+I (43115) lumen_engine: 剧本 stage 1/2 开始（phase 重置）
+I (43115) lumen_engine: anim_mask 0xFE -> 0xFF（scope=0x01 stage=0/2 pb=1）
+I (43365) lumen_ble: RX cmd=0x12 seq=0x98 len=1 result=0x00 power=1 brightness=150 rgb=255,170,0 segs=1
+I (43365) NimBLE: GATT procedure initiated: notify;
+I (43365) NimBLE: att_handle=18
+I (43375) NimBLE: GATT procedure initiated: notify;
+I (43375) NimBLE: att_handle=18
+I (43375) NimBLE: GATT procedure initiated: notify;
+I (43385) NimBLE: att_handle=18
+I (43385) lumen_ble: QueryStrip strip=6 -> 1 SegmentReport + SegmentListEnd mask=0x01 seq=0x98
+I (44625) lumen_engine: 剧本 stage 2/2 开始（phase 重置）
+I (44625) lumen_engine: anim_mask 0xFF -> 0xFE（scope=0x01 stage=1/2 pb=1）
+I (44865) lumen_ble: RX cmd=0x12 seq=0x99 len=1 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (44865) NimBLE: GATT procedure initiated: notify;
+I (44865) NimBLE: att_handle=18
+I (44875) NimBLE: GATT procedure initiated: notify;
+I (44875) NimBLE: att_handle=18
+I (44875) NimBLE: GATT procedure initiated: notify;
+I (44885) NimBLE: att_handle=18
+I (44885) lumen_ble: QueryStrip strip=7 -> 1 SegmentReport + SegmentListEnd mask=0x01 seq=0x99
+I (45395) lumen_engine: tdm: strips=8 active=8 lit=8 round=9588us avg=10170us max=382502us pushed=7291 (每条间隔≈10170us)
+I (46125) lumen_engine: 剧本 stage 1/2 开始（phase 重置）
+I (46125) lumen_engine: anim_mask 0xFE -> 0xFF（scope=0x01 stage=0/2 pb=1）
+I (46365) lumen_engine: ActivateScript id=3 loop=0（播放头回 0，待播放）
+I (46365) lumen_ble: RX cmd=0x19 seq=0x9A len=2 result=0x00 power=1 brightness=150 rgb=255,170,0 segs=1
+I (46375) NimBLE: GATT procedure initiated: notify;
+I (46375) NimBLE: att_handle=18
+I (46375) lumen_engine: 剧本 stage 1/2 开始（phase 重置）
+I (46385) lumen_engine: anim_mask 0xFF -> 0xFE（scope=0x00 stage=0/2 pb=0）
+I (46425) lumen_engine: SetPlayback action=1 loop=0 -> state=1 stage=0 script=3
+I (46425) lumen_ble: RX cmd=0x13 seq=0x9B len=2 result=0x00 power=1 brightness=150 rgb=255,170,0 segs=0
+I (46435) NimBLE: GATT procedure initiated: notify;
+I (46435) NimBLE: att_handle=18
+I (46435) lumen_engine: anim_mask 0xFE -> 0xFF（scope=0x01 stage=0/2 pb=1）
+I (47965) lumen_engine: 剧本 stage 2/2 开始（phase 重置）
+I (47965) lumen_engine: anim_mask 0xFF -> 0xFE（scope=0x01 stage=1/2 pb=1）
+I (48005) lumen_engine: tdm: strips=8 active=8 lit=8 round=9641us avg=10191us max=382502us pushed=7748 (每条间隔≈10191us)
+I (49455) lumen_engine: 剧本 stage 2/2 开始（phase 重置）
+I (49935) lumen_ble: RX cmd=0x05 seq=0x9C len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (49935) NimBLE: GATT procedure initiated: notify;
+I (49935) NimBLE: att_handle=18
+I (49945) NimBLE: GATT procedure initiated: notify;
+I (49945) NimBLE: att_handle=18
+I (49995) lumen_ble: RX cmd=0x05 seq=0x9D len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (49995) NimBLE: GATT procedure initiated: notify;
+I (49995) NimBLE: att_handle=18
+I (50005) NimBLE: GATT procedure initiated: notify;
+I (50005) NimBLE: att_handle=18
+I (50005) lumen_ble: RX cmd=0x05 seq=0x9E len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (50015) NimBLE: GATT procedure initiated: notify;
+I (50025) NimBLE: att_handle=18
+I (50025) NimBLE: GATT procedure initiated: notify;
+I (50025) NimBLE: att_handle=18
+I (50035) lumen_ble: RX cmd=0x05 seq=0x9F len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (50045) NimBLE: GATT procedure initiated: notify;
+I (50045) NimBLE: att_handle=18
+I (50055) NimBLE: GATT procedure initiated: notify;
+I (50055) NimBLE: att_handle=18
+I (50055) lumen_ble: RX cmd=0x05 seq=0xA0 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (50065) NimBLE: GATT procedure initiated: notify;
+I (50075) NimBLE: att_handle=18
+I (50075) NimBLE: GATT procedure initiated: notify;
+I (50075) NimBLE: att_handle=18
+I (50085) lumen_ble: RX cmd=0x05 seq=0xA1 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (50095) NimBLE: GATT procedure initiated: notify;
+I (50095) NimBLE: att_handle=18
+I (50095) NimBLE: GATT procedure initiated: notify;
+I (50105) NimBLE: att_handle=18
+I (50105) lumen_ble: RX cmd=0x05 seq=0xA2 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (50115) NimBLE: GATT procedure initiated: notify;
+I (50115) NimBLE: att_handle=18
+I (50125) NimBLE: GATT procedure initiated: notify;
+I (50125) NimBLE: att_handle=18
+I (50135) lumen_ble: RX cmd=0x05 seq=0xA3 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (50135) NimBLE: GATT procedure initiated: notify;
+I (50145) NimBLE: att_handle=18
+I (50145) NimBLE: GATT procedure initiated: notify;
+I (50155) NimBLE: att_handle=18
+I (50155) lumen_ble: RX cmd=0x05 seq=0xA4 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (50165) NimBLE: GATT procedure initiated: notify;
+I (50165) NimBLE: att_handle=18
+I (50175) NimBLE: GATT procedure initiated: notify;
+I (50175) NimBLE: att_handle=18
+I (50175) lumen_ble: RX cmd=0x05 seq=0xA5 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (50185) NimBLE: GATT procedure initiated: notify;
+I (50195) NimBLE: att_handle=18
+I (50195) NimBLE: GATT procedure initiated: notify;
+I (50195) NimBLE: att_handle=18
+I (50205) lumen_ble: RX cmd=0x05 seq=0xA6 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (50215) lumen_ble: ACK notify 失败 cmd=0x05 seq=0xA6 result=0x00 err=ESP_ERR_NO_MEM
+W (50215) lumen_ble: StateReport 发送失败 seq=0xA6
+I (50225) lumen_ble: RX cmd=0x05 seq=0xA7 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (50235) lumen_ble: ACK notify 失败 cmd=0x05 seq=0xA7 result=0x00 err=ESP_ERR_NO_MEM
+W (50245) lumen_ble: StateReport 发送失败 seq=0xA7
+I (50245) lumen_ble: RX cmd=0x05 seq=0xA8 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (50255) lumen_ble: ACK notify 失败 cmd=0x05 seq=0xA8 result=0x00 err=ESP_ERR_NO_MEM
+W (50265) lumen_ble: StateReport 发送失败 seq=0xA8
+I (50265) lumen_ble: RX cmd=0x05 seq=0xA9 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (50275) lumen_ble: ACK notify 失败 cmd=0x05 seq=0xA9 result=0x00 err=ESP_ERR_NO_MEM
+W (50285) lumen_ble: StateReport 发送失败 seq=0xA9
+I (50285) lumen_ble: RX cmd=0x05 seq=0xAA len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (50295) lumen_ble: ACK notify 失败 cmd=0x05 seq=0xAA result=0x00 err=ESP_ERR_NO_MEM
+W (50305) lumen_ble: StateReport 发送失败 seq=0xAA
+I (50305) lumen_ble: RX cmd=0x05 seq=0xAB len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (50315) lumen_ble: ACK notify 失败 cmd=0x05 seq=0xAB result=0x00 err=ESP_ERR_NO_MEM
+W (50325) lumen_ble: StateReport 发送失败 seq=0xAB
+I (50335) lumen_ble: RX cmd=0x05 seq=0xAC len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (50335) lumen_ble: ACK notify 失败 cmd=0x05 seq=0xAC result=0x00 err=ESP_ERR_NO_MEM
+W (50345) lumen_ble: StateReport 发送失败 seq=0xAC
+I (50995) lumen_engine: tdm: strips=8 active=8 lit=8 round=751us avg=9986us max=382502us pushed=8000 (每条间隔≈9986us)
+I (52455) lumen_ble: RX cmd=0x05 seq=0xAD len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (52455) NimBLE: GATT procedure initiated: notify;
+I (52455) NimBLE: att_handle=18
+I (52465) NimBLE: GATT procedure initiated: notify;
+I (52465) NimBLE: att_handle=18
+I (52465) lumen_ble: RX cmd=0x05 seq=0xAE len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (52475) NimBLE: GATT procedure initiated: notify;
+I (52485) NimBLE: att_handle=18
+I (52485) NimBLE: GATT procedure initiated: notify;
+I (52495) NimBLE: att_handle=18
+I (52495) lumen_ble: RX cmd=0x05 seq=0xAF len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (52505) NimBLE: GATT procedure initiated: notify;
+I (52505) NimBLE: att_handle=18
+I (52515) NimBLE: GATT procedure initiated: notify;
+I (52515) NimBLE: att_handle=18
+I (52515) lumen_ble: RX cmd=0x05 seq=0xB0 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (52525) NimBLE: GATT procedure initiated: notify;
+I (52535) NimBLE: att_handle=18
+I (52535) NimBLE: GATT procedure initiated: notify;
+I (52535) NimBLE: att_handle=18
+I (52545) lumen_ble: RX cmd=0x05 seq=0xB1 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (52555) NimBLE: GATT procedure initiated: notify;
+I (52555) NimBLE: att_handle=18
+I (52555) NimBLE: GATT procedure initiated: notify;
+I (52565) NimBLE: att_handle=18
+I (52565) lumen_ble: RX cmd=0x05 seq=0xB2 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (52575) NimBLE: GATT procedure initiated: notify;
+I (52575) NimBLE: att_handle=18
+I (52585) NimBLE: GATT procedure initiated: notify;
+I (52585) NimBLE: att_handle=18
+I (52595) lumen_ble: RX cmd=0x05 seq=0xB3 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (52595) NimBLE: GATT procedure initiated: notify;
+I (52605) NimBLE: att_handle=18
+I (52605) NimBLE: GATT procedure initiated: notify;
+I (52615) NimBLE: att_handle=18
+I (52615) lumen_ble: RX cmd=0x05 seq=0xB4 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (52625) NimBLE: GATT procedure initiated: notify;
+I (52625) NimBLE: att_handle=18
+I (52635) NimBLE: GATT procedure initiated: notify;
+I (52635) NimBLE: att_handle=18
+I (52635) lumen_ble: RX cmd=0x05 seq=0xB5 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (52645) NimBLE: GATT procedure initiated: notify;
+I (52655) NimBLE: att_handle=18
+I (52655) NimBLE: GATT procedure initiated: notify;
+I (52655) NimBLE: att_handle=18
+I (52665) lumen_ble: RX cmd=0x05 seq=0xB6 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (52675) lumen_ble: ACK notify 失败 cmd=0x05 seq=0xB6 result=0x00 err=ESP_ERR_NO_MEM
+W (52675) lumen_ble: StateReport 发送失败 seq=0xB6
+I (52685) lumen_ble: RX cmd=0x05 seq=0xB7 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (52695) lumen_ble: ACK notify 失败 cmd=0x05 seq=0xB7 result=0x00 err=ESP_ERR_NO_MEM
+W (52705) lumen_ble: StateReport 发送失败 seq=0xB7
+I (52705) lumen_ble: RX cmd=0x05 seq=0xB8 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (52715) lumen_ble: ACK notify 失败 cmd=0x05 seq=0xB8 result=0x00 err=ESP_ERR_NO_MEM
+W (52725) lumen_ble: StateReport 发送失败 seq=0xB8
+I (52725) lumen_ble: RX cmd=0x05 seq=0xB9 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (52735) lumen_ble: ACK notify 失败 cmd=0x05 seq=0xB9 result=0x00 err=ESP_ERR_NO_MEM
+W (52745) lumen_ble: StateReport 发送失败 seq=0xB9
+I (52745) lumen_ble: RX cmd=0x05 seq=0xBA len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (52755) lumen_ble: ACK notify 失败 cmd=0x05 seq=0xBA result=0x00 err=ESP_ERR_NO_MEM
+W (52765) lumen_ble: StateReport 发送失败 seq=0xBA
+I (52765) lumen_ble: RX cmd=0x05 seq=0xBB len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (52775) lumen_ble: ACK notify 失败 cmd=0x05 seq=0xBB result=0x00 err=ESP_ERR_NO_MEM
+W (52785) lumen_ble: StateReport 发送失败 seq=0xBB
+I (52795) lumen_ble: RX cmd=0x05 seq=0xBC len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (52795) lumen_ble: ACK notify 失败 cmd=0x05 seq=0xBC result=0x00 err=ESP_ERR_NO_MEM
+W (52805) lumen_ble: StateReport 发送失败 seq=0xBC
+I (54305) lumen_engine: tdm: strips=8 active=8 lit=8 round=751us avg=9547us max=382502us pushed=8000 (每条间隔≈9547us)
+I (54825) lumen_ble: RX cmd=0x05 seq=0xBD len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (54825) NimBLE: GATT procedure initiated: notify;
+I (54825) NimBLE: att_handle=18
+I (54835) NimBLE: GATT procedure initiated: notify;
+I (54835) NimBLE: att_handle=18
+I (54835) lumen_ble: RX cmd=0x05 seq=0xBE len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (54845) NimBLE: GATT procedure initiated: notify;
+I (54855) NimBLE: att_handle=18
+I (54855) NimBLE: GATT procedure initiated: notify;
+I (54865) NimBLE: att_handle=18
+I (54865) lumen_ble: RX cmd=0x05 seq=0xBF len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (54875) NimBLE: GATT procedure initiated: notify;
+I (54875) NimBLE: att_handle=18
+I (54885) NimBLE: GATT procedure initiated: notify;
+I (54885) NimBLE: att_handle=18
+I (54885) lumen_ble: RX cmd=0x05 seq=0xC0 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (54895) NimBLE: GATT procedure initiated: notify;
+I (54905) NimBLE: att_handle=18
+I (54905) NimBLE: GATT procedure initiated: notify;
+I (54905) NimBLE: att_handle=18
+I (54915) lumen_ble: RX cmd=0x05 seq=0xC1 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (54925) NimBLE: GATT procedure initiated: notify;
+I (54925) NimBLE: att_handle=18
+I (54925) NimBLE: GATT procedure initiated: notify;
+I (54935) NimBLE: att_handle=18
+I (54935) lumen_ble: RX cmd=0x05 seq=0xC2 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (54945) NimBLE: GATT procedure initiated: notify;
+I (54945) NimBLE: att_handle=18
+I (54955) NimBLE: GATT procedure initiated: notify;
+I (54955) NimBLE: att_handle=18
+I (54965) lumen_ble: RX cmd=0x05 seq=0xC3 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (54965) NimBLE: GATT procedure initiated: notify;
+I (54975) NimBLE: att_handle=18
+I (54975) NimBLE: GATT procedure initiated: notify;
+I (54985) NimBLE: att_handle=18
+I (54985) lumen_ble: RX cmd=0x05 seq=0xC4 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (54995) NimBLE: GATT procedure initiated: notify;
+I (54995) NimBLE: att_handle=18
+I (55005) NimBLE: GATT procedure initiated: notify;
+I (55005) NimBLE: att_handle=18
+I (55005) lumen_ble: RX cmd=0x05 seq=0xC5 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (55015) NimBLE: GATT procedure initiated: notify;
+I (55025) NimBLE: att_handle=18
+I (55025) NimBLE: GATT procedure initiated: notify;
+I (55025) NimBLE: att_handle=18
+I (55035) lumen_ble: RX cmd=0x05 seq=0xC6 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (55045) lumen_ble: ACK notify 失败 cmd=0x05 seq=0xC6 result=0x00 err=ESP_ERR_NO_MEM
+W (55045) lumen_ble: StateReport 发送失败 seq=0xC6
+I (55055) lumen_ble: RX cmd=0x05 seq=0xC7 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (55065) lumen_ble: ACK notify 失败 cmd=0x05 seq=0xC7 result=0x00 err=ESP_ERR_NO_MEM
+W (55075) lumen_ble: StateReport 发送失败 seq=0xC7
+I (55075) lumen_ble: RX cmd=0x05 seq=0xC8 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (55085) lumen_ble: ACK notify 失败 cmd=0x05 seq=0xC8 result=0x00 err=ESP_ERR_NO_MEM
+W (55095) lumen_ble: StateReport 发送失败 seq=0xC8
+I (55095) lumen_ble: RX cmd=0x05 seq=0xC9 len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (55105) lumen_ble: ACK notify 失败 cmd=0x05 seq=0xC9 result=0x00 err=ESP_ERR_NO_MEM
+W (55115) lumen_ble: StateReport 发送失败 seq=0xC9
+I (55115) lumen_ble: RX cmd=0x05 seq=0xCA len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (55125) lumen_ble: ACK notify 失败 cmd=0x05 seq=0xCA result=0x00 err=ESP_ERR_NO_MEM
+W (55135) lumen_ble: StateReport 发送失败 seq=0xCA
+I (55135) lumen_ble: RX cmd=0x05 seq=0xCB len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (55145) lumen_ble: ACK notify 失败 cmd=0x05 seq=0xCB result=0x00 err=ESP_ERR_NO_MEM
+W (55155) lumen_ble: StateReport 发送失败 seq=0xCB
+I (55165) lumen_ble: RX cmd=0x05 seq=0xCC len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+W (55165) lumen_ble: ACK notify 失败 cmd=0x05 seq=0xCC result=0x00 err=ESP_ERR_NO_MEM
+W (55175) lumen_ble: StateReport 发送失败 seq=0xCC
+I (57285) lumen_engine: ActivateScript id=3 loop=2（播放头回 0，待播放）
+I (57285) lumen_ble: RX cmd=0x19 seq=0xCD len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (57295) NimBLE: GATT procedure initiated: notify;
+I (57295) NimBLE: att_handle=18
+I (57295) lumen_engine: 剧本 stage 1/2 开始（phase 重置）
+I (57345) lumen_engine: SetPlayback action=1 loop=2 -> state=1 stage=0 script=3
+I (57345) lumen_ble: RX cmd=0x13 seq=0xCE len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (57355) NimBLE: GATT procedure initiated: notify;
+I (57355) NimBLE: att_handle=18
+I (57355) lumen_engine: anim_mask 0xFE -> 0xFF（scope=0x01 stage=0/2 pb=1）
+I (57595) lumen_engine: tdm: strips=8 active=8 lit=8 round=10959us avg=9202us max=382502us pushed=8055 (每条间隔≈9202us)
+I (58855) lumen_engine: 剧本 stage 2/2 开始（phase 重置）
+I (58855) lumen_engine: anim_mask 0xFF -> 0xFE（scope=0x01 stage=1/2 pb=1）
+I (59655) lumen_ble: RX cmd=0x05 seq=0xCF len=0 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (59655) NimBLE: GATT procedure initiated: notify;
+I (59655) NimBLE: att_handle=18
+I (59665) NimBLE: GATT procedure initiated: notify;
+I (59665) NimBLE: att_handle=18
+I (59715) lumen_engine: SetPlayback action=0 loop=0 -> state=0 stage=0 script=3
+I (59715) lumen_ble: RX cmd=0x13 seq=0xD0 len=2 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (59725) NimBLE: GATT procedure initiated: notify;
+I (59725) NimBLE: att_handle=18
+I (59725) lumen_engine: 剧本 stage 1/2 开始（phase 重置）
+I (59775) lumen_engine: ClearScript id=3 是激活剧本：已停止播放并退回无激活剧本
+I (59775) lumen_engine: ClearScript id=3 已清空（未提交即成功）
+I (59785) lumen_ble: RX cmd=0x1E seq=0xD1 len=1 result=0x00 power=1 brightness=150 rgb=0,0,0 segs=0
+I (59785) NimBLE: GATT procedure initiated: notify;
+I (59795) NimBLE: att_handle=18
+I (60165) lumen_engine: tdm: strips=8 active=8 lit=8 round=9712us avg=9259us max=382502us pushed=8501 (每条间隔≈9259us)
+I (62585) lumen_engine: tdm: strips=8 active=8 lit=8 round=9597us avg=9276us max=382502us pushed=8921 (每条间隔≈9276us)
+I (63015) lumen_ble: TX notify disabled
+I (63015) lumen_ble: disconnected handle=0x0001 reason=531
+I (63015) NimBLE: GAP procedure initiated: advertise;
+I (63015) NimBLE: disc_mode=2
+I (63025) NimBLE:  adv_channel_map=0 own_addr_type=0 adv_filter_policy=0 adv_itvl_min=0 adv_itvl_max=0
+I (63035) NimBLE:
+I (63035) lumen_ble: 开始广播（Lumen-5662），等连接
+I (65005) lumen_engine: tdm: strips=8 active=8 lit=8 round=9571us avg=9289us max=382502us pushed=9340 (每条间隔≈9289us)
+I (67415) lumen_engine: tdm: strips=8 active=8 lit=8 round=9574us avg=9302us max=382502us pushed=9760 (每条间隔≈9302us)
