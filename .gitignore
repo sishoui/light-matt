@@ -38,3 +38,7 @@ miniprogram/.auto/
 
 # 本地测试报告（日常运行产物，不进 git；发布级报告归档到 docs/evidence）
 .reports/
+
+# 本机凭证：飞书应用 App ID / Secret，只留在这台机器上
+.env
+.env.local
