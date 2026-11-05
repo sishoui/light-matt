@@ -92,9 +92,13 @@ node .zcode/skills/verify-lumen-ble/scripts/drive.mjs --list
 
 退出码：`0` 全过 / `1` 有真实失败 / `3` SKIP（没设备或全被跳过）。
 
-**用例数是实际收集数 16 条，不是 8 条。** `vitest.e2e.config.ts` 的 include 是
-`tests/e2e/**/*.test.ts`，覆盖两个文件：`real-device.test.ts` 8 条与
-`complex-plan.test.ts` 8 条。旧文只数了前者。编排器的 `ble` 层按实际收集数报。
+**用例数取实际收集数，不要手抄。** `vitest.e2e.config.ts` 的 include 是
+`tests/e2e/**/*.test.ts`，当前覆盖 `real-device.test.ts`、`complex-plan.test.ts`、
+`page-click.test.ts` 与 `walkthrough.test.ts`。加一个文件不需要改任何数字；
+`drive.mjs --list` 与编排器的 `ble` 层都按实际收集数报。
+
+`walkthrough.test.ts` 的 12 行挂着 `[已知分歧 #NNN]` 前缀，今天预期 skip 并照留读数。
+它们的跳过与「运行中途设备不可用」是两类，编排器分开报。
 
 实测（2026-11-04，v4.0，当时仓库里只有 `real-device.test.ts`，故为 8 条）：
 

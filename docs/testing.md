@@ -50,13 +50,26 @@ vitest 用 JSON reporter 写到临时文件（stdout 留给人读），`tsc --no
 （`0` 过 / `1` 断言失败 / `3` SKIP），编排器只做「读懂它」：`3` → SKIP，`1` 但用例全过也判 FAIL
 （收尾出问题不能算过），其余按 JSON 里的实际收集数报。
 
-> **这一层实际收集 16 条用例，不是 8 条。** `vitest.e2e.config.ts` 的 include 是
-> `tests/e2e/**/*.test.ts`，覆盖两个文件：`real-device.test.ts` 8 条（扫描连接、State、
-> 往返 ACK、段读回、非法参数、超灯珠数、每带开关、DeviceInfo）与 `complex-plan.test.ts`
-> 8 条（多阶段剧本下发、摘要、推进、两种 loop、逐阶段分区数、越界拒绝、其他引脚未被写入）。
-> 旧文写「8 项」是因为只数了 `real-device.test.ts` 一个文件。无设备时两条扫描用例
-> 会「顺利结束」（它们不 fail，只是没扫到东西），其余全部 skip。所以判定阈值是
-> 「至多 1 条通过 + 其余全跳过」→ SKIP，不能因为那一条通过就把整层染绿。
+> **这一层的用例数取实际收集数，不要手抄。** `vitest.e2e.config.ts` 的 include 是
+> `tests/e2e/**/*.test.ts`，目前覆盖 `real-device.test.ts`（扫描连接、State、往返 ACK、
+> 段读回、非法参数、超灯珠数、每带开关、DeviceInfo）、`complex-plan.test.ts`（多阶段剧本
+> 下发、摘要、推进、两种 loop、逐阶段分区数、越界拒绝、其他引脚未被写入）、
+> `page-click.test.ts`（页面处理器驱动的真机点击链路）与 `walkthrough.test.ts`
+> （用户走查用例组，见下一节）。`node scripts/test-run.mjs ble` 的 `--list` 与报告里的
+> 条数都是扫出来的；加一个文件不需要改任何数字。
+> 无设备时扫描用例会「顺利结束」（它不 fail，只是没扫到东西），走查用例组则**每条都 skip**，
+> 其余全部 skip。所以判定阈值是「至多 1 条通过 + 其余全跳过」→ SKIP，不能因为那一条通过
+> 就把整层染绿。走查用例组贡献 0 passed 是这一条的硬前提。
+
+#### `walkthrough.test.ts` 的隔离行是什么
+
+走查用例组里 12 行挂着 `known-divergence`（规格 #127 的 12 项发现），今天预期仍未修好：
+它们照跑、照留「界面值 · 设备值」读数、结局记为 skip。用例名带 `[已知分歧 #NNN]` 前缀，
+编排器按此前缀把它们的跳过原因与「运行中途设备不可用」**分开报**——混成一句会把 12 条
+已确认的缺陷报成环境问题。
+
+修好一张票就把那一行的 `expectation` 改成 `must-hold`：`judge` 会在「分歧已消失」时判
+failed，逼你摘掉标记，而不是被一条永远跳过的用例永久掩护。
 
 ### 不属于五层的取证工具
 
