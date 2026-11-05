@@ -161,6 +161,36 @@ GitHub Issues（`sishoui/light-matt`）。**最近一轮的规格父票是 `#102
 
 单上下文布局（`GLOSSARY.md` + `docs/adr/`）。见 `docs/agents/domain.md`。
 
+### 会话收尾：发飞书总结
+
+**每次会话结束前必须发一条**，用 `scripts/notify-feishu.py` 把本轮做了什么、
+跑到什么数、卡在哪发到飞书群。这是硬规则：**「没发」和「发过了」必须长得不一样**。
+
+```bash
+# 凭证只放环境变量，永不写进仓库 / 文档 / commit
+export FEISHU_APP_ID=cli_xxx FEISHU_APP_SECRET=xxx
+
+python scripts/notify-feishu.py --status green \
+  --title "lumen 会话总结 · <一句话结论>" \
+  --body-file .scratch/session-summary.md
+```
+
+| 项 | 要求 |
+|---|---|
+| 数字 | 引用**最近一次测试报告**的实际值（见 `docs/testing.md`），不抄旧数、不写「都正常」 |
+| 失败 | 有失败就用 `--status red`，写清哪层、哪条、报错原文 |
+| 未覆盖 | 明确列出没跑的层（如 `ui` 缺服务端口而 SKIP），**不许当通过** |
+| 凭证 | 只从 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 读；泄露过的 secret 要去后台重置 |
+| 目标群 | 默认 `oc_19c2c88a44e0ae537b82d72712afbf53`，换群用 `--chat-id` |
+| 验证 | 脚本会打印 `message_id`；要复核可 `GET /open-apis/im/v1/messages/{id}` |
+
+**为什么是应用凭证而不是自定义机器人 Webhook**：Webhook 只能发到「它被添加的那个群」，
+不能指定 `chat_id`；要发固定群就得走 `im/v1/messages`。
+**前提是应用已发布并开了 `im:message` 权限**，否则换得到 token 但发消息会报权限错。
+
+没配凭证时脚本退出码 `2` 并打印缺什么。**不要因此静默跳过**——在回复里明说
+「总结未发送：缺 FEISHU_APP_ID/SECRET」，让用户知道这事没做完。
+
 ## 真机工具
 
 - `scripts/probe-v3.py` —— 协议层真机验证（PC 当 central，需 bleak；项数看末尾汇总行）
