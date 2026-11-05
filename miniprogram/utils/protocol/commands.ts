@@ -37,6 +37,7 @@ import {
   LAYER_LEVEL_MAX,
   LOOP,
   LOOP_MAX,
+  type LoopMode,
   MAX_LEDS,
   MAX_SCRIPTS,
   MAX_SEGMENTS,
@@ -1144,12 +1145,12 @@ export function stateLoop(state: DeviceState): boolean {
  * 位表见 §7.5：bit0 = 循环中、bit2 = 最后一步循环。bit2 单独出现（无 bit0）
  * 是矛盾编码，按不循环处理（与固件 `lumen_loop_from_flags` 一致）。
  */
-export function stateLoopMode(state: DeviceState): number {
+export function stateLoopMode(state: DeviceState): LoopMode {
   return loopModeFromFlags(state.flags);
 }
 
 /** flags → 循环模式（State 与 ScriptSummary 共用同一张位表）。 */
-export function loopModeFromFlags(flags: number): number {
+export function loopModeFromFlags(flags: number): LoopMode {
   if ((flags & PLAYBACK_FLAG.LOOP) === 0) {
     return LOOP.NONE;
   }

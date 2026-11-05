@@ -64,7 +64,7 @@ import {
   type RecentDevice,
 } from "./device-history";
 import { LED_COUNT_ACK_TIMEOUT_MS } from "./ledCount";
-import { MAX_LEDS, MAX_SCRIPTS, MAX_STRIPS, MIN_LEDS, RESULT } from "../protocol/constants";
+import { MAX_LEDS, MAX_SCRIPTS, MAX_STRIPS, MIN_LEDS, RESULT, type LoopMode } from "../protocol/constants";
 import type { UsageLogSink } from "../usage/logger";
 import {
   breathingSegment,
@@ -1077,7 +1077,7 @@ export class ControlSession {
    *
    * `loop` 三种 action 下都会写入（设备侧持久化，§10.5）。
    */
-  async setPlayback(action: PlaybackAction, loop: number | boolean): Promise<ScriptResult> {
+  async setPlayback(action: PlaybackAction, loop: LoopMode): Promise<ScriptResult> {
     const epoch = this.reconnect.epoch;
     try {
       const ack = await this.sendCommand(cmdSetPlayback(action, loop));
@@ -1098,10 +1098,10 @@ export class ControlSession {
   /**
    * 切换到另一套已提交剧本（ActivateScript 0x19）；不自动播放。
    *
-   * `loop` 是**三值**（#98）：0 不循环 / 1 全部循环 / 2 最后一步循环；
-   * 旧的布尔写法仍然接受（true = 1、false = 0）。
+   * `loop` 是**三值**（#98）：0 不循环 / 1 全部循环 / 2 最后一步循环。
+   * 布尔只在下层编码器被折算，到这里必须已经是三值（#114）。
    */
-  async activateScript(scriptId: number, loop: number | boolean): Promise<ScriptResult> {
+  async activateScript(scriptId: number, loop: LoopMode): Promise<ScriptResult> {
     const epoch = this.reconnect.epoch;
     try {
       const ack = await this.sendCommand(cmdActivateScript(scriptId, loop));

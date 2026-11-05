@@ -293,6 +293,15 @@ export const LOOP = {
 export const LOOP_MAX = LOOP.LAST;
 
 /**
+ * 循环模式的三值类型（#114）。
+ *
+ * 凡是下发循环的接口都收这个类型：布尔在那里过不了编译，于是「把三值
+ * 压成布尔」在类型层面就被拦住。`boolean` 只在 `cmd*` 编码器里被显式
+ * 折算，不再向上传播。
+ */
+export type LoopMode = (typeof LOOP)[keyof typeof LOOP];
+
+/**
  * State 字节 10 与 ScriptSummary 0x85 的 flags 位表（§7.5）：
  * bit0 循环中（旧语义）、bit1 active、bit2 最后一步循环、bit3-7 保留 = 0。
  */
