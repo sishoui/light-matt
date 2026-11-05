@@ -282,11 +282,7 @@ export const WALKTHROUGH: readonly Step[] = [
     ticket: "#135",
     kind: "probe",
     does: "设备上这一组零分区时，简单档的灯效行不该写「常亮」",
-    expectation: {
-      kind: "known-divergence",
-      ticket: "#135",
-      note: "灯效行回落到「常亮」，而设备上这一组一个分区都没有",
-    },
+        expectation: { kind: "must-hold" },
     async act(ctx) {
       /* `neutralise()` 由执行器先调：停播 + 清分区。这里重开一次页面，
        * 让它从「设备上什么都没有」重新派生（重开 = 重新 onLoad + onShow）。 */
@@ -735,11 +731,7 @@ export const WALKTHROUGH: readonly Step[] = [
     ticket: "#135",
     kind: "probe",
     does: "简单档的参数区标题与灯效行用的是同一个名字",
-    expectation: {
-      kind: "known-divergence",
-      ticket: "#135",
-      note: "参数区标题仍在用旧色卡名（暖白常亮 / 流光追逐 / 爆闪白 / 心跳暖红 / 彩虹流动）",
-    },
+        expectation: { kind: "must-hold" },
     async act(ctx) {
       const page = ctx.pages.strip;
       page.onModeTap(tap({ mode: "simple" }));

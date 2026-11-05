@@ -439,8 +439,8 @@ Page({
     effectWheelOpen: false,
     /** 滚轮的八个选项（当前选中高亮）。 */
     effectOptions: [] as WheelOptionView[],
-    /** 当前选中的灯效 id（`simple-effects` 的 id）。 */
-    effectId: "solid",
+    /** 当前选中的灯效 id（`simple-effects` 的 id）；`null` = 未设置（#135）。 */
+    effectId: null as string | null,
     simpleParams: null as SimpleParamView | null,
     quickDisabledReason: "",
     quickBusy: false,
@@ -489,8 +489,13 @@ Page({
   segmentReports: [] as SegmentReport[],
   /** 当前选中的效果卡；null = 设备上不是「整组一张卡」。 */
   quickCardId: null as string | null,
-  /** #96：当前选中的灯效 id（八个灯效之一），一行式列表的选中态。 */
-  effectId: "solid",
+  /**
+   * #96 / #135：当前选中的灯效 id（八个灯效之一）。
+   *
+   * `null` = 设备上这一组**根本没有分区**，界面如实显示「未设置」，
+   * 不再冒充「常亮」——用户没点过任何灯效时，设备上确实什么都没有。
+   */
+  effectId: null as string | null,
   /** 当前卡片的 HSV 草稿（协议值，不是滑块刻度）。 */
   quickParams: {} as QuickParams,
   /** 简单档的亮度草稿（v4 的层亮度 0-100；松手即下发）。 */
@@ -647,7 +652,7 @@ Page({
     this.autoConnectTried = false;
     this.segmentReports = [];
     this.quickCardId = null;
-    this.effectId = "solid";
+    this.effectId = null;
     this.quickParams = {};
     this.levelDraft = LEVEL_DEFAULT;
     this.quickTimer = null;
@@ -3043,7 +3048,13 @@ Page({
       effectId,
       effectRows: buildEffectRows(effectId),
       effectOptions: buildWheelOptions(effectId),
-      simpleParams: buildSimpleParams(this.quickCardId, this.quickParams, this.levelDraft),
+      /* #135：把灯效名传进去，参数区标题与灯效行同一个来源。 */
+      simpleParams: buildSimpleParams(
+        this.quickCardId,
+        this.quickParams,
+        this.levelDraft,
+        effectId === null ? null : simpleEffectOf(effectId)?.name ?? null,
+      ),
       quickDisabledReason: this.disabledReason(),
       ...patch,
     });
@@ -3117,7 +3128,10 @@ Page({
     const inferred = inferSimpleState(this.segmentReports, this.stripLedCount());
     if (inferred === null) {
       this.quickCardId = null;
-      this.effectId = "solid";
+      /* #135：设备上读不出「整组一张卡」= 这一组没有分区。灯效行如实写
+       * 「未设置」，参数区整块不出现。以前这里写 "solid"，于是刚打开页面
+       * 就写着「常亮」，而设备上一个分区都没有。 */
+      this.effectId = null;
       this.quickParams = {};
     } else {
       this.quickCardId = inferred.cardId;
@@ -3360,7 +3374,7 @@ Page({
       if (wasPlaying) {
         await session.setPlayback(1, loopMode).catch(() => undefined);
       }
-      this.setData({ quickHint: `${simpleEffectOf(this.effectId)?.name ?? card.name} 已生效` });
+      this.setData({ quickHint: `${this.effectId === null ? card.name : simpleEffectOf(this.effectId)?.name ?? card.name} 已生效` });
       this.renderQuick();
     } catch (err) {
       const message = errorText(err);
