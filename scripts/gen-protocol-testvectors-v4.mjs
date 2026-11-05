@@ -761,12 +761,14 @@ addDevice({
   });
 }
 {
-  const info = [0x04, 0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 100, 8, 8, 8, 4, 0x01, 0x00];
+  /* #129：固件版本是**小端**（低字节在前），与 `firmware/main/protocol.c` 的
+   * `payload[0] = version & 0xFF` 一致。v4.0 在线上是 00 04，不是 04 00。 */
+  const info = [0x00, 0x04, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 100, 8, 8, 8, 4, 0x01, 0x00];
   if (info.length !== 15) throw new Error('DeviceInfoReport must be 15 bytes');
   addDevice({
     name: 'device_info_report', command: 0x88, commandName: 'DeviceInfoReport', seq: 54,
     payload: info,
-    note: '固件 v4.0；MAC AA:BB:CC:DD:EE:FF；caps=0x01（支持两层叠加，fade 未实现）',
+    note: '固件 v4.0（版本字段小端：00 04 = 0x0400）；MAC AA:BB:CC:DD:EE:FF；caps=0x01（支持两层叠加，fade 未实现）',
   });
 }
 

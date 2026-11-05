@@ -1579,16 +1579,16 @@
       "command": 136,
       "command_name": "DeviceInfoReport",
       "seq": 54,
-      "payload_hex": "0400AABBCCDDEEFF64080808040100",
+      "payload_hex": "0004AABBCCDDEEFF64080808040100",
       "payload_len": 15,
-      "frame_hex": "A60488360F000400AABBCCDDEEFF64080808040100229A",
+      "frame_hex": "A60488360F000004AABBCCDDEEFF6408080804010035FC",
       "frame_len": 23,
       "chunks_hex": [
-        "C0A60488360F000400AABBCCDDEEFF64080808040100229A"
+        "C0A60488360F000004AABBCCDDEEFF6408080804010035FC"
       ],
       "frame_valid": true,
       "result_code": 0,
-      "note": "固件 v4.0；MAC AA:BB:CC:DD:EE:FF；caps=0x01（支持两层叠加，fade 未实现）"
+      "note": "固件 v4.0（版本字段小端：00 04 = 0x0400）；MAC AA:BB:CC:DD:EE:FF；caps=0x01（支持两层叠加，fade 未实现）"
     }
   ]
 }

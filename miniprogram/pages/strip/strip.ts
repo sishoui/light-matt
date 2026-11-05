@@ -36,6 +36,7 @@ import {
   canAddStepStage,
   createAdvancedDrafts,
   moveStepStage,
+  removeStepStage,
   seedStepFromReports,
   setStageDurationMs,
   stageDurationMs,
@@ -439,8 +440,8 @@ Page({
     effectWheelOpen: false,
     /** 滚轮的八个选项（当前选中高亮）。 */
     effectOptions: [] as WheelOptionView[],
-    /** 当前选中的灯效 id（`simple-effects` 的 id）。 */
-    effectId: "solid",
+    /** 当前选中的灯效 id（`simple-effects` 的 id）；`null` = 未设置（#135）。 */
+    effectId: null as string | null,
     simpleParams: null as SimpleParamView | null,
     quickDisabledReason: "",
     quickBusy: false,
@@ -489,8 +490,13 @@ Page({
   segmentReports: [] as SegmentReport[],
   /** 当前选中的效果卡；null = 设备上不是「整组一张卡」。 */
   quickCardId: null as string | null,
-  /** #96：当前选中的灯效 id（八个灯效之一），一行式列表的选中态。 */
-  effectId: "solid",
+  /**
+   * #96 / #135：当前选中的灯效 id（八个灯效之一）。
+   *
+   * `null` = 设备上这一组**根本没有分区**，界面如实显示「未设置」，
+   * 不再冒充「常亮」——用户没点过任何灯效时，设备上确实什么都没有。
+   */
+  effectId: null as string | null,
   /** 当前卡片的 HSV 草稿（协议值，不是滑块刻度）。 */
   quickParams: {} as QuickParams,
   /** 简单档的亮度草稿（v4 的层亮度 0-100；松手即下发）。 */
@@ -647,7 +653,7 @@ Page({
     this.autoConnectTried = false;
     this.segmentReports = [];
     this.quickCardId = null;
-    this.effectId = "solid";
+    this.effectId = null;
     this.quickParams = {};
     this.levelDraft = LEVEL_DEFAULT;
     this.quickTimer = null;
@@ -2123,6 +2129,28 @@ Page({
     this.pickedSegId = -1;
     this.renderTimeline({ stepHint: "" });
   },
+
+  /**
+   * 删掉当前这一步（#133）。
+   *
+   * 加错了步骤以前只能换一套方案重来，用户精心编排的内容就白费了。
+   * 至少留一步：最后一步删掉会让时间轴空掉，方案也就没有意义了。
+   */
+  onStepDelete() {
+    const draft = this.currentDraft();
+    if (draft.stages.length <= 1) {
+      this.renderTimeline({ stepHint: "至少要留一个步骤" });
+      return;
+    }
+    const next = removeStepStage(draft, this.timelineIndex);
+    if (next === draft) {
+      return;
+    }
+    this.setDraft(next);
+    this.timelineIndex = Math.max(0, Math.min(this.timelineIndex, next.stages.length - 1));
+    this.pickedSegId = -1;
+    this.renderTimeline({ stepHint: "已删除这一步" });
+  },
   /** 拖时长条：块宽实时跟着变（拖动中也走 `renderTimeline`，只是不写设备）。 */
   onDurationChanging(e: WechatMiniprogram.SliderChanging) {
     this.applyDuration(Number(e.detail.value));
@@ -3043,7 +3071,13 @@ Page({
       effectId,
       effectRows: buildEffectRows(effectId),
       effectOptions: buildWheelOptions(effectId),
-      simpleParams: buildSimpleParams(this.quickCardId, this.quickParams, this.levelDraft),
+      /* #135：把灯效名传进去，参数区标题与灯效行同一个来源。 */
+      simpleParams: buildSimpleParams(
+        this.quickCardId,
+        this.quickParams,
+        this.levelDraft,
+        effectId === null ? null : simpleEffectOf(effectId)?.name ?? null,
+      ),
       quickDisabledReason: this.disabledReason(),
       ...patch,
     });
@@ -3117,7 +3151,10 @@ Page({
     const inferred = inferSimpleState(this.segmentReports, this.stripLedCount());
     if (inferred === null) {
       this.quickCardId = null;
-      this.effectId = "solid";
+      /* #135：设备上读不出「整组一张卡」= 这一组没有分区。灯效行如实写
+       * 「未设置」，参数区整块不出现。以前这里写 "solid"，于是刚打开页面
+       * 就写着「常亮」，而设备上一个分区都没有。 */
+      this.effectId = null;
       this.quickParams = {};
     } else {
       this.quickCardId = inferred.cardId;
@@ -3354,13 +3391,23 @@ Page({
       this.segmentReports = [
         { ...spec, stripId, segId: 0 } as unknown as (typeof this.segmentReports)[number],
       ];
-      /* #96：静默把整份方案也更新一次（进阶档的编排要能看到这一组的改动），
-       * 再恢复播放。失败不覆盖「已生效」——实时分区已经写进去了。 */
-      await this.silentDownloadPlans(loopMode);
-      if (wasPlaying) {
-        await session.setPlayback(1, loopMode).catch(() => undefined);
-      }
-      this.setData({ quickHint: `${simpleEffectOf(this.effectId)?.name ?? card.name} 已生效` });
+      const effectLabel =
+        this.effectId === null ? card.name : simpleEffectOf(this.effectId)?.name ?? card.name;
+      /*
+       * #139：简单档改色**只改实时灯效**，不动用户编排的方案。
+       *
+       * 以前这里是「重下整份方案 + 恢复播放」。用户以为只是临时换个颜色，
+       * 实际改了自己编排的内容，而且那句「已停止播放，改为实时灯效」紧接着
+       * 就被「已生效」覆盖掉，界面什么都没说。现在：
+       *  - 不重下方案（实时分区已经写进设备了）；
+       *  - 不恢复播放（票面裁决：改色 = 停播转实时）；
+       *  - 提示明说停了播放。
+       */
+      this.setData({
+        quickHint: wasPlaying
+          ? `${effectLabel} 已生效；原先的方案已停止播放，现在是实时灯效`
+          : `${effectLabel} 已生效`,
+      });
       this.renderQuick();
     } catch (err) {
       const message = errorText(err);

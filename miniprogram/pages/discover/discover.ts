@@ -267,7 +267,14 @@ Page({
           : this.data.scanning
             ? "正在扫描…"
             : "还没有扫描到设备",
-      emptyHint: searching ? "换个关键词，或清空搜索看全部。" : "把灯控通电，再点下面的「重新扫描」。",
+      /* #131：空态提示必须指向**当前那一刻真实存在的那个按钮**。
+       * 扫描进行中按钮已经是「停止扫描」，再说「点下面的『重新扫描』」
+       * 是让用户去找一个不存在的按钮。 */
+      emptyHint: searching
+        ? "换个关键词，或清空搜索看全部。"
+        : this.data.scanning
+          ? "扫描中，有新设备会自动出现在这里；点下面的「停止扫描」可以结束。"
+          : "把灯控通电，再点下面的「重新扫描」。",
       navSubtitle:
         this.data.linkClass === "link-ready"
           ? `已连接 · 附近 ${this.allRows.length} 台`

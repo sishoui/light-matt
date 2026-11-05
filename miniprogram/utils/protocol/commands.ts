@@ -1047,23 +1047,32 @@ export function parseStripConfigReport(payload: Uint8Array): StripConfig {
 /**
  * 解析 DeviceInfoReport 0x88（15 字节）。
  *
- * 固件版本按**高字节在前**给出（major, minor）——这正是向量与 §7.4 的
- * 「major<<8 | minor」在线上的一致表现（向量 `0300` 注释为 v3.0）。
+ * **线上字节是小端**（#129）：固件写的是
+ * `payload[0] = version & 0xFF` / `payload[1] = version >> 8`
+ * （`firmware/main/protocol.c` 的 `encode_device_info`），所以 v4.0 在线上是
+ * `00 04`。以前这里按大端读（`payload[0]` 当 major），于是 v4.0 被解成
+ * `v0.4（0x0004）`，用户会以为固件该升级了，或者以为自己在用一个不存在的版本。
+ *
+ * 当初的依据是向量里的 `0400` 与 §7.4 的「major<<8 | minor」——那是一份
+ * **按大端抄写**的期望值，和固件的实际输出对不上。以线上现实为准，三处一起改：
+ * 这里、`docs/protocol-v4.md`、可执行向量。
+ *
  * `hw_id` 是 6 字节 BT MAC，按 `AA:BB:CC:DD:EE:FF` 的自然顺序。
  */
 export function parseDeviceInfoReport(payload: Uint8Array): DeviceInfo {
   if (payload.length !== DEVICE_INFO_BYTES) {
     throw new RangeError(`DeviceInfoReport 载荷必须是 ${DEVICE_INFO_BYTES} 字节，收到 ${payload.length}`);
   }
-  const firmwareMajor = payload[0];
-  const firmwareMinor = payload[1];
+  const firmwareVersion = payload[0] | (payload[1] << 8);
+  const firmwareMajor = firmwareVersion >> 8;
+  const firmwareMinor = firmwareVersion & 0xff;
   const mac: string[] = [];
   for (let i = 0; i < 6; i += 1) {
     mac.push(payload[2 + i].toString(16).padStart(2, "0").toUpperCase());
   }
   const caps = payload[13];
   return {
-    firmwareVersion: (firmwareMajor << 8) | firmwareMinor,
+    firmwareVersion,
     firmwareMajor,
     firmwareMinor,
     hwId: mac.join(":"),

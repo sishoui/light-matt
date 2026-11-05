@@ -129,6 +129,8 @@ export interface ActContext {
   /** 只让世界发生一件用户在页面上做不到的事。 */
   disturb(kind: "drop-link"): Promise<void>;
   waitLink(state: LinkState, timeoutMs?: number): Promise<void>;
+  /** 此刻是否在扫描（只看链路态，不做往返）。 */
+  isScanning(): boolean;
   waitPageReady(page: PageName, timeoutMs?: number): Promise<void>;
   /** 等页面上的某个「忙」标记落下（`applying` / `quickBusy` …）。 */
   waitPageIdle(page: PageName, field: string, timeoutMs?: number): Promise<void>;

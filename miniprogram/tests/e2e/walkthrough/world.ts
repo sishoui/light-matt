@@ -417,6 +417,9 @@ export async function bootWorld(): Promise<World> {
         label: `链路变成 ${state}（当前 ${live.linkState}）`,
       });
     },
+    isScanning() {
+      return live.linkState === "scanning";
+    },
     async waitPageReady(pageName: PageName, timeoutMs = 30_000) {
       await waitFor(() => handles()[pageName].data.ready === true, {
         timeoutMs,

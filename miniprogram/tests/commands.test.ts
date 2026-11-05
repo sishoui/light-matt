@@ -496,10 +496,11 @@ describe("StripConfigReport 0x87 / DeviceInfoReport 0x88", () => {
 
   it("解析 15 字节设备信息（版本 / MAC / 能力）", () => {
     /* #72：max_leds 字节（偏移 8）现在是 0x64 = 100。 */
-    const payload = hexToBytes("0300AABBCCDDEEFF64080808040100") as Uint8Array;
+    const payload = hexToBytes("0003AABBCCDDEEFF64080808040100") as Uint8Array;
     const info = parseDeviceInfoReport(payload);
     expect(info.firmwareMajor).toBe(3);
     expect(info.firmwareMinor).toBe(0);
+    /* #129：版本字段是小的端在前。线上 00 03 解出 0x0300（v3.0）。 */
     expect(info.firmwareVersion).toBe(0x0300);
     expect(info.hwId).toBe("AA:BB:CC:DD:EE:FF");
     expect(info.maxLeds).toBe(100);

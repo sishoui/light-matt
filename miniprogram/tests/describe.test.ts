@@ -253,7 +253,7 @@ describe("v3 新增报告的描述", () => {
   it("DeviceInfoReport：版本 / hw_id / 能力", () => {
     /* #72：max_leds 字节（偏移 8）现在是 0x64 = 100。 */
     const info = parseDeviceInfoReport(
-      hexToBytes("0300AABBCCDDEEFF64080808040100") as Uint8Array,
+      hexToBytes("0003AABBCCDDEEFF64080808040100") as Uint8Array,
     );
     expect(describeDeviceInfo(info)).toBe(
       "DeviceInfoReport fw=3.0 hw=AA:BB:CC:DD:EE:FF maxLeds=100 maxStrips=8 " +

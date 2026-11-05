@@ -12,7 +12,11 @@
 import { SEGMENT_TYPE } from "../../../utils/protocol/constants";
 import { layerModeNameOf } from "../../../utils/control/effect-view";
 import { simpleEffectIdOfType, simpleEffectOf } from "../../../utils/control/simple-effects";
-import { PANEL_EMPTY_PLAN_GUIDE, PANEL_EMPTY_STEP_GUIDE } from "../../../utils/control/effect-panel";
+import {
+  PANEL_EMPTY_PLAN_GUIDE,
+  PANEL_EMPTY_STEP_GUIDE,
+  PANEL_NO_ZONE_GUIDE,
+} from "../../../utils/control/effect-panel";
 import { planIsEmpty, zonesOfStep } from "../../../utils/control/plan-editor";
 import type { SegmentReport } from "../../../utils/protocol/types";
 import {
@@ -282,11 +286,7 @@ export const WALKTHROUGH: readonly Step[] = [
     ticket: "#135",
     kind: "probe",
     does: "设备上这一组零分区时，简单档的灯效行不该写「常亮」",
-    expectation: {
-      kind: "known-divergence",
-      ticket: "#135",
-      note: "灯效行回落到「常亮」，而设备上这一组一个分区都没有",
-    },
+        expectation: { kind: "must-hold" },
     async act(ctx) {
       /* `neutralise()` 由执行器先调：停播 + 清分区。这里重开一次页面，
        * 让它从「设备上什么都没有」重新派生（重开 = 重新 onLoad + onShow）。 */
@@ -324,11 +324,7 @@ export const WALKTHROUGH: readonly Step[] = [
     ticket: "#133",
     kind: "probe",
     does: "进阶档里能不能删掉一个步骤",
-    expectation: {
-      kind: "known-divergence",
-      ticket: "#133",
-      note: "页面上没有删除步骤的入口；`removeStepStage` 有实现、零调用点",
-    },
+    expectation: { kind: "must-hold" },
     async act(ctx) {
       ctx.pages.strip.onModeTap(tap({ mode: "advanced" }));
       await ctx.sleep(300);
@@ -361,11 +357,7 @@ export const WALKTHROUGH: readonly Step[] = [
     ticket: "#133",
     kind: "probe",
     does: "在进阶档加一个步骤，新步骤不该是零分区",
-    expectation: {
-      kind: "known-divergence",
-      ticket: "#133",
-      note: "新步骤 `segments` 为空，轮到它时整组黑一帧",
-    },
+    expectation: { kind: "must-hold" },
     async act(ctx) {
       const page = ctx.pages.strip;
       page.onModeTap(tap({ mode: "advanced" }));
@@ -413,11 +405,7 @@ export const WALKTHROUGH: readonly Step[] = [
     ticket: "#139",
     kind: "probe",
     does: "方案在播时在简单档改色，界面要说清「停了播放」，方案内容不该被改写",
-    expectation: {
-      kind: "known-divergence",
-      ticket: "#139",
-      note: "「已停止播放」被「<灯效> 已生效」覆盖，且整份方案被重下了一遍",
-    },
+    expectation: { kind: "must-hold" },
     async act(ctx) {
       const page = ctx.pages.strip;
       page.onModeTap(tap({ mode: "advanced" }));
@@ -469,11 +457,7 @@ export const WALKTHROUGH: readonly Step[] = [
     ticket: "#130",
     kind: "probe",
     does: "掉线自动回连之后，首页电源键仍然能关灯",
-    expectation: {
-      kind: "known-divergence",
-      ticket: "#130",
-      note: "回连后 `busy` 粘住为 true，`onPowerTap` 静默返回，power 不翻转",
-    },
+    expectation: { kind: "must-hold" },
     async act(ctx) {
       await ctx.waitLink("ready");
       const home = ctx.pages.home;
@@ -530,11 +514,7 @@ export const WALKTHROUGH: readonly Step[] = [
     ticket: "#131",
     kind: "probe",
     does: "已连接时扫一次再停止，连接不该被拆掉",
-    expectation: {
-      kind: "known-divergence",
-      ticket: "#131",
-      note: "扫描把链路从 ready 打到 scanning，停扫后落到 idle 而不是 ready",
-    },
+    expectation: { kind: "must-hold" },
     async act(ctx) {
       await ctx.waitLink("ready");
       const discover = ctx.pages.discover;
@@ -575,24 +555,29 @@ export const WALKTHROUGH: readonly Step[] = [
     ticket: "#131",
     kind: "probe",
     does: "首页状态条写「停止」时点它，扫描真的停下",
-    expectation: {
-      kind: "known-divergence",
-      ticket: "#131",
-      note: "动作名是「停止」，`onStatusTap` 却只做「进设备页 / 进发现页」",
-    },
+    expectation: { kind: "must-hold" },
     async act(ctx) {
-      /* 上一条发现把链路留在 idle：先连回来。 */
+      /* 上一条可能把链路留在 scanning 或 idle：先归一，再从干净状态起扫。
+       * 这一行要验的是「文案与行为同源」，前提必须是**一次新的扫描**。 */
       await ctx.waitLink("ready").catch(() => undefined);
       const discover = ctx.pages.discover;
       discover.onShow();
       await ctx.sleep(200);
-      await discover.onScanTap();
-      await ctx.waitLink("scanning", 10_000).catch(() => undefined);
+      /* 还在扫就先停，否则下一次 onScanTap 是「停止」而不是「开始」。 */
+      if (!ctx.isScanning()) {
+        await discover.onScanTap();
+        await ctx.waitLink("scanning", 10_000).catch(() => undefined);
+      }
       const home = ctx.pages.home;
+      /* #131：已连接时的扫描不拆链路，`linkState` 是 scanning 而连接仍在。
+       * 首页要在**扫描进行中**那一刻重算状态条，才能看到「停止」。 */
       home.onShow();
       await ctx.sleep(300);
-      /* 这一刻 `statusAction` 应当是「停止」；点它。 */
-      if (String(home.data.statusAction) === "停止") {
+      /* 记下**点之前**那一刻的文案：点完之后扫描已经停了，状态条必然变成
+       * 「设备」——那不是不一致，那正是这一下生效了。 */
+      const tappedAction = String(home.data.statusAction);
+      remember("home.status-action-does-what-it-says.tappedAction", tappedAction);
+      if (tappedAction === "停止") {
         home.onStatusTap();
       }
       await ctx.sleep(1200);
@@ -602,7 +587,7 @@ export const WALKTHROUGH: readonly Step[] = [
     async observe(o) {
       const link = o.linkState();
       return {
-        ui: uiReading("home.statusAction", o.pages.home.data.statusAction),
+        ui: uiReading("home.statusAction（点击前）", recall("home.status-action-does-what-it-says.tappedAction") ?? ""),
         device: deviceReading("refreshState", "点完之后 linkState", link),
       };
     },
@@ -624,11 +609,7 @@ export const WALKTHROUGH: readonly Step[] = [
     ticket: "#131",
     kind: "probe",
     does: "发现页扫描中的空态提示不指向一个已经变成「停止扫描」的按钮",
-    expectation: {
-      kind: "known-divergence",
-      ticket: "#131",
-      note: "同一屏里「重新扫描」与「停止扫描」并存",
-    },
+    expectation: { kind: "must-hold" },
     async act(ctx) {
       const discover = ctx.pages.discover;
       discover.onShow();
@@ -676,7 +657,7 @@ export const WALKTHROUGH: readonly Step[] = [
     id: "strip.advanced.guide-right-level",
     ticket: "#137",
     kind: "probe",
-    does: "停在一个空步骤上时，面板引导说的是「这一步」而不是「整套方案」",
+    does: "面板引导按「方案空 / 这一步空 / 有分区但没选中」三种情况分别给对",
     expectation: { kind: "must-hold" },
     async act(ctx) {
       const page = ctx.pages.strip;
@@ -686,10 +667,20 @@ export const WALKTHROUGH: readonly Step[] = [
       await ctx.sleep(150);
       /* 第 1 步有分区 → 整份方案非空。 */
       await addZoneOn(ctx);
-      /* 再走到一个空步骤上。 */
+      /* #133 之后新步骤会继承上一步的画面，所以这里要**显式**造一个空步骤：
+       * 先清掉继承来的分区，才回到「这一步空、方案不空」那个场景。 */
       page.onStepAdd();
-      await ctx.sleep(200);
-      page.onStepTap(tap({ index: page.data.stepCount - 1 }));
+      await ctx.sleep(250);
+      const last = page.data.stepCount - 1;
+      page.onStepTap(tap({ index: last }));
+      await ctx.sleep(300);
+      for (const zone of [...page.currentZones()]) {
+        page.onZoneAxisTap(tap({ segId: zone.segId }));
+        await ctx.sleep(120);
+      }
+      /* 不选中任何分区：引导应该指「这一步」。 */
+      page.pickedSegId = -1;
+      page.renderTimeline({});
       await ctx.sleep(400);
     },
     async observe(o) {
@@ -713,10 +704,16 @@ export const WALKTHROUGH: readonly Step[] = [
     compare(sample) {
       const guide = String(sample.ui.value);
       const device = String(sample.device.value);
+      /* 这一步**有分区但没有选中**：引导必须指向「点一块」那一档，
+       * 既不能说「这一步是空的」，也不能说「整套方案是空的」。 */
       if (!device.includes("stepZones=0")) {
-        return guide === ""
+        return guide === PANEL_NO_ZONE_GUIDE
           ? AGREE
-          : { agrees: false, blame: "ui", why: `这一步有分区，面板却写「${guide}」` };
+          : {
+              agrees: false,
+              blame: "ui",
+              why: `这一步有分区但没选中，引导应是「${PANEL_NO_ZONE_GUIDE}」，实际「${guide}」`,
+            };
       }
       if (device.includes("planEmpty=true")) {
         return guide === PANEL_EMPTY_PLAN_GUIDE
@@ -739,11 +736,7 @@ export const WALKTHROUGH: readonly Step[] = [
     ticket: "#135",
     kind: "probe",
     does: "简单档的参数区标题与灯效行用的是同一个名字",
-    expectation: {
-      kind: "known-divergence",
-      ticket: "#135",
-      note: "参数区标题仍在用旧色卡名（暖白常亮 / 流光追逐 / 爆闪白 / 心跳暖红 / 彩虹流动）",
-    },
+        expectation: { kind: "must-hold" },
     async act(ctx) {
       const page = ctx.pages.strip;
       page.onModeTap(tap({ mode: "simple" }));
@@ -792,11 +785,7 @@ export const WALKTHROUGH: readonly Step[] = [
     ticket: "#129",
     kind: "probe",
     does: "设备信息页的固件版本与设备自报的字节一致",
-    expectation: {
-      kind: "known-divergence",
-      ticket: "#129",
-      note: "客户端按大端解析，设备按小端写；v4.0 显示成 v0.4",
-    },
+    expectation: { kind: "must-hold" },
     async act(ctx) {
       const page = ctx.pages.deviceInfo;
       page.onShow();
@@ -843,11 +832,7 @@ export const WALKTHROUGH: readonly Step[] = [
     ticket: "#140",
     kind: "probe",
     does: "首页亮度滑条的原始值旁边标出了设备上限，两个数字不再互相矛盾",
-    expectation: {
-      kind: "known-divergence",
-      ticket: "#140",
-      note: "滑条上限 200 时拖到 100 同时显示「100」与「50%」，没有任何一处说明上限",
-    },
+    expectation: { kind: "must-hold" },
     async act(ctx) {
       const max = await ctx.deviceMaxBrightness();
       const target = Math.max(1, Math.round(max / 2));

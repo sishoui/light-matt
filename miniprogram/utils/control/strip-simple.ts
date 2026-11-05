@@ -135,6 +135,14 @@ export function buildSimpleParams(
   cardId: string | null,
   params: QuickParams = {},
   level: number = LEVEL_DEFAULT,
+  /**
+   * 灯效名（`simple-effects` 的八个名字）。
+   *
+   * #135：参数区标题与灯效行必须同源。以前标题取的是卡片表的旧色卡名
+   * （暖白常亮 / 流光追逐 / 爆闪白…），而灯效行写「常亮 / 流星 / 爆闪」，
+   * 同一屏两套名字，用户会怀疑自己点错了。
+   */
+  effectName: string | null = null,
 ): SimpleParamView | null {
   const card = cardId === null ? null : quickCardOf(cardId);
   if (card === null) {
@@ -192,10 +200,12 @@ export function buildSimpleParams(
     });
   }
 
+  /* #135：名字以灯效行为准。卡片名只作为「没给灯效名」时的兜底。 */
+  const name = effectName ?? panel.cardName;
   return {
     cardId: panel.cardId,
-    cardName: panel.cardName,
-    title: sliders.length === 0 ? panel.cardName : `${panel.cardName}的参数`,
+    cardName: name,
+    title: sliders.length === 0 ? name : `${name}的参数`,
     colorHex: panel.colorHex,
     sliders,
     notice: card.kind === "off" ? OFF_CARD_NOTICE : "",

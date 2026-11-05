@@ -154,11 +154,30 @@ export function addStepStage(draft: ScriptDraft, durationMs: number = DEFAULT_ST
   if (draft.stages.length >= MAX_STEPS) {
     return draft;
   }
+  /*
+   * #133：新步骤**继承上一步的画面**，而不是留成空的。
+   *
+   * 空步骤下发到设备就是一个零分区的阶段——轮到它时整组黑一帧再回来。
+   * 用户点的是「加一步」，看到的是「灯闪灭」。继承上一段的复制品，
+   * 加完先是一片没变化的画面，用户再去改它。
+   *
+   * 整份方案还没有任何内容时，新步骤仍然是空的（没有可继承的东西）。
+   */
+  /* 往前找最近一个**有内容**的步骤，而不是只看紧邻的那一个：
+   * 上一步本身可能就是空的（用户先加了两步还没画），继承空步骤没有意义。 */
+  let source: ScriptDraft["stages"][number] | undefined;
+  for (let i = draft.stages.length - 1; i >= 0; i -= 1) {
+    if (draft.stages[i].segments.length > 0) {
+      source = draft.stages[i];
+      break;
+    }
+  }
+  const inherited = source === undefined ? [] : source.segments.map((segment) => ({ ...segment }));
   return {
     ...draft,
     stages: [
       ...draft.stages,
-      { durationInput: String(clampDuration(durationMs)), segments: [] },
+      { durationInput: String(clampDuration(durationMs)), segments: inherited },
     ],
   };
 }

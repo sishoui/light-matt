@@ -130,6 +130,14 @@ Page({
   menuKey: "",
   /** 改名 / 换封面进行中（防重复提交）。 */
   menuBusy: false,
+  /**
+   * 电源键这一次点击还在处理中（#130）。
+   *
+   * 与 `data.busy` 分开：`busy` 是**链路态**的投影（连接中就忙），
+   * 这个只表示「用户刚点了一下，命令还没回来」。混成一个字段就会重演
+   * 自动回连之后电源键永久失效——那次是链路态留下的 `true` 没人清。
+   */
+  powerBusy: false,
 
   onLoad() {
     /* 页面私有状态必须在这里显式初始化：Page() 不保证对象字面量字段被复制
@@ -142,6 +150,7 @@ Page({
     this.brightnessDebouncer = null;
     this.menuKey = "";
     this.menuBusy = false;
+    this.powerBusy = false;
 
     const storage = createWxStorage();
     const theme = pageThemeData(storage);
@@ -261,6 +270,8 @@ Page({
       detail?.message,
       session?.reconnectPending ?? false,
       (session?.cachedDevice ?? null) !== null,
+      /* #131：已连接时扫描不拆链路，但状态条必须说「停止」。 */
+      session?.transport.scanningOverLink ?? false,
     );
     const ready = state === "ready";
     const connecting = state === "connecting" || state === "initializing";
@@ -268,7 +279,12 @@ Page({
       ...view,
       ready,
       linkClass: view.linkClass,
-      busy: connecting || this.data.busy,
+      /* #130：`busy` 只由**链路态**派生。以前写成 `connecting || this.data.busy`，
+       * 于是自动回连期间置上的 `true` 永远没人清——回连成功后 `connecting` 变假，
+       * 但 `this.data.busy` 自己已经是 true，或运算把它留住了。电源键在
+       * `busy` 为真时静默 return，用户看到「已连接」却点不动开关。
+       * 现在每一次链路事件都重算：连接的几秒里为真，进 ready / failed / idle 立刻为假。 */
+      busy: connecting || this.powerBusy,
       connectingName: connecting ? detail?.deviceName ?? "" : "",
     });
     this.refresh();
@@ -335,7 +351,7 @@ Page({
       brightnessSlider: value,
       brightnessMax: max,
       brightnessPercent: brightnessDragPercent(value, max),
-      brightnessHint: "拖动调节，松手生效",
+      brightnessHint: `拖动调节，松手生效 · 上限 ${max}`,
     };
   },
 
@@ -362,7 +378,25 @@ Page({
   },
 
   /** 点状态条：已连接进详情，否则去发现页。 */
+  /**
+   * 点状态条：**行为必须与那条右侧文案一致**（#131）。
+   *
+   * 文案是 `statusAction`，由 `statusView` 按链路态派生：连接中是「取消」、
+   * 扫描中是「停止」、已连接是「设备」、其余是「发现」。以前这里只判
+   * `ready`，于是扫描中点写着「停止」的状态条会切到发现页，扫描照旧在跑——
+   * 文案承诺一个动作，代码做的是另一个。
+   */
   onStatusTap() {
+    const session = this.session;
+    const action = this.data.statusAction;
+    if (action === "停止") {
+      void session?.stopScan();
+      return;
+    }
+    if (action === "取消") {
+      session?.cancelConnect();
+      return;
+    }
     if (this.data.ready && this.data.current !== null) {
       pushTo(PAGE_ROUTES.device, { key: this.data.current.key });
       return;
@@ -379,7 +413,7 @@ Page({
   async onPowerTap() {
     const card = this.data.current;
     const session = this.session;
-    if (card === null || session === null || this.data.busy) {
+    if (card === null || session === null || this.data.busy || this.powerBusy) {
       return;
     }
     /* #91 第一条静默返回：只有云端记录的设备本机没有连接标识，点电源键
@@ -389,6 +423,7 @@ Page({
       wx.showToast({ title: "需要先扫描添加这台设备", icon: "none" });
       return;
     }
+    this.powerBusy = true;
     this.setData({ busy: true, powerHint: "" });
     try {
       if (!card.connected) {
@@ -444,7 +479,10 @@ Page({
       this.setData({ powerHint: `连接失败：${errorText(err)}` });
       wx.showToast({ title: errorText(err), icon: "none" });
     } finally {
-      this.setData({ busy: false });
+      this.powerBusy = false;
+      /* 收尾按链路态重算，而不是硬写 false：这一步可能刚把连接建起来，
+       * 此刻 busy 应该仍为真（connecting）。 */
+      this.applyLink(session.linkState);
     }
   },
 

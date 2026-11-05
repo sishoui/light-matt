@@ -185,11 +185,14 @@ describe("立即生效的顺序：停播 → 写 → 恢复", () => {
     expect(writeAt).toBeGreaterThan(stopAt);
   });
 
-  it("写完恢复播放（只在原来在播时）", () => {
+  it("写完**不**恢复播放：改色 = 停播转实时灯效（#139）", () => {
+    /* 这条以前锁的是「恢复播放」——那是 #139 之前的语义。票面裁决改了：
+     * 简单档改色只改实时灯效，不重下方案、不恢复播放，否则用户以为自己
+     * 只是临时换个颜色，实际动了自己编排的整份方案。 */
     const body = /async writeQuick\(\): Promise<void> \{([\s\S]*?)\n {2}\},/.exec(STRIP_TS);
     const src = body![1];
-    expect(src).toMatch(/if \(wasPlaying\) \{/);
-    expect(src).toMatch(/setPlayback\(1, loopMode\)/);
+    expect(src).not.toMatch(/setPlayback\(1, loopMode\)/);
+    expect(src).toContain("已停止播放");
   });
 
   it("停播用的是三值循环模式（#98），不是布尔", () => {
