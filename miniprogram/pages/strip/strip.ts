@@ -36,6 +36,7 @@ import {
   canAddStepStage,
   createAdvancedDrafts,
   moveStepStage,
+  removeStepStage,
   seedStepFromReports,
   setStageDurationMs,
   stageDurationMs,
@@ -2127,6 +2128,28 @@ Page({
     this.timelineIndex = next.stages.length - 1;
     this.pickedSegId = -1;
     this.renderTimeline({ stepHint: "" });
+  },
+
+  /**
+   * 删掉当前这一步（#133）。
+   *
+   * 加错了步骤以前只能换一套方案重来，用户精心编排的内容就白费了。
+   * 至少留一步：最后一步删掉会让时间轴空掉，方案也就没有意义了。
+   */
+  onStepDelete() {
+    const draft = this.currentDraft();
+    if (draft.stages.length <= 1) {
+      this.renderTimeline({ stepHint: "至少要留一个步骤" });
+      return;
+    }
+    const next = removeStepStage(draft, this.timelineIndex);
+    if (next === draft) {
+      return;
+    }
+    this.setDraft(next);
+    this.timelineIndex = Math.max(0, Math.min(this.timelineIndex, next.stages.length - 1));
+    this.pickedSegId = -1;
+    this.renderTimeline({ stepHint: "已删除这一步" });
   },
   /** 拖时长条：块宽实时跟着变（拖动中也走 `renderTimeline`，只是不写设备）。 */
   onDurationChanging(e: WechatMiniprogram.SliderChanging) {

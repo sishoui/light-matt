@@ -181,6 +181,12 @@
               >{{item.label}}</view>
             </view>
           </view>
+          <!-- #133：加错了能撤回。至少留一步，只剩一步时按钮置灰。 -->
+          <view
+            class="timeline-add {{stepCount > 1 ? '' : 'disabled'}}"
+            hover-class="{{stepCount > 1 ? 'timeline-add-hover' : ''}}"
+            bindtap="onStepDelete"
+          >− 步骤</view>
           <view
             class="timeline-add {{stepCanAdd ? '' : 'disabled'}}"
             hover-class="{{stepCanAdd ? 'timeline-add-hover' : ''}}"

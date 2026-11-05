@@ -12,7 +12,11 @@
 import { SEGMENT_TYPE } from "../../../utils/protocol/constants";
 import { layerModeNameOf } from "../../../utils/control/effect-view";
 import { simpleEffectIdOfType, simpleEffectOf } from "../../../utils/control/simple-effects";
-import { PANEL_EMPTY_PLAN_GUIDE, PANEL_EMPTY_STEP_GUIDE } from "../../../utils/control/effect-panel";
+import {
+  PANEL_EMPTY_PLAN_GUIDE,
+  PANEL_EMPTY_STEP_GUIDE,
+  PANEL_NO_ZONE_GUIDE,
+} from "../../../utils/control/effect-panel";
 import { planIsEmpty, zonesOfStep } from "../../../utils/control/plan-editor";
 import type { SegmentReport } from "../../../utils/protocol/types";
 import {
@@ -320,11 +324,7 @@ export const WALKTHROUGH: readonly Step[] = [
     ticket: "#133",
     kind: "probe",
     does: "进阶档里能不能删掉一个步骤",
-    expectation: {
-      kind: "known-divergence",
-      ticket: "#133",
-      note: "页面上没有删除步骤的入口；`removeStepStage` 有实现、零调用点",
-    },
+    expectation: { kind: "must-hold" },
     async act(ctx) {
       ctx.pages.strip.onModeTap(tap({ mode: "advanced" }));
       await ctx.sleep(300);
@@ -357,11 +357,7 @@ export const WALKTHROUGH: readonly Step[] = [
     ticket: "#133",
     kind: "probe",
     does: "在进阶档加一个步骤，新步骤不该是零分区",
-    expectation: {
-      kind: "known-divergence",
-      ticket: "#133",
-      note: "新步骤 `segments` 为空，轮到它时整组黑一帧",
-    },
+    expectation: { kind: "must-hold" },
     async act(ctx) {
       const page = ctx.pages.strip;
       page.onModeTap(tap({ mode: "advanced" }));
@@ -661,7 +657,7 @@ export const WALKTHROUGH: readonly Step[] = [
     id: "strip.advanced.guide-right-level",
     ticket: "#137",
     kind: "probe",
-    does: "停在一个空步骤上时，面板引导说的是「这一步」而不是「整套方案」",
+    does: "面板引导按「方案空 / 这一步空 / 有分区但没选中」三种情况分别给对",
     expectation: { kind: "must-hold" },
     async act(ctx) {
       const page = ctx.pages.strip;
@@ -671,10 +667,20 @@ export const WALKTHROUGH: readonly Step[] = [
       await ctx.sleep(150);
       /* 第 1 步有分区 → 整份方案非空。 */
       await addZoneOn(ctx);
-      /* 再走到一个空步骤上。 */
+      /* #133 之后新步骤会继承上一步的画面，所以这里要**显式**造一个空步骤：
+       * 先清掉继承来的分区，才回到「这一步空、方案不空」那个场景。 */
       page.onStepAdd();
-      await ctx.sleep(200);
-      page.onStepTap(tap({ index: page.data.stepCount - 1 }));
+      await ctx.sleep(250);
+      const last = page.data.stepCount - 1;
+      page.onStepTap(tap({ index: last }));
+      await ctx.sleep(300);
+      for (const zone of [...page.currentZones()]) {
+        page.onZoneAxisTap(tap({ segId: zone.segId }));
+        await ctx.sleep(120);
+      }
+      /* 不选中任何分区：引导应该指「这一步」。 */
+      page.pickedSegId = -1;
+      page.renderTimeline({});
       await ctx.sleep(400);
     },
     async observe(o) {
@@ -698,10 +704,16 @@ export const WALKTHROUGH: readonly Step[] = [
     compare(sample) {
       const guide = String(sample.ui.value);
       const device = String(sample.device.value);
+      /* 这一步**有分区但没有选中**：引导必须指向「点一块」那一档，
+       * 既不能说「这一步是空的」，也不能说「整套方案是空的」。 */
       if (!device.includes("stepZones=0")) {
-        return guide === ""
+        return guide === PANEL_NO_ZONE_GUIDE
           ? AGREE
-          : { agrees: false, blame: "ui", why: `这一步有分区，面板却写「${guide}」` };
+          : {
+              agrees: false,
+              blame: "ui",
+              why: `这一步有分区但没选中，引导应是「${PANEL_NO_ZONE_GUIDE}」，实际「${guide}」`,
+            };
       }
       if (device.includes("planEmpty=true")) {
         return guide === PANEL_EMPTY_PLAN_GUIDE
