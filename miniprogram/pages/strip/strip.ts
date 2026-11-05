@@ -3368,13 +3368,23 @@ Page({
       this.segmentReports = [
         { ...spec, stripId, segId: 0 } as unknown as (typeof this.segmentReports)[number],
       ];
-      /* #96：静默把整份方案也更新一次（进阶档的编排要能看到这一组的改动），
-       * 再恢复播放。失败不覆盖「已生效」——实时分区已经写进去了。 */
-      await this.silentDownloadPlans(loopMode);
-      if (wasPlaying) {
-        await session.setPlayback(1, loopMode).catch(() => undefined);
-      }
-      this.setData({ quickHint: `${this.effectId === null ? card.name : simpleEffectOf(this.effectId)?.name ?? card.name} 已生效` });
+      const effectLabel =
+        this.effectId === null ? card.name : simpleEffectOf(this.effectId)?.name ?? card.name;
+      /*
+       * #139：简单档改色**只改实时灯效**，不动用户编排的方案。
+       *
+       * 以前这里是「重下整份方案 + 恢复播放」。用户以为只是临时换个颜色，
+       * 实际改了自己编排的内容，而且那句「已停止播放，改为实时灯效」紧接着
+       * 就被「已生效」覆盖掉，界面什么都没说。现在：
+       *  - 不重下方案（实时分区已经写进设备了）；
+       *  - 不恢复播放（票面裁决：改色 = 停播转实时）；
+       *  - 提示明说停了播放。
+       */
+      this.setData({
+        quickHint: wasPlaying
+          ? `${effectLabel} 已生效；原先的方案已停止播放，现在是实时灯效`
+          : `${effectLabel} 已生效`,
+      });
       this.renderQuick();
     } catch (err) {
       const message = errorText(err);

@@ -409,11 +409,7 @@ export const WALKTHROUGH: readonly Step[] = [
     ticket: "#139",
     kind: "probe",
     does: "方案在播时在简单档改色，界面要说清「停了播放」，方案内容不该被改写",
-    expectation: {
-      kind: "known-divergence",
-      ticket: "#139",
-      note: "「已停止播放」被「<灯效> 已生效」覆盖，且整份方案被重下了一遍",
-    },
+    expectation: { kind: "must-hold" },
     async act(ctx) {
       const page = ctx.pages.strip;
       page.onModeTap(tap({ mode: "advanced" }));
