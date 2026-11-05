@@ -1135,6 +1135,30 @@ const E2E_JSON_FAIL = e2eReport([
 
 const E2E_JSON_EMPTY = JSON.stringify({ numTotalTests: 0, success: true, testResults: [] });
 
+/* 走查用例组的真实形状（#128）：12 条已知分歧行自带 `[已知分歧 #NNN]` 前缀，
+   其余行正常通过。 */
+const E2E_FILE_WALKTHROUGH = "C:/repo/miniprogram/tests/e2e/walkthrough.test.ts";
+
+const E2E_JSON_WALKTHROUGH = e2eReport([
+  {
+    name: E2E_FILE_WALKTHROUGH,
+    cases: [
+      e2eCase("走查 walkthrough.connected", "passed"),
+      e2eCase("走查 点首页大卡的电源键", "passed"),
+      ...["#129", "#130", "#131", "#133", "#135", "#137"].map((ticket, i) =>
+        e2eCase(`走查 [已知分歧 ${ticket}] 发现 ${i}`, "skipped"),
+      ),
+    ],
+  },
+  {
+    name: E2E_FILE_DEVICE,
+    cases: [
+      e2eCase("真机 e2e 用例 0", "passed"),
+      e2eCase("真机 e2e 用例 1", "skipped"),
+    ],
+  },
+]);
+
 describe("真机 e2e JSON 解析（#107）", () => {
   it("用例数取实际收集数（16），不是文档写的 8", () => {
     const parsed = parseE2eJson(E2E_JSON_PASS, { root: "C:/repo/miniprogram" });
@@ -1173,6 +1197,19 @@ describe("真机 e2e JSON 解析（#107）", () => {
     expect(parsed.status).toBe("SKIP");
     expect(parsed.skippedCount).toBe(7);
     expect(String(parsed.skipReason)).toContain("7/8");
+  });
+
+  it("已知分歧跳过与「运行中途设备不可用」分开记账，不混成一句错诊断", () => {
+    /* 已知分歧行是今天预期仍未修好的 12 项发现，不是环境问题。
+       混成一类会让「这轮验了 12 项缺陷」看起来像「设备中途掉了」。 */
+    const parsed = parseE2eJson(E2E_JSON_WALKTHROUGH, { root: "C:/repo/miniprogram" });
+
+    expect(parsed.status).toBe("PASS");
+    expect(parsed.passedCount).toBe(3);
+    expect(parsed.skippedCount).toBe(7);
+    expect(parsed.skipped).toHaveLength(2);
+    expect(parsed.skipped[0]).toContain("6 条跳过是已知分歧");
+    expect(parsed.skipped[1]).toContain("1/10 条用例跳过（运行中途设备不可用）");
   });
 
   it("有失败用例时 FAIL，失败详情带用例名与文件:行", () => {

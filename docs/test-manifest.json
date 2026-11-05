@@ -124,6 +124,7 @@
     "miniprogram/tests/e2e/complex-plan.test.ts": { "layer": "ble", "covers": "真机复杂剧本端到端：分片下发、大剧本、结束后复位设备" },
     "miniprogram/tests/e2e/page-click.test.ts": { "layer": "ble", "covers": "真机点击链路：页面事件处理器驱动真实灯控，分区读回与循环三档落地，无设备时计入 skipped", "ticket": "#118" },
     "miniprogram/tests/e2e/real-device.test.ts": { "layer": "ble", "covers": "真机扫描连接、开关、亮度、颜色、断线重连后继续播放" },
+    "miniprogram/tests/e2e/walkthrough.test.ts": { "layer": "ble", "covers": "用户走查用例组：按真实顺序调五个页面自己的处理器，每步并排记录界面值（页面 data）与设备值（State / QueryStrip / 最近下发方案），规格 #127 的 12 项发现挂在自清理的隔离行上，收尾断言逐带段数回到 0 且电源亮度回到快照", "ticket": "#128" },
 
     "server/tests/aggregation.test.ts": { "layer": "server", "covers": "使用日志的聚合查询与视图数据" },
     "server/tests/api.test.ts": { "layer": "server", "covers": "HTTP 路由与鉴权契约" },

@@ -20,7 +20,7 @@
  * 退出码：0 = 全过；1 = 有真实失败；3 = SKIP（没设备 / 固件不对），**不是失败**。
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, readdirSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -39,9 +39,16 @@ const opt = (name, fallback = null) => {
 };
 
 if (args.includes("--list")) {
+  /* 文件数自己数：手抄的「两个文件、16 条」每加一个文件就漂一次。 */
+  const e2eDir = join(MP, "tests", "e2e");
+  const e2eFiles = existsSync(e2eDir)
+    ? readdirSync(e2eDir)
+        .filter((name) => name.endsWith(".test.ts"))
+        .sort()
+    : [];
   console.log(
     [
-      "all       跑整份真机 e2e（tests/e2e/ 下两个文件，共 16 条用例）",
+      `all       跑整份真机 e2e（tests/e2e/ 下 ${e2eFiles.length} 个文件：${e2eFiles.join("、") || "无"}）`,
       "",
       "前置：设备上电、未被别处连着、烧的是 v4 固件；本机装了 python + bleak。",
       "无设备时退出码 3（SKIP），不是失败。",

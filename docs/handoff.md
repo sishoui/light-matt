@@ -91,7 +91,7 @@
 | #104 | `scripts/test-run.mjs`：三态语义（SKIP 不影响退出码）、六段报告、双写 md/json |
 | #105 | 小程序与后端层接入：用例数来自 vitest JSON，逐文件可见；tsc 失败计入该层 |
 | #106 | `scripts/verify-v5.mjs` 入库（原在 `.auto/`，未跟踪）；`--probe` 走真握手 |
-| #107 | 真机层复用 `drive.mjs` 的 doctor 与退出码语义；用例数是实际收集的 16 条，不是 8 |
+| #107 | 真机层复用 `drive.mjs` 的 doctor 与退出码语义；用例数取 vitest 的实际收集数，不手抄 |
 | #108 | 固件按测试函数输出 `TESTCOUNT`，117 个桶加总 = 13996；node 缺失输出 `SKIPPED` 标签 |
 | #109 | 差异节：只比本轮跑了的层，比用例数、标新增/消失文件与新失败新跳过 |
 | #110 | `--release`：未覆盖警告顶置、目录可排序且唯一、基线池与日常分开 |
@@ -517,7 +517,7 @@ TypeError: Cannot read properties of undefined (reading 'length')
 
 | 要验什么 | 用什么 |
 |---|---|
-| 真实扫描 / 连接 / 控制 | `npm run test:ble`（PC 蓝牙网关，两个 e2e 文件共 16 条）或手机真机预览 |
+| 真实扫描 / 连接 / 控制 | `npm run test:ble`（PC 蓝牙网关，用例数看实际收集数）或手机真机预览 |
 | 页面交互是否「点得动」 | `miniprogram-automator`（现在统一在 `scripts/verify-v5.mjs`） |
 | 取消逻辑 | `.auto/verify-cancel-stub.mjs`（在页面上下文给 `createBLEConnection` 打桩让它悬住） |
 

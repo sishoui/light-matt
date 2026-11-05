@@ -159,8 +159,8 @@ strip-advanced 6 + delete-device 6，每轮 22 项）。你在自己的环境发
 
 ## 7. 不覆盖的部分
 
-- **真机 BLE**：`cd miniprogram && npm run test:ble`（vitest 实际收集 16 条：`tests/e2e/`
-  下两个文件各 8 条；无设备时整片 skip。链路是 Node → `scripts/ble-gateway.py` → PC 蓝牙 → ESP32）。
+- **真机 BLE**：`cd miniprogram && npm run test:ble`（vitest 收 `tests/e2e/*.test.ts` 下所有文件，
+  条数看实际收集数；无设备时整片 skip。链路是 Node → `scripts/ble-gateway.py` → PC 蓝牙 → ESP32）。
 - **协议契约**：`python scripts/probe-v4.py [--address MAC]`（逐条发段并读回；通过 / 失败
   数看脚本末尾的 `===== N passed / M failed =====`）。
 - **固件 host 测试**：`node scripts/test-run.mjs firmware`（或直接跑 `run-tests.cmd`）。
