@@ -78,6 +78,7 @@
     "miniprogram/tests/ledCount.test.ts": { "layer": "mp", "covers": "灯珠数输入校验、回执分支、超时处理", "ticket": "#12" },
     "miniprogram/tests/log-panel.test.ts": { "layer": "mp", "covers": "点击序列模型与日志面板视图同源" },
     "miniprogram/tests/log.test.ts": { "layer": "mp", "covers": "帧日志环形缓冲" },
+    "miniprogram/tests/loop-mode.test.ts": { "layer": "mp", "covers": "循环三档的单一推导（草稿优先、设备兜底三值）、计划层不压平、页面点击链路下发的档位与设备 flags 一致", "ticket": "#114" },
     "miniprogram/tests/mock-mode.test.ts": { "layer": "mp", "covers": "演示传输层与真机传输层同形、演示数据播种、开关收敛" },
     "miniprogram/tests/mock-session.test.ts": { "layer": "mp", "covers": "演示模式下的会话级链路" },
     "miniprogram/tests/module-resolution.test.ts": { "layer": "mp", "covers": "禁止相对导入指向目录（静态扫描全仓 import），自带变异测试" },

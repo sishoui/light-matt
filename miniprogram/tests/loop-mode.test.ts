@@ -19,8 +19,10 @@ import type { BleTransport } from "../utils/ble/transport";
 import { MOCK_DEVICES } from "../utils/control/mock-devices";
 import { setSessionForTest } from "../utils/control/session-singleton";
 import { buildScriptPlan } from "../utils/control/script-plan";
+import { LOOP_MODE, resolveLoopMode } from "../utils/control/advanced-layers";
 import { PLAYBACK_FLAG, SEGMENT_TYPE } from "../utils/protocol/constants";
 import { createSessionStorage } from "./helpers/storage";
+import { installGlobals, instantiate } from "./helpers/page-runtime";
 
 const DEVICE = MOCK_DEVICES[0];
 
@@ -122,3 +124,178 @@ describe("#114 循环三档：会话直传", () => {
     }
   });
 });
+
+describe("#114 循环三档：单一推导（草稿优先，设备兜底）", () => {
+  it("草稿选过就以草稿为准，哪怕设备报的是另一档", () => {
+    expect(resolveLoopMode(0, 0x07)).toBe(LOOP_MODE.NONE);
+    expect(resolveLoopMode(2, 0x00)).toBe(LOOP_MODE.LAST);
+    expect(resolveLoopMode(1, 0x07)).toBe(LOOP_MODE.ALL);
+  });
+
+  it("兜底能区分三档（不是「是否在循环」）", () => {
+    expect(resolveLoopMode(undefined, 0x02)).toBe(LOOP_MODE.NONE);
+    expect(resolveLoopMode(undefined, 0x03)).toBe(LOOP_MODE.ALL);
+    expect(resolveLoopMode(undefined, 0x07)).toBe(LOOP_MODE.LAST);
+  });
+
+  it("草稿缺失且设备也没读到 → 不循环", () => {
+    expect(resolveLoopMode(undefined, null)).toBe(LOOP_MODE.NONE);
+  });
+
+  it("坏草稿值不算「用户选过」，交给设备", () => {
+    expect(resolveLoopMode(3, 0x03)).toBe(LOOP_MODE.ALL);
+    expect(resolveLoopMode(-1, 0x07)).toBe(LOOP_MODE.LAST);
+  });
+});
+
+describe("#114 循环三档：页面点击链路", () => {
+  /* 页面用 `wx` 的存储与几个渲染期 API；这些桩不参与任何业务判定。
+   * 存储每个用例一份（互不串扰），渲染期 API 由 `installGlobals` 补一次。 */
+  let wxStub: any = null;
+  /* `Page({...})` 只在模块首次求值时被调用一次；之后 import 走缓存。 */
+  let pageDef: any = null;
+
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const tap = (dataset: Record<string, any>) => ({ currentTarget: { dataset } });
+
+  async function openPage() {
+    const store = new Map<string, any>();
+    if (wxStub === null) {
+      wxStub = {
+        getStorageSync: (key: string) => store.get(key),
+        setStorageSync: (key: string, value: any) => void store.set(key, value),
+        removeStorageSync: (key: string) => void store.delete(key),
+        getStorageInfoSync: () => ({ keys: [...store.keys()] }),
+        showToast: () => undefined,
+        showModal: () => undefined,
+        vibrateShort: () => undefined,
+      };
+      const captured = installGlobals({ wx: wxStub });
+      await import("../pages/strip/strip");
+      pageDef = captured[captured.length - 1];
+      expect(pageDef, "页面模块应当注册 Page({...})").toBeDefined();
+    } else {
+      const backing = new Map<string, any>();
+      wxStub.getStorageSync = (key: string) => backing.get(key);
+      wxStub.setStorageSync = (key: string, value: any) => void backing.set(key, value);
+      wxStub.removeStorageSync = (key: string) => void backing.delete(key);
+      wxStub.getStorageInfoSync = () => ({ keys: [...backing.keys()] });
+      (globalThis as any).wx = wxStub;
+    }
+
+    const session = new ControlSession({
+      platform: "other",
+      devMode: false,
+      storage: createSessionStorage(),
+      transportOverride: new MockTransport() as unknown as BleTransport,
+      reconnectDelaysMs: [],
+    });
+    await session.connect(DEVICE.deviceId, DEVICE.broadcastName);
+    setSessionForTest(session);
+
+    const page = instantiate(pageDef);
+    page.onLoad({ strip: "0" });
+    page.onShow();
+    for (let i = 0; i < 200 && page.data.ready !== true; i += 1) {
+      await sleep(50);
+    }
+    expect(page.data.ready, "页面应当 ready").toBe(true);
+    return { page, session };
+  }
+
+  /** 划一个分区，让草稿非空（空方案时 applyAdvanced 一帧都不发）。 */
+  async function addZone(page: any) {
+    page.onModeTap(tap({ mode: "advanced" }));
+    await sleep(150);
+    page.onZoneAdd();
+    await sleep(150);
+    page.onPickerCellTap(tap({ index: "0" }));
+    await sleep(80);
+    page.onPickerCellTap(tap({ index: "3" }));
+    await sleep(80);
+    page.onPickerConfirm();
+    await sleep(300);
+  }
+
+  it("点三档中任一档，设备 flags 的循环位就是那一档", async () => {
+    const { page, session } = await openPage();
+    try {
+      await addZone(page);
+      for (const mode of [0, 1, 2] as const) {
+        page.onLoopTap(tap({ value: String(mode) }));
+        await sleep(1200);
+        expect(loopOf(session.deviceState!.flags), `点第 ${mode} 档后设备 flags`).toBe(mode);
+      }
+    } finally {
+      await session.disconnect();
+    }
+  }, 120_000);
+
+  it("「继续播放」与「应用并播放」下发同一档位时设备收到相同的值", async () => {
+    const { page, session } = await openPage();
+    try {
+      await addZone(page);
+      page.onLoopTap(tap({ value: "2" }));
+      await sleep(1200);
+
+      await page.onApplyAndPlay();
+      await sleep(1500);
+      const viaApply = loopOf(session.deviceState!.flags);
+
+      await page.activatePlan(0);
+      await sleep(1200);
+      const viaResume = loopOf(session.deviceState!.flags);
+
+      expect(viaApply, "应用并播放后").toBe(2);
+      expect(viaResume, "继续播放后").toBe(2);
+      expect(viaResume).toBe(viaApply);
+    } finally {
+      await session.disconnect();
+    }
+  }, 120_000);
+
+  it("设备在循环、草稿没选过时点「不循环」，这次点击必须生效", async () => {
+    const { page, session } = await openPage();
+    const ledCount = session.deviceState!.stripCounts[0];
+    try {
+      await session.downloadScript(twoStageScript(ledCount) as never, { activate: true, loop: 2 });
+      await session.setPlayback(1, 2);
+      await sleep(200);
+      expect(loopOf(session.deviceState!.flags), "前置：设备应在最后一步循环").toBe(2);
+      expect(page.currentDraft().loop, "前置：草稿没选过").toBeUndefined();
+
+      await addZone(page);
+      page.onLoopTap(tap({ value: "0" }));
+      await sleep(1200);
+      expect(loopOf(session.deviceState!.flags), "点不循环后设备应停在不循环").toBe(0);
+    } finally {
+      await session.disconnect();
+    }
+  }, 120_000);
+
+  it("简单档改颜色不篡改设备上的循环档位（暂停态，没有恢复帧兜住）", async () => {
+    const { page, session } = await openPage();
+    const ledCount = session.deviceState!.stripCounts[0];
+    try {
+      await session.downloadScript(twoStageScript(ledCount) as never, { activate: true, loop: 2 });
+      /* 暂停：`writeQuick` 会先停播，但**不会**在写完恢复播放（它只恢复
+       * 「原来在播」的情况），所以循环档位一旦被改写就留在了设备上。 */
+      await session.setPlayback(2, 2);
+      await sleep(200);
+      expect(session.deviceState!.playbackState, "前置：设备应当处于暂停").toBe(2);
+      expect(loopOf(session.deviceState!.flags), "前置：设备应在最后一步循环").toBe(2);
+
+      /* 草稿要有内容，否则 silentDownloadPlans 在 planIsEmpty 处提前返回。 */
+      await addZone(page);
+      page.onModeTap(tap({ mode: "simple" }));
+      await sleep(200);
+
+      page.selectEffect("breathe", "breathe");
+      await sleep(2500);
+      expect(loopOf(session.deviceState!.flags), "点效果卡后档位应保持在最后一步循环").toBe(2);
+    } finally {
+      await session.disconnect();
+    }
+  }, 120_000);
+});
+

@@ -40,6 +40,7 @@ import { encodeFrame } from "../utils/protocol/frame";
 import {
   BLEND,
   CMD,
+  LOOP,
   MAX_SCRIPTS,
   MAX_STAGES,
   SCRIPT_SEGMENT_BYTES,
@@ -338,7 +339,7 @@ function fourStageScript(): ScriptConfig {
 
 describe("#32 下发计划（帧序是协议要求）", () => {
   it("完整 4 阶段序列：1 Begin + 4 Stage + 8 Segment + 1 Commit + 1 Activate", () => {
-    const plan = buildScriptPlan(fourStageScript(), { loop: true });
+    const plan = buildScriptPlan(fourStageScript(), { loop: LOOP.ALL });
     expect(plan.frameCount).toBe(15);
 
     const kinds = plan.steps.map((s) => s.kind);

@@ -15,7 +15,7 @@ import type { BleTransport } from "../utils/ble/transport";
 import { AckRejectedError } from "../utils/ble/errors";
 import { breathingSegment, staticSegment } from "../utils/protocol/commands";
 import type { AckResult, CommandRequest, DeviceState } from "../utils/protocol/types";
-import { CMD, MAX_SCRIPTS, RESULT, SEGMENT_TYPE } from "../utils/protocol/constants";
+import { CMD, LOOP, MAX_SCRIPTS, RESULT, SEGMENT_TYPE } from "../utils/protocol/constants";
 import type { ScriptConfig } from "../utils/control/script-plan";
 import { checkScriptCapacity } from "../utils/control/script-plan";
 import type { SegmentSpec } from "../utils/protocol/types";
@@ -137,7 +137,7 @@ describe("#32 session.downloadScript", () => {
     const session = makeSession(transport);
     const progress: number[] = [];
 
-    const result = await session.downloadScript(fourStageScript(), { loop: true }, (view) => {
+    const result = await session.downloadScript(fourStageScript(), { loop: LOOP.ALL }, (view) => {
       progress.push(view.done);
     });
 
