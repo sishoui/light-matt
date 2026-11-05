@@ -24,6 +24,7 @@ gcc -std=c11 -Wall -Wextra -Werror -I"%MAIN%" ^
     "%MAIN%\effects.c" ^
     "%MAIN%\segment_store.c" ^
     "%MAIN%\script_store.c" ^
+    "%MAIN%\script_scope.c" ^
     "%MAIN%\script_blob.c" ^
     "%MAIN%\strip_planar.c" ^
     "%MAIN%\strip_power.c" ^

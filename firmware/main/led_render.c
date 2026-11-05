@@ -8,6 +8,7 @@
 
 #include "gamma.h"
 #include "led_strip_owner.h"
+#include "script_scope.h"
 #include "strip_power.h"
 
 static const char *TAG = "lumen_engine";
@@ -63,12 +64,17 @@ void lumen_led_render_note_skipped(void)
  *   ② 逐颗统一过 gamma + 亮度 —— **不在** effects 里做。
  *
  * 没有活动段时走 v1 单色路径（整条 state->r/g/b）。自检期间强制走单色（§7.1）。
+ *
+ * `script_mask` 是方案作用域的归属位（#122）。置位表示这一条归方案管：此时
+ * **哪怕它在这一步没有任何段**，也必须走分段路径输出全黑——退回 v1 单色会
+ * 让「这一步让这条灯组熄一下」整条亮成纯色，正是「亮起再熄灭」那个瞬态的
+ * 成因。未置位的带保持原判据（有活动段走分段，没有走单色）。
  */
 static uint16_t compose_frame(const lumen_state_t *snapshot,
                               const lumen_segment_store_t *segments,
                               const lumen_selftest_t *selftest, uint8_t max_brightness,
                               uint32_t now_ms, uint8_t strip_id, uint16_t strip_count_hint,
-                              uint8_t *frame, uint16_t cap)
+                              uint8_t script_mask, uint8_t *frame, uint16_t cap)
 {
     if (snapshot == NULL || frame == NULL) {
         return 0;
@@ -99,8 +105,10 @@ static uint16_t compose_frame(const lumen_state_t *snapshot,
     }
 
     bool selftest_on = selftest != NULL && lumen_selftest_active(selftest);
-    bool segmented = !selftest_on && segments != NULL &&
-                     lumen_segment_store_any_active(segments, strip_id) && snapshot->power != 0;
+    bool script_owned = strip_id < LUMEN_MAX_STRIPS && (script_mask & (uint8_t)(1u << strip_id)) != 0;
+    bool segmented = lumen_scope_uses_segments(
+        script_owned, segments != NULL && lumen_segment_store_any_active(segments, strip_id),
+        snapshot->power != 0, selftest_on);
 
     /*
      * 每带独立开关的门控（#38，§7.3 / §9.5）：实际是否出光 = 全局 power &&
@@ -148,13 +156,13 @@ uint16_t lumen_led_render_compose_strip(const lumen_state_t *snapshot,
                                         const lumen_selftest_t *selftest,
                                         uint8_t max_brightness, uint32_t now_ms,
                                         uint8_t strip_id, uint16_t strip_count,
-                                        uint8_t *out_frame, uint16_t out_cap)
+                                        uint8_t script_mask, uint8_t *out_frame, uint16_t out_cap)
 {
     if (strip_id >= LUMEN_MAX_STRIPS) {
         return 0;
     }
     return compose_frame(snapshot, segments, selftest, max_brightness, now_ms, strip_id,
-                         strip_count, out_frame, (uint16_t)(out_cap / 3u));
+                         strip_count, script_mask, out_frame, (uint16_t)(out_cap / 3u));
 }
 
 bool lumen_led_render_strip_is_animated(const lumen_segment_store_t *segments, uint8_t strip_id)
@@ -182,7 +190,7 @@ bool lumen_led_render_strip_is_animated(const lumen_segment_store_t *segments, u
 void lumen_led_render_snapshot(led_strip_handle_t strip, const lumen_state_t *snapshot,
                                const lumen_segment_store_t *segments,
                                const lumen_selftest_t *selftest, uint8_t max_brightness,
-                               uint32_t now_ms)
+                               uint32_t now_ms, uint8_t script_mask)
 {
     if (snapshot == NULL) {
         return;
@@ -190,13 +198,15 @@ void lumen_led_render_snapshot(led_strip_handle_t strip, const lumen_state_t *sn
 
     uint8_t frame[LUMEN_MAX_LEDS * 3];
     uint16_t count = compose_frame(snapshot, segments, selftest, max_brightness, now_ms, 0,
-                                  snapshot->led_count, frame, LUMEN_MAX_LEDS);
+                                  snapshot->led_count, script_mask, frame, LUMEN_MAX_LEDS);
     if (count == 0) {
         return;
     }
 
-    bool segmented = (selftest == NULL || !lumen_selftest_active(selftest)) && segments != NULL &&
-                     lumen_segment_store_any_active(segments, 0) && snapshot->power != 0;
+    bool script_owned = (script_mask & 0x01u) != 0;
+    bool segmented = lumen_scope_uses_segments(
+        script_owned, segments != NULL && lumen_segment_store_any_active(segments, 0),
+        snapshot->power != 0, selftest != NULL && lumen_selftest_active(selftest));
 
     /* CONFIG_LUMEN_FORCE_REFRESH：错色实验要求画面恒定但持续刷帧，跳过整帧去重。
      * 必须用 #ifdef：Kconfig 的 bool 关闭时**不定义宏**，直接写

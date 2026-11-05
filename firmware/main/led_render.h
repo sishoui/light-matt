@@ -29,11 +29,13 @@
  * selftest 是渲染任务在锁内拷出的一份自检快照（不能直接读引擎里的 s_selftest：
  * BLE 回调可能并发取消/重启）。
  * segments 可以为 NULL（视为没有任何活动段，走 v1 单色路径）。
+ * `script_mask`（#122）：strip 0 是否归方案管（bit0）。置位时即使没有活动段
+ * 也走分段路径输出全黑，而不是退回 v1 单色。
  */
 void lumen_led_render_snapshot(led_strip_handle_t strip, const lumen_state_t *snapshot,
                                const lumen_segment_store_t *segments,
                                const lumen_selftest_t *selftest, uint8_t max_brightness,
-                               uint32_t now_ms);
+                               uint32_t now_ms, uint8_t script_mask);
 
 /*
  * 把一条灯带的当前画面合成为像素缓冲（用户空间 RGB 已过 gamma + 亮度），
@@ -42,6 +44,9 @@ void lumen_led_render_snapshot(led_strip_handle_t strip, const lumen_state_t *sn
  * 与 lumen_led_render_snapshot 共用同一套合成规则（分段 memset + gamma），
  * 区别只是「不负责刷灯」。strip_id 决定用哪条的段配置与灯珠数。
  *
+ * `script_mask`（#122）：该条是否归方案管。置位时这一条即使没有活动段也走
+ * 分段路径输出全黑，而不是退回 v1 单色（整条纯色）。0 表示全部按实时分区判。
+ *
  * 返回实际填充的灯珠数；参数非法返回 0。
  */
 uint16_t lumen_led_render_compose_strip(const lumen_state_t *snapshot,
@@ -49,7 +54,8 @@ uint16_t lumen_led_render_compose_strip(const lumen_state_t *snapshot,
                                         const lumen_selftest_t *selftest,
                                         uint8_t max_brightness, uint32_t now_ms,
                                         uint8_t strip_id, uint16_t strip_count,
-                                        uint8_t *out_frame, uint16_t out_cap);
+                                        uint8_t script_mask, uint8_t *out_frame,
+                                        uint16_t out_cap);
 
 /* 该灯带是否有动画类活动段（帧循环判据之一）。纯查询，不加锁。 */
 bool lumen_led_render_strip_is_animated(const lumen_segment_store_t *segments,

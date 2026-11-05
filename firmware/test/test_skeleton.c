@@ -32,6 +32,7 @@
 #include "protocol.h"
 #include "save_scheduler.h"
 #include "script_blob.h"
+#include "script_scope.h"
 #include "script_store.h"
 #include "segment_store.h"
 #include "selftest.h"
@@ -5642,6 +5643,227 @@ static void test_strip_anim_mask(void)
 }
 
 /*
+ * 方案作用域（#122）：一条带只要在**任意一个步骤**里出现过，整份方案期间就归
+ * 剧本管；没出现过的带继续渲自己的实时分区。
+ *
+ * 四条验收项在纯逻辑层的对应：
+ *   1. 只含 strip0 的方案激活后，strip1..7 的动画位仍是它们自己的；
+ *   2. loop=0 走完停住（hold_last）时未参与的带动画位不变；
+ *   3. 参与方案但在这一步没有段的带 → 必须走分段路径（输出全黑），不是单色；
+ *   4. 未参与方案的带在方案全程拿到的是自己那份实时分区（逐条比对字节）。
+ *
+ * 真机侧的逐帧验证（State 第 12 字节 + 相机）由 scripts/verify-scope.py 做，
+ * 这里锁的是判据本身。
+ */
+static void build_one_strip_script(lumen_script_store_t *store, uint8_t script_id,
+                                   uint8_t stage_count, uint8_t strip_count,
+                                   uint8_t only_strip, uint8_t seg_type)
+{
+    lumen_script_store_init(store);
+    CHECK(lumen_script_begin(store, script_id, stage_count, strip_count));
+    for (uint8_t stage = 0; stage < stage_count; ++stage) {
+        CHECK(lumen_script_stage(store, script_id, stage, 1000, 0));
+        /* 只有 only_strip 在这两步里有内容：另一个步骤故意留空，用来验证
+         * 「参与方案但在某一步没段 → 该步全黑」。 */
+        if (stage == 0) {
+            lumen_segment_t seg = make_animated(
+                seg_type, 0, 9, (uint16_t)(stage * 1000), 255, 1000, 0, 0, 0);
+            uint16_t written = 0;
+            CHECK(lumen_script_segment(store, script_id, stage, only_strip, 0, &seg, &written));
+        }
+    }
+    uint16_t counts[LUMEN_MAX_STRIPS];
+    for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
+        counts[i] = 30;
+    }
+    uint8_t blob[LUMEN_SCRIPT_BLOB_MAX];
+    size_t len = 0;
+    CHECK(lumen_script_commit(store, script_id, counts, blob, sizeof(blob), &len) ==
+          LUMEN_SCRIPT_COMMIT_OK);
+}
+
+static void test_script_scope_union_mask(void)
+{
+    lumen_script_store_t store;
+
+    /* 只编排 strip0 的两步方案：并集只有 bit0。 */
+    build_one_strip_script(&store, 0, 2, 8, 0, LUMEN_EFFECT_BREATHING);
+    CHECK(lumen_script_strip_union_mask(lumen_script_get(&store, 0)) == 0x01);
+
+    /* 空表 / 未提交 / NULL 都是 0。 */
+    CHECK(lumen_script_strip_union_mask(NULL) == 0);
+
+    /* 只在**第二步**出现的带也算参与（并集口径，Q10：按整份方案算）。 */
+    lumen_script_store_init(&store);
+    CHECK(lumen_script_begin(&store, 0, 2, 8));
+    CHECK(lumen_script_stage(&store, 0, 0, 1000, 0));
+    CHECK(lumen_script_stage(&store, 0, 1, 1000, 0));
+    lumen_segment_t a = make_animated(LUMEN_EFFECT_RAINBOW, 0, 9, 0, 255, 500, 0, 0, 0);
+    uint16_t written = 0;
+    CHECK(lumen_script_segment(&store, 0, 0, 0, 0, &a, &written));
+    lumen_segment_t b = make_animated(LUMEN_EFFECT_RAINBOW, 0, 9, 0, 255, 500, 0, 0, 0);
+    CHECK(lumen_script_segment(&store, 0, 1, 5, 0, &b, &written));
+    uint16_t counts[LUMEN_MAX_STRIPS];
+    for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
+        counts[i] = 30;
+    }
+    uint8_t blob[LUMEN_SCRIPT_BLOB_MAX];
+    size_t len = 0;
+    CHECK(lumen_script_commit(&store, 0, counts, blob, sizeof(blob), &len) ==
+          LUMEN_SCRIPT_COMMIT_OK);
+    /* strip5 只在第 1 步出现 → 仍然整份方案期间归剧本管。 */
+    CHECK(lumen_script_strip_union_mask(lumen_script_get(&store, 0)) == 0x21);
+
+    /* 归属位判定的边界。 */
+    CHECK(lumen_scope_is_script_strip(0x21, 0));
+    CHECK(lumen_scope_is_script_strip(0x21, 5));
+    CHECK(!lumen_scope_is_script_strip(0x21, 1));
+    CHECK(!lumen_scope_is_script_strip(0x21, LUMEN_MAX_STRIPS));
+}
+
+/*
+ * 验收项 1 + 2：State 第 12 字节（strip_anim_mask）。
+ *
+ * 关键不是「终态对不对」，而是**任何时刻**都不能把未参与带报成方案的属性。
+ * 所以这里逐阶段推进播放头，每一步都核对。
+ */
+static void test_script_scope_anim_mask(void)
+{
+    lumen_script_store_t store;
+    lumen_segment_store_t live;
+    lumen_segment_store_t stage;
+
+    build_one_strip_script(&store, 0, 3, 8, 0, LUMEN_EFFECT_BREATHING);
+    const lumen_script_t *script = lumen_script_get(&store, 0);
+    CHECK(script != NULL);
+    uint8_t mask = lumen_script_strip_union_mask(script);
+    CHECK(mask == 0x01);
+
+    /* 实时分区：strip1..7 各跑一个呼吸（动画）。 */
+    lumen_segment_store_init(&live);
+    for (uint8_t s = 1; s < 8; ++s) {
+        live.slot[s][0] = make_animated(LUMEN_EFFECT_BREATHING, 0, 9, 0, 255, 1000, 0, 0, 0);
+    }
+    /* 静态配置本身在参与带上是空的（用户没给 strip0 划实时分区）。 */
+
+    /* 逐阶段：把该阶段的内容拷进 stage，模拟渲染任务的阶段重建。 */
+    for (uint8_t stage_index = 0; stage_index < script->stage_count; ++stage_index) {
+        lumen_segment_store_init(&stage);
+        for (uint8_t strip = 0; strip < LUMEN_MAX_STRIPS; ++strip) {
+            for (uint8_t seg = 0; seg < LUMEN_MAX_SEGMENTS; ++seg) {
+                if (script->stages[stage_index].segments[strip][seg].active) {
+                    stage.slot[strip][seg] = script->stages[stage_index].segments[strip][seg];
+                }
+            }
+        }
+        uint8_t got = lumen_scope_anim_mask(&stage, &live, mask, 8);
+        /* strip1..7 仍在跑各自的呼吸 → bit1..7 全在。 */
+        CHECK((got & 0xFE) == 0xFE);
+        /* strip0 只在 stage0 有呼吸段；stage1/2 没有 → 那一位跟着消失，
+         * 但它贡献的是黑而不是「回退实时分区」。 */
+        CHECK(got == (stage_index == 0 ? 0xFF : 0xFE));
+    }
+
+    /* 反例（这就是缺陷形态）：整份取 stage 时 strip0..7 只剩 strip0 的位。 */
+    lumen_segment_store_init(&stage);
+    stage.slot[0][0] = make_animated(LUMEN_EFFECT_BREATHING, 0, 9, 0, 255, 1000, 0, 0, 0);
+    CHECK(lumen_strip_anim_mask(&stage, 8) == 0x01);
+    /* 加上归属位之后，未参与的带把自己的动画位带了回来。 */
+    CHECK(lumen_scope_anim_mask(&stage, &live, 0x01, 8) == 0xFF);
+    /* 归属位为 0（没有方案接管）时就是实时分区自己的位。 */
+    CHECK(lumen_scope_anim_mask(&stage, &live, 0x00, 8) == 0xFE);
+
+    /* 播完停住（hold_last）时未参与带的动画位不受影响：归属位与播放头无关，
+     * 只由整份方案的内容决定（Q10 / Q8）。 */
+    CHECK(lumen_scope_anim_mask(&stage, &live, lumen_script_strip_union_mask(script), 8) == 0xFF);
+}
+
+/*
+ * 验收项 3：参与方案但在某一步没有段的带，该步输出**黑**。
+ *
+ * 判据在 `lumen_scope_uses_segments`：归属位让「零活动段」与「不归我管」
+ * 分开。这里锁的是判据本身，以及它退化为单色时会发生什么。
+ */
+static void test_script_scope_empty_step_is_black(void)
+{
+    /* 归方案管、这一段没有任何活动段 → 必须走分段路径（compose 会 memset 0）。 */
+    CHECK(lumen_scope_uses_segments(true, false, true, false));
+    /* 同样的空段表，但不归方案管 → 老行为（走 v1 单色，整条纯色）。 */
+    CHECK(!lumen_scope_uses_segments(false, false, true, false));
+    /* 有活动段：两条路径都走分段。 */
+    CHECK(lumen_scope_uses_segments(false, true, true, false));
+    CHECK(lumen_scope_uses_segments(true, true, true, false));
+    /* 总闸关 / 自检期间一律单色（渲染层原有规则不变）。 */
+    CHECK(!lumen_scope_uses_segments(true, true, false, false));
+    CHECK(!lumen_scope_uses_segments(true, true, true, true));
+
+    /* 端到端形态：空阶段配一个归属位，分段合成出来的就是全黑。 */
+    lumen_segment_store_t stage;
+    lumen_segment_store_init(&stage);
+    const uint8_t led_count = 10;
+    uint8_t buf[LUMEN_MAX_LEDS * 3];
+    memset(buf, 0xAA, sizeof(buf));
+    CHECK(lumen_segment_store_compose(&stage, 0, buf, led_count, 0) == led_count);
+    for (uint16_t i = 0; i < (uint16_t)led_count * 3u; ++i) {
+        CHECK(buf[i] == 0x00);
+    }
+}
+
+/*
+ * 验收项 4 的纯逻辑部分：未参与方案的带在方案全程拿到的是**自己那份**
+ * 实时分区，逐条、逐字节比。
+ */
+static void test_script_scope_compose(void)
+{
+    lumen_script_store_t store;
+    lumen_segment_store_t live;
+    lumen_segment_store_t stage;
+    lumen_segment_store_t out;
+
+    build_one_strip_script(&store, 0, 2, 8, 0, LUMEN_EFFECT_COMET);
+    const lumen_script_t *script = lumen_script_get(&store, 0);
+    uint8_t mask = lumen_script_strip_union_mask(script);
+
+    lumen_segment_store_init(&live);
+    for (uint8_t s = 1; s < 8; ++s) {
+        live.slot[s][0] = make_static(0, 9, (uint16_t)(s * 4000), 255);
+    }
+    lumen_segment_store_init(&stage);
+    stage.slot[0][0] = make_animated(LUMEN_EFFECT_COMET, 0, 9, 1234, 255, 1000, 0, 0, 0);
+
+    lumen_scope_compose(&out, &stage, &live, mask, 8);
+
+    /* strip0 取的是阶段内容（COMET），strip1..7 取的是实时分区（各自的 STATIC）。 */
+    CHECK(out.slot[0][0].active);
+    CHECK(out.slot[0][0].layer[0].type == LUMEN_EFFECT_COMET);
+    for (uint8_t s = 1; s < 8; ++s) {
+        CHECK(out.slot[s][0].active);
+        CHECK(out.slot[s][0].layer[0].type == LUMEN_EFFECT_STATIC);
+        CHECK(out.slot[s][0].layer[0].param[0] == live.slot[s][0].layer[0].param[0]);
+        CHECK(out.slot[s][0].layer[0].param[1] == live.slot[s][0].layer[0].param[1]);
+    }
+    /* 逐字节：未参与带的整条槽位与实时分区完全一致（不是「看起来一样」）。 */
+    for (uint8_t s = 1; s < 8; ++s) {
+        CHECK(memcmp(&out.slot[s][0], &live.slot[s][0], sizeof(out.slot[s][0])) == 0);
+    }
+
+    /* 阶段里故意不给 strip0 的第二步：归属位仍在 → 合成结果是空（该步全黑），
+     * 而 strip1..7 照旧。这就是验收项 3 与 4 同时成立的那一帧。 */
+    lumen_segment_store_init(&stage);
+    lumen_scope_compose(&out, &stage, &live, mask, 8);
+    CHECK(lumen_segment_store_count(&out, 0) == 0);
+    for (uint8_t s = 1; s < 8; ++s) {
+        CHECK(memcmp(&out.slot[s][0], &live.slot[s][0], sizeof(out.slot[s][0])) == 0);
+    }
+
+    /* 没有方案接管（归属位 0）时，合成结果就是实时分区本身。 */
+    lumen_scope_compose(&out, &stage, &live, 0, 8);
+    for (uint8_t s = 0; s < 8; ++s) {
+        CHECK(memcmp(&out.slot[s][0], &live.slot[s][0], sizeof(out.slot[s][0])) == 0);
+    }
+}
+
+/*
  * TDM 跳过决策真值表（§9.5）。四象限：
  *   持续出光 → PUSH；刚关 → 推黑再跳过；一直黑 → 直接跳过；刚开 → 强制推送。
  */
@@ -8610,6 +8832,11 @@ int main(int argc, char **argv)
     RUN_TEST(test_planar_set_count);
     RUN_TEST(test_planar_stats);
     RUN_TEST(test_planar_null_safety);
+
+    RUN_TEST(test_script_scope_union_mask);
+    RUN_TEST(test_script_scope_anim_mask);
+    RUN_TEST(test_script_scope_empty_step_is_black);
+    RUN_TEST(test_script_scope_compose);
 
     if (g_failures != 0) {
         fprintf(stderr, "\n%d/%d checks failed\n", g_failures, g_checks);
