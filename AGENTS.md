@@ -7,10 +7,9 @@
 **先读 [`docs/handoff.md`](docs/handoff.md)。** 它写清了当前在哪、哪些已完成、剩余工作卡在
 什么上。不要凭本文件的简短描述推断进度——项目已经过了三个大版本。
 
-> **当前状态：第五轮（UI / 交互）已合入 `master`（merge `ef295fe`）**，
-> 规格 [#85](https://github.com/sishoui/light-matt/issues/85)，实现票 #90–#101 全部关闭。
-> 上一条主线是 `78e7fc5`：#59 灯效编辑重构 → #70 导航重构 + 协议 v4
-> → #84 灯组进阶编辑器打磨。
+> **当前状态：第八轮（测试流程改造）在 `integration/test-flow`，待合入 `master`**，
+> 规格 [#102](https://github.com/sishoui/light-matt/issues/102)，实现票 #103–#111 全部关闭。
+> 上一条主线是第五轮（UI / 交互，规格 #85）已合入 `master`（merge `ef295fe`）。
 
 **第五轮**（规格 [#85](https://github.com/sishoui/light-matt/issues/85)，实现票 #90–#101）：
 
@@ -152,9 +151,10 @@ SHA-256 索引、配置丢失记录。
 
 ### Issue tracker
 
-GitHub Issues（`sishoui/light-matt`）。**当前 effort 的规格父票是 `#60`**（UI 重构 +
-协议 v4），9 张实现票 `#61`–`#69` **全部完成并在集成分支**。上一轮 v3 的父票 `#35`
-（`#36`–`#45` / `#46`）已关闭；v1 的 `#1` 与 v2 的 `#27` 是历史。
+GitHub Issues（`sishoui/light-matt`）。**最近一轮的规格父票是 `#102`**（测试流程改造），
+九张实现票 `#103`–`#111` **全部关闭**，改动在集成分支 `integration/test-flow`。
+上一轮的 `#85`（UI 第五轮，`#90`–`#101`）已合入 `master`；`#60`（UI 重构 + 协议 v4）
+与 v3 的 `#35` 已关闭；v1 的 `#1` 与 v2 的 `#27` 是历史。
 详见 `docs/agents/issue-tracker.md`。
 
 ### Domain docs
