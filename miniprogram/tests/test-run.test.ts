@@ -112,6 +112,50 @@ describe("executeLayers", () => {
     expect(md).toContain("缺自动化端口");
   });
 
+  describe("#116 结论行不得给未跑的层背书", () => {
+    it("整层 SKIP 时结论写「未全验证」，不写「✅ 通过」", () => {
+      const result = executeLayers([
+        layer("mp"),
+        layer("ui", { probe: () => ["缺微信开发者工具自动化端口"] }),
+      ]);
+
+      /* 机器结论仍是 PASS：缺环境不算失败，退出码语义不变。 */
+      expect(result.conclusion).toBe("PASS");
+      const verdict = renderReport(result)
+        .split("\n")
+        .find((line: string) => line.includes("**结论**"));
+      expect(verdict).toContain("未全验证");
+      expect(verdict).toContain("ui 层");
+      expect(verdict).not.toContain("✅ 通过");
+    });
+
+    it("全层都跑了才写「✅ 通过」", () => {
+      const verdict = renderReport(executeLayers([layer("mp"), layer("server")]))
+        .split("\n")
+        .find((line: string) => line.includes("**结论**"));
+      expect(verdict).toContain("✅ 通过");
+      expect(verdict).not.toContain("未全验证");
+    });
+
+    it("「整层没跑」与「层内跳过若干项」在结论行上分得开", () => {
+      const wholeLayerSkipped = renderReport(
+        executeLayers([layer("mp"), layer("ui", { probe: () => ["缺端口"] })]),
+      )
+        .split("\n")
+        .find((line: string) => line.includes("**结论**"));
+
+      const innerSkipped = renderReport(
+        executeLayers([layer("mp", { run: () => ({ status: "PASS", checks: 8, unit: "用例", detail: "", failures: [], skipped: ["2 条需要真机"] }) }), layer("server")]),
+      )
+        .split("\n")
+        .find((line: string) => line.includes("**结论**"));
+
+      expect(wholeLayerSkipped).toContain("未全验证");
+      expect(innerSkipped).toContain("层内跳过");
+      expect(innerSkipped).not.toContain("未全验证");
+    });
+  });
+
   it("每个 SKIP 都必须带原因，不会出现原因不明的跳过", () => {
     const result = executeLayers([layer("ui", { probe: () => ["缺真机"] })]);
 
@@ -963,6 +1007,33 @@ describe("ui 层接线", () => {
     } finally {
       await new Promise<void>((done) => server.close(() => done()));
     }
+  }, 40000);
+
+  it("#116 不指定 WS 时会依次试 9501 与 9502", () => {
+    /* 开发者工具的自动化端口是区间：第一个窗口占 9501，再开一个就顺延到 9502。
+       写死 9501 会让「明明开着自动化」的机器记成 SKIP。
+
+       断言落在报告出来的候选清单上：探不通时脚本必须把试过的地址都写出来，
+       否则读者只知道「连不上」，不知道它压根没试 9502。 */
+    const out = execFileSync(
+      process.execPath,
+      [resolve(__dirname, "../../scripts/verify-v5.mjs"), "--probe"],
+      {
+        /* 本机若有真实开发者工具，9501/9502 可能真的可连，那就不是这个测试要断言的分支；
+           用一个必然连不上的 WS 覆盖「指定了就只试它」的确定性。 */
+        env: { ...process.env, WS: "ws://127.0.0.1:1" },
+        encoding: "utf8",
+        timeout: 30000,
+      },
+    );
+    /* 指定 WS 时只试它：这是 CI 与手工排查需要的确定性。 */
+    expect(out).toContain("ws://127.0.0.1:1");
+    expect(out).not.toContain("9502");
+
+    const source = readFileSync(resolve(__dirname, "../../scripts/verify-v5.mjs"), "utf8");
+    expect(source).toContain("9501");
+    expect(source).toContain("9502");
+    expect(source).toMatch(/PORT_CANDIDATES/);
   }, 40000);
 });
 

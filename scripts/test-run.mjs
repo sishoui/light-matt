@@ -1446,7 +1446,31 @@ export function renderReport(report, { title = "测试报告", release = false }
     /* 发布归档要能一眼数清五层各自的结果，不用往下翻表。 */
     lines.push(`- **五层结果**：${layers.map((l) => `${l.label} ${statusCell(l.status)}`).join(" · ")}`);
   }
-  lines.push(`- **结论**：${report.conclusion === FAIL ? "❌ 有失败" : "✅ 通过"}`);
+  /*
+   * 结论行必须如实反映「有没有层没跑」（#116）。
+   *
+   * 以前只要不是 FAIL 就写「✅ 通过」，于是整层 SKIP 时报告顶部仍是一个绿勾——
+   * 「没跑」和「跑过了」在终端上长得一样，这正是这一轮要修的可信度问题。
+   * 现在的口径：
+   *   - 有失败        → ❌ 有失败
+   *   - 有整层没跑    → ⚠️ 未全验证（写明哪几层）
+   *   - 只跳过层内项  → ✅ 通过（N 项层内跳过）
+   *   - 其余          → ✅ 通过
+   * 退出码不动：SKIP 仍然不算失败（缺环境是常态），但结论文字不能再给它背书。
+   */
+  const verdict = (() => {
+    if (report.conclusion === FAIL) {
+      return "❌ 有失败";
+    }
+    if (skipped.length > 0) {
+      return `⚠️ 未全验证（${skipped.map((l) => l.label).join("、")} 未跑）`;
+    }
+    if (innerSkips.length > 0) {
+      return `✅ 通过（${innerSkips.length} 项层内跳过）`;
+    }
+    return "✅ 通过";
+  })();
+  lines.push(`- **结论**：${verdict}`);
   if (skipped.length > 0) {
     lines.push(`- **本轮未验证**：${skipped.map((l) => l.label).join("、")}`);
   }

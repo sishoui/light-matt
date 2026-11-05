@@ -33,7 +33,19 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 /* 仓库根：scripts -> 仓库根。所有路径都从这里推，不依赖 cwd。 */
 const REPO = resolve(HERE, "..");
 
-const PORT = process.env.WS || "ws://127.0.0.1:9501";
+/**
+ * 候选自动化端口（#116）。
+ *
+ * 微信开发者工具「设置 → 安全设置 → 服务端口」其实是个区间：开着自动化后
+ * 第一项占 9501，再开一个窗口就顺延到 9502。写死 9501 会让「明明开着自动化」
+ * 的机器记成 SKIP，而 SKIP 在报告里又不显眼——那正是本轮要修的可信度问题。
+ *
+ * `WS` 仍可强制指定：指了就只试它，不再猜（CI 与手工排查要靠这个确定性）。
+ */
+const PORT_CANDIDATES = process.env.WS
+  ? [process.env.WS]
+  : ["ws://127.0.0.1:9501", "ws://127.0.0.1:9502"];
+
 /* 探测超时要短到不会让人以为卡住，又要长到不会把「刚启动还没就绪」误判成「没开」。
    3 秒：开发者工具的 ws 端口要么立刻接受连接，要么本机直接 ECONNREFUSED。 */
 const PROBE_TIMEOUT_MS = 3000;
@@ -106,65 +118,95 @@ function probeAutomationPort(endpoint, timeoutMs = PROBE_TIMEOUT_MS) {
   });
 }
 
+/**
+ * 依次试候选端口，返回第一个真正握手成功的地址。
+ *
+ * TCP 通不算数：端口开着但窗口没开「自动化」时 TCP 连得上、WebSocket 握手
+ * 却失败。只测 TCP 会让探测说「可连」、正式跑立刻 SKIP，同一份环境两个结论。
+ *
+ * @returns {{ endpoint: string } | { reasons: string[] }}
+ */
+async function pickEndpoint(automator) {
+  const reasons = [];
+  for (const endpoint of PORT_CANDIDATES) {
+    const tcp = await probeAutomationPort(endpoint);
+    if (tcp.length > 0) {
+      reasons.push(...tcp);
+      continue;
+    }
+    try {
+      const connection = await withTimeout(
+        automator.connect({ wsEndpoint: endpoint }),
+        HANDSHAKE_TIMEOUT_MS,
+        endpoint,
+      );
+      await connection.disconnect();
+      return { endpoint };
+    } catch (error) {
+      reasons.push(`${endpoint}：${String(error.message ?? error)}`);
+    }
+  }
+  return { reasons };
+}
+
+/** 探测失败时指向可操作项（#116）：只说「连不上」没人知道该去哪开。 */
+const PORT_HINT =
+  "在微信开发者工具里打开 设置 → 安全设置 → 服务端口（开启「自动化」），" +
+  `或按需设置 WS=<ws 地址>；已试 ${PORT_CANDIDATES.join(" / ")}`;
+
+/** 加载 automator；缺失时返回 null（调用方据此报「缺环境」而不是硬失败）。 */
+function loadAutomator() {
+  try {
+    const requireFromMp = createRequire(resolve(REPO, "miniprogram", "package.json"));
+    const mod = requireFromMp("miniprogram-automator");
+    return mod.default ?? mod;
+  } catch {
+    return null;
+  }
+}
+
 /* ---------------- 只探测，不跑断言 ---------------- */
 
 /* 编排器的 ui 层用这一支做「主动探测」：真的握手一次再断开，不跑 49 项断言，
    所以探测的代价与断言数无关。
-   为什么不能只做 TCP 连接：端口开着但窗口没开「自动化」模式时 TCP 连得上、
-   WebSocket 握手却失败。只测 TCP 会让 probe 说「可连」、run 立刻 SKIP——
-   同一份环境得出两个结论，报告就自相矛盾了。
    退出码在这里也保持「0 = 没有断言失败」：不通不是失败，是缺环境。 */
 if (process.argv.includes("--probe")) {
-  const reasons = await probeAutomationPort(PORT);
-  if (reasons.length > 0) {
-    console.log(skipLine(reasons.join("、")));
+  const probeAutomator = loadAutomator();
+  if (probeAutomator === null) {
+    console.log(skipLine("缺 miniprogram-automator（在 miniprogram/ 下跑 npm install）"));
     process.exit(0);
   }
-  try {
-    const requireFromMp = createRequire(resolve(REPO, "miniprogram", "package.json"));
-    const probeMod = requireFromMp("miniprogram-automator");
-    const probeAutomator = probeMod.default ?? probeMod;
-    /* connect 本身不带超时：对「TCP 接得上但不讲 WebSocket」的端口会一直等，
-       把探针挂死。这种半开状态正是「窗口开着但没开自动化」，必须判成缺环境。 */
-    const connection = await withTimeout(probeAutomator.connect({ wsEndpoint: PORT }), HANDSHAKE_TIMEOUT_MS, PORT);
-    await connection.disconnect();
-    console.log(`PORT: ${PORT} 可连`);
-  } catch (error) {
-    console.log(skipLine(`缺微信开发者工具自动化端口（${PORT}：${String(error.message ?? error)}）`));
+  const chosen = await pickEndpoint(probeAutomator);
+  if ("endpoint" in chosen) {
+    console.log(`PORT: ${chosen.endpoint} 可连`);
+  } else {
+    console.log(skipLine(`缺微信开发者工具自动化端口（${chosen.reasons.join("；")}）。${PORT_HINT}`));
   }
   process.exit(0);
 }
 
 /* ---------------- 正常验收 ---------------- */
 
-/* 先探测再连接：连不上时报「缺环境」而不是抛栈，编排器才不会把常态当失败。
-   真正连接仍可能失败（端口开但窗口没开自动化模式），那种也归为缺环境。 */
-const missing = await probeAutomationPort(PORT);
-if (missing.length > 0) {
-  console.log(skipLine(missing.join("、")));
+const automator = loadAutomator();
+if (automator === null) {
+  console.log(
+    skipLine("缺 miniprogram-automator（在 miniprogram/ 下跑 npm install）：ui 层未验证"),
+  );
   process.exit(0);
 }
 
-/* automator 只在确认端口通之后才加载。
-   为什么延后：本脚本住在 miniprogram/ 之外，裸包名得从它的 package.json 起解析
-   （与 `.zcode/skills/verify-lumen/scripts/drive.mjs` 同一做法）；而 clean clone
-   还没 `npm install` 时模块不存在。先把「缺端口」这条最常见的原因报出去，
-   否则一个没装依赖的 clone 会把 ui 层变成硬失败而不是 SKIP。 */
-let automator;
-try {
-  const requireFromMp = createRequire(resolve(REPO, "miniprogram", "package.json"));
-  const automatorMod = requireFromMp("miniprogram-automator");
-  automator = automatorMod.default ?? automatorMod;
-} catch (error) {
-  console.log(skipLine(`缺 miniprogram-automator（在 miniprogram/ 下跑 npm install）：${String(error.message ?? error)}`));
+/* 先试端口再跑断言：连不上时报「缺环境」而不是抛栈，编排器才不会把常态当失败。 */
+const chosen = await pickEndpoint(automator);
+if (!("endpoint" in chosen)) {
+  console.log(skipLine(`缺微信开发者工具自动化端口（${chosen.reasons.join("；")}）。${PORT_HINT}`));
   process.exit(0);
 }
 
 let mp;
 try {
-  mp = await automator.connect({ wsEndpoint: PORT });
+  mp = await automator.connect({ wsEndpoint: chosen.endpoint });
 } catch (error) {
-  console.log(skipLine(`缺微信开发者工具自动化端口（${PORT}：${String(error.message ?? error)}）`));
+  console.log(skipLine(`缺微信开发者工具自动化端口（${chosen.endpoint}：${String(error.message ?? error)}）。${PORT_HINT}`));
   process.exit(0);
 }
 
@@ -188,6 +230,25 @@ const textOf = async () => {
   }
   return pages[0].outerWxml();
 };
+
+/**
+ * 等到页面 DOM 里出现某段文本（或超时后返回最后一次快照）。
+ *
+ * 自定义组件的 `setData` 落在页面之后，用固定 sleep 去等它必然偶尔失败。
+ * 凡是「组件挂载后才成立」的断言都应该走这里。
+ */
+async function waitForText(needle, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  let snapshot = "";
+  while (Date.now() < deadline) {
+    snapshot = await textOf();
+    if (snapshot.includes(needle)) {
+      return snapshot;
+    }
+    await sleep(200);
+  }
+  return snapshot;
+}
 
 /** 连上第一台演示设备（并把首页回到正常态）。 */
 async function connectDemo() {
@@ -246,14 +307,16 @@ rec(
   String(homeDark?.data?.accentColor ?? "").toUpperCase() === "#8FA9C4",
   homeDark?.data?.accentColor ?? "",
 );
-const navDark = await mp.evaluate(() => {
-  const p = getCurrentPages().pop();
-  const pages = p.selectAllComponents ? null : null;
-  return null;
-});
-void navDark;
-const homeText = await textOf();
-rec("导航栏组件挂上了 use-dark", homeText.includes("nav-root use-dark"));
+/* 导航栏是自定义组件：它的 `use-dark` 在组件 `attached` 之后才由 `setData`
+   落下，比页面 `themeClass` 晚一拍。固定 sleep 会让这一条随机失败（实测同一
+   环境连跑三次失败一次）——不稳定的断言比没有断言更糟，它会让人怀疑真实缺陷。
+   所以等到出现为止，超时才算失败。 */
+const homeText = await waitForText("nav-root use-dark", 5000);
+rec(
+  "导航栏组件挂上了 use-dark",
+  homeText.includes("nav-root use-dark"),
+  homeText.includes("nav-root use-dark") ? "" : `等了 5 秒仍未出现（页面 ${homeText.length} 字符）`,
+);
 // 复位浅色
 await mp.switchTab("/pages/me/me");
 await sleep(800);
