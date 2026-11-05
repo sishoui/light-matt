@@ -349,7 +349,7 @@ Page({
       brightnessSlider: value,
       brightnessMax: max,
       brightnessPercent: brightnessDragPercent(value, max),
-      brightnessHint: "拖动调节，松手生效",
+      brightnessHint: `拖动调节，松手生效 · 上限 ${max}`,
     };
   },
 

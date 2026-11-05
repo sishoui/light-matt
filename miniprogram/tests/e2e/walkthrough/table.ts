@@ -839,11 +839,7 @@ export const WALKTHROUGH: readonly Step[] = [
     ticket: "#140",
     kind: "probe",
     does: "首页亮度滑条的原始值旁边标出了设备上限，两个数字不再互相矛盾",
-    expectation: {
-      kind: "known-divergence",
-      ticket: "#140",
-      note: "滑条上限 200 时拖到 100 同时显示「100」与「50%」，没有任何一处说明上限",
-    },
+    expectation: { kind: "must-hold" },
     async act(ctx) {
       const max = await ctx.deviceMaxBrightness();
       const target = Math.max(1, Math.round(max / 2));
