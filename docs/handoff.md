@@ -1,9 +1,72 @@
 # 交接：lumen 当前状态与下一步
 
-**最后更新**：2026-11-05　**分支**：`integration/test-flow`（测试流程改造，待合入 `master`）
+**最后更新**：2026-11-05（第九轮）　**分支**：`integration/test-flow`（测试流程改造，待合入 `master`）
 
 这份文件是给**新会话**的入口。它只写「新会话必须知道、但代码和文档里读不到」的东西；
 其余一律给指针，不重复。
+
+---
+
+## 0. 2026-11-05 第九轮：进阶灯效的方案作用域与自动下发（**已完成，未合入**）
+
+**规格 [#120](https://github.com/sishoui/light-matt/issues/120)，六张实现票 `#121`–`#126`。**
+
+### 为什么改
+
+进阶档有两个用户可见的坏行为，都在真机上复现过：
+
+1. **改了东西灯带不动**。#96 删掉「应用并播放」后只有循环三档还在写设备，
+   选灯效 / 划分区 / 调参数 / 改时长全部只进本地草稿，失败原因也从不显示
+   （`applyError` 有二十处赋值、wxml 里零处显示）。
+2. **调一条灯带会波及别的带**。固件只有一份播放头、一个 `stage_index`，
+   一套方案给所有带铺内容；App 又用 `fillOtherStripSlices` 把别的带读回来
+   塞进同一份方案，等于把它们绑上同一条时间轴。而它读回的是**静态存储**，
+   播放中的画面在阶段存储里、协议读不回来——补的永远是陈旧数据。
+
+### 交付了什么
+
+| 票 | 内容 | 落点 |
+|---|---|---|
+| #121 | 随机闪烁不再下发成常亮 | `effect-panel.ts` 补 `case "flicker"`；新增密度滑块与 `density` 字段 |
+| #122 | 方案只驱动它包含的带，其余继续渲实时分区 | 新模块 `firmware/main/script_scope.c`；`led_engine.c` 逐条按归属合成渲染源；`compose_frame` / `compose_strip` / `tdm_push_strip` / `snapshot` 各加一个 `script_mask` 参数 |
+| #123 | 删掉「补齐其它灯带」 | 删 `plan-fill.ts` 与其单测、方法的 import；方案只含用户编辑过的带；`session.lastDownloadedScript` 让测试能断言方案内容 |
+| #124 | 先传方案再停播 | `applyAdvanced` 重排：上传 → 停播 → 写回落画面 → 开播 |
+| #125 | 改动自动下发 + 失败可见 | `scheduleAdvancedApply(immediate)` + `advancedEpoch` / `advancedQueued` / `advancedBusy`；`applyError` 在 wxml 顶部渲染；删死代码 `onApplyAndPlay` |
+| #126 | 端到端验证与证据 | `scripts/verify-scope.py` / `verify-scope-camera.py` / `calibrate-scope-boxes.py`；证据见下 |
+
+### 实测数字
+
+| 项 | 结果 |
+|---|---|
+| 固件 host | **14127 断言**（117 桶 + 4 新桶），比上轮 +131 |
+| 小程序单测 | **1861 用例 / 72 文件**（`plan-fill.test.ts` 的 11 条随模块删除） |
+| 后端单测 | 140 用例（本轮未改动，随日常跑） |
+| 字节契约 | `probe-v4.py` **43/43**；93 条向量原样通过 |
+| 真机 e2e | BLE 层 **21/21**（66s） |
+| #121 真机读回 | `0x07` / period 1000 / p5 128（修复前 `0x00` / period 0） |
+| #124 窗口 | 上传 14 帧 = 420ms（30ms/帧）→ 停播到开播 **一帧** |
+
+证据归档：[`docs/evidence/advanced-scope-2026-11-05.md`](evidence/advanced-scope-2026-11-05.md)。
+
+### 本轮踩到的两个方法论坑
+
+1. **BLE 逐帧轮询抓不到「闪一下就恢复」。** 单发 `QUERY_STATE` 是 16Hz，批量
+   连发也只到 33Hz，而固件是 20fps——只存在一帧的瞬态正好落在采样间隙里。
+   最后靠**固件串口每帧打一行**（掩码变化时才打）拿到帧级无遗漏的证据。
+   任何「瞬态」类验收都该先想清楚采样频率和被测帧率的关系。
+2. **相机分不开靠得近的灯带。** 这台机位下 s2 与 s0 的采样框重叠 56%、s4 重叠
+   62%；把 strip0 调暗，其余七条的读数也各掉 7~39（光学串扰）。所以「逐带亮度
+   阈值」这条路走不通——改用**同内容对照**（两阶段 strip0 输出相同像素，只换
+   渲染源），差值必须 ≤0.41 才算无关。细节见证据文档 §3。
+
+### 遗留
+
+1. **`integration/test-flow` 仍未合入 `master`**（上轮遗留，与本轮无关）。
+2. `scripts/calibrate-scope-boxes.py` 产出的 `.scope-boxes.json` 绑定机位与
+   分辨率，是本地产物（已 gitignore）；换机位必须重跑标定。
+3. 单步方案下 `loop=1` 与 `loop=2` 行为雷同（#120 的 Q4，已知，不在本轮范围）。
+4. 电气耦合（8 带共用 5V 的电流阶跃）是物理限制，本轮缓解了触发源但没解决，
+   已写进 [`pending-tasks.md`](pending-tasks.md) §0.0。
 
 ---
 
