@@ -780,11 +780,7 @@ export const WALKTHROUGH: readonly Step[] = [
     ticket: "#129",
     kind: "probe",
     does: "设备信息页的固件版本与设备自报的字节一致",
-    expectation: {
-      kind: "known-divergence",
-      ticket: "#129",
-      note: "客户端按大端解析，设备按小端写；v4.0 显示成 v0.4",
-    },
+    expectation: { kind: "must-hold" },
     async act(ctx) {
       const page = ctx.pages.deviceInfo;
       page.onShow();

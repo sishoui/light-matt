@@ -416,7 +416,7 @@ describe("v3 单帧查询（QueryStripConfig / QueryDeviceInfo）", () => {
     const seq = fakeWx.writes[0].slice(1)[3];
 
     fakeWx.ack(0x1d, seq, 0x00);
-    const payload = hexToBytes("0300AABBCCDDEEFF40080808040100") as Uint8Array;
+    const payload = hexToBytes("0003AABBCCDDEEFF40080808040100") as Uint8Array;
     fakeWx.emitFrame(encodeFrame(0x88, seq, payload));
 
     const info = await pending;

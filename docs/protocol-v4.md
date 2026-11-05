@@ -476,7 +476,7 @@ bit0 = 循环中、bit1 = active、bit2 = 最后一步循环、bit3-7 = 0。未�
 **DeviceInfoReport**：
 
 ```
-0..1   firmware_version   u16，major<<8 | minor（v4 固件为 0x0400）
+0..1   firmware_version   u16 **小端**（低字节在前）；v4 固件在线上是 00 04 → 0x0400
 2..7   hw_id              6 字节 BT MAC，按 "AA:BB:CC:DD:EE:FF" 的自然顺序
 8      max_leds
 9      max_strips
