@@ -671,9 +671,17 @@ const BLE_SKILL_DIR = join(".zcode", "skills", "verify-lumen-ble", "scripts");
  *      必须能报成 SKIP 而不是 FAIL；
  *   2. 只有扫描那条用例会在无设备时「顺利结束」（它自己提前 return），
  *      所以「至多一条通过 + 其余跳过」也要判 SKIP，否则整层会被这一条染绿；
- *   3. 用例数是**实际收集数**（两个 e2e 文件合计 16 条），不是文档里只数了一个
- *      文件得出的 8。
+ *   3. 用例数取**实际收集数**，不抄文档里的手抄数字。
  */
+
+/**
+ * 走查用例组的已知分歧行在 vitest 里的标题前缀（`titleOf` 生成）。
+ *
+ * 它们 skip 的原因是「这条发现今天还在」，不是「设备中途没了」。混成一类
+ * 会把 12 条已确认的缺陷报成「运行中途设备不可用」——一句明确错误的诊断。
+ */
+export const KNOWN_DIVERGENCE_PREFIX = "[已知分歧";
+
 export const parseE2eJson = (jsonText, { root = ".", dir = "" } = {}) => {
   let report;
   try {
@@ -699,13 +707,19 @@ export const parseE2eJson = (jsonText, { root = ".", dir = "" } = {}) => {
   let passed = 0;
   let skipped = 0;
   let seen = 0;
+  /* 跳过原因按标题前缀分流：已知分歧是「这条缺陷今天还在」，不是环境问题。 */
+  let knownDivergenceSkips = 0;
 
   for (const item of results) {
     const assertions = Array.isArray(item.assertionResults) ? item.assertionResults : [];
-    const fileSkipped = assertions.filter((a) => a.status === "skipped" || a.status === "pending" || a.status === "todo").length;
+    const isSkip = (a) => a.status === "skipped" || a.status === "pending" || a.status === "todo";
+    const fileSkipped = assertions.filter(isSkip).length;
     passed += assertions.filter((a) => a.status === "passed").length;
     skipped += fileSkipped;
     seen += assertions.length;
+    knownDivergenceSkips += assertions.filter(
+      (a) => isSkip(a) && String(a.title ?? a.fullName ?? "").startsWith(KNOWN_DIVERGENCE_PREFIX),
+    ).length;
 
     files.push({ file: repoPath(String(item.name ?? "")), checks: assertions.length, status: item.status ?? "unknown" });
 
@@ -766,8 +780,22 @@ export const parseE2eJson = (jsonText, { root = ".", dir = "" } = {}) => {
     };
   }
 
-  /* 只跑了一部分：层仍然 PASS（没有失败），但没跑到的部分必须进未验证清单。 */
-  const innerSkips = skipped > 0 ? [`${skipped}/${total} 条用例跳过（运行中途设备不可用）`] : [];
+  /* 只跑了一部分：层仍然 PASS（没有失败），但没跑到的部分必须进未验证清单。
+   *
+   * 两类跳过必须分开报。走查用例组的已知分歧行是**今天该失败的 12 项发现**：
+   * 把它们归进「运行中途设备不可用」是一句明确错误的诊断，也会让
+   * 「这轮验了 12 项缺陷」和「这轮设备中途掉了」在报告里长得一样。 */
+  const divergenceSkips = Math.min(knownDivergenceSkips, skipped);
+  const deviceDownSkips = skipped - divergenceSkips;
+  const innerSkips = [];
+  if (divergenceSkips > 0) {
+    innerSkips.push(
+      `${divergenceSkips} 条跳过是已知分歧（走查用例组里规格 #127 的发现，今天预期仍未修好）`,
+    );
+  }
+  if (deviceDownSkips > 0) {
+    innerSkips.push(`${deviceDownSkips}/${total} 条用例跳过（运行中途设备不可用）`);
+  }
 
   return {
     ...base,
@@ -910,7 +938,7 @@ const probeBle = (repoRoot) => () => {
   return missing;
 };
 
-/** 跑真机层。整轮（体检 + 16 条真机用例）在本机约一分钟，超时给到 10 分钟。 */
+/** 跑真机层。整轮（体检 + 全部真机用例）在本机约一分钟，超时给到 10 分钟。 */
 const runBle = ({ repoRoot }) => {
   const started = Date.now();
   const scripts = bleScripts(repoRoot);
