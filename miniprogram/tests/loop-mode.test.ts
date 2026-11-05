@@ -148,60 +148,73 @@ describe("#114 循环三档：单一推导（草稿优先，设备兜底）", ()
   });
 });
 
-describe("#114 循环三档：页面点击链路", () => {
-  /* 页面用 `wx` 的存储与几个渲染期 API；这些桩不参与任何业务判定。
-   * 存储每个用例一份（互不串扰），渲染期 API 由 `installGlobals` 补一次。 */
-  let wxStub: any = null;
-  /* `Page({...})` 只在模块首次求值时被调用一次；之后 import 走缓存。 */
-  let pageDef: any = null;
+/* ------------------------------------------------------------------ */
+/* 页面底座（#115）：模块级共享一份                                       */
+/* ------------------------------------------------------------------ */
 
-  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-  const tap = (dataset: Record<string, any>) => ({ currentTarget: { dataset } });
+/*
+ * `Page({...})` 只在模块**首次**求值时被调用一次，之后 `import` 走缓存。
+ * 所以页面定义只能捕获一次——这段必须放在 describe 外面，否则第二个
+ * describe 会拿到空的 `captured`（实测：单独跑绿、全量跑全红）。
+ */
+let sharedWx: any = null;
+let sharedPageDef: any = null;
 
-  async function openPage() {
-    const store = new Map<string, any>();
-    if (wxStub === null) {
-      wxStub = {
-        getStorageSync: (key: string) => store.get(key),
-        setStorageSync: (key: string, value: any) => void store.set(key, value),
-        removeStorageSync: (key: string) => void store.delete(key),
-        getStorageInfoSync: () => ({ keys: [...store.keys()] }),
-        showToast: () => undefined,
-        showModal: () => undefined,
-        vibrateShort: () => undefined,
-      };
-      const captured = installGlobals({ wx: wxStub });
-      await import("../pages/strip/strip");
-      pageDef = captured[captured.length - 1];
-      expect(pageDef, "页面模块应当注册 Page({...})").toBeDefined();
-    } else {
-      const backing = new Map<string, any>();
-      wxStub.getStorageSync = (key: string) => backing.get(key);
-      wxStub.setStorageSync = (key: string, value: any) => void backing.set(key, value);
-      wxStub.removeStorageSync = (key: string) => void backing.delete(key);
-      wxStub.getStorageInfoSync = () => ({ keys: [...backing.keys()] });
-      (globalThis as any).wx = wxStub;
-    }
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const tap = (dataset: Record<string, any>) => ({ currentTarget: { dataset } });
 
-    const session = new ControlSession({
-      platform: "other",
-      devMode: false,
-      storage: createSessionStorage(),
-      transportOverride: new MockTransport() as unknown as BleTransport,
-      reconnectDelaysMs: [],
-    });
-    await session.connect(DEVICE.deviceId, DEVICE.broadcastName);
-    setSessionForTest(session);
-
-    const page = instantiate(pageDef);
-    page.onLoad({ strip: "0" });
-    page.onShow();
-    for (let i = 0; i < 200 && page.data.ready !== true; i += 1) {
-      await sleep(50);
-    }
-    expect(page.data.ready, "页面应当 ready").toBe(true);
-    return { page, session };
+/**
+ * 加载真实页面模块并注入演示会话。
+ *
+ * 存储每个用例一份（互不串扰）；渲染期 API 由 `installGlobals` 补一次，
+ * 那些桩只让派生算得出确定值，不掺业务判定。
+ */
+async function openPage() {
+  const store = new Map<string, any>();
+  if (sharedWx === null) {
+    sharedWx = {
+      getStorageSync: (key: string) => store.get(key),
+      setStorageSync: (key: string, value: any) => void store.set(key, value),
+      removeStorageSync: (key: string) => void store.delete(key),
+      getStorageInfoSync: () => ({ keys: [...store.keys()] }),
+      showToast: () => undefined,
+      showModal: () => undefined,
+      vibrateShort: () => undefined,
+    };
+    const captured = installGlobals({ wx: sharedWx });
+    await import("../pages/strip/strip");
+    sharedPageDef = captured[captured.length - 1];
+    expect(sharedPageDef, "页面模块应当注册 Page({...})").toBeDefined();
+  } else {
+    const backing = new Map<string, any>();
+    sharedWx.getStorageSync = (key: string) => backing.get(key);
+    sharedWx.setStorageSync = (key: string, value: any) => void backing.set(key, value);
+    sharedWx.removeStorageSync = (key: string) => void backing.delete(key);
+    sharedWx.getStorageInfoSync = () => ({ keys: [...backing.keys()] });
+    (globalThis as any).wx = sharedWx;
   }
+
+  const session = new ControlSession({
+    platform: "other",
+    devMode: false,
+    storage: createSessionStorage(),
+    transportOverride: new MockTransport() as unknown as BleTransport,
+    reconnectDelaysMs: [],
+  });
+  await session.connect(DEVICE.deviceId, DEVICE.broadcastName);
+  setSessionForTest(session);
+
+  const page = instantiate(sharedPageDef);
+  page.onLoad({ strip: "0" });
+  page.onShow();
+  for (let i = 0; i < 200 && page.data.ready !== true; i += 1) {
+    await sleep(50);
+  }
+  expect(page.data.ready, "页面应当 ready").toBe(true);
+  return { page, session };
+}
+
+describe("#114 循环三档：页面点击链路", () => {
 
   /** 划一个分区，让草稿非空（空方案时 applyAdvanced 一帧都不发）。 */
   async function addZone(page: any) {
@@ -326,5 +339,190 @@ describe("#114 循环三档：页面点击链路", () => {
       await session.disconnect();
     }
   }, 120_000);
+});
+
+/**
+ * #117：进阶档整条点击路径。
+ *
+ * 与上面同一份底座、同一套驱动方式，补的是「点出来的东西设备真的收到了吗」的
+ * 其余几面：分区区间可读回、效果落成层类型、只改一条灯组不波及别条。
+ *
+ * 断言一律落在**外部可观察行为**上（页面派生的 data + 设备 State / QueryStrip），
+ * 不看内部方法有没有被调用，也不看私有字段。
+ */
+describe("#117 进阶档点击路径", () => {
+
+  it("切到进阶档后页面给出时间轴与循环三档", async () => {
+    const { page, session } = await openPage();
+    try {
+      expect(page.data.mode, "默认是简单档").toBe("simple");
+      page.onModeTap(tap({ mode: "advanced" }));
+      await sleep(300);
+      expect(page.data.mode).toBe("advanced");
+      expect(Array.isArray(page.data.steps), "时间轴步骤要渲染出来").toBe(true);
+      expect(page.data.steps.length).toBeGreaterThan(0);
+      expect(page.data.loopChoices, "循环三档要在页面上").toHaveLength(3);
+      expect(page.data.loopChoices.map((c: any) => c.label)).toEqual([
+        "不循环",
+        "全部循环",
+        "最后一步循环",
+      ]);
+    } finally {
+      await session.disconnect();
+    }
+  }, 120_000);
+
+  it("加步骤只改本地编排，不动设备", async () => {
+    const { page, session } = await openPage();
+    try {
+      page.onModeTap(tap({ mode: "advanced" }));
+      await sleep(200);
+      const stagesBefore = page.currentDraft().stages.length;
+      const segCountsBefore = JSON.stringify(session.deviceState!.stripSegCounts);
+
+      page.onStepAdd();
+      await sleep(400);
+
+      expect(page.currentDraft().stages.length, "草稿多一步").toBe(stagesBefore + 1);
+      expect(JSON.stringify(session.deviceState!.stripSegCounts), "设备段数不该变").toBe(
+        segCountsBefore,
+      );
+    } finally {
+      await session.disconnect();
+    }
+  }, 120_000);
+
+  it("划选分区并确定后，应用下发能从设备读回同一区间", async () => {
+    const { page, session } = await openPage();
+    const ledCount = session.deviceState!.stripCounts[0];
+    const endCell = Math.min(9, ledCount - 1);
+    try {
+      page.onModeTap(tap({ mode: "advanced" }));
+      await sleep(200);
+      page.onZoneAdd();
+      await sleep(200);
+      expect(page.data.pickerOpen, "灯珠弹窗应当打开").toBe(true);
+
+      page.onPickerCellTap(tap({ index: "0" }));
+      await sleep(80);
+      page.onPickerCellTap(tap({ index: String(endCell) }));
+      await sleep(80);
+      expect(page.data.pickerCanConfirm, "划选后应当允许确定").toBe(true);
+
+      page.onPickerConfirm();
+      await sleep(400);
+      expect(page.data.pickerOpen).toBe(false);
+
+      await page.applyAdvanced();
+      await sleep(1500);
+      /* 播放中设备按方案渲染，停播后才读得到静态分区。 */
+      await session.setPlayback(0, 0);
+      await sleep(500);
+
+      const queried = await session.queryStrip(0);
+      expect(queried.kind).toBe("ok");
+      const reports = queried.kind === "ok" ? queried.reports : [];
+      expect(
+        reports.some((r: any) => r.start === 0 && r.end === endCell),
+        `设备应能读回区间 0-${endCell}，实际 ${reports.map((r: any) => `${r.start}-${r.end}`).join(", ") || "无"}`,
+      ).toBe(true);
+    } finally {
+      await session.disconnect();
+    }
+  }, 180_000);
+
+  it("选效果后应用，设备读回该效果的层类型", async () => {
+    const { page, session } = await openPage();
+    try {
+      page.onModeTap(tap({ mode: "advanced" }));
+      await sleep(200);
+      page.onZoneAdd();
+      await sleep(200);
+      page.onPickerCellTap(tap({ index: "0" }));
+      await sleep(80);
+      page.onPickerCellTap(tap({ index: "9" }));
+      await sleep(80);
+      page.onPickerConfirm();
+      await sleep(400);
+
+      const zones = page.currentZones();
+      expect(zones.length, "前置：应有一个分区").toBeGreaterThan(0);
+      page.onBubbleZoneTap(tap({ segId: String(zones[0].segId) }));
+      await sleep(200);
+
+      page.onPanelTypeTap(tap({ type: "breathing" }));
+      await sleep(300);
+      expect(page.panelMode).toBe("breathing");
+
+      await page.applyAdvanced();
+      await sleep(1500);
+      await session.setPlayback(0, 0);
+      await sleep(500);
+
+      const queried = await session.queryStrip(0);
+      expect(queried.kind).toBe("ok");
+      const types = queried.kind === "ok" ? queried.reports.map((r: any) => r.layer0.type) : [];
+      expect(types, "设备读回的第一层应当是呼吸 0x01").toContain(SEGMENT_TYPE.BREATHING);
+    } finally {
+      await session.disconnect();
+    }
+  }, 180_000);
+
+  it("只编辑一条灯组并应用，其它灯组的分区与颜色逐字节不变", async () => {
+    const { page, session } = await openPage();
+    try {
+      /* 先给 strip 1 布一个静态段，模拟「别的灯组本来有配置」。 */
+      await session.setSegment({
+        stripId: 1,
+        segId: 0,
+        start: 0,
+        end: 9,
+        blend: 0,
+        layer0: {
+          type: SEGMENT_TYPE.STATIC,
+          hue: 12000,
+          sat: 255,
+          periodMs: 0,
+          p5: 0,
+          flags: 0,
+          level: 100,
+        },
+        layer1: { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 },
+      });
+      await sleep(400);
+
+      const before = await session.queryStrip(1);
+      expect(before.kind).toBe("ok");
+      const beforeReports = before.kind === "ok" ? before.reports : [];
+      expect(beforeReports.length, "前置：strip 1 应当有段").toBeGreaterThan(0);
+
+      /* 用户只编辑当前灯组（strip 0）。 */
+      page.onModeTap(tap({ mode: "advanced" }));
+      await sleep(200);
+      page.onZoneAdd();
+      await sleep(200);
+      page.onPickerCellTap(tap({ index: "0" }));
+      await sleep(80);
+      page.onPickerCellTap(tap({ index: "9" }));
+      await sleep(80);
+      page.onPickerConfirm();
+      await sleep(300);
+      await page.applyAdvanced();
+      await sleep(1500);
+      await session.setPlayback(0, 0);
+      await sleep(500);
+
+      const after = await session.queryStrip(1);
+      expect(after.kind).toBe("ok");
+      const afterReports = after.kind === "ok" ? after.reports : [];
+
+      expect(afterReports.length, "strip 1 的分区数不该变").toBe(beforeReports.length);
+      /* 逐字节：颜色与区间都不许被碰。 */
+      const key = (r: any) => `${r.start}-${r.end}|${r.layer0.type},${r.layer0.hue},${r.layer0.sat}`;
+      expect(afterReports.map(key)).toEqual(beforeReports.map(key));
+    } finally {
+      await session.disconnect();
+    }
+  }, 180_000);
 });
 
