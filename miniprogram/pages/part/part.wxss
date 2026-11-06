@@ -119,3 +119,109 @@
 .primary-btn[disabled] {
   opacity: 0.5;
 }
+
+/* ---------------- 时间轴（#154 单元的输出） ---------------- */
+
+.timeline-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.timeline-block {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 48rpx;
+  border-radius: var(--radius-sm);
+  background: var(--card-2);
+  color: var(--text-2);
+  overflow: hidden;
+}
+
+.timeline-block.selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.timeline-label,
+.timeline-order {
+  font-size: var(--fs-caption);
+}
+
+.tick-row {
+  position: relative;
+  height: 40rpx;
+}
+
+.tick {
+  position: absolute;
+  font-size: var(--fs-caption);
+  color: var(--text-3);
+  transform: translateX(-50%);
+}
+
+/* 两端贴边：标签不越出容器（位置仍由单元的 percent 决定）。 */
+.tick-first {
+  transform: none;
+}
+
+.tick-last {
+  transform: translateX(-100%);
+}
+
+/* ---------------- 效果面板（#154 单元的输出） ---------------- */
+
+.type-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.type-cell {
+  flex: 1 1 22%;
+  padding: var(--sp-2) 0;
+  border-radius: var(--radius-sm);
+  background: var(--card-2);
+  color: var(--text-2);
+  font-size: var(--fs-caption);
+  text-align: center;
+}
+
+.type-cell.selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.slider-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.choice-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.choice-cells {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.choice-cell {
+  flex: 1;
+  padding: var(--sp-2) 0;
+  border-radius: var(--radius-sm);
+  background: var(--card-2);
+  color: var(--text-2);
+  font-size: var(--fs-caption);
+  text-align: center;
+}
+
+.choice-cell.selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+}

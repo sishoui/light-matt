@@ -8,9 +8,16 @@
  *  1. **结构**（布局，0x20–0x23）：这个名字覆盖哪几颗灯珠；
  *  2. **内容**（场景，0x25–0x27）：它在当前场景里的时间轴与两层灯效。
  *
- * 所以本票（#155）的最小版是：结构区只有名字，内容区只有**一个步骤 + 一层效果**。
- * 时间轴、多步骤、叠加层留到后续票——但两条写入路径已经完整（`writeLayout`
- * 与 `setSceneStep`），加字段不需要改协议。
+ * ## 页面只做三件事
+ *
+ * 派生与规则全部在可独立驱动的单元里（#154 的两条判据）：
+ *
+ *  - **时间轴单元**（`timeline-unit`）：给一组步骤 → 渲染、选中、长按重排、改时长；
+ *    本页的最小版只有一步，所以「渲染 / 选中 / 改时长」三条真的在用，
+ *    长按重排随 #156 / #157 的多步骤 UI 一起接上（单元本身已能独立驱动）。
+ *  - **效果面板单元**（`panel-unit`）：给一层效果 → 切类型、改参数、回读。
+ *
+ * 页面自己只剩：读设备、把手势交给单元、把单元结果塞进 `setData`、下发。
  *
  * ## 两条写入路径的语义差别（必须在界面上说清）
  *
@@ -30,35 +37,51 @@ import { queryInt } from "../../utils/control/routes";
 import { ControlSession } from "../../utils/control/session";
 import { getSession, isMockSession } from "../../utils/control/session-singleton";
 import {
-  EFFECT_TYPE,
-  EFFECT_TYPE_NAMES,
-  LAYER_LEVEL_MAX,
+  applyPanelChoiceValue,
+  applyPanelSliderValue,
+  createPanelUnit,
+  panelUnitCheck,
+  panelUnitLayers,
+  panelUnitView,
+  selectPanelStep,
+  setPanelUnitHint,
+  switchPanelMode,
+  type PanelTarget,
+  type PanelUnit,
+} from "../../utils/control/panel-unit";
+import {
+  PANEL_EMPTY_STEP_GUIDE,
+  PANEL_TYPE_OPTIONS,
+  type PanelType,
+} from "../../utils/control/effect-panel";
+import {
+  applyTimelineDuration,
+  clampTimelineSelection,
+  createTimelineUnit,
+  selectTimelineStep,
+  setTimelineDuration,
+  setTimelineLedCount,
+  timelineStepDurationMs,
+  timelineUnitView,
+  type TimelineUnit,
+} from "../../utils/control/timeline-unit";
+import {
+  MAX_STEPS as TIMELINE_MAX_STEPS,
+  durationTicks,
+  type TimelineStep,
+} from "../../utils/control/timeline";
+import {
   LOOP,
   MAX_STEPS,
   NAME_BYTES,
-  NO_EFFECT,
   STEP_MAX_MS,
   STEP_MIN_MS,
 } from "../../utils/protocol/constants";
-import { EMPTY_LAYER, staticLayer } from "../../utils/protocol/commands";
 import type {
-  EffectLayer,
   LayoutPart,
   ScenePartReport,
   SceneStepReport,
 } from "../../utils/protocol/types";
-
-/** 可选的灯效类型（本票只做「一层」；叠加层与更多类型留给后续票）。 */
-const EFFECT_OPTIONS: ReadonlyArray<{ type: number; label: string }> = [
-  { type: EFFECT_TYPE.STATIC, label: EFFECT_TYPE_NAMES[EFFECT_TYPE.STATIC] },
-  { type: EFFECT_TYPE.BREATHING, label: EFFECT_TYPE_NAMES[EFFECT_TYPE.BREATHING] },
-  { type: EFFECT_TYPE.RAINBOW, label: EFFECT_TYPE_NAMES[EFFECT_TYPE.RAINBOW] },
-  { type: EFFECT_TYPE.COMET, label: EFFECT_TYPE_NAMES[EFFECT_TYPE.COMET] },
-  { type: EFFECT_TYPE.STROBE, label: EFFECT_TYPE_NAMES[EFFECT_TYPE.STROBE] },
-  { type: EFFECT_TYPE.HEARTBEAT, label: EFFECT_TYPE_NAMES[EFFECT_TYPE.HEARTBEAT] },
-  { type: EFFECT_TYPE.FLICKER, label: EFFECT_TYPE_NAMES[EFFECT_TYPE.FLICKER] },
-  { type: EFFECT_TYPE.OFF, label: EFFECT_TYPE_NAMES[EFFECT_TYPE.OFF] },
-];
 
 /** 循环三档的展示名（§7.5）。 */
 const LOOP_OPTIONS: ReadonlyArray<{ value: number; label: string }> = [
@@ -102,7 +125,14 @@ Page({
     /** 本部位在这个场景里的步数。 */
     stepCount: 0,
     stepIndex: 0,
-    /** 时长（毫秒），滑块用 100-60000。 */
+    /** 时间轴的块（`timelineUnitView` 的输出，页面不自己算宽）。 */
+    timelineBlocks: [] as ReturnType<typeof timelineUnitView>["blocks"],
+    timelineTotalMs: 0,
+    timelineCanAdd: false,
+    timelineMax: TIMELINE_MAX_STEPS,
+    /** 时长条的三个刻度（0.5 / 15 / 30 秒）：标签与位置都由纯函数算好。 */
+    durationTicks: durationTicks(),
+    /** 时长（毫秒），滑块用 STEP_MIN_MS-STEP_MAX_MS。 */
     durationMs: 3000,
     durationMin: STEP_MIN_MS,
     durationMax: STEP_MAX_MS,
@@ -111,18 +141,27 @@ Page({
     loopOptions: LOOP_OPTIONS.map((item) => item.label),
     /** 部位开关（属于场景）。 */
     on: true,
-    /** 底层效果类型。 */
-    effectIndex: 0,
-    effectOptions: EFFECT_OPTIONS.map((item) => item.label),
-    /** 层亮度 0-100。 */
-    level: LAYER_LEVEL_MAX,
-    levelMax: LAYER_LEVEL_MAX,
-    /** 色相（0-65535，界面显示成 0-360°）。 */
-    hue: 0,
-    /** 色相的度数形式（slider 用；0-360）。WXML 不做算术，所以由页面算好。 */
-    hueDegrees: 0,
-    /** 饱和度 0-255。 */
-    sat: 255,
+
+    /* ---- 效果面板（`panelUnitView` 的输出） ---- */
+    panelTypes: [] as ReturnType<typeof panelUnitView>["panelTypes"],
+    panelType: "static" as PanelType,
+    panelSliders: [] as ReturnType<typeof panelUnitView>["panelSliders"],
+    panelChoices: [] as ReturnType<typeof panelUnitView>["panelChoices"],
+    panelColorHex: "",
+    panelSummary: "",
+    panelNotice: "",
+    panelHasLayer: false,
+    panelGuide: PANEL_EMPTY_STEP_GUIDE,
+    hueRamp: "",
+    panelHint: "",
+    /** 叠加层（第二层）的选项 / 摘要；本票只读展示，编辑留给 #158。 */
+    overlayChoices: [] as ReturnType<typeof panelUnitView>["overlayChoices"],
+    overlayChoice: "none" as ReturnType<typeof panelUnitView>["overlayChoice"],
+    overlayEnabled: false,
+    overlaySummary: "",
+    overlaySliders: [] as ReturnType<typeof panelUnitView>["overlaySliders"],
+    overlayChoices2: [] as ReturnType<typeof panelUnitView>["overlayChoices2"],
+    overlayColorHex: "",
     /** 原生控件的激活色（不读 CSS 变量）。 */
     accentColor: "",
 
@@ -145,6 +184,12 @@ Page({
   scenePart: null as ScenePartReport | null,
   /** 当前步骤的两层（只读快照，改一层时另一层原样带回）。 */
   stepSnapshot: null as SceneStepReport | null,
+  /** 时间轴单元的交互状态（选中 / 容器宽 / 拖动）。 */
+  timeline: createTimelineUnit(),
+  /** 效果面板单元（类型 / 参数草稿 / 叠加层 / 亮度记忆）。 */
+  panel: createPanelUnit(),
+  /** 时间轴模型（本票只有一步；多步骤随 #156 / #157）。 */
+  timelineSteps: [] as TimelineStep[],
   /** 写入代次：连点保存时旧一轮静默退出。 */
   applyEpoch: 0,
   /** 订阅解绑。 */
@@ -159,6 +204,9 @@ Page({
     this.layoutParts = [];
     this.scenePart = null;
     this.stepSnapshot = null;
+    this.timeline = createTimelineUnit();
+    this.panel = createPanelUnit();
+    this.timelineSteps = [];
     this.applyEpoch = 0;
     this.unsubscribers = [];
 
@@ -279,8 +327,20 @@ Page({
           ) ?? null);
     this.stepSnapshot = step;
 
+    /* 3) 时间轴模型：本票只有「设备上那一步」（0 步时给一个默认步）。 */
+    const steps: TimelineStep[] =
+      step === null ? [{ durationMs: 3000, zones: [] }] : [{ durationMs: step.durationMs, zones: [] }];
+    this.timelineSteps = steps;
+    this.timeline = setTimelineLedCount(this.timeline, stripLedCount);
+    this.timeline = clampTimelineSelection(this.timeline, steps.length);
+    const timeline = timelineUnitView(steps, this.timeline);
+
+    /* 4) 效果面板：一次读回两层（`panel-unit` 负责主效果与叠加层）。 */
+    const target: PanelTarget = { sceneId, stripId, partId, stepIndex: 0, layer: 0 };
+    this.panel = selectPanelStep(this.panel, target, step);
+    const panel = panelUnitView(this.panel, { hasLayer: step !== null });
+
     const name = part.name;
-    const layer = step?.layer0 ?? staticLayer(0, 255, LAYER_LEVEL_MAX);
     this.setData({
       ready: true,
       hint: "",
@@ -294,17 +354,110 @@ Page({
       sceneId,
       sceneLabel: sceneId === 0 ? "场景 1" : `场景 ${sceneId + 1}`,
       stepCount: scenePart?.stepCount ?? 0,
+      stepIndex: timeline.selected,
+      timelineBlocks: timeline.blocks,
+      timelineTotalMs: timeline.totalMs,
+      timelineCanAdd: timeline.canAdd,
       loopIndex: loopIndexOf(scenePart?.loop ?? LOOP.NONE),
       on: scenePart?.on ?? false,
-      durationMs: step?.durationMs ?? 3000,
-      effectIndex: effectIndexOf(layer.type),
-      level: layer.level,
-      hue: layer.hue,
-      hueDegrees: Math.round((layer.hue / 65535) * 360),
-      sat: layer.sat,
-      applyError: "",
+      durationMs: timelineStepDurationMs(steps, timeline.selected),
+      ...panel,
     });
   },
+
+  /* ---------------- 时间轴（`timeline-unit`） ---------------- */
+
+  /** 点一块选中（多步骤时才有第二块；本票的列表只有一步）。 */
+  onStepTap(e: WechatMiniprogram.TouchEvent) {
+    const index = Number(e.currentTarget.dataset.index ?? -1);
+    const next = selectTimelineStep(this.timeline, index, this.timelineSteps.length);
+    if (next === this.timeline) {
+      return;
+    }
+    this.timeline = next;
+    this.applyTimelineToData();
+  },
+
+  /** 时长滑块（秒）：落进模型并刷新块宽。 */
+  onDurationChange(e: WechatMiniprogram.SliderChange) {
+    const seconds = Number(e.detail.value);
+    const next = applyTimelineDuration(this.timelineSteps, this.timeline.selected, seconds);
+    if (next === this.timelineSteps) {
+      return;
+    }
+    this.timelineSteps = next;
+    this.applyTimelineToData();
+  },
+
+  /** 时长条的三个刻度（点一下直接跳到那一档）。 */
+  onDurationTick(e: WechatMiniprogram.TouchEvent) {
+    const durationMs = Number(e.currentTarget.dataset.ms ?? 0);
+    const next = setTimelineDuration(this.timelineSteps, this.timeline.selected, durationMs);
+    if (next === this.timelineSteps) {
+      return;
+    }
+    this.timelineSteps = next;
+    this.applyTimelineToData();
+  },
+
+  /** 时间轴的派生（`timelineUnitView` 的唯一调用点）。 */
+  applyTimelineToData() {
+    const view = timelineUnitView(this.timelineSteps, this.timeline);
+    this.setData({
+      stepIndex: view.selected,
+      timelineBlocks: view.blocks,
+      timelineTotalMs: view.totalMs,
+      timelineCanAdd: view.canAdd,
+      durationMs: timelineStepDurationMs(this.timelineSteps, view.selected),
+    });
+  },
+
+  /* ---------------- 效果面板（`panel-unit`） ---------------- */
+
+  /** 换效果类型（只改主效果；叠加层留给 #158）。 */
+  onPanelTypeTap(e: WechatMiniprogram.TouchEvent) {
+    const type = String(e.currentTarget.dataset.type ?? "") as PanelType;
+    if (!PANEL_TYPE_OPTIONS.some((option) => option.type === type)) {
+      return;
+    }
+    const next = switchPanelMode(this.panel, type);
+    if (next === this.panel) {
+      return;
+    }
+    this.panel = next;
+    this.applyPanelToData();
+  },
+
+  /** 主效果的滑块（色相 / 饱和度 / 亮度 / 周期 / 最低亮 / 跨度 / 尾长 / 频率 / 节奏 / 密度）。 */
+  onPanelSliderChange(e: WechatMiniprogram.SliderChange) {
+    const key = String(e.currentTarget.dataset.key ?? "");
+    const next = applyPanelSliderValue(this.panel, key, Number(e.detail.value));
+    if (next === this.panel) {
+      return;
+    }
+    this.panel = next;
+    this.applyPanelToData();
+  },
+
+  /** 主效果的选择控件（波形 / 方向 / 占空比 / 脉冲）。 */
+  onPanelChoiceTap(e: WechatMiniprogram.TouchEvent) {
+    const key = String(e.currentTarget.dataset.key ?? "");
+    const value = Number(e.currentTarget.dataset.value ?? Number.NaN);
+    const next = applyPanelChoiceValue(this.panel, key, value);
+    if (next === this.panel) {
+      return;
+    }
+    this.panel = next;
+    this.applyPanelToData();
+  },
+
+  /** 面板的派生（`panelUnitView` 的唯一调用点）。 */
+  applyPanelToData() {
+    const view = panelUnitView(this.panel, { hasLayer: this.stepSnapshot !== null });
+    this.setData({ ...view });
+  },
+
+  /* ---------------- 结构区（布局） ---------------- */
 
   /** 名字输入：只记本地草稿与字节数（没按保存就不下发）。 */
   onNameInput(e: WechatMiniprogram.Input) {
@@ -320,8 +473,6 @@ Page({
    */
   async onSaveName() {
     const session = this.session;
-    const storage = this.storage;
-    void storage;
     if (session === null || this.data.busy) {
       return;
     }
@@ -331,7 +482,9 @@ Page({
       return;
     }
     const parts = this.layoutParts.map((part) =>
-      part.partId === this.data.partId ? { ...part, name, nameLen: nameBytesOf(name) } : { ...part },
+      part.partId === this.data.partId
+        ? { ...part, name, nameLen: nameBytesOf(name) }
+        : { ...part },
     );
     this.applyEpoch += 1;
     const epoch = this.applyEpoch;
@@ -354,47 +507,11 @@ Page({
     }
   },
 
-  /** 效果类型选择（只改底层；叠加层留到后续票）。 */
-  onEffectChange(e: WechatMiniprogram.PickerChange) {
-    const index = Number(e.detail.value);
-    if (!Number.isInteger(index) || index < 0 || index >= EFFECT_OPTIONS.length) {
-      return;
-    }
-    const type = EFFECT_OPTIONS[index].type;
-    /* 换类型时参数区整体替换（effects-spec §2）：保留色相与亮度，其余清零。 */
-    this.setData({
-      effectIndex: index,
-      level: type === EFFECT_TYPE.OFF ? 0 : this.data.level,
-    });
-  },
-
-  /** 层亮度（0-100）。 */
-  onLevelChange(e: WechatMiniprogram.SliderChange) {
-    this.setData({ level: Number(e.detail.value) });
-  },
-
-  /** 色相（界面 0-360°，线上 0-65535）。 */
-  onHueChange(e: WechatMiniprogram.SliderChange) {
-    const degrees = Math.max(0, Math.min(360, Number(e.detail.value)));
-    this.setData({
-      hue: Math.round((degrees / 360) * 65535),
-      hueDegrees: degrees,
-    });
-  },
-
-  /** 饱和度 0-255。 */
-  onSatChange(e: WechatMiniprogram.SliderChange) {
-    this.setData({ sat: Math.max(0, Math.min(255, Number(e.detail.value))) });
-  },
+  /* ---------------- 内容区（场景） ---------------- */
 
   /** 部位开关（属于场景；只灭灯、不停时钟）。 */
   onToggleOn(e: WechatMiniprogram.SwitchChange) {
     this.setData({ on: Boolean(e.detail.value) });
-  },
-
-  /** 时长（100-60000ms）。 */
-  onDurationChange(e: WechatMiniprogram.SliderChange) {
-    this.setData({ durationMs: Number(e.detail.value) });
   },
 
   /** 循环三档（§7.5）。 */
@@ -413,19 +530,38 @@ Page({
     if (session === null || this.data.busy) {
       return;
     }
+    /* 本地预检：越界的频率 / 节奏一帧都不发，原因就地显示。 */
+    const check = panelUnitCheck(this.panel);
+    if (!check.ok) {
+      this.setData({ applyError: check.message });
+      return;
+    }
+
+    const sceneId = this.data.sceneId;
     const stripId = this.data.stripId;
     const partId = this.data.partId;
-    const sceneId = this.data.sceneId;
-    const stepCount = Math.max(1, Math.min(MAX_STEPS, this.data.stepCount === 0 ? 1 : this.data.stepCount));
+    const stepCount = Math.max(
+      1,
+      Math.min(MAX_STEPS, this.data.stepCount === 0 ? 1 : this.data.stepCount),
+    );
     const loop = LOOP_OPTIONS[this.data.loopIndex]?.value ?? LOOP.NONE;
-    const type = EFFECT_OPTIONS[this.data.effectIndex]?.type ?? EFFECT_TYPE.STATIC;
+    /* 时长与两层都来自各自的单元（页面不再自己算参数）。 */
+    const durationMs = timelineStepDurationMs(this.timelineSteps, this.timeline.selected);
+    const layers = panelUnitLayers(this.panel);
 
     this.applyEpoch += 1;
     const epoch = this.applyEpoch;
     this.setData({ busy: true, applyError: "" });
     try {
       /* 1) 时间轴头。步数从 0 → 1 会建出第一步；之后改循环 / 开关不动时间轴。 */
-      const head = await session.setScenePart(sceneId, stripId, partId, stepCount, loop, this.data.on);
+      const head = await session.setScenePart(
+        sceneId,
+        stripId,
+        partId,
+        stepCount,
+        loop,
+        this.data.on,
+      );
       if (epoch !== this.applyEpoch) {
         return;
       }
@@ -434,35 +570,22 @@ Page({
         return;
       }
 
-      /* 2) 这一步的两层：layer0 是新效果，layer1 原样保留（本票不编辑叠加层）。 */
-      const keepOverlay = this.stepSnapshot?.layer1 ?? EMPTY_LAYER;
-      const layer: EffectLayer = {
-        type,
-        hue: this.data.hue,
-        sat: this.data.sat,
-        periodMs: type === EFFECT_TYPE.STATIC || type === EFFECT_TYPE.OFF
-          ? 0
-          : this.stepSnapshot?.layer0.periodMs ?? defaultPeriodOf(type),
-        p5: type === EFFECT_TYPE.STATIC || type === EFFECT_TYPE.OFF
-          ? 0
-          : this.stepSnapshot?.layer0.p5 ?? 0,
-        flags: type === EFFECT_TYPE.OFF ? 0 : (this.stepSnapshot?.layer0.flags ?? 0),
-        level: type === EFFECT_TYPE.OFF ? 0 : this.data.level,
-      };
+      /* 2) 这一步的两层：都由面板单元装配（主效果 + 叠加层）。 */
       const step = await session.setSceneStep({
         sceneId,
         stripId,
         partId,
-        stepIndex: 0,
-        durationMs: clampDuration(this.data.durationMs),
-        layer0: layer,
-        layer1: keepOverlay.type === NO_EFFECT ? EMPTY_LAYER : keepOverlay,
+        stepIndex: this.timeline.selected,
+        durationMs,
+        layer0: layers.layer0,
+        layer1: layers.layer1,
       });
       if (epoch !== this.applyEpoch) {
         return;
       }
       if (step.kind === "ok" || step.kind === "storage") {
         if (step.kind === "storage") {
+          this.panel = setPanelUnitHint(this.panel, "已生效但未保存到设备");
           this.setData({ applyError: "已生效但未保存到设备" });
         } else {
           wx.showToast({ title: "已下发", icon: "none" });
@@ -528,41 +651,9 @@ function partPixelCount(part: LayoutPart): number {
   return total;
 }
 
-function effectIndexOf(type: number): number {
-  const index = EFFECT_OPTIONS.findIndex((item) => item.type === type);
-  return index < 0 ? 0 : index;
-}
-
 function loopIndexOf(loop: number): number {
   const index = LOOP_OPTIONS.findIndex((item) => item.value === loop);
   return index < 0 ? 0 : index;
-}
-
-/** 类型的默认周期（新建一步时用；与 effects-spec §5 的下限一致）。 */
-function defaultPeriodOf(type: number): number {
-  switch (type) {
-    case EFFECT_TYPE.BREATHING:
-      return 2000;
-    case EFFECT_TYPE.RAINBOW:
-    case EFFECT_TYPE.COMET:
-      return 3000;
-    case EFFECT_TYPE.STROBE:
-      return 300;
-    case EFFECT_TYPE.HEARTBEAT:
-      return 900;
-    case EFFECT_TYPE.FLICKER:
-      return 800;
-    default:
-      return 0;
-  }
-}
-
-/** 把时长钳进 100-60000。 */
-function clampDuration(value: number): number {
-  if (!Number.isFinite(value)) {
-    return STEP_MIN_MS;
-  }
-  return Math.max(STEP_MIN_MS, Math.min(STEP_MAX_MS, Math.round(value)));
 }
 
 /** 写命令失败的统一文案（StorageFailed 单独说「已生效但未保存」）。 */
@@ -585,3 +676,6 @@ function describeFailure(result: {
   }
   return "写入失败";
 }
+
+/** 两个单元的类型留在这里可读（页面私有字段的注解来源）。 */
+export type PartPageUnits = { timeline: TimelineUnit; panel: PanelUnit };

@@ -55,47 +55,28 @@
       </view>
 
       <view class="card">
+        <!--
+          时间轴（`timeline-unit` 的 timelineUnitView 输出）：本票只有一步，
+          所以只有一块；多步骤与长按重排随 #156 / #157。
+        -->
         <view class="field">
-          <text class="field-label">灯效</text>
-          <picker
-            mode="selector"
-            range="{{effectOptions}}"
-            value="{{effectIndex}}"
-            bindchange="onEffectChange"
+          <text class="field-label">时间轴</text>
+          <text class="field-value">{{timelineBlocks.length}} 步 · {{durationMs}} ms</text>
+        </view>
+        <view class="timeline-row">
+          <view
+            wx:for="{{timelineBlocks}}"
+            wx:key="key"
+            class="timeline-block {{item.selected ? 'selected' : ''}}"
+            style="{{item.style}}"
+            data-index="{{item.index}}"
+            bindtap="onStepTap"
           >
-            <view class="picker-value">{{effectOptions[effectIndex]}}</view>
-          </picker>
+            <text wx:if="{{item.showLabel}}" class="timeline-label">{{item.durationText}}</text>
+            <text class="timeline-order">{{item.index + 1}}</text>
+          </view>
         </view>
 
-        <view class="field">
-          <text class="field-label">层亮度</text>
-          <text class="field-value">{{level}}</text>
-        </view>
-        <slider
-          min="0"
-          max="{{levelMax}}"
-          value="{{level}}"
-          activeColor="{{accentColor}}"
-          show-value="{{false}}"
-          bindchange="onLevelChange"
-        />
-
-        <view class="field">
-          <text class="field-label">色相</text>
-          <text class="field-value">{{hue}} / 65535</text>
-        </view>
-        <slider min="0" max="360" value="{{hueDegrees}}" activeColor="{{accentColor}}" bindchange="onHueChange" />
-
-        <view class="field">
-          <text class="field-label">饱和度</text>
-          <text class="field-value">{{sat}}</text>
-        </view>
-        <slider min="0" max="255" value="{{sat}}" activeColor="{{accentColor}}" bindchange="onSatChange" />
-
-        <view class="field">
-          <text class="field-label">时长</text>
-          <text class="field-value">{{durationMs}} ms</text>
-        </view>
         <slider
           min="{{durationMin}}"
           max="{{durationMax}}"
@@ -103,6 +84,75 @@
           activeColor="{{accentColor}}"
           bindchange="onDurationChange"
         />
+        <view class="tick-row">
+          <text
+            wx:for="{{durationTicks}}"
+            wx:key="key"
+            class="tick tick-{{item.align}}"
+            style="left: {{item.percent}}%"
+            data-ms="{{item.durationMs}}"
+            bindtap="onDurationTick"
+          >{{item.label}}</text>
+        </view>
+
+        <!--
+          效果面板（`panel-unit` 的 panelUnitView 输出）：参数区完全由类型决定，
+          页面这里没有任何按类型的 wx:if——这是「参数控件定义只有一份」的落地。
+        -->
+        <view class="field">
+          <text class="field-label">灯效</text>
+          <text class="field-value">{{panelSummary}}</text>
+        </view>
+        <view class="type-row">
+          <view
+            wx:for="{{panelTypes}}"
+            wx:key="type"
+            class="type-cell {{item.selected ? 'selected' : ''}}"
+            data-type="{{item.type}}"
+            bindtap="onPanelTypeTap"
+          >{{item.name}}</view>
+        </view>
+
+        <text wx:if="{{panelGuide}}" class="field-hint">{{panelGuide}}</text>
+        <text wx:if="{{panelNotice}}" class="field-hint">{{panelNotice}}</text>
+
+        <view class="slider-row" wx:for="{{panelSliders}}" wx:key="key">
+          <view class="field">
+            <text class="field-label">{{item.label}}</text>
+            <text class="field-value">{{item.display}}</text>
+          </view>
+          <slider
+            min="{{item.min}}"
+            max="{{item.max}}"
+            step="{{item.step}}"
+            value="{{item.value}}"
+            activeColor="{{accentColor}}"
+            data-key="{{item.key}}"
+            bindchange="onPanelSliderChange"
+          />
+        </view>
+
+        <view class="choice-row" wx:for="{{panelChoices}}" wx:key="key">
+          <text class="field-label">{{item.label}}</text>
+          <view class="choice-cells">
+            <view
+              wx:for="{{item.options}}"
+              wx:for-item="option"
+              wx:key="value"
+              class="choice-cell {{option.value === item.value ? 'selected' : ''}}"
+              data-key="{{item.key}}"
+              data-value="{{option.value}}"
+              bindtap="onPanelChoiceTap"
+            >{{option.label}}</view>
+          </view>
+        </view>
+
+        <!-- 叠加层（第二层）：本票只读展示，编辑随 #158。 -->
+        <view wx:if="{{overlayEnabled}}" class="field">
+          <text class="field-label">特效层</text>
+          <text class="field-value">{{overlaySummary}}</text>
+        </view>
+        <text wx:elif="{{panelHasLayer}}" class="field-hint">特效层：空</text>
 
         <view class="field">
           <text class="field-label">循环</text>
