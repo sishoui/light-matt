@@ -63,6 +63,17 @@ static uint8_t s_layout_blob[LUMEN_LAYOUT_BLOB_MAX];
 static uint8_t s_scene_blob[LUMEN_MAX_SCENES][LUMEN_SCENE_BLOB_MAX];
 
 /*
+ * 上电恢复用的两块工作区。**必须静态**：`lumen_led_engine_init` 由 app_main
+ * 调用，那个任务的栈默认只有 3584 字节（CONFIG_ESP_MAIN_TASK_STACK_SIZE），
+ * 而布局是 2696 字节、场景是 10530 字节。放进局部变量会在启动时打穿栈保护，
+ * 表现为设备一上电就 panic、连蓝牙广播都起不来。
+ *
+ * 只在 init 里用一次，与渲染任务的工作区不重叠，所以静态区不会打架。
+ */
+static lumen_layout_store_t s_restore_layout;
+static lumen_scene_t s_restore_scene;
+
+/*
  * 渲染任务的工作区（**静态**，不是栈上局部变量）。
  *
  * 为什么必须静态：lumen_state_t + 布局快照（2696 B）+ 场景快照（10530 B）
@@ -852,25 +863,28 @@ esp_err_t lumen_led_engine_init(void)
     /*
      * 恢复布局。它必须按**当前**灯珠数整份校验：数量被改小之后旧布局里越界的
      * 段应当整份拒绝，而不是让半套越界配置进入 RAM（与 v4 的剧本同一取舍）。
+     *
+     * 用 s_restore_layout 而不是局部变量：lumen_layout_store_t 是 2696 字节，
+     * 而 lumen_led_engine_init 跑在 app_main 任务的 3584 字节栈上——放局部变量
+     * 直接打穿栈保护（真机实测 `Stack protection fault, task "main"`）。
      */
-    {
-        lumen_layout_store_t layout_restored;
-        lumen_layout_store_init(&layout_restored);
-        if (lumen_state_store_load_layout(&layout_restored, s_state.led_count)) {
-            s_layout = layout_restored;
-            ESP_LOGI(TAG, "布局已恢复：strip0 parts=%u", s_layout.part_count[0]);
-        }
+    lumen_layout_store_init(&s_restore_layout);
+    if (lumen_state_store_load_layout(&s_restore_layout, s_state.led_count)) {
+        s_layout = s_restore_layout;
+        ESP_LOGI(TAG, "布局已恢复：strip0 parts=%u", s_layout.part_count[0]);
     }
 
     /*
      * 恢复三个场景。播放头**不持久化**（§9.4：上电从每个部位的第 1 步起跳），
      * 所以这里只恢复内容，播放头保持「未启动」。
+     *
+     * 同样必须静态：lumen_scene_t 是 10530 字节，一轮循环就把 app_main 的栈
+     * 彻底压穿。循环复用同一块工作区，逐个场景载入后立刻拷进 s_scenes。
      */
     for (uint8_t i = 0; i < LUMEN_MAX_SCENES; ++i) {
-        lumen_scene_t scene_restored;
-        lumen_scene_init(&scene_restored);
-        if (lumen_state_store_load_scene(i, &scene_restored)) {
-            s_scenes.scene[i] = scene_restored;
+        lumen_scene_init(&s_restore_scene);
+        if (lumen_state_store_load_scene(i, &s_restore_scene)) {
+            s_scenes.scene[i] = s_restore_scene;
         }
     }
     refresh_layout_summary_locked();
@@ -943,6 +957,27 @@ esp_err_t lumen_led_engine_init(void)
 
     /* State 报实际配置的灯带数（小程序据此知道要查几条）。 */
     s_state.strip_count = strip_n > 1 ? strip_n : 1;
+
+    /*
+     * 把每条链的灯珠数写回 State。
+     *
+     * 上面那份 counts[] 只喂给了 lumen_planar_init（渲染要按它建句柄），而
+     * State 的 led_count[] 一直是默认值：首条有数、其余 0。后果不是「显示不
+     * 对」——lumen_layout_store_validate 拿 strip_counts 校验每条已配置的链
+     * 都不得为 0，于是**每一句 LayoutCommit 都被 InvalidParam 拒掉**，布局永远
+     * 落不了盘，部位划分改了也不生效（真机实测 55/58，三条失败全是它）。
+     *
+     * 多条链时以 counts[] 为准（它已经合成了「恢复值 / 默认值」）；单条链时
+     * led_count[0] 就是唯一那条，保持原样即可。
+     */
+    if (strip_n > 1) {
+        for (uint8_t i = 0; i < strip_n; ++i) {
+            s_state.led_count[i] = counts[i];
+        }
+        for (uint8_t i = strip_n; i < LUMEN_MAX_STRIPS; ++i) {
+            s_state.led_count[i] = 0;
+        }
+    }
     refresh_layout_summary_locked();
 
     BaseType_t created =

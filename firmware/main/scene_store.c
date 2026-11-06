@@ -363,7 +363,16 @@ bool lumen_scene_blob_decode(const uint8_t *blob, size_t len, lumen_scene_t *out
         }
     }
 
-    lumen_scene_t decoded;
+    /*
+     * **必须静态**：lumen_scene_t 是 10530 字节，而本函数经
+     * lumen_state_store_load_scene 跑在 app_main 任务的 3584 字节栈上。
+     * 放局部变量会在「NVS 里已有场景数据」的那次启动打穿栈保护——真机表现是
+     * 刷完固件第一次能起来（无持久化数据、走不到这一段），写入场景后一复位就
+     * 反复 panic 重启，连蓝牙广播都起不来。
+     *
+     * 解码在同一把调用里完成，最后整体拷给 out，所以复用安全。
+     */
+    static lumen_scene_t decoded;
     memset(&decoded, 0, sizeof(decoded));
     decoded.name_len = name_len;
     memcpy(decoded.name, &blob[BLOB_OFF_NAME], LUMEN_NAME_BYTES);

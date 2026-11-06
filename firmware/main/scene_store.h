@@ -84,6 +84,15 @@ _Static_assert(sizeof(lumen_scene_step_t) == 20, "lumen_scene_step_t must be 20 
 _Static_assert(sizeof(lumen_part_scene_t) == 164, "lumen_part_scene_t must be 164 bytes");
 _Static_assert(sizeof(lumen_scene_t) == 10530, "lumen_scene_t must be 10530 bytes");
 
+/*
+ * 栈预算（写给下一个改这里的人）：app_main 的栈默认 3584 字节
+ * （CONFIG_ESP_MAIN_TASK_STACK_SIZE），而上电恢复链
+ * （state_store → scene_store / layout_store 解码）就跑在它上面。
+ * 这两个结构**只能放静态区**；放局部变量会直接打穿栈保护，表现是
+ * 「刷完固件第一次能起来、写入数据后一复位就反复 panic」。
+ * 真机踩过两次：led_engine_init 的恢复工作区，与两个 blob 解码的 decoded。
+ */
+
 /* blob：'LMS5' + 版本 + 名字 + 每链部分数据。最坏 10472 字节，硬上限 12288。 */
 #define LUMEN_SCENE_BLOB_VERSION 1
 #define LUMEN_SCENE_BLOB_MAX 12288
