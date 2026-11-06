@@ -50,3 +50,6 @@ miniprogram/.auto/
 
 # 本地测试运行目录（adv-scope 录制、临时探针）
 .test-run-tmp/
+
+# 模拟器 / 3D 渲染的产物（脚本生成，不入库）
+.sim-out/
