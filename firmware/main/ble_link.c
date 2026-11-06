@@ -32,7 +32,7 @@
 
 static const char *TAG = "lumen_ble";
 
-/* 128-bit UUID 在 NimBLE 里按小端存放。唯一真相是 docs/protocol-v4.md §2。
+/* 128-bit UUID 在 NimBLE 里按小端存放。唯一真相是 docs/protocol-v5.md §2。
  * Service 6c756d65-6e00-4b1e-9a3c-000000000001
  * RX      ...-000000000002
  * TX      ...-000000000003
@@ -52,7 +52,7 @@ static const ble_uuid128_t s_state_uuid = BLE_UUID128_INIT(
     0x1e, 0x4b, 0x00, 0x6e, 0x65, 0x6d, 0x75, 0x6c);
 
 /*
- * 单次 BLE 写 / notify 的字节上限（docs/protocol-v4.md §2.1）：
+ * 单次 BLE 写 / notify 的字节上限（docs/protocol-v5.md §2.1）：
  *   chunk_capacity = min(mtu - 3, 180)，单分片的数据上限再减 1 字节分片头。
  *
  * MTU 未知时按 23 处理（最坏情况），即 20 字节写、19 字节数据。
@@ -62,9 +62,8 @@ static const ble_uuid128_t s_state_uuid = BLE_UUID128_INIT(
 #define LUMEN_RX_BUF_SIZE (LUMEN_MAX_CHUNK_CAPACITY + 1)
 #define LUMEN_DEFAULT_MTU 23
 
-/* v4 固件版本号（DeviceInfoReport 的 firmware_version = major<<8 | minor）。
- * 与协议 version 是两件事，但同一轮升级必须同步（docs/protocol-v4.md §7.4）。 */
-#define LUMEN_FIRMWARE_VERSION 0x0400
+/* 固件版本号现在是 protocol.h 的 LUMEN_FIRMWARE_VERSION（0x0500），
+ * 与协议 version 在同一轮升级里同步（docs/protocol-v5.md §4）。 */
 
 /* 每条灯带的数据脚（构建期 Kconfig，协议只读；#38 的 StripConfigReport 用它）。 */
 #ifndef CONFIG_LUMEN_STRIP_PINS
@@ -238,58 +237,110 @@ static void reject_oversized(const struct os_mbuf *om, uint16_t mbuf_len)
 }
 
 /*
- * QueryStrip 0x12 的多帧响应（docs/protocol-v4.md §7.4 / §8）：
- * seg_count 条 SegmentReport(0x83) + 1 条 SegmentListEnd(0x84)，
- * **全部回显同一个 seq**。小程序按命令字区分帧类型，按 SegmentListEnd 收尾。
+ * QueryLayout 0x24 的多帧响应（docs/protocol-v5.md §7.2 / §8）：
+ * 逐部位一条 LayoutReport 0x89 + 一条 LayoutListEnd 0x8A，**全部回显同一个 seq**。
  *
- * SegmentReport 载荷固定 23 字节，与 §7.1 的 SetSegment 同构：
- *   strip_id, seg_id(真实槽位), start, end, blend, layer0(9), layer1(9)
- *
- * #37：段就是两层结构，layer0 / layer1 / blend 直接编码上报（与持久化记录
- * 的层编码完全一致，用 lumen_layer_encode 而不是在这里手抄一遍字段）。
+ * 只有 seg_count > 0 的部位才会被报出来；part_mask 与报告条数一致。
+ * 名字为空串的部位仍然可报（name_len = 0）。
  */
-static void send_strip_reports(uint8_t seq, uint8_t strip_id)
+static void send_layout_reports(uint8_t seq, uint8_t strip_id)
 {
-    lumen_segment_t segments[LUMEN_MAX_SEGMENTS];
-    uint8_t slots[LUMEN_MAX_SEGMENTS];
-    uint8_t count = lumen_led_engine_segments(strip_id, segments, slots, LUMEN_MAX_SEGMENTS);
-    uint8_t mask = lumen_led_engine_segment_mask(strip_id);
+    /* 布局快照 2696 字节：放静态区，别吃 NimBLE 主机任务的 4KB 栈。 */
+    static lumen_layout_store_t layout;
+    lumen_led_engine_layout_snapshot(&layout);
 
     uint8_t frame[LUMEN_MAX_FRAME];
+    uint8_t mask = 0;
     uint8_t sent = 0;
-    for (uint8_t i = 0; i < count; ++i) {
-        const lumen_segment_t *seg = &segments[i];
-        /* layer0.type 未知说明段表已被写坏；不回报（权威段表不该出现）。 */
-        if (!lumen_effect_type_known(seg->layer[0].type)) {
-            continue;
+    uint8_t parts = layout.part_count[strip_id];
+    if (parts > LUMEN_MAX_PARTS) {
+        parts = LUMEN_MAX_PARTS;
+    }
+    for (uint8_t p = 0; p < parts; ++p) {
+        const lumen_part_layout_t *part = &layout.part[strip_id][p];
+        if (part->segs.seg_count == 0) {
+            continue; /* 没有划出灯珠的部位不报（报告条数 = part_mask 位数） */
         }
-        /* 层编码：type + param[7] + level（9 字节定宽，§7.1）。 */
-        uint8_t layer0[9];
-        uint8_t layer1[9];
-        lumen_layer_encode(&seg->layer[0], layer0);
-        lumen_layer_encode(&seg->layer[1], layer1);
-
-        size_t len = lumen_protocol_encode_segment_report(seq, strip_id, slots[i], seg->start,
-                                                          seg->end, seg->blend, layer0, layer1,
-                                                          frame, sizeof(frame));
+        size_t len = lumen_protocol_encode_layout_report(
+            seq, strip_id, p, part->name_len, part->name, part->segs.seg_count, part->segs.seg,
+            frame, sizeof(frame));
         if (len == 0 || lumen_ble_link_notify(frame, len) != ESP_OK) {
-            ESP_LOGW(TAG, "SegmentReport 发送失败 strip=%u seg=%u", strip_id, slots[i]);
+            ESP_LOGW(TAG, "LayoutReport 发送失败 strip=%u part=%u", strip_id, p);
             continue;
         }
+        mask |= (uint8_t)(1u << p);
         ++sent;
     }
 
-    size_t end_len = lumen_protocol_encode_segment_list_end(seq, strip_id, mask, frame,
-                                                            sizeof(frame));
+    size_t end_len = lumen_protocol_encode_layout_list_end(seq, strip_id, mask, frame,
+                                                           sizeof(frame));
     if (end_len == 0 || lumen_ble_link_notify(frame, end_len) != ESP_OK) {
-        ESP_LOGW(TAG, "SegmentListEnd 发送失败 strip=%u", strip_id);
+        ESP_LOGW(TAG, "LayoutListEnd 发送失败 strip=%u", strip_id);
     }
-    ESP_LOGI(TAG, "QueryStrip strip=%u -> %u SegmentReport + SegmentListEnd mask=0x%02X seq=0x%02X",
+    ESP_LOGI(TAG, "QueryLayout strip=%u -> %u LayoutReport + LayoutListEnd mask=0x%02X seq=0x%02X",
              strip_id, sent, mask, seq);
 }
 
 /*
- * QueryStripConfig 0x1C → StripConfigReport 0x87（docs/protocol-v4.md §7.4）。
+ * QueryScene 0x29 的多帧响应（§6.2 / §8）：逐部位 ScenePartReport 0x8B、
+ * 逐步骤 SceneStepReport 0x8C、一条 SceneListEnd 0x8D，全部回显同一个 seq。
+ *
+ * 只报 step_count > 0 的部位（0 步 = 本场景不演，S10），与下发时的形状对称。
+ * 场景快照 10530 字节：静态区，绝不上栈。
+ */
+static void send_scene_reports(uint8_t seq, uint8_t scene_id)
+{
+    static lumen_scene_t scene;
+    lumen_led_engine_scene_snapshot(scene_id, &scene);
+
+    uint8_t frame[LUMEN_MAX_FRAME];
+    uint8_t part_reports = 0;
+    uint8_t step_reports = 0;
+
+    for (uint8_t strip = 0; strip < LUMEN_MAX_STRIPS; ++strip) {
+        for (uint8_t part = 0; part < LUMEN_MAX_PARTS; ++part) {
+            const lumen_part_scene_t *ps = &scene.part[strip][part];
+            if (ps->step_count == 0) {
+                continue;
+            }
+            size_t len = lumen_protocol_encode_scene_part_report(
+                seq, scene_id, strip, part, ps->step_count, ps->loop, ps->on, frame,
+                sizeof(frame));
+            if (len == 0 || lumen_ble_link_notify(frame, len) != ESP_OK) {
+                ESP_LOGW(TAG, "ScenePartReport 发送失败 scene=%u strip=%u part=%u", scene_id,
+                         strip, part);
+                continue;
+            }
+            ++part_reports;
+            for (uint8_t st = 0; st < ps->step_count && st < LUMEN_MAX_STEPS; ++st) {
+                uint8_t l0[9];
+                uint8_t l1[9];
+                lumen_layer_encode(&ps->step[st].layer[0], l0);
+                lumen_layer_encode(&ps->step[st].layer[1], l1);
+                size_t slen = lumen_protocol_encode_scene_step_report(
+                    seq, scene_id, strip, part, st, ps->step[st].duration_ms, l0, l1, frame,
+                    sizeof(frame));
+                if (slen == 0 || lumen_ble_link_notify(frame, slen) != ESP_OK) {
+                    ESP_LOGW(TAG, "SceneStepReport 发送失败 scene=%u strip=%u part=%u step=%u",
+                             scene_id, strip, part, st);
+                    continue;
+                }
+                ++step_reports;
+            }
+        }
+    }
+
+    size_t end_len = lumen_protocol_encode_scene_list_end(seq, scene_id, scene.name_len,
+                                                          scene.name, frame, sizeof(frame));
+    if (end_len == 0 || lumen_ble_link_notify(frame, end_len) != ESP_OK) {
+        ESP_LOGW(TAG, "SceneListEnd 发送失败 scene=%u", scene_id);
+    }
+    ESP_LOGI(TAG, "QueryScene %u -> %u ScenePartReport + %u SceneStepReport + SceneListEnd",
+             scene_id, part_reports, step_reports);
+}
+
+/*
+ * QueryStripConfig 0x1C -> StripConfigReport 0x87（docs/protocol-v5.md §7.4）。
  * 引脚表来自构建期 Kconfig（CONFIG_LUMEN_STRIP_PINS），协议只读。
  * 未分配的记录由编码器写 gpio=0xFF、flags=0。
  */
@@ -316,12 +367,11 @@ static void send_strip_config_report(uint8_t seq)
 }
 
 /*
- * QueryDeviceInfo 0x1D → DeviceInfoReport 0x88（docs/protocol-v4.md §7.4）。
+ * QueryDeviceInfo 0x1D -> DeviceInfoReport 0x88（docs/protocol-v5.md §7.4）。
  *
  * hw_id 是 6 字节 BT MAC，按 "AA:BB:CC:DD:EE:FF" 的自然顺序——esp_read_mac
  * 给出的就是这个顺序，直接抄，不要按小端翻转（那是数值字段的规则）。
- * caps：bit0 = 支持两层叠加（v3 的段载荷已经是定宽两层）；
- *       bit1 = fade 已实现 —— #39 才接行为，这里保持 0。
+ * caps：bit0 = 支持两层叠加；bit1 = fade（v5 仍为 0）。
  */
 static void send_device_info_report(uint8_t seq)
 {
@@ -344,52 +394,12 @@ static void send_device_info_report(uint8_t seq)
 }
 
 /*
- * ScriptProgress 0x86：每接受 8 帧 ScriptSegment 补一条（docs/protocol-v4.md §10.4）。
- *
- * 「每 8 帧」是设备侧补充证据；权威进度是小程序自己数的逐帧 ACK。
- * 每帧都发会把 BLE 带宽吃掉（下发一帧本身就 20 字节），所以按 8 帧节流。
- */
-static void send_script_progress(uint8_t seq, uint8_t script_id, uint16_t frames_written)
-{
-    uint8_t frame[LUMEN_MAX_FRAME];
-    size_t len = lumen_protocol_encode_script_progress(seq, script_id, frames_written, frame,
-                                                       sizeof(frame));
-    if (len == 0 || lumen_ble_link_notify(frame, len) != ESP_OK) {
-        ESP_LOGW(TAG, "ScriptProgress 发送失败 id=%u frames=%u", script_id, frames_written);
-    }
-}
-
-/* QueryScript 0x1A → ScriptSummary 0x85（回显请求 seq）。 */
-static void send_script_summary(uint8_t seq, uint8_t script_id)
-{
-    uint8_t stage_count = 0;
-    uint8_t flags = 0;
-    if (!lumen_led_engine_script_summary(script_id, &stage_count, &flags)) {
-        /* 未提交的剧本：回 stage_count 0、flags 0、active 0，让 UI 明确显示「没有」。 */
-        ESP_LOGI(TAG, "QueryScript id=%u -> 未提交", script_id);
-        stage_count = 0;
-        flags = 0;
-    }
-    uint8_t active = (uint8_t)((flags & 0x02u) != 0 ? 1 : 0);
-    uint8_t frame[LUMEN_MAX_FRAME];
-    size_t len = lumen_protocol_encode_script_summary(seq, script_id, stage_count,
-                                                      (uint8_t)(flags & 0x01u), active, frame,
-                                                      sizeof(frame));
-    if (len == 0 || lumen_ble_link_notify(frame, len) != ESP_OK) {
-        ESP_LOGW(TAG, "ScriptSummary 发送失败 id=%u", script_id);
-        return;
-    }
-    ESP_LOGI(TAG, "QueryScript id=%u -> stages=%u flags=0x%02X active=%u seq=0x%02X", script_id,
-             stage_count, flags, active, seq);
-}
-
-/*
  * 处理一条完整写到 RX 的帧：
- *   解码（§10.2 magic→version→length→checksum）
- *   → 命令分发（§10.2 command→payload 长度→payload 取值）
- *   → 写入共享状态（RAM）
- *   → 发渲染信号（lumen_led_engine_commit 内部完成，渲染异步）
- *   → 回 ACK（协议 §10.1：写入 RAM 后立刻回）
+ *   解码（§3.1 magic→version→length→checksum）
+ *   → 命令分发（§5 command→payload 长度→payload 取值）
+ *   → 写入共享状态 / 布局 / 场景（RAM）
+ *   → 发渲染信号（引擎内部完成，渲染异步）
+ *   → 回 ACK
  *
  * 渲染任务与 NVS 写入都不在本回调里发生。命令层是纯函数，状态写入是 O(1)
  * 邮箱操作，不阻塞 NimBLE 主机任务。
@@ -404,7 +414,7 @@ static void handle_frame(const uint8_t *data, size_t len)
     case LUMEN_DECODE_OK:
         break;
     case LUMEN_DECODE_SILENT:
-        /* 不足 6 字节：读不出可靠的 seq，按协议静默丢弃。 */
+        /* 不足 8 字节：读不出可靠的 seq，按协议静默丢弃。 */
         ESP_LOGW(TAG, "帧不足 %d 字节，静默丢弃", LUMEN_FRAME_OVERHEAD);
         return;
     default:
@@ -419,18 +429,19 @@ static void handle_frame(const uint8_t *data, size_t len)
     lumen_led_engine_snapshot(&current);
 
     /*
-     * 段配置快照只给段命令用：0x10 / 0x11 / 0x12。
-     * 1.5KB 拷贝（#37 两层结构：8×8×24）放在栈上会吃掉主机任务的栈余量，
-     * 所以用静态缓冲——RX 回调在 NimBLE 主机任务里串行执行，不存在并发进入。
+     * 布局快照只给布局命令用（0x20-0x24）。2696 字节放栈上会吃掉主机任务的
+     * 栈余量，所以用静态缓冲——RX 回调在 NimBLE 主机任务里串行执行，
+     * 不存在并发进入。
      */
-    static lumen_segment_store_t s_segment_scratch;
-    const lumen_segment_store_t *segments = NULL;
+    static lumen_layout_store_t s_layout_scratch;
+    const lumen_layout_store_t *layout = NULL;
     switch (frame.command) {
-    case LUMEN_CMD_SET_SEGMENT:
-    case LUMEN_CMD_CLEAR_SEGMENT:
-    case LUMEN_CMD_QUERY_STRIP:
-        lumen_led_engine_segments_snapshot(&s_segment_scratch);
-        segments = &s_segment_scratch;
+    case LUMEN_CMD_LAYOUT_WRITE:
+    case LUMEN_CMD_LAYOUT_PART:
+    case LUMEN_CMD_LAYOUT_SEG:
+    case LUMEN_CMD_QUERY_LAYOUT:
+        lumen_led_engine_layout_snapshot(&s_layout_scratch);
+        layout = &s_layout_scratch;
         break;
     default:
         break;
@@ -438,81 +449,37 @@ static void handle_frame(const uint8_t *data, size_t len)
 
     lumen_command_outcome_t outcome;
     /* max_brightness 取构建期常量：SetBrightness 在这里被钳位，而不是拒绝。 */
-    /* #29：段区间必须按「这条灯带自己」的灯珠数校验，不能一律用 strip 0 的。 */
-    uint16_t strip_counts[LUMEN_MAX_STRIPS];
-    lumen_led_engine_strip_counts(strip_counts);
-    lumen_command_dispatch(&frame, &current, segments, strip_counts,
-                           lumen_led_engine_max_brightness(), &outcome);
+    lumen_command_dispatch(&frame, &current, layout, lumen_led_engine_max_brightness(), &outcome);
 
     /*
-     * 段配置写入 / 清除（#25）。命令层已完成 §11.3 第 4-9 步校验，
-     * 引擎在锁内做最终写入并重算 State 摘要（seg_count 与 seg 0 基准色）。
-     * 引擎的最终结果码是权威（可能因为期间状态变化而被再拒一次）。
-     */
-    if (outcome.segment_op && outcome.result_code == LUMEN_RESULT_OK) {
-        if (outcome.segment_clear) {
-            outcome.result_code = lumen_led_engine_clear_segment(
-                outcome.segment_strip, outcome.segment_id, frame.command);
-        } else {
-            outcome.result_code = lumen_led_engine_set_segment(
-                outcome.segment_strip, outcome.segment_id, &outcome.segment, frame.command);
-        }
-    }
-
-    /*
-     * #32 剧本命令（0x13–0x1A）。命令层只做形状校验，暂存 / 提交 / 激活在引擎
-     * 的锁内执行。引擎的返回码是权威：它可能因为「没有对应的 Begin」「未提交」
-     * 等上下文原因再拒一次。
+     * 布局族 0x20-0x24。命令层已完成单条命令的校验；引擎在锁内写入权威表，
+     * 并判需要布局上下文的边界（部位是否存在、跨部位互斥）。引擎的返回码是
+     * 权威：它可能因为期间布局变化而被再拒一次。
      *
-     * ScriptCommit 失败额外补一条 Event 0x02（detail = script_id）：ACK 里只有
-     * 结果码 0x01，小程序分不清是哪个剧本、哪种校验失败。
+     * LayoutCommit 是唯一落盘点（§10.5：0 ms 防抖）；失败回 StorageFailed
+     * 且 RAM 保留。
      */
-    if (outcome.script_op != LUMEN_SCRIPT_OP_NONE && outcome.result_code == LUMEN_RESULT_OK) {
-        switch (outcome.script_op) {
-        case LUMEN_SCRIPT_OP_PLAYBACK:
-            outcome.result_code =
-                lumen_led_engine_set_playback(outcome.script_action, outcome.script_loop);
+    if (outcome.layout_op && outcome.result_code == LUMEN_RESULT_OK) {
+        switch (outcome.layout_opcode) {
+        case LUMEN_CMD_LAYOUT_WRITE:
+            outcome.result_code = lumen_led_engine_layout_write(outcome.layout_strip,
+                                                                outcome.layout_part_count);
             break;
-        case LUMEN_SCRIPT_OP_BEGIN:
-            outcome.result_code = lumen_led_engine_script_begin(
-                outcome.script_id, outcome.script_stage_count, outcome.script_strip_count);
+        case LUMEN_CMD_LAYOUT_PART:
+            outcome.result_code = lumen_led_engine_layout_part(
+                outcome.layout_strip, outcome.layout_part, outcome.layout_name_len,
+                outcome.layout_name, outcome.layout_seg_count);
             break;
-        case LUMEN_SCRIPT_OP_STAGE:
-            outcome.result_code = lumen_led_engine_script_stage(
-                outcome.script_id, outcome.script_stage_index, outcome.script_duration_ms,
-                outcome.script_fade_ms);
+        case LUMEN_CMD_LAYOUT_SEG:
+            outcome.result_code = lumen_led_engine_layout_seg(
+                outcome.layout_strip, outcome.layout_part, outcome.layout_seg,
+                outcome.layout_start, outcome.layout_end);
             break;
-        case LUMEN_SCRIPT_OP_SEGMENT: {
-            uint16_t written = 0;
-            outcome.result_code = lumen_led_engine_script_segment(
-                outcome.script_id, outcome.script_stage_index, outcome.script_strip,
-                outcome.script_seg, &outcome.script_segment, &written);
-            if (outcome.result_code == LUMEN_RESULT_OK) {
-                /*
-                 * 进度：每接受 8 帧补一条 0x86（§10.4）。第 8、16、24… 帧各发一次，
-                 * 回显这次下发请求的 seq。
-                 */
-                if (written > 0 && (written % 8u) == 0u) {
-                    send_script_progress(frame.seq, outcome.script_id, written);
-                }
-            }
+        case LUMEN_CMD_LAYOUT_COMMIT:
+            outcome.result_code = lumen_led_engine_layout_commit(frame.command);
             break;
-        }
-        case LUMEN_SCRIPT_OP_COMMIT:
-            outcome.result_code = lumen_led_engine_script_commit(outcome.script_id);
-            if (outcome.result_code != LUMEN_RESULT_OK) {
-                send_event(LUMEN_EVENT_SCRIPT_COMMIT_FAILED, outcome.script_id);
-            }
-            break;
-        case LUMEN_SCRIPT_OP_ABORT:
-            outcome.result_code = lumen_led_engine_script_abort(outcome.script_id);
-            break;
-        case LUMEN_SCRIPT_OP_ACTIVATE:
-            outcome.result_code =
-                lumen_led_engine_activate_script(outcome.script_id, outcome.script_loop);
-            break;
-        case LUMEN_SCRIPT_OP_QUERY:
-            /* 查询不改状态；ACK 之后补 ScriptSummary（与 QueryStrip 同一模式）。 */
+        case LUMEN_CMD_QUERY_LAYOUT:
+            /* 查询不改状态；ACK 之后补 LayoutReport + LayoutListEnd。 */
             outcome.result_code = LUMEN_RESULT_OK;
             break;
         default:
@@ -521,28 +488,51 @@ static void handle_frame(const uint8_t *data, size_t len)
     }
 
     /*
-     * ClearScript 0x1E（#73）：真正删掉一套已提交剧本。与段 / 剧本命令一样，
-     * 引擎的返回码是权威（可能因落盘预检失败回 StorageFailed）。清空不是
-     * §9.6 下发流程的一环，所以用独立字段而不是 script_op。
+     * 场景族 0x25-0x29。同布局：命令层判形状，引擎在锁内写表并入队落盘
+     * （2 s 防抖）。编码后超过 12288 字节时回 StorageFailed 且 RAM 原样保留。
      */
-    if (outcome.clear_script && outcome.result_code == LUMEN_RESULT_OK) {
-        outcome.result_code = lumen_led_engine_clear_script(outcome.clear_script_id);
+    if (outcome.scene_op && outcome.result_code == LUMEN_RESULT_OK) {
+        switch (outcome.scene_opcode) {
+        case LUMEN_CMD_SCENE_PART:
+            outcome.result_code = lumen_led_engine_scene_part(
+                outcome.scene_id, outcome.scene_strip, outcome.scene_part,
+                outcome.scene_step_count, outcome.scene_loop, outcome.scene_on, frame.command);
+            break;
+        case LUMEN_CMD_SCENE_STEP:
+            outcome.result_code = lumen_led_engine_scene_step(
+                outcome.scene_id, outcome.scene_strip, outcome.scene_part,
+                outcome.scene_step_index, outcome.scene_duration_ms, outcome.scene_layer[0],
+                outcome.scene_layer[1], frame.command);
+            break;
+        case LUMEN_CMD_SCENE_NAME:
+            outcome.result_code = lumen_led_engine_scene_name(
+                outcome.scene_id, outcome.scene_name_len, outcome.scene_name, frame.command);
+            break;
+        case LUMEN_CMD_ACTIVATE_SCENE:
+            outcome.result_code =
+                lumen_led_engine_activate_scene(outcome.scene_id, frame.command);
+            break;
+        case LUMEN_CMD_QUERY_SCENE:
+            /* 查询不改状态；ACK 之后补三条报告（§6.2）。 */
+            outcome.result_code = LUMEN_RESULT_OK;
+            break;
+        default:
+            break;
+        }
     }
 
     /*
-     * SetStripPower 0x1B（docs/protocol-v4.md §9.5）。命令层已校验 strip 已分配
-     * 且 on ∈ {0,1}。这里只改 State 的 strip_power_mask（一位），让小程序立刻
-     * 能通过 State 观察到结果。
+     * SetStripPower 0x1B（§9.5）。命令层已校验 strip 已分配且 on ∈ {0,1}。
+     * 这里只改 State 的 strip_power_mask（一位），让小程序立刻能通过 State
+     * 观察到结果。
      *
-     * state_changed 会触发下面的 commit → 渲染信号：#38 的渲染门控与 TDM
-     * 跳带都在渲染任务里生效，所以关掉的带会在下一帧推黑并停止占轮询时间，
-     * 重开的带下一帧立刻恢复。全局 SetPower(0) 只动 power，**不碰**这个掩码，
-     * 因此关灯再开灯会回到各带原来的开关状态。
+     * 全局 SetPower(0) 只动 power，**不碰**这个掩码，因此关灯再开灯会回到
+     * 各带原来的开关状态。
      */
     if (outcome.strip_power_op && outcome.result_code == LUMEN_RESULT_OK) {
         uint8_t mask = lumen_strip_power_set_mask(outcome.next.strip_power_mask,
-                                                   outcome.strip_power_strip,
-                                                   outcome.strip_power_on);
+                                                  outcome.strip_power_strip,
+                                                  outcome.strip_power_on);
         if (mask != current.strip_power_mask) {
             outcome.next.strip_power_mask = mask;
             outcome.state_changed = true;
@@ -550,15 +540,13 @@ static void handle_frame(const uint8_t *data, size_t len)
     }
 
     /*
-     * 自检控制（协议 §9.7），必须在写共享状态之前处理：
+     * 自检控制（§9.6），必须在写共享状态之前处理：
      *  - 改变状态的命令先取消自检，再 commit，渲染任务不会闪回自检色；
      *  - SelfTest 只启动覆盖，不改状态（state_changed 恒为 false）。
-     * 记录「是否真的取消了」，否则每条 SetXxx 都会打出 selftest=cancel，
-     * 排查时会误以为自检被打断过。
      *
      * SetLedCount 例外：reducer 只标记「需要重建」，真正的成败在引擎里
-     * （重建中再请求会回 Busy）。Busy 意味着新命令**没有**被应用，按 §11.2
-     * 第 5 条的语义不该取消自检——所以它的取消延后到 set_led_count 的结果。
+     * （重建中再请求会回 Busy）。Busy 意味着新命令**没有**被应用，按 §9.6
+     * 的语义不该取消自检——所以它的取消延后到 set_led_count 的结果。
      */
     bool cancelled_selftest = false;
     if (outcome.cancels_selftest && !outcome.led_count_rebuild) {
@@ -575,14 +563,12 @@ static void handle_frame(const uint8_t *data, size_t len)
 
     /*
      * 每帧一行、字段固定：command / seq / len / result 是两端 seq 对齐的
-     * 主线索；power/brightness/rgb 是命令生效后的存储状态（自检期间也仍是
-     * 存储状态，不是自检颜色——§11.2 第 6 条）。
+     * 主线索；power/brightness 是命令生效后的存储状态。
      *
-     * selftest=start/cancel/on 是 §11.2 的串口证据：
+     * selftest=start/cancel/on 是 §9.6 的串口证据：
      *   start  = 这条命令启动了自检；
-     *   cancel = 这条命令确实打断了进行中的自检（没在自检时不会出现）；
-     *   on     = 命令处理完后自检仍在跑，即这条命令没有取消自检
-     *            （QueryState 期间出现 on 就证明查询不打断自检）。
+     *   cancel = 这条命令确实打断了进行中的自检；
+     *   on     = 命令处理完后自检仍在跑（即这条命令没有取消自检）。
      */
     const char *selftest_note = "";
     if (outcome.start_selftest) {
@@ -592,75 +578,70 @@ static void handle_frame(const uint8_t *data, size_t len)
     } else if (lumen_led_engine_selftest_active()) {
         selftest_note = " selftest=on";
     }
-    /* 每帧只打一行：命令字 / seq / 结果码 / 关键状态。 */
     ESP_LOGI(TAG,
              "RX cmd=0x%02X seq=0x%02X len=%u result=0x%02X power=%u brightness=%u "
-             "rgb=%u,%u,%u segs=%u%s%s",
-             frame.command, frame.seq, frame.payload_len, outcome.result_code,
-             outcome.next.power, outcome.next.brightness, outcome.next.r, outcome.next.g,
-             outcome.next.b, outcome.next.seg_count, outcome.state_changed ? " changed" : "",
-             selftest_note);
+             "scene=%u parts=%u%s%s",
+             frame.command, frame.seq, frame.payload_len, outcome.result_code, outcome.next.power,
+             outcome.next.brightness, outcome.next.active_scene, outcome.next.part_count[0],
+             outcome.state_changed ? " changed" : "", selftest_note);
 
     if (outcome.led_count_rebuild) {
         /*
-         * SetLedCount（协议 §10.1 例外 / §11.3）：ACK 必须等句柄重建结果。
+         * SetLedCount（§11.3）：ACK 必须等句柄重建结果。
          * 这里只登记请求 —— 引擎判忙 / 判相同值，真正的 create/del 在渲染任务，
          * 结果由引擎经 response 回调发 ACK。
-         *
-         * 上面那行的 result 是 reducer 的判定（0x00 = 取值合法），不是最终结果：
-         * 真正的 ACK 可能是 0x09（重建失败）或 0x05（忙），由 send_ack 再打一行。
          */
-        uint8_t status = lumen_led_engine_set_led_count_for_strip(outcome.led_count_strip,
-                                                                outcome.led_count, frame.seq);
-        if (status == LUMEN_LED_ENGINE_DEFERRED) {
-            /* 已被接受（或数量未变）：现在才取消自检，与「新命令生效」同时。
-             * 取消要在登记之后，否则重建期间的渲染会先闪回存储色。 */
+        uint8_t st = lumen_led_engine_set_led_count_for_strip(outcome.led_count_strip,
+                                                              outcome.led_count, frame.seq);
+        if (st == LUMEN_LED_ENGINE_DEFERRED) {
+            /* 已被接受：现在才取消自检，与「新命令生效」同时。 */
             if (outcome.cancels_selftest) {
                 lumen_led_engine_cancel_selftest();
             }
             return; /* ACK 由渲染任务在重建完成后发 */
         }
-        if (status == LUMEN_RESULT_OK && outcome.cancels_selftest) {
+        if (st == LUMEN_RESULT_OK && outcome.cancels_selftest) {
             lumen_led_engine_cancel_selftest();
         }
         /* OK（数量未变）或 Busy：可以立即回。Busy 不取消自检。 */
-        send_ack(frame.seq, frame.command, status);
+        send_ack(frame.seq, frame.command, st);
         return;
     }
 
     /* ACK 在写入 RAM 之后立刻发；不等待渲染完成。 */
     send_ack(frame.seq, frame.command, outcome.result_code);
 
-    /* §6.1：查询状态在 ACK 之后紧跟一条 StateReport，载荷布局与 State read 相同。 */
+    /* §9.1：查询状态在 ACK 之后紧跟一条 StateReport，载荷布局与 State read 相同。 */
     if (outcome.state_report) {
         uint8_t state[LUMEN_STATE_BYTES];
         lumen_led_engine_state_bytes(state);
         uint8_t buf[LUMEN_MAX_FRAME];
-        size_t len = lumen_protocol_encode_state_report(frame.seq, state, buf, sizeof(buf));
-        if (len == 0 || lumen_ble_link_notify(buf, len) != ESP_OK) {
+        size_t slen = lumen_protocol_encode_state_report(frame.seq, state, buf, sizeof(buf));
+        if (slen == 0 || lumen_ble_link_notify(buf, slen) != ESP_OK) {
             ESP_LOGW(TAG, "StateReport 发送失败 seq=0x%02X", frame.seq);
         }
     }
 
-    /* QueryStrip：seg_count 条 SegmentReport + 1 条 SegmentListEnd，同 seq（§8）。 */
-    if (outcome.strip_query) {
-        send_strip_reports(frame.seq, outcome.query_strip_id);
+    /* QueryLayout：逐部位 LayoutReport + 一条 LayoutListEnd，同 seq（§8）。 */
+    if (outcome.layout_op && outcome.layout_opcode == LUMEN_CMD_QUERY_LAYOUT &&
+        outcome.result_code == LUMEN_RESULT_OK) {
+        send_layout_reports(frame.seq, outcome.layout_strip);
     }
 
-    /* QueryStripConfig 0x1C：ACK 之后一条 StripConfigReport 0x87（§8）。 */
+    /* QueryScene：部位头 / 每步 / 收尾三段，同 seq（§6.2）。 */
+    if (outcome.scene_op && outcome.scene_opcode == LUMEN_CMD_QUERY_SCENE &&
+        outcome.result_code == LUMEN_RESULT_OK) {
+        send_scene_reports(frame.seq, outcome.scene_id);
+    }
+
+    /* QueryStripConfig 0x1C：ACK 之后一条 StripConfigReport 0x87（§7.4）。 */
     if (outcome.strip_config_query) {
         send_strip_config_report(frame.seq);
     }
 
-    /* QueryDeviceInfo 0x1D：ACK 之后一条 DeviceInfoReport 0x88（§8）。 */
+    /* QueryDeviceInfo 0x1D：ACK 之后一条 DeviceInfoReport 0x88（§7.4）。 */
     if (outcome.device_info_query) {
         send_device_info_report(frame.seq);
-    }
-
-    /* QueryScript：ACK 之后一条 ScriptSummary 0x85（§10.1 第 3 步）。 */
-    if (outcome.script_op == LUMEN_SCRIPT_OP_QUERY &&
-        outcome.result_code == LUMEN_RESULT_OK) {
-        send_script_summary(frame.seq, outcome.script_id);
     }
 }
 

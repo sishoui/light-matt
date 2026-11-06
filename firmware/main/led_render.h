@@ -5,63 +5,56 @@
 
 #include "led_strip.h"
 
+#include "layout_store.h"
 #include "protocol.h"
-#include "segment_store.h"
+#include "scene_compose.h"
+#include "scene_store.h"
+#include "selftest.h"
 #include "state.h"
 
-/* 自检进度类型（lumen_selftest_t）由 selftest.h 定义；渲染只读它。 */
-#include "selftest.h"
-
 /*
- * led_render：一份状态快照 + 段配置 → 一帧灯带像素。
+ * led_render：一份状态快照 + 布局 + 场景 + 播放头 → 一帧灯带像素。
  *
  * 只做合成、gamma、自检覆盖、渲染去重与刷灯，不拥有任何共享状态、不加锁。
  * 调用者是渲染任务，且持有灯带句柄的唯一所有权（见 led_strip_owner.h）。
  *
- * 两条路径（docs/v2-effects-engine.md §3 / §4）：
- *  - 有活动段：段合成到像素缓冲（**先 memset 0**，未覆盖区必须熄灭），
- *    再对每颗灯统一施加 gamma + 亮度；
- *  - 没有活动段：**整条全黑**（docs/protocol-v4.md §9.3 第 2 条）。v1 的
- *    「整条铺 state->r/g/b」回退已删除，它让没设灯效的带亮成暖白，并把
- *    strip0/seg0 的颜色漏到所有带上。
+ * v5 的合成**不再有段表**：唯一接缝是 `lumen_scene_compose()`
+ * （scene_compose.c，host 可测）。本文件只负责它前后的两件事：
+ *   ① 自检覆盖（整条单色，忽略布局与场景）；
+ *   ② 全局亮度 + gamma，对整帧做**一次**。
+ *
+ * 没有覆盖的灯珠就是全黑（§9.3 第 1 步），不存在 v1 那种「整条铺 state->r/g/b」
+ * 的回退。
  */
 
 /*
  * 渲染一份快照，并把「已渲染像素」记下来供下次去重。
+ *
  * selftest 是渲染任务在锁内拷出的一份自检快照（不能直接读引擎里的 s_selftest：
  * BLE 回调可能并发取消/重启）。
- * segments 可以为 NULL（视为没有任何活动段 → 全黑）。
- * `script_mask`（#122）：strip 0 是否归方案管（bit0）。置位时即使没有活动段
- * 也是全黑——与「没有分区就是黑」同一条规则，只是多一层显式说明。
+ * layout / scene / clocks 为 NULL 时视为「没有任何部位」→ 全黑。
  */
 void lumen_led_render_snapshot(led_strip_handle_t strip, const lumen_state_t *snapshot,
-                               const lumen_segment_store_t *segments,
-                               const lumen_selftest_t *selftest, uint8_t max_brightness,
-                               uint32_t now_ms, uint8_t script_mask);
+                               const lumen_layout_store_t *layout, const lumen_scene_t *scene,
+                               const lumen_part_clocks_t *clocks, const lumen_selftest_t *selftest,
+                               uint8_t max_brightness, uint32_t now_ms);
 
 /*
  * 把一条灯带的当前画面合成为像素缓冲（用户空间 RGB 已过 gamma + 亮度），
- * 不刷灯、不改去重状态。TDM 轮询用它为每条灯带各自生成一帧（#29）。
+ * 不刷灯、不改去重状态。TDM 轮询用它为每条灯带各自生成一帧。
  *
- * 与 lumen_led_render_snapshot 共用同一套合成规则（memset + gamma），
- * 区别只是「不负责刷灯」。strip_id 决定用哪条的段配置与灯珠数。
- *
- * `script_mask`（#122）：该条是否归方案管。置位时这一条即使没有活动段也是
- * 全黑。0 表示全部按实时分区判。
+ * 与 lumen_led_render_snapshot 共用同一套合成规则，区别只是「不负责刷灯」。
+ * strip_id 决定用哪条链的布局与场景、以及它自己的灯珠数。
  *
  * 返回实际填充的灯珠数；参数非法返回 0。
  */
 uint16_t lumen_led_render_compose_strip(const lumen_state_t *snapshot,
-                                        const lumen_segment_store_t *segments,
-                                        const lumen_selftest_t *selftest,
-                                        uint8_t max_brightness, uint32_t now_ms,
-                                        uint8_t strip_id, uint16_t strip_count,
-                                        uint8_t script_mask, uint8_t *out_frame,
-                                        uint16_t out_cap);
-
-/* 该灯带是否有动画类活动段（帧循环判据之一）。纯查询，不加锁。 */
-bool lumen_led_render_strip_is_animated(const lumen_segment_store_t *segments,
-                                        uint8_t strip_id);
+                                        const lumen_layout_store_t *layout,
+                                        const lumen_scene_t *scene,
+                                        const lumen_part_clocks_t *clocks,
+                                        const lumen_selftest_t *selftest, uint8_t max_brightness,
+                                        uint32_t now_ms, uint8_t strip_id, uint16_t strip_count,
+                                        uint8_t *out_frame, uint16_t out_cap);
 
 /*
  * 清掉「已渲染」标记，强制下一次渲染真的写灯带。
@@ -70,18 +63,17 @@ bool lumen_led_render_strip_is_animated(const lumen_segment_store_t *segments,
 void lumen_led_render_invalidate(void);
 
 /*
- * 帧循环的累计计数（#30）：
+ * 帧循环的累计计数：
  *   drawn   —— 真正写进灯带的帧数（refresh 成功）
  *   skipped —— 像素与上一帧逐字节相同而跳过 refresh 的次数
  *
- * 用途是让「静态不空转、动画持续刷」在串口上可判定：动画模式下 drawn
- * 随帧率增长；纯静态模式根本没有帧循环，两个计数都不动。
+ * 用途是让「静态不空转、动画持续刷」在串口上可判定。
  * 任一参数可为 NULL。
  */
 void lumen_led_render_counters(uint32_t *drawn, uint32_t *skipped);
 
 /*
- * 让多灯带 TDM 路径（#29）把每条灯带的「真刷 / 跳过」记进同一组计数。
+ * 让多灯带 TDM 路径把每条灯带的「真刷 / 跳过」记进同一组计数。
  * 单灯带路径已在 lumen_led_render_snapshot 内部记，不需要调用。
  */
 void lumen_led_render_note_drawn(void);

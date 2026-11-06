@@ -55,7 +55,8 @@
 
     "firmware/test/test_skeleton.c": {
       "layer": "firmware",
-      "covers": "固件 host 测试全量：v4 协议向量逐字节、命令 reducer 语义、state 与 CRC、分片重组、gamma、段校验矩阵、剧本容量与 blob 往返、灯效两层合成"
+      "covers": "固件 host 测试全量：v5 协议向量逐字节（含 14 条 retired_* 退役命令必须回 0x02）、命令 reducer 语义（整机 / 灯组 / 布局 0x20-0x24 / 场景 0x25-0x29）、State 32 字节与 blob v6、布局 blob LML1 与场景 blob LMS5 的往返与损坏拒绝、CRC、分片重组、gamma、灯效两层合成与层亮度、播放头推进与唯一渲染接缝 lumen_scene_compose",
+      "ticket": "#155"
     },
 
     "miniprogram/tests/add-device.test.ts": { "layer": "mp", "covers": "发现页搜索匹配、名称预填、已添加判定与信号条", "ticket": "#92" },

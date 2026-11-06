@@ -107,7 +107,7 @@ size_t lumen_protocol_encode(uint8_t command, uint8_t seq, const uint8_t *payloa
     out[1] = LUMEN_VERSION;
     out[2] = command;
     out[3] = seq;
-    /* 16 位小端长度（docs/protocol-v4.md §3.1）。 */
+    /* 16 位小端长度（docs/protocol-v5.md §3.1）。 */
     out[4] = (uint8_t)(payload_len & 0xFF);
     out[5] = (uint8_t)(payload_len >> 8);
     if (payload_len > 0) {
@@ -145,62 +145,6 @@ size_t lumen_protocol_encode_state_report(uint8_t seq,
                                  out_cap);
 }
 
-size_t lumen_protocol_encode_segment_report(uint8_t seq, uint8_t strip_id, uint8_t seg_id,
-                                            uint8_t start, uint8_t end, uint8_t blend,
-                                            const uint8_t layer0[9], const uint8_t layer1[9],
-                                            uint8_t *out, size_t out_cap)
-{
-    if (layer0 == NULL) {
-        return 0;
-    }
-    /* 固定 23 字节，与 §7.1 的 SetSegment 载荷同构（docs/protocol-v4.md §7.1）。 */
-    uint8_t payload[23];
-    payload[0] = strip_id;
-    payload[1] = seg_id;
-    payload[2] = start;
-    payload[3] = end;
-    payload[4] = blend;
-    memcpy(&payload[5], layer0, 9);
-    if (layer1 != NULL) {
-        memcpy(&payload[14], layer1, 9);
-    } else {
-        /* 空层：type = 0xFF，参数 7 字节全 0、level 0（docs/protocol-v4.md §7.1）。 */
-        payload[14] = LUMEN_NO_EFFECT;
-        memset(&payload[15], 0, 8);
-    }
-    return lumen_protocol_encode(LUMEN_CMD_SEGMENT_REPORT, seq, payload, sizeof(payload), out,
-                                 out_cap);
-}
-
-size_t lumen_protocol_encode_segment_list_end(uint8_t seq, uint8_t strip_id, uint8_t seg_mask,
-                                              uint8_t *out, size_t out_cap)
-{
-    uint8_t payload[2] = {strip_id, seg_mask};
-    return lumen_protocol_encode(LUMEN_CMD_SEGMENT_LIST_END, seq, payload, sizeof(payload), out,
-                                 out_cap);
-}
-
-size_t lumen_protocol_encode_script_summary(uint8_t seq, uint8_t script_id, uint8_t stage_count,
-                                            uint8_t flags, uint8_t active, uint8_t *out,
-                                            size_t out_cap)
-{
-    /* 载荷 [script_id, stage_count, flags, active]（docs/protocol-v4.md §7.4）。 */
-    uint8_t payload[4] = {script_id, stage_count, flags, active};
-    return lumen_protocol_encode(LUMEN_CMD_SCRIPT_SUMMARY, seq, payload, sizeof(payload), out,
-                                 out_cap);
-}
-
-size_t lumen_protocol_encode_script_progress(uint8_t seq, uint8_t script_id,
-                                             uint16_t frames_written, uint8_t *out,
-                                             size_t out_cap)
-{
-    /* 载荷 [script_id, frames_lo, frames_hi]（docs/protocol-v4.md §7.4）。 */
-    uint8_t payload[3] = {script_id, (uint8_t)(frames_written & 0xFF),
-                          (uint8_t)(frames_written >> 8)};
-    return lumen_protocol_encode(LUMEN_CMD_SCRIPT_PROGRESS, seq, payload, sizeof(payload), out,
-                                 out_cap);
-}
-
 size_t lumen_protocol_encode_strip_config_report(uint8_t seq,
                                                  const uint8_t gpios[LUMEN_MAX_STRIPS],
                                                  uint8_t strip_count, uint8_t *out,
@@ -212,7 +156,7 @@ size_t lumen_protocol_encode_strip_config_report(uint8_t seq,
     if (strip_count > LUMEN_MAX_STRIPS) {
         return 0;
     }
-    /* 8 条固定记录：[strip_id, gpio, flags]，flags bit0 = 已分配（docs/protocol-v4.md §7.4）。 */
+    /* 8 条固定记录：[strip_id, gpio, flags]，flags bit0 = 已分配（docs/protocol-v5.md §7.4）。 */
     uint8_t payload[LUMEN_MAX_STRIPS * 3];
     for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
         uint8_t assigned = i < strip_count ? 1u : 0u;
@@ -231,19 +175,116 @@ size_t lumen_protocol_encode_device_info_report(uint8_t seq, uint16_t firmware_v
     if (hw_id == NULL) {
         return 0;
     }
-    /* 0..1 version | 2..7 hw_id | 8 max_leds | 9 max_strips | 10 max_segments |
-     * 11 max_stages | 12 max_scripts | 13 caps | 14 reserved = 0（§7.4）。 */
+    /* 0..1 version | 2..7 hw_id | 8 max_leds | 9 max_strips | 10 max_parts |
+     * 11 max_part_segs | 12 max_steps | 13 max_scenes | 14 caps（§7.4）。 */
     uint8_t payload[15];
     payload[0] = (uint8_t)(firmware_version & 0xFF);
     payload[1] = (uint8_t)(firmware_version >> 8);
     memcpy(&payload[2], hw_id, 6);
     payload[8] = LUMEN_MAX_LEDS;
     payload[9] = LUMEN_MAX_STRIPS;
-    payload[10] = LUMEN_MAX_SEGMENTS;
-    payload[11] = LUMEN_MAX_STAGES;
-    payload[12] = LUMEN_MAX_SCRIPTS;
-    payload[13] = caps;
-    payload[14] = 0;
+    payload[10] = LUMEN_MAX_PARTS;
+    payload[11] = LUMEN_MAX_PART_SEGS;
+    payload[12] = LUMEN_MAX_STEPS;
+    payload[13] = LUMEN_MAX_SCENES;
+    payload[14] = caps;
     return lumen_protocol_encode(LUMEN_CMD_DEVICE_INFO_REPORT, seq, payload, sizeof(payload), out,
+                                 out_cap);
+}
+
+size_t lumen_protocol_encode_layout_report(uint8_t seq, uint8_t strip_id, uint8_t part_id,
+                                           uint8_t name_len, const uint8_t name[LUMEN_NAME_BYTES],
+                                           uint8_t seg_count, const uint8_t seg[][2],
+                                           uint8_t *out, size_t out_cap)
+{
+    if (name_len > LUMEN_NAME_BYTES || seg_count > LUMEN_MAX_PART_SEGS) {
+        return 0;
+    }
+    /*
+     * 固定 44 字节（docs/protocol-v5.md §7.2）：
+     *   strip | part | name_len | name[24] | seg_count | 8 × (start, end)
+     * 未用的段写 0/0。
+     */
+    uint8_t payload[44];
+    memset(payload, 0, sizeof(payload));
+    payload[0] = strip_id;
+    payload[1] = part_id;
+    payload[2] = name_len;
+    if (name != NULL && name_len > 0) {
+        memcpy(&payload[3], name, name_len);
+    }
+    payload[27] = seg_count;
+    for (uint8_t i = 0; i < seg_count; ++i) {
+        /* seg 为 NULL 时保持 0/0（调用方只能在 seg_count 为 0 时省略它）。 */
+        if (seg != NULL) {
+            payload[28 + i * 2] = seg[i][0];
+            payload[28 + i * 2 + 1] = seg[i][1];
+        }
+    }
+    return lumen_protocol_encode(LUMEN_CMD_LAYOUT_REPORT, seq, payload, sizeof(payload), out,
+                                 out_cap);
+}
+
+size_t lumen_protocol_encode_layout_list_end(uint8_t seq, uint8_t strip_id, uint8_t part_mask,
+                                             uint8_t *out, size_t out_cap)
+{
+    uint8_t payload[2] = {strip_id, part_mask};
+    return lumen_protocol_encode(LUMEN_CMD_LAYOUT_LIST_END, seq, payload, sizeof(payload), out,
+                                 out_cap);
+}
+
+size_t lumen_protocol_encode_scene_part_report(uint8_t seq, uint8_t scene_id, uint8_t strip_id,
+                                               uint8_t part_id, uint8_t step_count, uint8_t loop,
+                                               uint8_t on, uint8_t *out, size_t out_cap)
+{
+    uint8_t payload[6] = {scene_id, strip_id, part_id, step_count, loop, on};
+    return lumen_protocol_encode(LUMEN_CMD_SCENE_PART_REPORT, seq, payload, sizeof(payload), out,
+                                 out_cap);
+}
+
+size_t lumen_protocol_encode_scene_step_report(uint8_t seq, uint8_t scene_id, uint8_t strip_id,
+                                               uint8_t part_id, uint8_t step_index,
+                                               uint16_t duration_ms, const uint8_t layer0[9],
+                                               const uint8_t layer1[9], uint8_t *out,
+                                               size_t out_cap)
+{
+    if (layer0 == NULL) {
+        return 0;
+    }
+    /* 与 SceneStep 同构（§7.4）：scene | strip | part | step | duration(2) | l0(9) | l1(9)。 */
+    uint8_t payload[LUMEN_SCENE_STEP_BYTES];
+    payload[0] = scene_id;
+    payload[1] = strip_id;
+    payload[2] = part_id;
+    payload[3] = step_index;
+    payload[4] = (uint8_t)(duration_ms & 0xFF);
+    payload[5] = (uint8_t)(duration_ms >> 8);
+    memcpy(&payload[6], layer0, 9);
+    if (layer1 != NULL) {
+        memcpy(&payload[15], layer1, 9);
+    } else {
+        /* 空层：type = 0xFF，参数 7 字节全 0、level 0（§7.1）。 */
+        payload[15] = LUMEN_NO_EFFECT;
+        memset(&payload[16], 0, 8);
+    }
+    return lumen_protocol_encode(LUMEN_CMD_SCENE_STEP_REPORT, seq, payload, sizeof(payload), out,
+                                 out_cap);
+}
+
+size_t lumen_protocol_encode_scene_list_end(uint8_t seq, uint8_t scene_id, uint8_t name_len,
+                                            const uint8_t name[LUMEN_NAME_BYTES], uint8_t *out,
+                                            size_t out_cap)
+{
+    if (name_len > LUMEN_NAME_BYTES) {
+        return 0;
+    }
+    uint8_t payload[LUMEN_SCENE_NAME_BYTES];
+    memset(payload, 0, sizeof(payload));
+    payload[0] = scene_id;
+    payload[1] = name_len;
+    if (name != NULL && name_len > 0) {
+        memcpy(&payload[2], name, name_len);
+    }
+    return lumen_protocol_encode(LUMEN_CMD_SCENE_LIST_END, seq, payload, sizeof(payload), out,
                                  out_cap);
 }

@@ -21,27 +21,6 @@ bool lumen_strip_mask_allows(const lumen_state_t *state, uint8_t strip_id, bool 
     return (state->strip_power_mask & (uint8_t)(1u << strip_id)) != 0;
 }
 
-uint8_t lumen_strip_anim_mask(const lumen_segment_store_t *segments, uint8_t strip_count)
-{
-    if (segments == NULL) {
-        return 0;
-    }
-    if (strip_count == 0 || strip_count > LUMEN_MAX_STRIPS) {
-        strip_count = LUMEN_MAX_STRIPS;
-    }
-    uint8_t mask = 0;
-    for (uint8_t strip = 0; strip < strip_count; ++strip) {
-        for (uint8_t slot = 0; slot < LUMEN_MAX_SEGMENTS; ++slot) {
-            const lumen_segment_t *seg = &segments->slot[strip][slot];
-            if (lumen_segment_is_animated(seg)) {
-                mask |= (uint8_t)(1u << strip);
-                break; /* 一条带只要有一个动画段就置位 */
-            }
-        }
-    }
-    return mask;
-}
-
 uint8_t lumen_strip_power_set_mask(uint8_t mask, uint8_t strip_id, bool on)
 {
     if (strip_id >= LUMEN_MAX_STRIPS) {

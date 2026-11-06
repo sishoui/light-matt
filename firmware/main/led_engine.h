@@ -5,18 +5,27 @@
 
 #include "esp_err.h"
 
+#include "layout_store.h"
 #include "protocol.h"
-#include "segment_store.h"
+#include "scene_compose.h"
+#include "scene_store.h"
 #include "state.h"
 #include "state_store.h"
 
 /*
- * led_engine：共享状态的唯一所有者 + latest-wins 邮箱 + 渲染任务 + 段配置。
+ * led_engine：共享状态的唯一所有者 + latest-wins 邮箱 + 渲染任务 +
+ * 布局 / 场景两张表的权威副本 + 64 个部位的播放头。
  *
- * 依赖方向：ble_link → led_engine → {effects, segment_store, state_store}。
- * led_engine 不调用任何 BLE API。
+ * 依赖方向：ble_link → led_engine → {effects, scene_compose, layout_store,
+ * scene_store, state_store}。led_engine 不调用任何 BLE API。
  * 灯带句柄只在渲染任务里使用：`led_strip_del` 旧句柄与 `led_strip_new_rmt_device`
- * 新句柄都只在渲染任务里执行（协议 §11.3 的异步重建）。
+ * 新句柄都只在渲染任务里执行（§11.3 的异步重建）。
+ *
+ * v5 相比 v4 的结构变化：
+ *   - 段表（8 × 8）与剧本表（~70KB）删除，换成**布局**（2696 B）与
+ *     **三个场景**（31590 B）+ 64 个播放头（512 B），净省约 35 KB（§11）；
+ *   - s_state.led_count 变成逐条数组（State 32 字节，§7.3）；
+ *   - 渲染只走 lumen_scene_compose（§9.3）。
  */
 
 /*
@@ -37,9 +46,8 @@ esp_err_t lumen_led_engine_init(void);
 /* BLE 层注册：引擎用它在渲染任务里回 SetLedCount 的异步 ACK。 */
 void lumen_led_engine_set_response_cb(lumen_led_engine_response_cb cb);
 
-/* 把共享状态编码成 LUMEN_STATE_BYTES(37) 字节 State（docs/protocol-v4.md §7.3），
- * 供 State read 与 StateReport 使用。条带维度（灯珠数 / 活动段数）在同一临界区
- * 内按当前生效的段配置填好。 */
+/* 把共享状态编码成 LUMEN_STATE_BYTES(32) 字节 State（docs/protocol-v5.md §7.3），
+ * 供 State read 与 StateReport 使用。逐条灯珠数与部位数在同一临界区内填好。 */
 void lumen_led_engine_state_bytes(uint8_t out[LUMEN_STATE_BYTES]);
 
 /* 拷贝一份共享状态快照。 */
@@ -50,137 +58,108 @@ void lumen_led_engine_snapshot(lumen_state_t *out);
  * 并请求 state_store 做 500ms debounce 持久化。
  *
  * command 是触发这次变更的命令字，只用于 NVS 写失败时的 Event 0x81 detail
- * （docs/protocol-v4.md §10.3）；持久化内容本身是整份快照（状态 + 段配置）。
+ * （docs/protocol-v5.md §10.5）。
  */
 void lumen_led_engine_commit(const lumen_state_t *next, uint8_t command);
-
-/*
- * 段配置写入 / 清除（#25）。命令层已按 §11.3 第 4-9 步校验过参数，
- * 引擎在锁内做最终写入（防御性再校验一次）、重算 State 摘要
- * （seg_count 与字节 2-4 的 seg 0 基准色）、唤醒渲染并请求持久化。
- *
- * 返回 LUMEN_RESULT_OK 或 LUMEN_RESULT_INVALID_PARAM。
- * ACK 由调用方在返回后立即发出（段配置是 O(1) 的内存写，不需要等渲染）。
- */
-uint8_t lumen_led_engine_set_segment(uint8_t strip_id, uint8_t seg_id,
-                                     const lumen_segment_t *segment, uint8_t command);
-uint8_t lumen_led_engine_clear_segment(uint8_t strip_id, uint8_t seg_id, uint8_t command);
-
-/*
- * 拷出整份段配置快照（命令层做 §11.3 第 5-9 步校验用）。
- * 快照 1KB，只在 BLE 回调里拷贝，不唤醒渲染任务。
- */
-void lumen_led_engine_segments_snapshot(lumen_segment_store_t *out);
-
-/*
- * 拷出某灯带的活动段（QueryStrip → SegmentReport 用）。
- *
- * out 按槽位升序填充活动段，最多 cap 个；返回写入个数。
- * out_slots 可选：同时给出每个活动段的**真实槽位号**（spec-v3 §4.2 第 3 处
- * 缺陷修正——SegmentReport 的 seg_id 必须是真实槽位，不能是压缩序号）。
- * 该函数在调用者上下文拷贝快照，不唤醒渲染任务。
- */
-uint8_t lumen_led_engine_segments(uint8_t strip_id, lumen_segment_t *out, uint8_t *out_slots,
-                                  uint8_t cap);
-
-/* 某灯带的 seg_mask（SegmentListEnd 用）。 */
-uint8_t lumen_led_engine_segment_mask(uint8_t strip_id);
 
 /* 注册 NVS 写失败回调（参数是触发写入的命令字）。BLE 层用它发 Event 0x81。 */
 void lumen_led_engine_set_store_event_cb(lumen_store_event_cb cb);
 
+/* ---------------- 布局（§6.1） ---------------- */
+
 /*
- * 请求把灯珠数量改为 count（调用方保证 1-100 已由命令层校验）。
+ * 写一条链的部位数并清空其部位（LayoutWrite 0x20 的语义）。
+ * 只改 RAM，不落盘——LayoutCommit 才落盘。
+ */
+uint8_t lumen_led_engine_layout_write(uint8_t strip_id, uint8_t part_count);
+
+/* 写一个部位的名字与段数（LayoutPart 0x21）。 */
+uint8_t lumen_led_engine_layout_part(uint8_t strip_id, uint8_t part_id, uint8_t name_len,
+                                     const uint8_t *name, uint8_t seg_count);
+
+/*
+ * 写一个部位的一段（LayoutSeg 0x22）。跨部位的互斥由引擎在持有布局表时判。
+ */
+uint8_t lumen_led_engine_layout_seg(uint8_t strip_id, uint8_t part_id, uint8_t seg_id,
+                                    uint8_t start, uint8_t end);
+
+/*
+ * 整份校验并**立即落盘**（LayoutCommit 0x23）。
+ *
+ * 成功后：state.layout_valid = 1，part_count 摘要同步，并把该链所有部位的
+ * 播放头重置到此刻（§6.1：唯一允许打断时钟的操作）。
+ * 落盘失败回 StorageFailed 且 RAM 里的布局保留（不半套生效）。
+ */
+uint8_t lumen_led_engine_layout_commit(uint8_t command);
+
+/*
+ * 读一份布局快照（QueryLayout → LayoutReport 用）。
+ * 只在调用者上下文拷贝，不唤醒渲染任务。
+ */
+void lumen_led_engine_layout_snapshot(lumen_layout_store_t *out);
+
+/* 某链的部位数（State 的 part_count 来源）。 */
+uint8_t lumen_led_engine_part_count(uint8_t strip_id);
+
+/* ---------------- 场景（§6.2） ---------------- */
+
+/* 写一个部位的时间轴头（ScenePart 0x25）。只有 step_count 真的变了才清空步骤。 */
+uint8_t lumen_led_engine_scene_part(uint8_t scene_id, uint8_t strip_id, uint8_t part_id,
+                                    uint8_t step_count, uint8_t loop, uint8_t on,
+                                    uint8_t command);
+
+/*
+ * 单步增量写入（SceneStep 0x26）。两层是 9 字节定宽线格式，命令层已做形状校验；
+ * 这里还判 step_index < step_count（需要场景表的上下文）。
+ */
+uint8_t lumen_led_engine_scene_step(uint8_t scene_id, uint8_t strip_id, uint8_t part_id,
+                                    uint8_t step_index, uint16_t duration_ms,
+                                    const uint8_t layer0[9], const uint8_t layer1[9],
+                                    uint8_t command);
+
+/* 写场景名（SceneName 0x27）。 */
+uint8_t lumen_led_engine_scene_name(uint8_t scene_id, uint8_t name_len, const uint8_t *name,
+                                    uint8_t command);
+
+/*
+ * 激活场景（ActivateScene 0x28）：硬切 + 全部部位从第 1 步重跳（T3/C4）。
+ * 返回 INVALID_PARAM 表示 scene_id 越界；0-2 总是合法（空场景就是全黑）。
+ */
+uint8_t lumen_led_engine_activate_scene(uint8_t scene_id, uint8_t command);
+
+/* 读一份场景快照（QueryScene → 三条报告用）。 */
+void lumen_led_engine_scene_snapshot(uint8_t scene_id, lumen_scene_t *out);
+
+/* 当前激活的场景 id（0-2）。 */
+uint8_t lumen_led_engine_active_scene(void);
+
+/* ---------------- 灯珠数与自检 ---------------- */
+
+/*
+ * 请求把某条灯带的灯珠数量改为 count（调用方保证 1-100 已由命令层校验）。
  *
  * 返回：
  *   LUMEN_RESULT_OK            与当前数量相同，无需重建；调用方立即回 ACK 0x00；
  *   LUMEN_RESULT_BUSY          已有重建在排队/进行中（§11.3：不排队）；回 0x05；
  *   LUMEN_LED_ENGINE_DEFERRED  已排队；渲染任务重建完成后经 response 回执。
- *
- * 数量要等句柄重建成功后才写入共享状态；失败时旧句柄与旧数量原样保留。
- * 重建成功后会裁剪越界的段（end >= 新数量 → 该段失效，不自动缩短）。
- */
-uint8_t lumen_led_engine_set_led_count(uint16_t count, uint8_t seq);
-
-/*
- * #29：按灯带设置灯珠数。strip 0 与上面的单参数版本等价（走句柄重建）；
- * strip 1..7 只改该条的 count（TDM 共用一个按 max_count 建的句柄），
- * 同步完成并直接回 ACK 0x00 / 0x01（越界或灯带不存在）。
  */
 uint8_t lumen_led_engine_set_led_count_for_strip(uint8_t strip_id, uint16_t count, uint8_t seq);
 
-/*
- * #29：把每条灯带当前的灯珠数填进 out（长度须为 LUMEN_MAX_STRIPS）。
- * 单灯带时 out[0] = State 的 led_count，其余项为 0。
- * 命令层用它校验 SetSegment 的段区间——不能一律用 strip 0 的数字。
- */
+/* 把每条灯带当前的灯珠数填进 out（长度须为 LUMEN_MAX_STRIPS）。 */
 void lumen_led_engine_strip_counts(uint16_t out[LUMEN_MAX_STRIPS]);
 
 /* 当前生效的亮度上限（构建期常量）。 */
 uint8_t lumen_led_engine_max_brightness(void);
 
 /*
- * 自检（协议 §11.2）：红 → 绿 → 蓝 → 白，每色 500ms，2s 后自动结束。
+ * 自检（§9.6）：红 → 绿 → 蓝 → 白，每色 500ms，2s 后自动结束。
  *
- * 自检是渲染层的临时覆盖：不写共享状态、不写 NVS、不改 s_state；结束后
- * 渲染任务自动回到存储状态（关灯态回关灯）。即使存储状态是关灯，自检
- * 期间也会点亮，亮度取当前 max_brightness。自检期间一律显示单色，不用分段。
- *
- * 调用顺序（ble_link 在命令分发后）：先 cancel（如命令改变状态）或 start，
- * 再 commit 新状态。重复 start 会重新从红色计时。
+ * 自检是渲染层的临时覆盖：不写共享状态、不写 NVS。结束后渲染任务自动回到
+ * 存储状态。自检期间忽略布局与场景，整条刷自检色。
  */
 void lumen_led_engine_start_selftest(void);
 
-/*
- * 立即取消自检并重绘存储状态；未在自检时无副作用。
- * 返回 true 表示确实停掉了一个进行中的自检——串口日志据此区分
- * 「这条命令取消了自检」与「命令到来时本来就没在自检」，避免排查时误判。
- */
+/* 立即取消自检并重绘存储状态；未在自检时无副作用。 */
 bool lumen_led_engine_cancel_selftest(void);
-
-/*
- * #32 剧本下发与播放控制。全部返回 LUMEN_RESULT_OK / LUMEN_RESULT_INVALID_PARAM。
- *
- * 暂存 / 提交 / 激活都在引擎的锁内完成：剧本表是引擎持有的唯一权威。
- * commit 失败时只丢弃暂存，已提交剧本与静态配置都不动（验收点）。
- * commit / activate 成功后请求持久化（500ms debounce）；**播放位置不持久化**。
- */
-uint8_t lumen_led_engine_script_begin(uint8_t script_id, uint8_t stage_count,
-                                      uint8_t strip_count);
-uint8_t lumen_led_engine_script_stage(uint8_t script_id, uint8_t stage_index,
-                                      uint16_t duration_ms, uint16_t fade_ms);
-uint8_t lumen_led_engine_script_segment(uint8_t script_id, uint8_t stage_index, uint8_t strip_id,
-                                        uint8_t seg_id, const lumen_segment_t *segment,
-                                        uint16_t *frames_written);
-uint8_t lumen_led_engine_script_commit(uint8_t script_id);
-uint8_t lumen_led_engine_script_abort(uint8_t script_id);
-
-/*
- * ClearScript 0x1E（#73）：真正删掉一套已提交剧本。
- *
- * 未提交即成功（幂等）；清掉的正是激活剧本时停止播放并退回「无激活剧本」。
- * 落盘预检失败回 LUMEN_RESULT_STORAGE_FAILED，且 RAM 里的剧本**原样保留**
- * （不出现「本机看着删了、断电又回来」的半套状态）。
- */
-uint8_t lumen_led_engine_clear_script(uint8_t script_id);
-
-/*
- * 激活一套已提交剧本。loop 是 lumen_loop_mode_t 的线上字节（0 不循环 /
- * 1 全部循环 / 2 最后一步循环，#98），命令层已拒绝 > 2 的值。
- */
-uint8_t lumen_led_engine_activate_script(uint8_t script_id, uint8_t loop);
-
-/*
- * ScriptSummary 0x85 的数据源：stage_count / flags / active。
- *
- * flags 与 State 字节 10 共用 script_store.h 的位表：bit0 循环中、bit1 active、
- * bit2 最后一步循环、bit3-7 = 0。未提交返回 false。 */
-bool lumen_led_engine_script_summary(uint8_t script_id, uint8_t *stage_count, uint8_t *flags);
-
-/* 本次下发的累计接受帧数（ScriptProgress 0x86 的数据源）。 */
-uint16_t lumen_led_engine_script_frames(uint8_t script_id, uint16_t *frames_written);
-
-/* SetPlayback 0x13：action 0 stop / 1 play / 2 pause，loop 是 lumen_loop_mode_t。 */
-uint8_t lumen_led_engine_set_playback(uint8_t action, uint8_t loop);
 
 bool lumen_led_engine_selftest_active(void);

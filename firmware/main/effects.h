@@ -3,6 +3,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "protocol.h"
+
 /*
  * 灯效像素计算（纯函数，无 ESP-IDF 头，可在 host 上直接单测）。
  *
@@ -233,6 +235,38 @@ bool lumen_layer_static_reserved_zero(const lumen_effect_layer_t *layer);
  * （v4 §7.1 第 3 步：空层不得携带亮度）。
  */
 bool lumen_layer_empty_params_zero(const lumen_effect_layer_t *layer);
+
+/*
+ * 只做「类型参数」规则（§7.1 第 8 步）：flags 保留位与周期区间。
+ *
+ * 静态层要求 flags == 0；呼吸 bit3-7 保留、周期 ≥334；彩虹/流光保留位见各
+ * 类型；爆闪 flags == 0、周期 ≥100；心跳 bit1-7 保留、周期 500-1500；
+ * 熄灭 flags == 0 且 period == 0（hue / sat / p5 由
+ * lumen_segment_validate_shape 另判，本函数看不到它们）；未知类型一律非法。
+ * period_ms == 0 表示静止，不受下限约束。
+ *
+ * 呼吸的 p5 是相对百分比 0-100，那条判定同样在 lumen_segment_validate_shape。
+ */
+uint8_t lumen_segment_validate_params(uint8_t type, uint8_t flags, uint16_t period_ms);
+
+/*
+ * 一步 / 一段的整体形状校验（§7.1 第 2-8 步，**不含 strip / 区间 / 重叠**）。
+ *
+ * 顺序固定：
+ *   2 layer0 已知且不得为空层
+ *   3 layer1 已知或空层；空层的 level 必须为 0
+ *   4 任一层的 level ≤ 100
+ *   5 layer1 为空 ⇒ blend 必须为 0
+ *   6 blend ≤ LUMEN_BLEND_MAX
+ *   7 静态层 param[3..6] 全 0（对两层都生效）
+ *   8 各层按 type 校验参数（呼吸 p5 ≤ 100、熄灭参数全 0 由本函数单独判）
+ *
+ * 命令层、场景存储与 blob 解码都复用这一处，拒收规则永远一致。定义放在
+ * effects.c 而不是场景 / 段模块：本模块拥有 lumen_segment_t，是场景存储与
+ * 渲染接缝的共同下层，所以规则只存在一份（v5 删掉 segment_store 之后仍然
+ * 只有一个来源）。
+ */
+uint8_t lumen_segment_validate_shape(const lumen_segment_t *seg);
 
 /* ---------------- 段几何 ---------------- */
 
