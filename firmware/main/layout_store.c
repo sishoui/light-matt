@@ -411,7 +411,12 @@ bool lumen_layout_blob_decode(const uint8_t *blob, size_t len, uint8_t *out_stri
         return false;
     }
 
-    lumen_layout_store_t decoded;
+    /*
+     * **必须静态**：lumen_layout_store_t 是 2696 字节，本函数经
+     * lumen_state_store_load_layout 跑在 app_main 任务的 3584 字节栈上。
+     * 与 scene_store.c 的同类修复同一个理由，见那里的注释。
+     */
+    static lumen_layout_store_t decoded;
     memset(&decoded, 0, sizeof(decoded));
     uint16_t counts[LUMEN_MAX_STRIPS];
     memset(counts, 0, sizeof(counts));
