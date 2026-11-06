@@ -29,7 +29,6 @@ import {
   loadDevicePhotos,
   photoKeyOf,
 } from "./device-photo";
-import { clearPlanDraftsForDevice } from "./plan-drafts";
 import { clearStripMetaForDevice } from "./strip-meta";
 import { isMockDeviceId } from "./mock-mode";
 import { markMockDeleted } from "./mock-deleted";
@@ -109,14 +108,13 @@ export async function deleteDeviceFully(input: DeleteDeviceInput): Promise<Delet
     removeDevice(storage, deviceId);
   }
 
-  /* 5. 方案草稿：键可能是 hardwareId 或 deviceId，两个都清。 */
-  let planDraftsCleared = 0;
-  if (hardwareId.length > 0) {
-    planDraftsCleared += clearPlanDraftsForDevice(storage, hardwareId);
-  }
-  if (deviceId.length > 0) {
-    planDraftsCleared += clearPlanDraftsForDevice(storage, deviceId);
-  }
+  /*
+   * 5. 方案草稿：**v5 已经没有本地方案草稿**（`lumen.planDrafts.v1` 随
+   * 「剧本 / 方案」模型一起退役，编辑内容现在存在设备的场景里）。
+   * 这里保留一个显式的 0，是为了让「清理清单」的形状不变——将来若再引入
+   * 本地草稿，位置就在这里。
+   */
+  const planDraftsCleared = 0;
 
   /* 6. 灯组元数据：按 deviceKey 前缀清理，连同自定义封面文件一起删。 */
   let stripMetaCleared = 0;

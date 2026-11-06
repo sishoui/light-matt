@@ -23,16 +23,17 @@ import {
 import type { LinkDetail } from "./link-listeners";
 import { FrameLog } from "./log";
 import { TransportListeners } from "./link-listeners";
-import { mockSpecOf, type MockDeviceSpec, type MockSegmentSeed } from "../control/mock-devices";
-import { parseSegmentPayload } from "../protocol/commands";
-import { toFlat } from "../protocol/segment-shapes";
+import { mockSpecOf, type MockDeviceSpec } from "../control/mock-devices";
 import {
-  BLEND,
+  EFFECT_TYPE,
+  LAYOUT_PART_BYTES,
   MAX_LEDS,
-  MAX_SCRIPTS,
+  MAX_SCENES,
+  NAME_BYTES,
   NO_EFFECT,
-  NO_SCRIPT,
-  SEGMENT_TYPE,
+  SCENE_STEP_BYTES,
+  STEP_MAX_MS,
+  STEP_MIN_MS,
 } from "../protocol/constants";
 import type {
   AckResult,
@@ -40,44 +41,81 @@ import type {
   DeviceInfo,
   DeviceState,
   DiscoveredDevice,
+  EffectLayer,
+  LayoutListEnd,
+  LayoutReport,
   LinkState,
-  SegmentListEnd,
-  SegmentReport,
-  SegmentSpec,
+  SceneListEnd,
+  ScenePartReport,
+  SceneStepReport,
   StripConfig,
 } from "../protocol/types";
 
-/** 每台演示设备的可变状态（连接时从 spec 播种，之后按命令修改）。 */
+/** 一个部位在 mock 里的可变状态（布局 + 它在本场景的时间轴）。 */
+interface MockPart {
+  partId: number;
+  name: string;
+  /** 闭区间灯珠段，最多 8 条。 */
+  segs: Array<[number, number]>;
+  stepCount: number;
+  loop: number;
+  on: boolean;
+  steps: Array<{
+    durationMs: number;
+    layer0: EffectLayer;
+    layer1: EffectLayer;
+  }>;
+}
+
+/** 每条链：部位列表（布局） + 本场景里各部位的时间轴。 */
+interface MockStrip {
+  ledCount: number;
+  parts: MockPart[];
+}
+
+/**
+ * 每台演示设备的可变状态（连接时从 spec 播种，之后按命令修改）。
+ *
+ * v5 的两张表都按链展开：`strips[i].parts` 是布局，每个部位的
+ * stepCount / loop / on / steps 是**当前场景**的时间轴。三个场景在 mock 里
+ * 只保留激活这一个——演示模式不需要多场景切换的视觉证据，而 State 只报
+ * `activeScene`，页面读到的仍是设备权威值。
+ */
 interface MockRuntime {
-  ledCounts: number[];
+  strips: MockStrip[];
   power: 0 | 1;
   brightness: number;
-  rgb: { r: number; g: number; b: number };
   stripPowerMask: number;
-  segments: SegmentSpec[];
-  /** scriptId → 阶段数。 */
-  scripts: Map<number, number>;
-  activeScript: number;
-  playback: number;
-  /** 循环模式 0 不循环 / 1 全部循环 / 2 最后一步循环（#98，与固件同值）。 */
-  loop: number;
-  /** 下发中的剧本暂存（Begin 之后、Commit 之前）。 */
-  staging: { scriptId: number; stages: Map<number, { durationMs: number; segments: SegmentSpec[] }> } | null;
+  activeScene: number;
+  layoutValid: boolean;
+  sceneName: string;
+  /** 布局暂存（LayoutWrite 之后、LayoutCommit 之前）。 */
+  layoutStaging: boolean;
 }
 
 const EMPTY_INFO: Omit<DeviceInfo, "hwId"> = {
-  firmwareVersion: 0x0300,
-  firmwareMajor: 3,
+  firmwareVersion: 0x0500,
+  firmwareMajor: 5,
   firmwareMinor: 0,
   maxLeds: MAX_LEDS,
   maxStrips: 8,
-  maxSegments: 8,
-  maxStages: 8,
-  maxScripts: 4,
+  maxParts: 8,
+  maxPartSegs: 8,
+  maxSteps: 8,
+  maxScenes: MAX_SCENES,
   caps: 0x01,
   supportsTwoLayers: true,
   fadeImplemented: false,
 };
+
+/** 演示用的静态层（常亮）。 */
+function staticLayer(hue: number, sat: number): EffectLayer {
+  return { type: EFFECT_TYPE.STATIC, hue, sat, periodMs: 0, p5: 0, flags: 0, level: 100 };
+}
+
+function emptyLayer(): EffectLayer {
+  return { type: NO_EFFECT, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 };
+}
 
 /** 模拟的扫描结果里额外出现的「附近未登记」设备，让发现页有内容。 */
 const NEARBY_ONLY: readonly DiscoveredDevice[] = [
@@ -85,39 +123,30 @@ const NEARBY_ONLY: readonly DiscoveredDevice[] = [
 ];
 
 function seedRuntime(spec: MockDeviceSpec): MockRuntime {
-  const segments: SegmentSpec[] = spec.segments.map((seed) => toSpecOf(seed));
+  const strips: MockStrip[] = fillStrips(spec.stripCounts).map((ledCount, stripIndex) => ({
+    ledCount,
+    parts: spec.parts
+      .filter((part) => part.stripId === stripIndex)
+      .map((part) => ({
+        partId: part.partId,
+        name: part.name,
+        segs: part.segs.map(([start, end]) => [start, end] as [number, number]),
+        /* 出厂状态：每部位 1 步常亮，与「点 + 播种整条/1 步/常亮」一致。 */
+        stepCount: 1,
+        loop: 0,
+        on: true,
+        steps: [{ durationMs: 3000, layer0: staticLayer(part.hue, part.sat), layer1: emptyLayer() }],
+      })),
+  }));
   return {
-    ledCounts: fillStrips(spec.stripCounts),
+    strips,
     power: spec.power,
     brightness: spec.brightness,
-    rgb: { ...spec.rgb },
     stripPowerMask: spec.stripPowerMask,
-    segments,
-    scripts: new Map(),
-    activeScript: NO_SCRIPT,
-    playback: 0,
-    loop: 0,
-    staging: null,
-  };
-}
-
-function toSpecOf(seed: MockSegmentSeed): SegmentSpec {
-  return {
-    stripId: seed.stripId,
-    segId: seed.segId,
-    start: seed.start,
-    end: seed.end,
-    blend: BLEND.OVER,
-    layer0: {
-      type: SEGMENT_TYPE.STATIC,
-      hue: seed.hue,
-      sat: seed.sat,
-      periodMs: 0,
-      p5: 0,
-      flags: 0,
-      level: 100,
-    },
-    layer1: { type: NO_EFFECT, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 },
+    activeScene: 0,
+    layoutValid: strips.some((strip) => strip.parts.length > 0),
+    sceneName: "场景 1",
+    layoutStaging: false,
   };
 }
 
@@ -127,6 +156,60 @@ function fillStrips(counts: readonly number[]): number[] {
     if (index < out.length) out[index] = count;
   });
   return out;
+}
+
+/** UTF-8 字节长度（名字字段的上限校验用）。 */
+function encodeUtf8Length(text: string): number {
+  let bytes = 0;
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    bytes += code <= 0x7f ? 1 : code <= 0x7ff ? 2 : code <= 0xffff ? 3 : 4;
+  }
+  return bytes;
+}
+
+/** 从载荷里读一层（9 字节定宽，§7.1）。 */
+function readLayer(payload: Uint8Array, offset: number): EffectLayer {
+  return {
+    type: payload[offset],
+    hue: payload[offset + 1] | (payload[offset + 2] << 8),
+    sat: payload[offset + 3],
+    periodMs: payload[offset + 4] | (payload[offset + 5] << 8),
+    p5: payload[offset + 6],
+    flags: payload[offset + 7],
+    level: payload[offset + 8],
+  };
+}
+
+/** 从 24 字节名字段里解出前 len 字节（UTF-8）。 */
+function decodeUtf8(bytes: Uint8Array, offset: number, len: number): string {
+  let text = "";
+  const end = Math.min(offset + len, bytes.length);
+  for (let i = offset; i < end; ) {
+    const b0 = bytes[i];
+    let code: number;
+    let size: number;
+    if (b0 < 0x80) {
+      code = b0;
+      size = 1;
+    } else if ((b0 & 0xe0) === 0xc0) {
+      code = ((b0 & 0x1f) << 6) | (bytes[i + 1] & 0x3f);
+      size = 2;
+    } else if ((b0 & 0xf0) === 0xe0) {
+      code = ((b0 & 0x0f) << 12) | ((bytes[i + 1] & 0x3f) << 6) | (bytes[i + 2] & 0x3f);
+      size = 3;
+    } else {
+      code =
+        ((b0 & 0x07) << 18) |
+        ((bytes[i + 1] & 0x3f) << 12) |
+        ((bytes[i + 2] & 0x3f) << 6) |
+        (bytes[i + 3] & 0x3f);
+      size = 4;
+    }
+    text += String.fromCodePoint(code);
+    i += size;
+  }
+  return text;
 }
 
 export class MockTransport {
@@ -355,38 +438,76 @@ export class MockTransport {
     return this.stateOf();
   }
 
-  async queryStrip(
+  async queryLayout(
     stripId: number,
     _opts: { timeoutMs?: number } = {},
-  ): Promise<{ reports: SegmentReport[]; end: SegmentListEnd }> {
+  ): Promise<{ reports: LayoutReport[]; end: LayoutListEnd }> {
     this.ensureWritable();
     const runtime = this.runtimeOrThrow();
-    const reports = runtime.segments
-      .filter((segment) => segment.stripId === stripId)
-      .sort((a, b) => a.segId - b.segId)
-      .map((segment) => ({ ...segment, ...toFlat(segment) }));
-    const segMask = reports.reduce((mask, report) => mask | (1 << report.segId), 0);
-    return { reports, end: { stripId, segMask } };
+    const strip = runtime.strips[stripId];
+    if (strip === undefined) {
+      throw new Error(`没有 strip ${stripId}`);
+    }
+    /* 只有 segs 非空的部位才报（§7.2：part_mask 与报告条数一致）。 */
+    const reports: LayoutReport[] = strip.parts
+      .filter((part) => part.segs.length > 0)
+      .map((part) => ({
+        stripId,
+        partId: part.partId,
+        nameLen: encodeUtf8Length(part.name),
+        name: part.name,
+        segCount: part.segs.length,
+        segs: part.segs.map(([start, end]) => [start, end] as [number, number]),
+      }));
+    const partMask = reports.reduce((mask, report) => mask | (1 << report.partId), 0);
+    return { reports, end: { stripId, partMask } };
   }
 
-  async queryScript(scriptId: number, _opts: { timeoutMs?: number } = {}): Promise<{
-    scriptId: number;
-    stageCount: number;
-    flags: number;
-    loopMode: number;
-    active: boolean;
+  async queryScene(
+    sceneId: number,
+    _opts: { timeoutMs?: number } = {},
+  ): Promise<{
+    sceneId: number;
+    parts: ScenePartReport[];
+    steps: SceneStepReport[];
+    end: SceneListEnd;
   }> {
     this.ensureWritable();
     const runtime = this.runtimeOrThrow();
-    const active = runtime.activeScript === scriptId;
-    /* 未激活剧本没有独立的循环存储位置（loop 是播放属性），与固件一致只报 0。 */
-    const flags = active && runtime.loop !== 0 ? (runtime.loop === 2 ? 0x05 : 0x01) | 0x02 : 0x00;
+    const parts: ScenePartReport[] = [];
+    const steps: SceneStepReport[] = [];
+    runtime.strips.forEach((strip, stripId) => {
+      for (const part of strip.parts) {
+        if (part.stepCount === 0) {
+          continue;
+        }
+        parts.push({
+          sceneId,
+          stripId,
+          partId: part.partId,
+          stepCount: part.stepCount,
+          loop: part.loop,
+          on: part.on,
+        });
+        part.steps.slice(0, part.stepCount).forEach((step, stepIndex) => {
+          steps.push({
+            sceneId,
+            stripId,
+            partId: part.partId,
+            stepIndex,
+            durationMs: step.durationMs,
+            layer0: { ...step.layer0 },
+            layer1: { ...step.layer1 },
+          });
+        });
+      }
+    });
+    const nameLen = encodeUtf8Length(runtime.sceneName);
     return {
-      scriptId,
-      stageCount: runtime.scripts.get(scriptId) ?? 0,
-      flags,
-      loopMode: active ? runtime.loop : 0,
-      active,
+      sceneId,
+      parts,
+      steps,
+      end: { sceneId, nameLen, name: runtime.sceneName },
     };
   }
 
@@ -394,7 +515,7 @@ export class MockTransport {
     this.ensureWritable();
     const runtime = this.runtimeOrThrow();
     const channels = Array.from({ length: 8 }, (_, stripId) => {
-      const assigned = stripId < runtime.ledCounts.filter((count) => count > 0).length;
+      const assigned = stripId < runtime.strips.filter((strip) => strip.ledCount > 0).length;
       const gpio = [3, 10, 0, 1, 4, 5, 6, 7][stripId] ?? 0xff;
       return {
         stripId,
@@ -489,131 +610,176 @@ export class MockTransport {
         if (stripId >= 8 || count < 1 || count > MAX_LEDS) {
           return 0x01;
         }
-        runtime.ledCounts[stripId] = count;
-        /* 灯珠数变小会裁掉越界段（§9.2）。 */
-        runtime.segments = runtime.segments.filter(
-          (segment) => segment.stripId !== stripId || segment.end < count,
-        );
+        const strip = runtime.strips[stripId];
+        if (strip === undefined) {
+          return 0x01;
+        }
+        strip.ledCount = count;
+        /* 灯珠数变小会裁掉越界的段（§6.1：不自动缩短，整段失效）。 */
+        for (const part of strip.parts) {
+          part.segs = part.segs.filter(([, end]) => end < count);
+        }
         return 0x00;
       }
       case 0x07: {
         return 0x00;
       }
-      case 0x10: {
-        try {
-          const spec = parseSegmentPayload(payload);
-          if (spec.end >= runtime.ledCounts[spec.stripId]) {
-            return 0x01;
-          }
-          /* 同带区间重叠：设备拒绝（§9.2）。 */
-          const overlaps = runtime.segments.some(
-            (segment) =>
-              segment.stripId === spec.stripId &&
-              segment.segId !== spec.segId &&
-              segment.start <= spec.end &&
-              spec.start <= segment.end,
-          );
-          if (overlaps) {
-            return 0x01;
-          }
-          runtime.segments = runtime.segments.filter(
-            (segment) => !(segment.stripId === spec.stripId && segment.segId === spec.segId),
-          );
-          runtime.segments.push(spec);
-          return 0x00;
-        } catch {
-          return 0x01;
-        }
-      }
-      case 0x11: {
+      /* ---- 布局族 0x20-0x24 ---- */
+      case 0x20: {
         const stripId = payload[0];
-        const segId = payload[1];
-        runtime.segments = runtime.segments.filter(
-          (segment) => !(segment.stripId === stripId && segment.segId === segId),
-        );
-        return 0x00;
-      }
-      case 0x13: {
-        const action = payload[0];
-        if (action > 2) {
+        const partCount = payload[1];
+        const strip = runtime.strips[stripId];
+        if (strip === undefined || partCount > 8) {
           return 0x01;
         }
-        /* #98：loop 是三值；越界与固件一样回 InvalidParam（不改状态）。 */
-        if (payload[1] > 2) {
+        /* LayoutWrite：声明部位数并**清空**该链的部位（§6.1 第 1 条）。 */
+        strip.parts = Array.from({ length: partCount }, (_, partId) => ({
+          partId,
+          name: "",
+          segs: [],
+          stepCount: 0,
+          loop: 0,
+          on: true,
+          steps: [],
+        }));
+        runtime.layoutStaging = true;
+        return 0x00;
+      }
+      case 0x21: {
+        if (payload.length !== LAYOUT_PART_BYTES) {
+          return 0x04;
+        }
+        const stripId = payload[0];
+        const partId = payload[1];
+        const nameLen = payload[2];
+        const segCount = payload[27];
+        const part = runtime.strips[stripId]?.parts[partId];
+        if (part === undefined || nameLen > NAME_BYTES || segCount > 8) {
           return 0x01;
         }
-        runtime.playback = action;
-        runtime.loop = payload[1];
+        part.name = decodeUtf8(payload, 3, nameLen);
+        /* 声明段数时清空旧段（分帧下发的中间态由 LayoutCommit 兜底）。 */
+        part.segs = [];
+        part.stepCount = part.stepCount;
         return 0x00;
       }
-      case 0x14: {
-        const scriptId = payload[0];
-        const stageCount = payload[1];
-        if (scriptId >= MAX_SCRIPTS || stageCount < 1 || stageCount > 8) {
+      case 0x22: {
+        const stripId = payload[0];
+        const partId = payload[1];
+        const start = payload[3];
+        const end = payload[4];
+        const strip = runtime.strips[stripId];
+        const part = strip?.parts[partId];
+        if (strip === undefined || part === undefined) {
           return 0x01;
         }
-        runtime.staging = { scriptId, stages: new Map() };
-        return 0x00;
-      }
-      case 0x15: {
-        const scriptId = payload[0];
-        const stageIndex = payload[1];
-        const durationMs = payload[2] | (payload[3] << 8);
-        if (runtime.staging === null || runtime.staging.scriptId !== scriptId) {
-          return 0x09;
+        if (start > end || end >= strip.ledCount) {
+          return 0x01;
         }
-        const stage = runtime.staging.stages.get(stageIndex) ?? { durationMs: 0, segments: [] };
-        stage.durationMs = durationMs;
-        runtime.staging.stages.set(stageIndex, stage);
-        return 0x00;
-      }
-      case 0x16: {
-        const scriptId = payload[0];
-        const stageIndex = payload[1];
-        if (runtime.staging === null || runtime.staging.scriptId !== scriptId) {
-          return 0x09;
-        }
-        try {
-          const spec = parseSegmentPayload(payload.slice(2));
-          const stage = runtime.staging.stages.get(stageIndex) ?? { durationMs: 0, segments: [] };
-          stage.segments = stage.segments.filter(
-            (segment) => !(segment.stripId === spec.stripId && segment.segId === spec.segId),
-          );
-          if (spec.layer0.type !== NO_EFFECT) {
-            stage.segments.push(spec);
+        /* 一颗灯珠只属一个部位（S3）：与同链其它部位的所有段互斥。 */
+        for (const other of strip.parts) {
+          for (const [ostart, oend] of other.segs) {
+            if (other.partId === partId) {
+              continue;
+            }
+            if (!(end < ostart || oend < start)) {
+              return 0x01;
+            }
           }
-          runtime.staging.stages.set(stageIndex, stage);
-          return 0x00;
-        } catch {
-          return 0x01;
         }
-      }
-      case 0x17: {
-        const scriptId = payload[0];
-        if (runtime.staging === null || runtime.staging.scriptId !== scriptId) {
-          return 0x09;
-        }
-        runtime.scripts.set(scriptId, runtime.staging.stages.size);
-        runtime.staging = null;
+        part.segs = part.segs.filter((_, index) => index !== payload[2]);
+        part.segs.push([start, end]);
         return 0x00;
       }
-      case 0x18: {
-        runtime.staging = null;
-        return 0x00;
-      }
-      case 0x19: {
-        const scriptId = payload[0];
-        if (!runtime.scripts.has(scriptId)) {
+      case 0x23: {
+        /* LayoutCommit：整份校验（段已写齐 + 段互斥已在 LayoutSeg 判过）。 */
+        const broken = runtime.strips.some((strip) =>
+          strip.parts.some((part) => part.segs.length === 0 && part.name !== ""),
+        );
+        if (broken) {
           return 0x01;
         }
-        if (payload[1] > 2) {
-          return 0x01;
-        }
-        runtime.activeScript = scriptId;
-        runtime.loop = payload[1];
-        runtime.playback = 1;
+        runtime.layoutValid = runtime.strips.some((strip) => strip.parts.length > 0);
+        runtime.layoutStaging = false;
         return 0x00;
       }
+      case 0x24: {
+        /* 查询由 queryLayout 处理；走到这里说明调用方用错了通道。 */
+        return 0x00;
+      }
+      /* ---- 场景族 0x25-0x29 ---- */
+      case 0x25: {
+        const sceneId = payload[0];
+        const stripId = payload[1];
+        const partId = payload[2];
+        const stepCount = payload[3];
+        const loop = payload[4];
+        const on = payload[5];
+        const part = runtime.strips[stripId]?.parts[partId];
+        if (sceneId >= MAX_SCENES || part === undefined) {
+          return 0x01;
+        }
+        if (stepCount > 8 || loop > 2 || on > 1) {
+          return 0x01;
+        }
+        /* 只有步数真的变了才清空步骤（§6.2：点一下开关不该抹掉时间轴）。 */
+        if (part.stepCount !== stepCount) {
+          part.steps = part.steps.slice(0, stepCount);
+          while (part.steps.length < stepCount) {
+            part.steps.push({
+              durationMs: 1000,
+              layer0: staticLayer(0, 255),
+              layer1: emptyLayer(),
+            });
+          }
+        }
+        part.stepCount = stepCount;
+        part.loop = loop;
+        part.on = on !== 0;
+        return 0x00;
+      }
+      case 0x26: {
+        if (payload.length !== SCENE_STEP_BYTES) {
+          return 0x04;
+        }
+        const stripId = payload[1];
+        const partId = payload[2];
+        const stepIndex = payload[3];
+        const durationMs = payload[4] | (payload[5] << 8);
+        const part = runtime.strips[stripId]?.parts[partId];
+        if (part === undefined) {
+          return 0x01;
+        }
+        if (stepIndex >= part.stepCount) {
+          return 0x01;
+        }
+        if (durationMs < STEP_MIN_MS || durationMs > STEP_MAX_MS) {
+          return 0x01;
+        }
+        part.steps[stepIndex] = {
+          durationMs,
+          layer0: readLayer(payload, 6),
+          layer1: readLayer(payload, 15),
+        };
+        return 0x00;
+      }
+      case 0x27: {
+        const nameLen = payload[1];
+        if (payload[0] >= MAX_SCENES || nameLen > NAME_BYTES) {
+          return 0x01;
+        }
+        runtime.sceneName = decodeUtf8(payload, 2, nameLen);
+        return 0x00;
+      }
+      case 0x28: {
+        if (payload[0] >= MAX_SCENES) {
+          return 0x01;
+        }
+        runtime.activeScene = payload[0];
+        return 0x00;
+      }
+      case 0x29:
+        return 0x00;
       case 0x1b: {
         const stripId = payload[0];
         const on = payload[1] === 1;
@@ -624,24 +790,8 @@ export class MockTransport {
         return 0x00;
       }
       case 0x1c:
-      case 0x1d:
-      case 0x1a:
-      case 0x12: {
+      case 0x1d: {
         /* 查询类由各自的 async 方法处理；走到这里说明调用方用错了通道。 */
-        return 0x00;
-      }
-      case 0x1e: {
-        /* ClearScript（#73 / #83）：未提交的编号也视为成功（协议幂等）；
-         * 清掉的正是激活方案时退回「无激活剧本」并停播。 */
-        const scriptId = payload[0];
-        if (!Number.isInteger(scriptId) || scriptId >= MAX_SCRIPTS) {
-          return 0x01;
-        }
-        runtime.scripts.delete(scriptId);
-        if (runtime.activeScript === scriptId) {
-          runtime.activeScript = NO_SCRIPT;
-          runtime.playback = 0;
-        }
         return 0x00;
       }
       default:
@@ -649,36 +799,25 @@ export class MockTransport {
     }
   }
 
-  /** 由运行时状态派生 37 字节 State 的等价对象。 */
+  /** 由运行时状态派生 32 字节 State 的等价对象（§7.3）。 */
   private stateOf(): DeviceState {
     const runtime = this.runtimeOrThrow();
     const stripCount = Math.max(
       1,
-      runtime.ledCounts.reduce((count, value, index) => (value > 0 ? index + 1 : count), 1),
+      runtime.strips.reduce((count, strip, index) => (strip.ledCount > 0 ? index + 1 : count), 1),
     );
-    const stripSegCounts = Array.from({ length: 8 }, (_, stripId) =>
-      runtime.segments.filter((segment) => segment.stripId === stripId).length,
-    );
+    const ledCounts = runtime.strips.map((strip) => strip.ledCount);
+    const partCounts = runtime.strips.map((strip) => strip.parts.length);
     return {
       power: runtime.power,
       brightness: runtime.brightness,
-      r: runtime.rgb.r,
-      g: runtime.rgb.g,
-      b: runtime.rgb.b,
-      ledCount: runtime.ledCounts[0],
       maxBrightness: this.spec?.maxBrightness ?? 255,
       stripCount,
-      segCount: stripSegCounts[0],
-      scriptId: runtime.activeScript,
-      stageIndex: 0,
-      playbackState: runtime.playback,
-      flags:
-        (runtime.loop === 0 ? 0x00 : runtime.loop === 2 ? 0x05 : 0x01) |
-        (runtime.activeScript !== NO_SCRIPT ? 0x02 : 0x00),
       stripPowerMask: runtime.stripPowerMask,
-      stripAnimMask: 0x00,
-      stripCounts: [...runtime.ledCounts],
-      stripSegCounts,
+      activeScene: runtime.activeScene,
+      layoutValid: runtime.layoutValid,
+      stripLedCounts: ledCounts,
+      partCounts,
     };
   }
 }
@@ -690,21 +829,19 @@ function commandLabel(command: number): string {
     0x05: "QueryState",
     0x06: "SetLedCount",
     0x07: "SelfTest",
-    0x10: "SetSegment",
-    0x11: "ClearSegment",
-    0x12: "QueryStrip",
-    0x13: "SetPlayback",
-    0x14: "ScriptBegin",
-    0x15: "ScriptStage",
-    0x16: "ScriptSegment",
-    0x17: "ScriptCommit",
-    0x18: "ScriptAbort",
-    0x19: "ActivateScript",
-    0x1a: "QueryScript",
-    0x1b: "SetStripPower",
+     0x1b: "SetStripPower",
     0x1c: "QueryStripConfig",
     0x1d: "QueryDeviceInfo",
-    0x1e: "ClearScript",
+    0x20: "LayoutWrite",
+    0x21: "LayoutPart",
+    0x22: "LayoutSeg",
+    0x23: "LayoutCommit",
+    0x24: "QueryLayout",
+    0x25: "ScenePart",
+    0x26: "SceneStep",
+    0x27: "SceneName",
+    0x28: "ActivateScene",
+    0x29: "QueryScene",
   };
   return labels[command] ?? `cmd 0x${command.toString(16)}`;
 }

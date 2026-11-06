@@ -351,13 +351,13 @@ describe("颜色语义纯函数", () => {
     expect(clampRgb({ r: 300, g: -20, b: 127.5 })).toEqual({ r: 255, g: 0, b: 128 });
   });
 
-  it("本地乐观更新只改 RGB，不动 power / brightness / ledCount", () => {
+  it("applyLocalColor 在 v5 已无字段可改（State 不再有 RGB），只做入参归一", () => {
     const state = baseState({ power: 0, brightness: 42 });
     const next = applyLocalColor(state, { r: 0, g: 0, b: 255 });
-    expect(next).toEqual({ ...state, r: 0, g: 0, b: 255 });
+    /* v5 的 State 是 32 字节且不含颜色摘要（§7.3），所以这里原样返回。 */
+    expect(next).toEqual(state);
     expect(next.power).toBe(0);
     expect(next.brightness).toBe(42);
-    expect(state.r).toBe(255); // 不修改入参
     expect(sameRgb({ r: 1, g: 2, b: 3 }, { r: 1, g: 2, b: 3 })).toBe(true);
     expect(sameRgb({ r: 1, g: 2, b: 3 }, { r: 1, g: 2, b: 4 })).toBe(false);
   });
@@ -369,127 +369,5 @@ describe("颜色语义纯函数", () => {
     expect(presetBrightness(baseState({ brightness: 200, maxBrightness: 180 }), 200)).toBe(180);
     expect(presetBrightness(null, 200)).toBe(200);
     expect(presetBrightness(null, 0)).toBe(128);
-  });
-});
-
-describe("#25：颜色写进选中段（不再是占位）", () => {
-  it("没有选中段时 queueColor / commitColor 不发帧（不能假装成功）", async () => {
-    const { session, transport, clock } = makeSession();
-    transport.emitState(baseState({ power: 1, brightness: 77 }));
-
-    session.queueColor({ r: 0, g: 0, b: 255 });
-    clock.advance(200);
-    await settle();
-
-    session.commitColor({ r: 255, g: 0, b: 0 });
-    clock.advance(200);
-    await settle();
-
-    expect(transport.attempts).toHaveLength(0);
-    expect(transport.writes).toHaveLength(0);
-    vi.restoreAllMocks();
-  });
-
-  it("有选中段时颜色变成 SetSegment 0x10，区间与 hue/sat 正确，并走 20Hz 闸门", async () => {
-    const { session, transport, clock } = makeSession();
-    transport.emitState(baseState({ power: 1, brightness: 77 }));
-    session.setActiveSegment({ stripId: 0, segId: 2, start: 40, end: 63 });
-
-    /* 纯红：hue 0、sat 255。 */
-    session.commitColor({ r: 255, g: 0, b: 0 });
-    clock.advance(200);
-    await settle();
-
-    expect(transport.writes).toHaveLength(1);
-    const req = transport.writes[0];
-    expect(req.command).toBe(0x10);
-    /* strip, seg, start, end, type, hue_lo, hue_hi, sat */
-    /* v4：23 字节两层载荷，单层时 layer1 全 0xFF 且 level 0。 */
-    expect(req.payload.length).toBe(23);
-    expect(bytesToCompactHex(req.payload)).toBe(
-      "0002283F00000000FF0000000064FF0000000000000000",
-    );
-
-    /* 连续拖动：50ms 闸门，只保留最新值。 */
-    transport.writes.length = 0;
-    transport.writeTimes.length = 0;
-    for (let i = 0; i < 20; i += 1) {
-      session.queueColor({ r: 0, g: 255, b: 0 });
-      clock.advance(10);
-      await settle();
-    }
-    clock.advance(200);
-    await settle();
-    expect(transport.writes.length).toBeLessThanOrEqual(5);
-    for (let i = 1; i < transport.writeTimes.length; i += 1) {
-      expect(transport.writeTimes[i] - transport.writeTimes[i - 1]).toBeGreaterThanOrEqual(50);
-    }
-    /* 绿色 hue=120° → 0x5555（21845），sat=255。 */
-    const last = transport.writes[transport.writes.length - 1];
-    expect(bytesToCompactHex(last.payload)).toBe(
-      "0002283F00005555FF0000000064FF0000000000000000",
-    );
-
-    vi.restoreAllMocks();
-  });
-
-  it("applyPreset 没有目标段时明确报错；有目标段时发 SetSegment", async () => {
-    const { session, transport } = makeSession();
-    transport.emitState(baseState());
-
-    const noTarget = await session.applyPreset({ r: 255, g: 0, b: 0 });
-    expect(noTarget.kind).toBe("error");
-    expect(transport.attempts).toHaveLength(0);
-
-    session.setActiveSegment({ stripId: 0, segId: 0, start: 0, end: 15 });
-    const withTarget = await session.applyPreset({ r: 255, g: 0, b: 0 });
-    expect(withTarget.kind).toBe("ok");
-    expect(transport.writes).toHaveLength(1);
-    expect(transport.writes[0].command).toBe(0x10);
-    expect(bytesToCompactHex(transport.writes[0].payload)).toBe(
-      "0000000F00000000FF0000000064FF0000000000000000",
-    );
-
-    vi.restoreAllMocks();
-  });
-
-  it("亮度仍走 20Hz 闸门；颜色走另一条同节奏的段闸门", async () => {
-    const { session, transport, clock } = makeSession();
-    transport.emitState(baseState());
-    session.setActiveSegment({ stripId: 0, segId: 0, start: 0, end: 15 });
-
-    /* 模拟 100Hz：每 10ms 交替推亮度与颜色。 */
-    for (let i = 0; i < 100; i += 1) {
-      if (i % 2 === 0) {
-        session.queueBrightness(100 + (i % 40));
-      } else {
-        session.queueColor(hsvToRgb(i * 3.6, 1, 1));
-      }
-      clock.advance(10);
-      await settle();
-    }
-    clock.advance(200);
-    await settle();
-
-    /* 两条通道各自 20Hz，合起来不超过 20 帧/秒（不是叠成 40Hz）。 */
-    expect(transport.writes.length).toBeGreaterThan(0);
-    expect(transport.writes.length).toBeLessThanOrEqual(20);
-    const commands = new Set(transport.writes.map((w) => w.command));
-    expect(commands.has(CMD_SET_BRIGHTNESS)).toBe(true);
-    expect(commands.has(0x10)).toBe(true);
-    expect(commands.size).toBe(2);
-
-    vi.restoreAllMocks();
-  });
-
-  it("断开连接会清掉选中段（颜色控件回到禁用态）", async () => {
-    const { session, transport } = makeSession();
-    transport.emitState(baseState());
-    session.setActiveSegment({ stripId: 0, segId: 0, start: 0, end: 15 });
-    expect(session.activeSegment).not.toBeNull();
-
-    await session.disconnect();
-    expect(session.activeSegment).toBeNull();
-    vi.restoreAllMocks();
   });
 });

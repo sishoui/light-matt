@@ -111,7 +111,8 @@ function sessionWith(transport: FakeTransport): ControlSession {
 }
 
 function stateWith(ledCount: number): DeviceState {
-  return baseState({ ledCount });
+  /* v5 的权威字段是逐条数组（State 32 字节，§7.3），所以夹具写 stripLedCounts[0]。 */
+  return baseState({ stripLedCounts: [ledCount, 0, 0, 0, 0, 0, 0, 0] });
 }
 
 describe("parseLedCountInput", () => {
@@ -206,13 +207,13 @@ describe("ControlSession.setLedCount", () => {
     expect(transport.sendOptions[0]).toEqual({ timeoutMs: 3000 });
     expect(result.kind).toBe("ok");
     if (result.kind === "ok") {
-      expect(result.state.ledCount).toBe(60);
-      // 只改数量，不动开关 / 亮度 / 颜色。
+      expect(result.state.stripLedCounts[0]).toBe(60);
+      /* 只改数量，不动开关 / 亮度（v5 的 State 没有颜色摘要）。 */
       expect(result.state.power).toBe(1);
       expect(result.state.brightness).toBe(128);
-      expect(result.state.r).toBe(255);
+      expect(result.state.maxBrightness).toBe(255);
     }
-    expect(session.deviceState?.ledCount).toBe(60);
+    expect(session.deviceState?.stripLedCounts[0]).toBe(60);
   });
 
   it("Busy(0x05)：返回 ack-error，本地 ledCount 保持旧值", async () => {
@@ -228,7 +229,7 @@ describe("ControlSession.setLedCount", () => {
       expect(result.ack.resultCode).toBe(0x05);
       expect(ledCountResultHint(result.ack.resultCode)).toContain("稍后重试");
     }
-    expect(session.deviceState?.ledCount).toBe(30);
+    expect(session.deviceState?.stripLedCounts[0]).toBe(30);
     // 重建是重操作：不重传（sendOptions 里没有 retryOnTimeout）。
     expect(transport.sendOptions[0]?.retryOnTimeout).toBeUndefined();
   });
@@ -246,7 +247,7 @@ describe("ControlSession.setLedCount", () => {
       expect(result.ack.resultCode).toBe(0x09);
       expect(ledCountResultHint(result.ack.resultCode)).toContain("原数量");
     }
-    expect(session.deviceState?.ledCount).toBe(30);
+    expect(session.deviceState?.stripLedCounts[0]).toBe(30);
   });
 
   it("超时异常：折成 error 结果，不发第二帧", async () => {
@@ -262,7 +263,7 @@ describe("ControlSession.setLedCount", () => {
       expect(result.message).toContain("3000");
     }
     expect(transport.writes).toHaveLength(1);
-    expect(session.deviceState?.ledCount).toBe(30);
+    expect(session.deviceState?.stripLedCounts[0]).toBe(30);
   });
 
   it("非法数量不发帧（前端兜底拒绝）", async () => {
@@ -286,7 +287,7 @@ describe("ControlSession.setLedCount", () => {
 
     expect(result.kind).toBe("ok");
     expect(Array.from(transport.writes[0].payload)).toEqual([0x00, 0x64, 0x00]);
-    expect(session.deviceState?.ledCount).toBe(100);
+    expect(session.deviceState?.stripLedCounts[0]).toBe(100);
   });
 
   it("未连接时不发帧", async () => {
@@ -317,6 +318,6 @@ describe("ControlSession.setLedCount", () => {
 
     const result = await pending;
     expect(result.kind).toBe("stale");
-    expect(session.deviceState?.ledCount).toBe(12);
+    expect(session.deviceState?.stripLedCounts[0]).toBe(12);
   });
 });

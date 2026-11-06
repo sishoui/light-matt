@@ -4,7 +4,10 @@
     "firmware": {
       "label": "固件 host 测试",
       "cheap": true,
-      "requires": ["gcc", "node"],
+      "requires": [
+        "gcc",
+        "node"
+      ],
       "missingHint": "缺 gcc 或 node",
       "scan": [
         "firmware/test/test_skeleton.c",
@@ -17,28 +20,39 @@
       "cheap": true,
       "requires": [],
       "missingHint": "",
-      "scan": ["miniprogram/tests/*.test.ts"]
+      "scan": [
+        "miniprogram/tests/*.test.ts"
+      ]
     },
     "server": {
       "label": "后端单测",
       "cheap": true,
       "requires": [],
       "missingHint": "",
-      "scan": ["server/tests/*.test.ts"]
+      "scan": [
+        "server/tests/*.test.ts"
+      ]
     },
     "ui": {
       "label": "渲染回归",
       "cheap": false,
-      "requires": ["微信开发者工具 + 自动化端口"],
+      "requires": [
+        "微信开发者工具 + 自动化端口"
+      ],
       "missingHint": "缺微信开发者工具自动化端口",
       "scan": []
     },
     "ble": {
       "label": "真机 e2e",
       "cheap": false,
-      "requires": ["ESP32 真机", "bleak"],
+      "requires": [
+        "ESP32 真机",
+        "bleak"
+      ],
       "missingHint": "缺真机或 bleak",
-      "scan": ["miniprogram/tests/e2e/*.test.ts"]
+      "scan": [
+        "miniprogram/tests/e2e/*.test.ts"
+      ]
     }
   },
   "files": {
@@ -46,104 +60,244 @@
       "layer": "firmware",
       "covers": "v4 向量与 protocol-v4.md 的独立一致性校验（保留对照：v4 已作废但仍可回归）。不走生成器，专门抓生成器的错"
     },
-
     "scripts/check-protocol-testvectors-v5.mjs": {
       "layer": "firmware",
       "covers": "v5 向量与 protocol-v5.md 的独立一致性校验：帧宽 / magic / version、命令表载荷宽度、退役命令必须回 0x02、布局与场景语义约束、层编码规则、State 32 字节布局、报告宽度与 0x0500 版本、分片重组。不走生成器，专门抓生成器的错",
       "ticket": "#155"
     },
-
     "firmware/test/test_skeleton.c": {
       "layer": "firmware",
       "covers": "固件 host 测试全量：v5 协议向量逐字节（含 14 条 retired_* 退役命令必须回 0x02）、命令 reducer 语义（整机 / 灯组 / 布局 0x20-0x24 / 场景 0x25-0x29）、State 32 字节与 blob v6、布局 blob LML1 与场景 blob LMS5 的往返与损坏拒绝、CRC、分片重组、gamma、灯效两层合成与层亮度、播放头推进与唯一渲染接缝 lumen_scene_compose",
       "ticket": "#155"
     },
-
-    "miniprogram/tests/add-device.test.ts": { "layer": "mp", "covers": "发现页搜索匹配、名称预填、已添加判定与信号条", "ticket": "#92" },
-    "miniprogram/tests/advanced-draft.test.ts": { "layer": "mp", "covers": "进阶草稿纯逻辑：步骤时长、增删重排、多灯组隔离", "ticket": "#65" },
-    "miniprogram/tests/advanced-layers.test.ts": { "layer": "mp", "covers": "进阶档两层模型与八种灯效清单，含灯组页结构断言", "ticket": "#100" },
-    "miniprogram/tests/app-config.test.ts": { "layer": "mp", "covers": "app.json 配置契约、路由常量一致、WXML 绑定在脚本里有同名方法" },
-    "miniprogram/tests/brightness.test.ts": { "layer": "mp", "covers": "亮度纯函数、100Hz 到 20Hz 的 latest-wins、亮度与开关解耦", "ticket": "#9" },
-    "miniprogram/tests/chunk.test.ts": { "layer": "mp", "covers": "分片容量计算、单帧构造、分片重组器" },
-    "miniprogram/tests/codec.test.ts": { "layer": "mp", "covers": "v4 协议向量、CRC16、载荷与整帧边界" },
-    "miniprogram/tests/color.test.ts": { "layer": "mp", "covers": "HSV 到用户空间 RGB 的换算、颜色语义纯函数、写进选中段" },
-    "miniprogram/tests/commands.test.ts": { "layer": "mp", "covers": "命令构造器、状态帧解析、段载荷解析" },
-    "miniprogram/tests/delete-device.test.ts": { "layer": "mp", "covers": "删除设备的六处清理，演示设备删除后不再回来", "ticket": "#91" },
-    "miniprogram/tests/describe.test.ts": { "layer": "mp", "covers": "命令、回执与状态的可读文案" },
-    "miniprogram/tests/device-api.test.ts": { "layer": "mp", "covers": "设备接口请求形状、重试、身份头，以及断网时的降级", "ticket": "#44" },
-    "miniprogram/tests/device-list.test.ts": { "layer": "mp", "covers": "本地优先的设备列表合并、已知标记、扫描行派生", "ticket": "#62" },
-    "miniprogram/tests/device-photo.test.ts": { "layer": "mp", "covers": "设备封面存储映射" },
-    "miniprogram/tests/device-registry.test.ts": { "layer": "mp", "covers": "设备登记表默认值、备注名、启用掩码", "ticket": "#41" },
-    "miniprogram/tests/device-sync.test.ts": { "layer": "mp", "covers": "本地先写再同步后端，同步失败不阻塞本地", "ticket": "#44" },
-    "miniprogram/tests/deviceSwitch.test.ts": { "layer": "mp", "covers": "设备切换状态机、失败路径、最近连过列表", "ticket": "#33" },
-    "miniprogram/tests/effect-layout.test.ts": { "layer": "mp", "covers": "效果区间校验、重叠拦截、默认切分、逐灯珠归属" },
-    "miniprogram/tests/effect-panel.test.ts": { "layer": "mp", "covers": "进阶档效果面板纯逻辑：类型行、参数区、叠加层" },
-    "miniprogram/tests/effect-types.test.ts": { "layer": "mp", "covers": "灯效类型清单与段类型枚举保持同步" },
-    "miniprogram/tests/effect-view.test.ts": { "layer": "mp", "covers": "灯效选项表、层模式文案、应用层类型" },
-    "miniprogram/tests/errors.test.ts": { "layer": "mp", "covers": "错误分流与面向用户的错误文案" },
-    "miniprogram/tests/home-actions.test.ts": { "layer": "mp", "covers": "首页搜索、长按菜单、亮度防抖后再下发", "ticket": "#93" },
-    "miniprogram/tests/home-view.test.ts": { "layer": "mp", "covers": "首页卡片派生视图与封面图回退" },
-    "miniprogram/tests/led-count-plan.test.ts": { "layer": "mp", "covers": "灯珠数收敛与方案收缩的四组输入、受影响分区数", "ticket": "#79" },
-    "miniprogram/tests/led-count-ui.test.ts": { "layer": "mp", "covers": "灯珠数滑块的界面契约（源码结构断言）", "ticket": "#79" },
-    "miniprogram/tests/led-picker.test.ts": { "layer": "mp", "covers": "灯珠弹窗纯规则：锚点、区间、取消，以及弹窗结构" },
-    "miniprogram/tests/ledCount.test.ts": { "layer": "mp", "covers": "灯珠数输入校验、回执分支、超时处理", "ticket": "#12" },
-    "miniprogram/tests/log-panel.test.ts": { "layer": "mp", "covers": "点击序列模型与日志面板视图同源" },
-    "miniprogram/tests/log.test.ts": { "layer": "mp", "covers": "帧日志环形缓冲" },
-    "miniprogram/tests/loop-mode.test.ts": { "layer": "mp", "covers": "循环三档的单一推导（草稿优先、设备兜底三值）、计划层不压平、页面点击链路下发的档位与设备 flags 一致", "ticket": "#114" },
-    "miniprogram/tests/mock-mode.test.ts": { "layer": "mp", "covers": "演示传输层与真机传输层同形、演示数据播种、开关收敛" },
-    "miniprogram/tests/mock-session.test.ts": { "layer": "mp", "covers": "演示模式下的会话级链路" },
-    "miniprogram/tests/module-resolution.test.ts": { "layer": "mp", "covers": "禁止相对导入指向目录（静态扫描全仓 import），自带变异测试" },
-    "miniprogram/tests/panel-unit.test.ts": { "layer": "mp", "covers": "效果面板单元可独立驱动：一层效果的类型切换、参数回读、叠加层、装配进分区与本地预检，参数控件定义只有一份", "ticket": "#154" },
-    "miniprogram/tests/page-fields.test.ts": { "layer": "mp", "covers": "页面的非 data 字段必须在 onLoad 初始化（静态扫描），自带变异测试" },
-    "miniprogram/tests/page-runtime.test.ts": { "layer": "mp", "covers": "页面测试底座自身：路径键、data 独立性、渲染期桩、waitFor 语义", "ticket": "#115" },
-    "miniprogram/tests/plan-drafts.test.ts": { "layer": "mp", "covers": "方案草稿落盘键、读写、多灯组切片、旧键迁移" },
-    "miniprogram/tests/plan-editor.test.ts": { "layer": "mp", "covers": "方案状态、步骤与灯组切片、空态、术语翻译" },
-    "miniprogram/tests/plan-slots.test.ts": { "layer": "mp", "covers": "方案空位与最小空位、删除不重排、标签文案", "ticket": "#83" },
-    "miniprogram/tests/profile.test.ts": { "layer": "mp", "covers": "本机身份（头像与昵称）的存储纯逻辑" },
-    "miniprogram/tests/protocol-v98.test.ts": { "layer": "mp", "covers": "流星密度与实色拖尾、随机闪烁命令、循环三值", "ticket": "#98" },
-    "miniprogram/tests/quick-effects.test.ts": { "layer": "mp", "covers": "快捷效果卡片表、档位到协议值、整组方案规格" },
-    "miniprogram/tests/quick-selection.test.ts": { "layer": "mp", "covers": "灯效选中的权威来源，迟到的读回不覆盖刚选的", "ticket": "#91" },
-    "miniprogram/tests/reconnect.test.ts": { "layer": "mp", "covers": "断线反映、退避重连、重订阅通知、进前台静默回连", "ticket": "#11" },
-    "miniprogram/tests/scan-filter.test.ts": { "layer": "mp", "covers": "本产品设备名判定、扫描过滤、不带系统级服务" },
-    "miniprogram/tests/script-capacity.test.ts": { "layer": "mp", "covers": "剧本容量预估四场景、段 id 唯一、帧序", "ticket": "#45" },
-    "miniprogram/tests/script-session.test.ts": { "layer": "mp", "covers": "剧本下发、播放控制、清空剧本命令", "ticket": "#32" },
-    "miniprogram/tests/script-view.test.ts": { "layer": "mp", "covers": "剧本草稿、状态字节的权威来源、进度文案", "ticket": "#32" },
-    "miniprogram/tests/scripts.test.ts": { "layer": "mp", "covers": "剧本命令与向量逐字节、下发计划、进度视图", "ticket": "#32" },
-    "miniprogram/tests/segment-color.test.ts": { "layer": "mp", "covers": "改色保留第二层与混合方式、无缓存时先查询", "ticket": "#48" },
-    "miniprogram/tests/segment-editor.test.ts": { "layer": "mp", "covers": "区间预检、同带重叠、周期下限、层合法性", "ticket": "#42" },
-    "miniprogram/tests/segments.test.ts": { "layer": "mp", "covers": "段编解码向量、逐分区亮度、扁平与两层模型互转" },
-    "miniprogram/tests/selftest.test.ts": { "layer": "mp", "covers": "自检帧与会话自检入口", "ticket": "#13" },
-    "miniprogram/tests/session-strip.test.ts": { "layer": "mp", "covers": "灯组 id 必填、连接后重建、身份切换时清理", "ticket": "#41" },
-    "miniprogram/tests/session-v3.test.ts": { "layer": "mp", "covers": "逐带开关、引脚表、逐带灯珠数、当前灯组", "ticket": "#40" },
-    "miniprogram/tests/simple-effects.test.ts": { "layer": "mp", "covers": "八种灯效、空编码、一行式灯效与滚轮", "ticket": "#96" },
-    "miniprogram/tests/strip-head.test.ts": { "layer": "mp", "covers": "固定三套方案、拨盘刻度、灯珠数胶囊文案", "ticket": "#95" },
-    "miniprogram/tests/strip-meta.test.ts": { "layer": "mp", "covers": "灯组名称与封面存取、键与设备隔离", "ticket": "#94" },
-    "miniprogram/tests/strip-simple.test.ts": { "layer": "mp", "covers": "简单档纯派生、参数区可见性、读回后回填卡片", "ticket": "#64" },
-    "miniprogram/tests/theme-sync.test.ts": { "layer": "mp", "covers": "雾蓝主色、无橙色残留、原生控件激活色、显示时重读主题", "ticket": "#90" },
-    "miniprogram/tests/theme.test.ts": { "layer": "mp", "covers": "双主题变量、无硬编码色、主题配置与 app.json 一致" },
-    "miniprogram/tests/test-manifest.test.ts": { "layer": "mp", "covers": "测试清单查漏工具自身：通配收集、未登记/已删/层不一致/空说明四类问题，自带变异测试" },
-    "miniprogram/tests/test-run.test.ts": { "layer": "mp", "covers": "测试编排器自身：三态语义、报告六段、退出码，固件输出解析，vitest 结构化输出与 tsc 报错的按文件解析，以及发布级归档（未覆盖警告、目录唯一、基线池分开）", "ticket": "#105" },
-    "miniprogram/tests/throttle.test.ts": { "layer": "mp", "covers": "20Hz latest-wins 节流" },
-    "miniprogram/tests/timeline.test.ts": { "layer": "mp", "covers": "时间轴时长钳位、宽度比例、最小宽度、布局视图", "ticket": "#65" },
-    "miniprogram/tests/timeline-unit.test.ts": { "layer": "mp", "covers": "时间轴单元可独立驱动：步骤集的渲染、选中、长按拖动的代次与 from→to、改时长钳位、容器宽分配", "ticket": "#154" },
-    "miniprogram/tests/transport.test.ts": { "layer": "mp", "covers": "分片与重组、MTU、状态读取回落、单帧查询" },
-    "miniprogram/tests/usage.test.ts": { "layer": "mp", "covers": "使用日志写入、离线补报、幂等", "ticket": "#34" },
-    "miniprogram/tests/writer.test.ts": { "layer": "mp", "covers": "写入器单飞与先进先出" },
-    "miniprogram/tests/zone-axis.test.ts": { "layer": "mp", "covers": "分区轴按比例定位、块列表、起止手柄", "ticket": "#66" },
-    "miniprogram/tests/zone-editor.test.ts": { "layer": "mp", "covers": "拖动划选、新增预检、快捷切分、增删改", "ticket": "#55" },
-    "miniprogram/tests/zone-model.test.ts": { "layer": "mp", "covers": "建读分区、两层模型、混合方式归一", "ticket": "#53" },
-    "miniprogram/tests/zone-preview.test.ts": { "layer": "mp", "covers": "分区术语统一、预览条颜色、选中态、页面结构", "ticket": "#97" },
-
-    "miniprogram/tests/e2e/complex-plan.test.ts": { "layer": "ble", "covers": "真机复杂剧本端到端：分片下发、大剧本、结束后复位设备" },
-    "miniprogram/tests/e2e/page-click.test.ts": { "layer": "ble", "covers": "真机点击链路：页面事件处理器驱动真实灯控，分区读回与循环三档落地，无设备时计入 skipped", "ticket": "#118" },
-    "miniprogram/tests/e2e/real-device.test.ts": { "layer": "ble", "covers": "真机扫描连接、开关、亮度、颜色、断线重连后继续播放" },
-    "miniprogram/tests/e2e/walkthrough.test.ts": { "layer": "ble", "covers": "用户走查用例组：按真实顺序调五个页面自己的处理器，每步并排记录界面值（页面 data）与设备值（State / QueryStrip / 最近下发方案），规格 #127 的 12 项发现挂在自清理的隔离行上，收尾断言逐带段数回到 0 且电源亮度回到快照", "ticket": "#128" },
-
-    "server/tests/aggregation.test.ts": { "layer": "server", "covers": "使用日志的聚合查询与视图数据" },
-    "server/tests/api.test.ts": { "layer": "server", "covers": "HTTP 路由与鉴权契约" },
-    "server/tests/devices.test.ts": { "layer": "server", "covers": "设备登记、归属与设备键归一" },
-    "server/tests/readonly.test.ts": { "layer": "server", "covers": "只读看板对写方法的拒绝" },
-    "server/tests/schema-migration.test.ts": { "layer": "server", "covers": "数据库结构与迁移" },
-    "server/tests/session.test.ts": { "layer": "server", "covers": "微信 code2session 与会话身份，注入假网络调用" }
+    "miniprogram/tests/add-device.test.ts": {
+      "layer": "mp",
+      "covers": "发现页搜索匹配、名称预填、已添加判定与信号条",
+      "ticket": "#92"
+    },
+    "miniprogram/tests/app-config.test.ts": {
+      "layer": "mp",
+      "covers": "app.json 配置契约、路由常量一致、WXML 绑定在脚本里有同名方法"
+    },
+    "miniprogram/tests/brightness.test.ts": {
+      "layer": "mp",
+      "covers": "亮度纯函数、100Hz 到 20Hz 的 latest-wins、亮度与开关解耦",
+      "ticket": "#9"
+    },
+    "miniprogram/tests/chunk.test.ts": {
+      "layer": "mp",
+      "covers": "分片容量计算、单帧构造、分片重组器"
+    },
+    "miniprogram/tests/codec.test.ts": {
+      "layer": "mp",
+      "covers": "v5 协议向量（111 条，含 14 条退役命令必须回 0x02）、CRC16、分片重组、232/240 帧长上限、32 字节 State 示例",
+      "ticket": "#155"
+    },
+    "miniprogram/tests/color.test.ts": {
+      "layer": "mp",
+      "covers": "HSV 到用户空间 RGB 的换算、颜色语义纯函数、写进选中段"
+    },
+    "miniprogram/tests/commands.test.ts": {
+      "layer": "mp",
+      "covers": "v5 命令构造器与解析器：整机 / 灯组 / 布局族 0x20-0x24 / 场景族 0x25-0x29 的载荷宽度与范围校验，层编码 9 字节，名字 UTF-8 编解码，三条新报告的字节布局，以及 v4 入口已整体删除",
+      "ticket": "#155"
+    },
+    "miniprogram/tests/describe.test.ts": {
+      "layer": "mp",
+      "covers": "日志描述器对齐 v5：两族新命令的参数文本、32 字节 State（无 RGB / 无播放位置）、0x89-0x8D 五条新报告、v4 四条报告已删除",
+      "ticket": "#155"
+    },
+    "miniprogram/tests/device-api.test.ts": {
+      "layer": "mp",
+      "covers": "设备接口请求形状、重试、身份头，以及断网时的降级",
+      "ticket": "#44"
+    },
+    "miniprogram/tests/device-list.test.ts": {
+      "layer": "mp",
+      "covers": "本地优先的设备列表合并、已知标记、扫描行派生",
+      "ticket": "#62"
+    },
+    "miniprogram/tests/device-photo.test.ts": {
+      "layer": "mp",
+      "covers": "设备封面存储映射"
+    },
+    "miniprogram/tests/device-registry.test.ts": {
+      "layer": "mp",
+      "covers": "设备登记表默认值、备注名、启用掩码",
+      "ticket": "#41"
+    },
+    "miniprogram/tests/device-sync.test.ts": {
+      "layer": "mp",
+      "covers": "本地先写再同步后端，同步失败不阻塞本地",
+      "ticket": "#44"
+    },
+    "miniprogram/tests/deviceSwitch.test.ts": {
+      "layer": "mp",
+      "covers": "设备切换状态机、失败路径、最近连过列表",
+      "ticket": "#33"
+    },
+    "miniprogram/tests/errors.test.ts": {
+      "layer": "mp",
+      "covers": "错误分流与面向用户的错误文案"
+    },
+    "miniprogram/tests/home-actions.test.ts": {
+      "layer": "mp",
+      "covers": "首页搜索、长按菜单、亮度防抖后再下发",
+      "ticket": "#93"
+    },
+    "miniprogram/tests/home-view.test.ts": {
+      "layer": "mp",
+      "covers": "首页卡片派生视图与封面图回退"
+    },
+    "miniprogram/tests/ledCount.test.ts": {
+      "layer": "mp",
+      "covers": "灯珠数输入校验、回执分支、超时处理",
+      "ticket": "#12"
+    },
+    "miniprogram/tests/log-panel.test.ts": {
+      "layer": "mp",
+      "covers": "点击序列模型与日志面板视图同源"
+    },
+    "miniprogram/tests/log.test.ts": {
+      "layer": "mp",
+      "covers": "帧日志环形缓冲"
+    },
+    "miniprogram/tests/mock-mode.test.ts": {
+      "layer": "mp",
+      "covers": "演示传输层与真机传输层同形、演示数据播种、开关收敛"
+    },
+    "miniprogram/tests/module-resolution.test.ts": {
+      "layer": "mp",
+      "covers": "禁止相对导入指向目录（静态扫描全仓 import），自带变异测试"
+    },
+    "miniprogram/tests/page-fields.test.ts": {
+      "layer": "mp",
+      "covers": "页面的非 data 字段必须在 onLoad 初始化（静态扫描），自带变异测试"
+    },
+    "miniprogram/tests/page-runtime.test.ts": {
+      "layer": "mp",
+      "covers": "页面测试底座自身：路径键、data 独立性、渲染期桩、waitFor 语义",
+      "ticket": "#115"
+    },
+    "miniprogram/tests/profile.test.ts": {
+      "layer": "mp",
+      "covers": "本机身份（头像与昵称）的存储纯逻辑"
+    },
+    "miniprogram/tests/protocol-v98.test.ts": {
+      "layer": "mp",
+      "covers": "流星密度与实色拖尾 flags、随机闪烁层编码、循环三值挂在 ScenePart 上（§7.5）",
+      "ticket": "#155"
+    },
+    "miniprogram/tests/reconnect.test.ts": {
+      "layer": "mp",
+      "covers": "断线反映、退避重连、重订阅通知、进前台静默回连",
+      "ticket": "#11"
+    },
+    "miniprogram/tests/scan-filter.test.ts": {
+      "layer": "mp",
+      "covers": "本产品设备名判定、扫描过滤、不带系统级服务"
+    },
+    "miniprogram/tests/selftest.test.ts": {
+      "layer": "mp",
+      "covers": "自检帧与会话自检入口",
+      "ticket": "#13"
+    },
+    "miniprogram/tests/session-strip.test.ts": {
+      "layer": "mp",
+      "covers": "灯带维度必须显式传参（setStripPower / queryLayout）、断线与切设备清空逐带布局缓存",
+      "ticket": "#155"
+    },
+    "miniprogram/tests/session-v3.test.ts": {
+      "layer": "mp",
+      "covers": "逐带开关、引脚表、逐带灯珠数、当前灯组",
+      "ticket": "#40"
+    },
+    "miniprogram/tests/strip-head.test.ts": {
+      "layer": "mp",
+      "covers": "固定三套方案、拨盘刻度、灯珠数胶囊文案",
+      "ticket": "#95"
+    },
+    "miniprogram/tests/strip-meta.test.ts": {
+      "layer": "mp",
+      "covers": "灯组名称与封面存取、键与设备隔离",
+      "ticket": "#94"
+    },
+    "miniprogram/tests/theme-sync.test.ts": {
+      "layer": "mp",
+      "covers": "雾蓝主色、无橙色残留、原生控件激活色、显示时重读主题",
+      "ticket": "#90"
+    },
+    "miniprogram/tests/theme.test.ts": {
+      "layer": "mp",
+      "covers": "双主题变量、无硬编码色、主题配置与 app.json 一致"
+    },
+    "miniprogram/tests/test-manifest.test.ts": {
+      "layer": "mp",
+      "covers": "测试清单查漏工具自身：通配收集、未登记/已删/层不一致/空说明四类问题，自带变异测试"
+    },
+    "miniprogram/tests/test-run.test.ts": {
+      "layer": "mp",
+      "covers": "测试编排器自身：三态语义、报告六段、退出码，固件输出解析，vitest 结构化输出与 tsc 报错的按文件解析，以及发布级归档（未覆盖警告、目录唯一、基线池分开）",
+      "ticket": "#105"
+    },
+    "miniprogram/tests/throttle.test.ts": {
+      "layer": "mp",
+      "covers": "20Hz latest-wins 节流"
+    },
+    "miniprogram/tests/transport.test.ts": {
+      "layer": "mp",
+      "covers": "分片与重组、MTU、状态读取回落、单帧查询"
+    },
+    "miniprogram/tests/usage.test.ts": {
+      "layer": "mp",
+      "covers": "使用日志写入、离线补报、幂等",
+      "ticket": "#34"
+    },
+    "miniprogram/tests/writer.test.ts": {
+      "layer": "mp",
+      "covers": "写入器单飞与先进先出"
+    },
+    "miniprogram/tests/e2e/complex-plan.test.ts": {
+      "layer": "ble",
+      "covers": "真机复杂剧本端到端：分片下发、大剧本、结束后复位设备"
+    },
+    "miniprogram/tests/e2e/page-click.test.ts": {
+      "layer": "ble",
+      "covers": "真机点击链路：页面事件处理器驱动真实灯控，分区读回与循环三档落地，无设备时计入 skipped",
+      "ticket": "#118"
+    },
+    "miniprogram/tests/e2e/real-device.test.ts": {
+      "layer": "ble",
+      "covers": "真机扫描连接、开关、亮度、颜色、断线重连后继续播放"
+    },
+    "miniprogram/tests/e2e/walkthrough.test.ts": {
+      "layer": "ble",
+      "covers": "用户走查用例组：按真实顺序调五个页面自己的处理器，每步并排记录界面值（页面 data）与设备值（State / QueryStrip / 最近下发方案），规格 #127 的 12 项发现挂在自清理的隔离行上，收尾断言逐带段数回到 0 且电源亮度回到快照",
+      "ticket": "#128"
+    },
+    "server/tests/aggregation.test.ts": {
+      "layer": "server",
+      "covers": "使用日志的聚合查询与视图数据"
+    },
+    "server/tests/api.test.ts": {
+      "layer": "server",
+      "covers": "HTTP 路由与鉴权契约"
+    },
+    "server/tests/devices.test.ts": {
+      "layer": "server",
+      "covers": "设备登记、归属与设备键归一"
+    },
+    "server/tests/readonly.test.ts": {
+      "layer": "server",
+      "covers": "只读看板对写方法的拒绝"
+    },
+    "server/tests/schema-migration.test.ts": {
+      "layer": "server",
+      "covers": "数据库结构与迁移"
+    },
+    "server/tests/session.test.ts": {
+      "layer": "server",
+      "covers": "微信 code2session 与会话身份，注入假网络调用"
+    }
   }
 }

@@ -1,0 +1,124 @@
+<view class="page {{themeClass}}">
+  <nav-bar title="{{title}}" subtitle="{{deviceName}}" back="{{true}}" bind:back="onBack" />
+
+  <view class="content">
+    <!-- 写入失败原因显示在页面顶部（#125 的口径）。 -->
+    <view wx:if="{{applyError}}" class="apply-error" bindtap="onDismissApplyError">
+      <text class="apply-error-text">{{applyError}}</text>
+      <text class="apply-error-close">×</text>
+    </view>
+
+    <view wx:if="{{hint}}" class="hint-card">
+      <text class="hint-text">{{hint}}</text>
+    </view>
+
+    <block wx:if="{{ready && !hint}}">
+      <!-- ---------------- 结构区（布局，0x21 / 0x23） ---------------- -->
+      <view class="section-head">
+        <text class="section-title">结构</text>
+        <text class="section-note">名字 · 区间</text>
+      </view>
+
+      <view class="card">
+        <view class="field">
+          <text class="field-label">部位名</text>
+          <input
+            class="field-input"
+            value="{{nameInput}}"
+            placeholder="例如：床头"
+            maxlength="24"
+            bindinput="onNameInput"
+          />
+        </view>
+        <text class="field-hint">{{nameBytes}} / {{nameLimit}} 字节（中文按 3 字节算）</text>
+
+        <view class="field">
+          <text class="field-label">覆盖灯珠</text>
+          <text class="field-value">{{rangeText}}</text>
+        </view>
+        <text class="field-hint">{{pixelCount}} 颗 / 本组共 {{stripLedCount}} 颗</text>
+
+        <button
+          class="primary-btn"
+          disabled="{{busy}}"
+          bindtap="onSaveName"
+        >保存名字</button>
+        <text class="field-hint">
+          保存会重写整条灯组的布局，并把这条链的播放头重置到此刻
+        </text>
+      </view>
+
+      <!-- ---------------- 内容区（场景，0x25 / 0x26） ---------------- -->
+      <view class="section-head">
+        <text class="section-title">内容</text>
+        <text class="section-note">{{sceneLabel}} · {{stepCount}} 步</text>
+      </view>
+
+      <view class="card">
+        <view class="field">
+          <text class="field-label">灯效</text>
+          <picker
+            mode="selector"
+            range="{{effectOptions}}"
+            value="{{effectIndex}}"
+            bindchange="onEffectChange"
+          >
+            <view class="picker-value">{{effectOptions[effectIndex]}}</view>
+          </picker>
+        </view>
+
+        <view class="field">
+          <text class="field-label">层亮度</text>
+          <text class="field-value">{{level}}</text>
+        </view>
+        <slider
+          min="0"
+          max="{{levelMax}}"
+          value="{{level}}"
+          activeColor="{{accentColor}}"
+          show-value="{{false}}"
+          bindchange="onLevelChange"
+        />
+
+        <view class="field">
+          <text class="field-label">色相</text>
+          <text class="field-value">{{hue}} / 65535</text>
+        </view>
+        <slider min="0" max="360" value="{{hueDegrees}}" activeColor="{{accentColor}}" bindchange="onHueChange" />
+
+        <view class="field">
+          <text class="field-label">饱和度</text>
+          <text class="field-value">{{sat}}</text>
+        </view>
+        <slider min="0" max="255" value="{{sat}}" activeColor="{{accentColor}}" bindchange="onSatChange" />
+
+        <view class="field">
+          <text class="field-label">时长</text>
+          <text class="field-value">{{durationMs}} ms</text>
+        </view>
+        <slider
+          min="{{durationMin}}"
+          max="{{durationMax}}"
+          value="{{durationMs}}"
+          activeColor="{{accentColor}}"
+          bindchange="onDurationChange"
+        />
+
+        <view class="field">
+          <text class="field-label">循环</text>
+          <picker mode="selector" range="{{loopOptions}}" value="{{loopIndex}}" bindchange="onLoopChange">
+            <view class="picker-value">{{loopOptions[loopIndex]}}</view>
+          </picker>
+        </view>
+
+        <view class="field">
+          <text class="field-label">这个部位</text>
+          <switch checked="{{on}}" color="{{accentColor}}" disabled="{{busy}}" bindchange="onToggleOn" />
+        </view>
+
+        <button class="primary-btn" disabled="{{busy}}" bindtap="onSaveContent">下发</button>
+        <text class="field-hint">下发只写这一步，不会重置播放头</text>
+      </view>
+    </block>
+  </view>
+</view>
