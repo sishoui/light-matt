@@ -8,6 +8,7 @@ REM OEM code page, so UTF-8 comments get mangled into bogus commands.
 set "MAIN=%~dp0..\main"
 set "OUT=%TEMP%\lumen-host-tests"
 set "VECTORS=%~dp0..\..\docs\protocol-testvectors-v4.json"
+set "VECTORS_V5=%~dp0..\..\docs\protocol-testvectors-v5.json"
 if not exist "%OUT%" mkdir "%OUT%"
 
 REM #49 note on the source list below:
@@ -35,6 +36,8 @@ gcc -std=c11 -Wall -Wextra -Werror -I"%MAIN%" ^
     "%MAIN%\led_count_job.c" ^
     "%MAIN%\save_scheduler.c" ^
     "%MAIN%\state_blob.c" ^
+    "%MAIN%\layout_store.c" ^
+    "%MAIN%\scene_store.c" ^
     -lm -o "%OUT%\lumen_host_tests.exe"
 if errorlevel 1 exit /b 1
 

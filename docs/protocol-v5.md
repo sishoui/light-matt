@@ -343,8 +343,11 @@ Event 0x81 的 `event_code`：`0x01` 存储失败（`detail` = 触发写入的�
 - 部位之间不重叠是**设备侧**权威校验（`LayoutSeg` 回 `InvalidParam`），
   App 侧预检只是提前提示。
 - 相位模式（S6）是**布局**属性：`连续` = 多段按升序拼成一条逻辑灯带取样；
-  `各自起点` = 每段从自己的 0 开始。本票只实现「连续」以外的默认值？
-  **不**——相位模式同时实现在 `lumen_scene_compose`，由布局的第 7 字节给出。
+  `各自起点` = 每段从自己的 0 开始。`lumen_layout_logical_index` 实现两种映射，
+  `lumen_scene_compose` 接收相位模式作为参数。
+  **v5.0 固定为「连续」**：线上没有任何命令能改它，§10.3 的每链记录也只有
+  `led_count | part_count | reserved(6)` 六个保留字节，而保留字节按契约必须为 0
+  ——不能借来存相位。等有线上位的票再把其中一个保留字节升格并改 blob 版本。
 
 ### 9.3 合成顺序（`lumen_scene_compose`）
 
@@ -428,6 +431,11 @@ nvs,      data, nvs,     0x9000,   0x10000,
 总长 `8 + 64 + 64 × 42 = 2760`。解码校验每段的 `start ≤ end`、
 `end < 该链 led_count`、段互斥；坏 blob 整份拒绝。
 
+> **分帧下发时的「未写」段**：`LayoutPart` 先声明 `seg_count`，`LayoutSeg`
+> 随后逐条到达。声明了但还没写的槽位**不能**当成 0-0（那会与合法的 1-2 冲突），
+> 因此 RAM 里用 `0xFF/0xFF` 标记未写，只有 `LayoutCommit` 才要求 `seg_count`
+> 条都已写齐，否则整份 `InvalidParam`。落盘时不存在未写段。
+
 ### 10.4 Scene blob `LMS5`（最大 10472 字节，硬上限 12288）
 
 ```
@@ -468,15 +476,27 @@ LED 全黑——「什么都没要求的时候设备状态不被改动」（U9�
 
 ## 11. 渲染与 RAM
 
+实测值（`_Static_assert` 钉住，`firmware/test/test_skeleton.c` 的
+`test_layout_sizes` / `test_scene_sizes` 在运行时再核一次）：
+
 | 量 | 值 |
 |---|---|
-| `lumen_layout_store_t` | 2568 B（`_Static_assert` 钉住） |
-| `lumen_scene_t` | 10400 B（最坏） |
-| 三个场景常驻 | 31200 B |
+| `lumen_part_layout_t` | 42 B |
+| `lumen_layout_store_t` | **2696 B** = 8 + 64 × 42 |
+| `lumen_part_scene_t` | 164 B = 3 + 填充 + 8 × 20 |
+| `lumen_scene_t` | **10530 B** = 25 + 8 + 64 × 164 |
+| `lumen_scene_set_t`（三个场景） | **31590 B** |
 | 每部位播放头 | 8 B × 64 = 512 B |
+| 场景 blob 最坏编码 | **10472 B**（预算 12288） |
 
 v5 删掉 v4 的剧本表（约 70 KB）与 16 KB 剧本 blob 缓冲，新增约 34 KB 的状态与
 场景，**净省约 35 KB**。播放头是 `origin_ms + started`，不做累加。
+
+> 初稿写的 2568 / 10400 / 31200 是设计期估算：布局少算了每链的 `part_count`
+> 字节，场景少算了每部位的 3 字节头与 2 字节对齐填充。实现按实测值落地，
+> 结论（净省约 35 KB、最坏 10472 ≤ 12288）不变。
+> `test_scene_blob_max_size` 在 host 上真写一遍 8 链 × 8 部位 × 8 步 × 两层，
+> 断言 `lumen_scene_blob_size() == 10472` 并往返解码。
 
 ---
 
