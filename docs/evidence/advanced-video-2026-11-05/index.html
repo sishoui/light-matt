@@ -1,0 +1,706 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>进阶灯效逐步实测报告</title>
+<style>
+:root{--bg:#0f1115;--card:#171a21;--line:#262b36;--text:#e6e9ef;--dim:#8b93a3;
+--ok:#6fd08c;--bad:#ff6f6f;--gap:#ffb35c;--same:#d8d264;--skip:#8891a3;--accent:#6b8cae}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+font:15px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:40px 22px 80px}
+h1{font-size:30px;margin:0 0 6px}
+.sub{color:var(--dim);font-size:14px;margin-bottom:26px}
+h2{font-size:20px;margin:44px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+.banner{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--gap);
+border-radius:10px;padding:18px 20px;margin:22px 0}
+.banner h3{margin:0 0 8px;font-size:16px}
+.banner p{margin:6px 0;color:#c8cedb}
+.stats{display:flex;gap:12px;flex-wrap:wrap;margin:18px 0 8px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:10px;
+padding:12px 18px;min-width:110px}
+.stat b{display:block;font-size:24px;line-height:1.2}
+.stat span{color:var(--dim);font-size:12px}
+table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12px;letter-spacing:.04em}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+padding:16px;margin:16px 0;display:grid;grid-template-columns:minmax(0,1fr) 460px;gap:16px}
+@media(max-width:900px){.card{grid-template-columns:1fr}}
+.card video{width:100%;border-radius:8px;background:#000;display:block}
+.card h4{margin:0 0 4px;font-size:16px}
+.card .why{color:var(--dim);font-size:13px;margin-bottom:10px}
+.kv{font-size:13px;color:#b9c0cd}
+.kv div{padding:2px 0}
+.kv b{color:var(--dim);font-weight:500;display:inline-block;min-width:70px}
+.tag{display:inline-block;font-size:12px;padding:2px 9px;border-radius:20px;
+border:1px solid currentColor;margin-left:8px;vertical-align:middle}
+.ok{color:var(--ok)} .bad{color:var(--bad)} .gap{color:var(--gap)}
+.same{color:var(--same)} .skip{color:var(--skip)}
+.verdict{margin-top:8px;font-size:13px;padding:8px 10px;border-radius:8px;background:#12151b}
+code{background:#12151b;padding:1px 6px;border-radius:4px;font-size:13px}
+footer{margin-top:50px;color:var(--dim);font-size:12px;border-top:1px solid var(--line);padding-top:16px}
+</style></head><body><div class="wrap">
+<h1>进阶灯效：每一步点击的实测视频</h1>
+<div class="sub">真机 <b>Lumen-5662</b>（固件 v4.0，8 条灯带 × 30 颗）· 相机 1280×720 逐帧录制 ·
+共 34 段，252 秒素材</div>
+
+<div class="banner">
+<h3>先说最重要的一件事</h3>
+<p><b>当前版本里，进阶档只有「循环三档」会在点下去时真正写给设备。</b>
+其余改动（选灯效、划分区、调参数、改时长）点完只写进手机本地草稿，设备毫无反应 ——
+这一点在下面每个步骤的「① 只点击」视频里可以直接看到。</p>
+<p>所以每个步骤都录了两段：<b>① 只点击</b>（今天用户点完看到的真实画面）与
+<b>② 点击后应用</b>（调用页面自己的下发逻辑，验证这套编排本身对不对）。</p>
+</div>
+
+<div class="stats">
+<div class="stat"><b class="ok">15</b><span>读回与预期一致</span></div>
+<div class="stat"><b class="bad">1</b><span>与预期不符</span></div>
+<div class="stat"><b class="gap">17</b><span>只点击时未下发</span></div>
+<div class="stat"><b class="same">1</b><span>下发后无变化</span></div>
+</div>
+
+<h2>发现的问题</h2>
+<table><tr><th>步骤</th><th>现象</th><th>视频</th></tr>
+<tr><td>点灯效「随机闪烁」</td><td>与预期不符：背景层应为 随机闪烁 0x07，实际 常亮 0x00</td><td><a class='bad' href='media/10-effect-flicker--apply.mp4'>查看</a></td></tr>
+</table>
+
+<p class="kv"><b>根因：</b><code>utils/control/effect-panel.ts</code> 的
+<code>panelLayer()</code> 是一次 <code>switch (type)</code>，但分支里<b>没有
+<code>case "flicker"</code></b>，于是「随机闪烁」落到 <code>default</code>（里面是静态层
+<code>{type: STATIC, periodMs: 0, p5: 0, flags: 0}</code>）。同文件的
+<code>TYPE_VALUE</code> 与 <code>panelTypeOf()</code> 都认识 <code>flicker → 0x07</code>，
+<code>SLIDER_KEYS.flicker</code> 也定义了四个滑块 —— 唯独真正生成层的那一处漏了。
+<code>defaultParams("flicker")</code> 同样走 <code>default</code>，所以它的周期默认是 0。</p>
+<p class="kv"><b>为什么测试没拦住：</b><code>effect-panel.test.ts</code> 断言的是类型<b>清单</b>里有
+<code>flicker</code>、滑块表里有它，没有断言 <code>panelLayer("flicker")</code> 产出的
+<code>type</code> 是 <code>0x07</code>。这是「测了清单没测映射」的典型缺口。</p>
+
+<h2>进入进阶档</h2>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/01-mode-advanced--click.mp4"></video>
+  </div>
+  <div>
+    <h4>点「进阶」 · ① 只点击</h4>
+    <div class="why">3.4s · 34 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>无分区 · 分区 0 · 不循环 · 停止</div>
+      <div><b>操作后</b>无分区 · 分区 0 · 不循环 · 停止</div>
+      <div><b>相机读回</b>亮灯 1 px · 平均亮度 23.52 · 色相 —</div>
+    </div>
+    <div class="verdict"><span class="gap">未下发</span>
+      <span class="tag gap">草稿</span>
+      <div style="margin-top:6px;color:#b9c0cd">只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/02-step-add--click.mp4"></video>
+  </div>
+  <div>
+    <h4>点「加步骤」 · ① 只点击</h4>
+    <div class="why">3.4s · 34 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>无分区 · 分区 0 · 不循环 · 停止</div>
+      <div><b>操作后</b>无分区 · 分区 0 · 不循环 · 停止</div>
+      <div><b>相机读回</b>亮灯 2 px · 平均亮度 23.38 · 色相 —</div>
+    </div>
+    <div class="verdict"><span class="gap">未下发</span>
+      <span class="tag gap">草稿</span>
+      <div style="margin-top:6px;color:#b9c0cd">只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/03-zone-add--click.mp4"></video>
+  </div>
+  <div>
+    <h4>点「加分区」→ 划选整条灯带 → 确定 · ① 只点击</h4>
+    <div class="why">3.4s · 34 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>无分区 · 分区 0 · 不循环 · 停止</div>
+      <div><b>操作后</b>无分区 · 分区 0 · 不循环 · 停止</div>
+      <div><b>相机读回</b>亮灯 11 px · 平均亮度 23.5 · 色相 198.0°</div>
+    </div>
+    <div class="verdict"><span class="gap">未下发</span>
+      <span class="tag gap">草稿</span>
+      <div style="margin-top:6px;color:#b9c0cd">只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/03-zone-add--apply.mp4"></video>
+  </div>
+  <div>
+    <h4>点「加分区」→ 划选整条灯带 → 确定 · ② 应用后</h4>
+    <div class="why">6.2s · 62 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>无分区 · 分区 0 · 不循环 · 停止</div>
+      <div><b>操作后</b>常亮 · 分区 0 · 不循环 · 播放中</div>
+      <div><b>相机读回</b>亮灯 40 px · 平均亮度 3.31 · 色相 36.0°</div>
+    </div>
+    <div class="verdict"><span class="ok">生效</span>
+      <span class="tag ok">设备</span>
+      <div style="margin-top:6px;color:#b9c0cd">读回值与预期一致。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/04-zone-select--click.mp4"></video>
+  </div>
+  <div>
+    <h4>选中分区 · ① 只点击</h4>
+    <div class="why">3.4s · 34 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>常亮 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>常亮 · 分区 1 · 不循环 · 停止</div>
+      <div><b>相机读回</b>亮灯 0 px · 平均亮度 3.28 · 色相 —</div>
+    </div>
+    <div class="verdict"><span class="gap">未下发</span>
+      <span class="tag gap">草稿</span>
+      <div style="margin-top:6px;color:#b9c0cd">只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。</div></div>
+  </div>
+</div>
+<h2>背景层：八个灯效</h2>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/05-effect-breathing--click.mp4"></video>
+  </div>
+  <div>
+    <h4>点灯效「呼吸」 · ① 只点击</h4>
+    <div class="why">3.4s · 34 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>常亮 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>常亮 · 分区 1 · 不循环 · 停止</div>
+      <div><b>相机读回</b>亮灯 9 px · 平均亮度 3.26 · 色相 —</div>
+    </div>
+    <div class="verdict"><span class="gap">未下发</span>
+      <span class="tag gap">草稿</span>
+      <div style="margin-top:6px;color:#b9c0cd">只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/05-effect-breathing--apply.mp4"></video>
+  </div>
+  <div>
+    <h4>点灯效「呼吸」 · ② 应用后</h4>
+    <div class="why">6.2s · 62 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>常亮 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>呼吸 · 分区 0 · 不循环 · 播放中</div>
+      <div><b>相机读回</b>亮灯 3 px · 平均亮度 2.54 · 色相 34.0°</div>
+    </div>
+    <div class="verdict"><span class="ok">生效</span>
+      <span class="tag ok">设备</span>
+      <div style="margin-top:6px;color:#b9c0cd">读回值与预期一致。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/06-effect-rainbow--click.mp4"></video>
+  </div>
+  <div>
+    <h4>点灯效「彩虹」 · ① 只点击</h4>
+    <div class="why">3.3s · 33 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>呼吸 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>呼吸 · 分区 1 · 不循环 · 停止</div>
+      <div><b>相机读回</b>亮灯 0 px · 平均亮度 0.85 · 色相 —</div>
+    </div>
+    <div class="verdict"><span class="gap">未下发</span>
+      <span class="tag gap">草稿</span>
+      <div style="margin-top:6px;color:#b9c0cd">只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/06-effect-rainbow--apply.mp4"></video>
+  </div>
+  <div>
+    <h4>点灯效「彩虹」 · ② 应用后</h4>
+    <div class="why">6.3s · 63 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>呼吸 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>彩虹 · 分区 0 · 不循环 · 播放中</div>
+      <div><b>相机读回</b>亮灯 4383 px · 平均亮度 15.34 · 色相 237.0°</div>
+    </div>
+    <div class="verdict"><span class="ok">生效</span>
+      <span class="tag ok">设备</span>
+      <div style="margin-top:6px;color:#b9c0cd">读回值与预期一致。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/07-effect-comet--click.mp4"></video>
+  </div>
+  <div>
+    <h4>点灯效「流星」 · ① 只点击</h4>
+    <div class="why">3.4s · 34 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>彩虹 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>彩虹 · 分区 1 · 不循环 · 停止</div>
+      <div><b>相机读回</b>亮灯 2738 px · 平均亮度 9.64 · 色相 214.0°</div>
+    </div>
+    <div class="verdict"><span class="gap">未下发</span>
+      <span class="tag gap">草稿</span>
+      <div style="margin-top:6px;color:#b9c0cd">只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/07-effect-comet--apply.mp4"></video>
+  </div>
+  <div>
+    <h4>点灯效「流星」 · ② 应用后</h4>
+    <div class="why">6.2s · 62 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>彩虹 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>流星 · 分区 0 · 不循环 · 播放中</div>
+      <div><b>相机读回</b>亮灯 12 px · 平均亮度 0.68 · 色相 29.0°</div>
+    </div>
+    <div class="verdict"><span class="ok">生效</span>
+      <span class="tag ok">设备</span>
+      <div style="margin-top:6px;color:#b9c0cd">读回值与预期一致。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/08-effect-strobe--click.mp4"></video>
+  </div>
+  <div>
+    <h4>点灯效「爆闪」 · ① 只点击</h4>
+    <div class="why">3.4s · 34 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>流星 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>流星 · 分区 1 · 不循环 · 停止</div>
+      <div><b>相机读回</b>亮灯 39 px · 平均亮度 0.75 · 色相 37.5°</div>
+    </div>
+    <div class="verdict"><span class="gap">未下发</span>
+      <span class="tag gap">草稿</span>
+      <div style="margin-top:6px;color:#b9c0cd">只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/08-effect-strobe--apply.mp4"></video>
+  </div>
+  <div>
+    <h4>点灯效「爆闪」 · ② 应用后</h4>
+    <div class="why">6.3s · 63 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>流星 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>爆闪 · 分区 0 · 不循环 · 播放中</div>
+      <div><b>相机读回</b>亮灯 0 px · 平均亮度 0.0 · 色相 30.0°</div>
+    </div>
+    <div class="verdict"><span class="ok">生效</span>
+      <span class="tag ok">设备</span>
+      <div style="margin-top:6px;color:#b9c0cd">读回值与预期一致。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/09-effect-heartbeat--click.mp4"></video>
+  </div>
+  <div>
+    <h4>点灯效「心跳」 · ① 只点击</h4>
+    <div class="why">3.4s · 34 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>爆闪 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>爆闪 · 分区 1 · 不循环 · 停止</div>
+      <div><b>相机读回</b>亮灯 0 px · 平均亮度 0.0 · 色相 —</div>
+    </div>
+    <div class="verdict"><span class="gap">未下发</span>
+      <span class="tag gap">草稿</span>
+      <div style="margin-top:6px;color:#b9c0cd">只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/09-effect-heartbeat--apply.mp4"></video>
+  </div>
+  <div>
+    <h4>点灯效「心跳」 · ② 应用后</h4>
+    <div class="why">6.2s · 62 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>爆闪 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>心跳 · 分区 0 · 不循环 · 播放中</div>
+      <div><b>相机读回</b>亮灯 0 px · 平均亮度 0.0 · 色相 30.0°</div>
+    </div>
+    <div class="verdict"><span class="ok">生效</span>
+      <span class="tag ok">设备</span>
+      <div style="margin-top:6px;color:#b9c0cd">读回值与预期一致。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/10-effect-flicker--click.mp4"></video>
+  </div>
+  <div>
+    <h4>点灯效「随机闪烁」 · ① 只点击</h4>
+    <div class="why">3.4s · 34 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>心跳 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>心跳 · 分区 1 · 不循环 · 停止</div>
+      <div><b>相机读回</b>亮灯 0 px · 平均亮度 0.0 · 色相 —</div>
+    </div>
+    <div class="verdict"><span class="gap">未下发</span>
+      <span class="tag gap">草稿</span>
+      <div style="margin-top:6px;color:#b9c0cd">只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/10-effect-flicker--apply.mp4"></video>
+  </div>
+  <div>
+    <h4>点灯效「随机闪烁」 · ② 应用后</h4>
+    <div class="why">6.3s · 63 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>心跳 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>常亮 · 分区 0 · 不循环 · 播放中</div>
+      <div><b>相机读回</b>亮灯 800 px · 平均亮度 4.69 · 色相 32.0°</div>
+    </div>
+    <div class="verdict"><span class="bad">不符预期</span>
+      <span class="tag bad">设备</span>
+      <div style="margin-top:6px;color:#b9c0cd">与预期不符：背景层应为 随机闪烁 0x07，实际 常亮 0x00</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/11-effect-static--click.mp4"></video>
+  </div>
+  <div>
+    <h4>点灯效「常亮」 · ① 只点击</h4>
+    <div class="why">3.4s · 34 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>常亮 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>常亮 · 分区 1 · 不循环 · 停止</div>
+      <div><b>相机读回</b>亮灯 404 px · 平均亮度 3.5 · 色相 42.0°</div>
+    </div>
+    <div class="verdict"><span class="gap">未下发</span>
+      <span class="tag gap">草稿</span>
+      <div style="margin-top:6px;color:#b9c0cd">只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/11-effect-static--apply.mp4"></video>
+  </div>
+  <div>
+    <h4>点灯效「常亮」 · ② 应用后</h4>
+    <div class="why">6.3s · 63 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>常亮 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>常亮 · 分区 0 · 不循环 · 播放中</div>
+      <div><b>相机读回</b>亮灯 694 px · 平均亮度 4.48 · 色相 32.0°</div>
+    </div>
+    <div class="verdict"><span class="ok">生效</span>
+      <span class="tag ok">设备</span>
+      <div style="margin-top:6px;color:#b9c0cd">读回值与预期一致。</div></div>
+  </div>
+</div>
+<h2>参数</h2>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/12-param-level--click.mp4"></video>
+  </div>
+  <div>
+    <h4>把分区亮度拖到 40 · ① 只点击</h4>
+    <div class="why">3.4s · 34 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>常亮 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>常亮 · 分区 1 · 不循环 · 停止</div>
+      <div><b>相机读回</b>亮灯 218 px · 平均亮度 3.27 · 色相 44.0°</div>
+    </div>
+    <div class="verdict"><span class="gap">未下发</span>
+      <span class="tag gap">草稿</span>
+      <div style="margin-top:6px;color:#b9c0cd">只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/12-param-level--apply.mp4"></video>
+  </div>
+  <div>
+    <h4>把分区亮度拖到 40 · ② 应用后</h4>
+    <div class="why">6.3s · 63 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>常亮 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>常亮 · 分区 0 · 不循环 · 播放中</div>
+      <div><b>相机读回</b>亮灯 1050 px · 平均亮度 2.81 · 色相 27.0°</div>
+    </div>
+    <div class="verdict"><span class="ok">生效</span>
+      <span class="tag ok">设备</span>
+      <div style="margin-top:6px;color:#b9c0cd">读回值与预期一致。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/13-param-hue--click.mp4"></video>
+  </div>
+  <div>
+    <h4>把色相拖到 210° · ① 只点击</h4>
+    <div class="why">3.4s · 34 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>常亮 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>常亮 · 分区 1 · 不循环 · 停止</div>
+      <div><b>相机读回</b>亮灯 1 px · 平均亮度 0.94 · 色相 —</div>
+    </div>
+    <div class="verdict"><span class="gap">未下发</span>
+      <span class="tag gap">草稿</span>
+      <div style="margin-top:6px;color:#b9c0cd">只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/13-param-hue--apply.mp4"></video>
+  </div>
+  <div>
+    <h4>把色相拖到 210° · ② 应用后</h4>
+    <div class="why">6.2s · 62 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>常亮 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>常亮 · 分区 0 · 不循环 · 播放中</div>
+      <div><b>相机读回</b>亮灯 1932 px · 平均亮度 7.21 · 色相 239.0°</div>
+    </div>
+    <div class="verdict"><span class="ok">生效</span>
+      <span class="tag ok">设备</span>
+      <div style="margin-top:6px;color:#b9c0cd">读回值与预期一致。</div></div>
+  </div>
+</div>
+<h2>特效层</h2>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/14-overlay-comet--click.mp4"></video>
+  </div>
+  <div>
+    <h4>特效层选「流星」 · ① 只点击</h4>
+    <div class="why">3.4s · 34 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>常亮 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>常亮 · 分区 1 · 不循环 · 停止</div>
+      <div><b>相机读回</b>亮灯 1895 px · 平均亮度 7.13 · 色相 240.0°</div>
+    </div>
+    <div class="verdict"><span class="gap">未下发</span>
+      <span class="tag gap">草稿</span>
+      <div style="margin-top:6px;color:#b9c0cd">只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/14-overlay-comet--apply.mp4"></video>
+  </div>
+  <div>
+    <h4>特效层选「流星」 · ② 应用后</h4>
+    <div class="why">6.3s · 63 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>常亮 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>常亮 + 特效层流星 · 分区 0 · 不循环 · 播放中</div>
+      <div><b>相机读回</b>亮灯 120 px · 平均亮度 0.92 · 色相 30.0°</div>
+    </div>
+    <div class="verdict"><span class="ok">生效</span>
+      <span class="tag ok">设备</span>
+      <div style="margin-top:6px;color:#b9c0cd">读回值与预期一致。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/15-overlay-blend--click.mp4"></video>
+  </div>
+  <div>
+    <h4>混合方式改成「相加」 · ① 只点击</h4>
+    <div class="why">3.4s · 34 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>常亮 + 特效层流星 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>常亮 + 特效层流星 · 分区 1 · 不循环 · 停止</div>
+      <div><b>相机读回</b>亮灯 34 px · 平均亮度 0.75 · 色相 38.0°</div>
+    </div>
+    <div class="verdict"><span class="gap">未下发</span>
+      <span class="tag gap">草稿</span>
+      <div style="margin-top:6px;color:#b9c0cd">只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/15-overlay-blend--apply.mp4"></video>
+  </div>
+  <div>
+    <h4>混合方式改成「相加」 · ② 应用后</h4>
+    <div class="why">6.3s · 63 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>常亮 + 特效层流星 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>常亮 + 特效层流星 · 分区 0 · 不循环 · 播放中</div>
+      <div><b>相机读回</b>亮灯 1604 px · 平均亮度 6.11 · 色相 225.0°</div>
+    </div>
+    <div class="verdict"><span class="ok">生效</span>
+      <span class="tag ok">设备</span>
+      <div style="margin-top:6px;color:#b9c0cd">读回值与预期一致。</div></div>
+  </div>
+</div>
+<h2>循环三档</h2>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/16-loop-none--click.mp4"></video>
+  </div>
+  <div>
+    <h4>循环「不循环」 · ① 只点击</h4>
+    <div class="why">3.4s · 34 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>常亮 + 特效层流星 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>常亮 + 特效层流星 · 分区 1 · 不循环 · 停止</div>
+      <div><b>相机读回</b>亮灯 1380 px · 平均亮度 5.36 · 色相 222.0°</div>
+    </div>
+    <div class="verdict"><span class="ok">生效</span>
+      <span class="tag ok">设备</span>
+      <div style="margin-top:6px;color:#b9c0cd">读回值与预期一致。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/17-loop-all--click.mp4"></video>
+  </div>
+  <div>
+    <h4>循环「全部循环」 · ① 只点击</h4>
+    <div class="why">3.4s · 34 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>常亮 + 特效层流星 · 分区 1 · 不循环 · 停止</div>
+      <div><b>操作后</b>常亮 + 特效层流星 · 分区 0 · 全部循环 · 播放中</div>
+      <div><b>相机读回</b>亮灯 1796 px · 平均亮度 6.88 · 色相 232.0°</div>
+    </div>
+    <div class="verdict"><span class="ok">生效</span>
+      <span class="tag ok">设备</span>
+      <div style="margin-top:6px;color:#b9c0cd">读回值与预期一致。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/18-loop-last--click.mp4"></video>
+  </div>
+  <div>
+    <h4>循环「最后一步循环」 · ① 只点击</h4>
+    <div class="why">3.4s · 34 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>常亮 + 特效层流星 · 分区 1 · 全部循环 · 播放中</div>
+      <div><b>操作后</b>常亮 + 特效层流星 · 分区 0 · 最后一步循环 · 播放中</div>
+      <div><b>相机读回</b>亮灯 918 px · 平均亮度 3.53 · 色相 231.0°</div>
+    </div>
+    <div class="verdict"><span class="ok">生效</span>
+      <span class="tag ok">设备</span>
+      <div style="margin-top:6px;color:#b9c0cd">读回值与预期一致。</div></div>
+  </div>
+</div>
+<h2>时长与收尾</h2>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/19-duration--click.mp4"></video>
+  </div>
+  <div>
+    <h4>步骤时长改到 1.5 秒 · ① 只点击</h4>
+    <div class="why">3.4s · 34 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>常亮 + 特效层流星 · 分区 1 · 最后一步循环 · 播放中</div>
+      <div><b>操作后</b>常亮 + 特效层流星 · 分区 1 · 最后一步循环 · 播放中</div>
+      <div><b>相机读回</b>亮灯 1863 px · 平均亮度 7.03 · 色相 236.0°</div>
+    </div>
+    <div class="verdict"><span class="gap">未下发</span>
+      <span class="tag gap">草稿</span>
+      <div style="margin-top:6px;color:#b9c0cd">只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/19-duration--apply.mp4"></video>
+  </div>
+  <div>
+    <h4>步骤时长改到 1.5 秒 · ② 应用后</h4>
+    <div class="why">6.3s · 63 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>常亮 + 特效层流星 · 分区 1 · 最后一步循环 · 播放中</div>
+      <div><b>操作后</b>常亮 + 特效层流星 · 分区 0 · 最后一步循环 · 播放中</div>
+      <div><b>相机读回</b>亮灯 1925 px · 平均亮度 7.24 · 色相 230.0°</div>
+    </div>
+    <div class="verdict"><span class="same">无变化</span>
+      <span class="tag same">设备</span>
+      <div style="margin-top:6px;color:#b9c0cd">时长属于剧本科内容，协议只回摘要、读不回每步时长，因此设备侧无法用读回值证明；这一段只能看灯带的实际播放节奏。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/20-effect-off--click.mp4"></video>
+  </div>
+  <div>
+    <h4>点灯效「空」 · ① 只点击</h4>
+    <div class="why">3.3s · 33 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>常亮 + 特效层流星 · 分区 1 · 最后一步循环 · 播放中</div>
+      <div><b>操作后</b>常亮 + 特效层流星 · 分区 1 · 最后一步循环 · 播放中</div>
+      <div><b>相机读回</b>亮灯 1876 px · 平均亮度 7.17 · 色相 232.0°</div>
+    </div>
+    <div class="verdict"><span class="gap">未下发</span>
+      <span class="tag gap">草稿</span>
+      <div style="margin-top:6px;color:#b9c0cd">只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div>
+    <video controls preload="metadata" src="media/20-effect-off--apply.mp4"></video>
+  </div>
+  <div>
+    <h4>点灯效「空」 · ② 应用后</h4>
+    <div class="why">6.4s · 64 帧</div>
+    <div class="kv">
+      <div><b>操作前</b>常亮 + 特效层流星 · 分区 1 · 最后一步循环 · 播放中</div>
+      <div><b>操作后</b>熄灭 + 特效层流星 · 分区 0 · 最后一步循环 · 播放中</div>
+      <div><b>相机读回</b>亮灯 67 px · 平均亮度 0.67 · 色相 27.0°</div>
+    </div>
+    <div class="verdict"><span class="ok">生效</span>
+      <span class="tag ok">设备</span>
+      <div style="margin-top:6px;color:#b9c0cd">读回值与预期一致。</div></div>
+  </div>
+</div>
+
+<footer>
+素材：<code>2521</code> 帧 / <code>252.4</code> 秒 @
+实测 <code>10.04</code> fps。视频按逐帧真实时间戳切窗口，
+未使用容器声明帧率。<br>
+点击走的是页面自己的事件处理器（<code>onPanelTypeTap</code> / <code>onLoopTap</code> /
+<code>onPickerConfirm</code> …），不是重写一遍调用顺序；断言读设备 State 与 QueryStrip 读回值。
+</footer>
+</div></body></html>

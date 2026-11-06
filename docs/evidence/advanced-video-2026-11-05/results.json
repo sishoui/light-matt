@@ -1,0 +1,2126 @@
+[
+  {
+    "id": "01-mode-advanced",
+    "title": "点「进阶」",
+    "before": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 0,
+      "scriptId": 0,
+      "segs": 0,
+      "layerTypes": [],
+      "overlayTypes": [],
+      "ranges": [],
+      "layers": []
+    },
+    "afterClick": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 0,
+      "scriptId": 0,
+      "segs": 0,
+      "layerTypes": [],
+      "overlayTypes": [],
+      "ranges": [],
+      "layers": []
+    },
+    "afterApply": null,
+    "writesOnClick": false,
+    "clickChanged": false,
+    "visualChanged": null,
+    "pageMode": "advanced",
+    "panelMode": "static"
+  },
+  {
+    "id": "02-step-add",
+    "title": "点「加步骤」",
+    "before": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 0,
+      "scriptId": 0,
+      "segs": 0,
+      "layerTypes": [],
+      "overlayTypes": [],
+      "ranges": [],
+      "layers": []
+    },
+    "afterClick": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 0,
+      "scriptId": 0,
+      "segs": 0,
+      "layerTypes": [],
+      "overlayTypes": [],
+      "ranges": [],
+      "layers": []
+    },
+    "afterApply": null,
+    "writesOnClick": false,
+    "clickChanged": false,
+    "visualChanged": null,
+    "pageMode": "advanced",
+    "panelMode": "static"
+  },
+  {
+    "id": "03-zone-add",
+    "title": "点「加分区」→ 划选整条灯带 → 确定",
+    "before": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 0,
+      "scriptId": 0,
+      "segs": 0,
+      "layerTypes": [],
+      "overlayTypes": [],
+      "ranges": [],
+      "layers": []
+    },
+    "afterClick": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 0,
+      "scriptId": 0,
+      "segs": 0,
+      "layerTypes": [],
+      "overlayTypes": [],
+      "ranges": [],
+      "layers": []
+    },
+    "afterApply": {
+      "flags": 2,
+      "playback": 1,
+      "stage": 0,
+      "scriptId": 0,
+      "segs": 0,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "writesOnClick": false,
+    "clickChanged": false,
+    "visualChanged": true,
+    "pageMode": "advanced",
+    "panelMode": "static"
+  },
+  {
+    "id": "04-zone-select",
+    "title": "选中分区",
+    "before": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterClick": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterApply": null,
+    "writesOnClick": false,
+    "clickChanged": false,
+    "visualChanged": null,
+    "pageMode": "advanced",
+    "panelMode": "static"
+  },
+  {
+    "id": "05-effect-breathing",
+    "title": "点灯效「呼吸」",
+    "before": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterClick": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterApply": {
+      "flags": 2,
+      "playback": 1,
+      "stage": 0,
+      "scriptId": 0,
+      "segs": 0,
+      "layerTypes": [
+        1
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 1,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 2000,
+            "p5": 40,
+            "flags": 0,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "writesOnClick": false,
+    "clickChanged": false,
+    "visualChanged": true,
+    "pageMode": "advanced",
+    "panelMode": "breathing"
+  },
+  {
+    "id": "06-effect-rainbow",
+    "title": "点灯效「彩虹」",
+    "before": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        1
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 1,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 2000,
+            "p5": 40,
+            "flags": 0,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterClick": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        1
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 1,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 2000,
+            "p5": 40,
+            "flags": 0,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterApply": {
+      "flags": 2,
+      "playback": 1,
+      "stage": 0,
+      "scriptId": 0,
+      "segs": 0,
+      "layerTypes": [
+        2
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 2,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 3000,
+            "p5": 255,
+            "flags": 0,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "writesOnClick": false,
+    "clickChanged": false,
+    "visualChanged": true,
+    "pageMode": "advanced",
+    "panelMode": "rainbow"
+  },
+  {
+    "id": "07-effect-comet",
+    "title": "点灯效「流星」",
+    "before": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        2
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 2,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 3000,
+            "p5": 255,
+            "flags": 0,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterClick": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        2
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 2,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 3000,
+            "p5": 255,
+            "flags": 0,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterApply": {
+      "flags": 2,
+      "playback": 1,
+      "stage": 0,
+      "scriptId": 0,
+      "segs": 0,
+      "layerTypes": [
+        3
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 3,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 2000,
+            "p5": 120,
+            "flags": 0,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "writesOnClick": false,
+    "clickChanged": false,
+    "visualChanged": true,
+    "pageMode": "advanced",
+    "panelMode": "comet"
+  },
+  {
+    "id": "08-effect-strobe",
+    "title": "点灯效「爆闪」",
+    "before": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        3
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 3,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 2000,
+            "p5": 120,
+            "flags": 0,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterClick": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        3
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 3,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 2000,
+            "p5": 120,
+            "flags": 0,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterApply": {
+      "flags": 2,
+      "playback": 1,
+      "stage": 0,
+      "scriptId": 0,
+      "segs": 0,
+      "layerTypes": [
+        4
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 4,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 250,
+            "p5": 90,
+            "flags": 0,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "writesOnClick": false,
+    "clickChanged": false,
+    "visualChanged": true,
+    "pageMode": "advanced",
+    "panelMode": "strobe"
+  },
+  {
+    "id": "09-effect-heartbeat",
+    "title": "点灯效「心跳」",
+    "before": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        4
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 4,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 250,
+            "p5": 90,
+            "flags": 0,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterClick": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        4
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 4,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 250,
+            "p5": 90,
+            "flags": 0,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterApply": {
+      "flags": 2,
+      "playback": 1,
+      "stage": 0,
+      "scriptId": 0,
+      "segs": 0,
+      "layerTypes": [
+        5
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 5,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 1000,
+            "p5": 60,
+            "flags": 1,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "writesOnClick": false,
+    "clickChanged": false,
+    "visualChanged": true,
+    "pageMode": "advanced",
+    "panelMode": "heartbeat"
+  },
+  {
+    "id": "10-effect-flicker",
+    "title": "点灯效「随机闪烁」",
+    "before": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        5
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 5,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 1000,
+            "p5": 60,
+            "flags": 1,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterClick": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        5
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 5,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 1000,
+            "p5": 60,
+            "flags": 1,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterApply": {
+      "flags": 2,
+      "playback": 1,
+      "stage": 0,
+      "scriptId": 0,
+      "segs": 0,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "writesOnClick": false,
+    "clickChanged": false,
+    "visualChanged": true,
+    "pageMode": "advanced",
+    "panelMode": "flicker"
+  },
+  {
+    "id": "11-effect-static",
+    "title": "点灯效「常亮」",
+    "before": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterClick": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterApply": {
+      "flags": 2,
+      "playback": 1,
+      "stage": 0,
+      "scriptId": 0,
+      "segs": 0,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "writesOnClick": false,
+    "clickChanged": false,
+    "visualChanged": false,
+    "pageMode": "advanced",
+    "panelMode": "static"
+  },
+  {
+    "id": "12-param-level",
+    "title": "把分区亮度拖到 40",
+    "before": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterClick": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 100
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterApply": {
+      "flags": 2,
+      "playback": 1,
+      "stage": 0,
+      "scriptId": 0,
+      "segs": 0,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 40
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "writesOnClick": false,
+    "clickChanged": false,
+    "visualChanged": true,
+    "pageMode": "advanced",
+    "panelMode": "static"
+  },
+  {
+    "id": "13-param-hue",
+    "title": "把色相拖到 210°",
+    "before": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 40
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterClick": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 40
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterApply": {
+      "flags": 2,
+      "playback": 1,
+      "stage": 0,
+      "scriptId": 0,
+      "segs": 0,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 38229,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 40
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "writesOnClick": false,
+    "clickChanged": false,
+    "visualChanged": true,
+    "pageMode": "advanced",
+    "panelMode": "static"
+  },
+  {
+    "id": "14-overlay-comet",
+    "title": "特效层选「流星」",
+    "before": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 38229,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 40
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterClick": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        255
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 38229,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 40
+          },
+          "l1": {
+            "type": 255,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterApply": {
+      "flags": 2,
+      "playback": 1,
+      "stage": 0,
+      "scriptId": 0,
+      "segs": 0,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        3
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 38229,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 40
+          },
+          "l1": {
+            "type": 3,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 500,
+            "p5": 120,
+            "flags": 0,
+            "level": 100
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "writesOnClick": false,
+    "clickChanged": false,
+    "visualChanged": true,
+    "pageMode": "advanced",
+    "panelMode": "static"
+  },
+  {
+    "id": "15-overlay-blend",
+    "title": "混合方式改成「相加」",
+    "before": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        3
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 38229,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 40
+          },
+          "l1": {
+            "type": 3,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 500,
+            "p5": 120,
+            "flags": 0,
+            "level": 100
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterClick": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        3
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 38229,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 40
+          },
+          "l1": {
+            "type": 3,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 500,
+            "p5": 120,
+            "flags": 0,
+            "level": 100
+          },
+          "blend": 0
+        }
+      ]
+    },
+    "afterApply": {
+      "flags": 2,
+      "playback": 1,
+      "stage": 0,
+      "scriptId": 0,
+      "segs": 0,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        3
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 38229,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 40
+          },
+          "l1": {
+            "type": 3,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 500,
+            "p5": 120,
+            "flags": 0,
+            "level": 100
+          },
+          "blend": 2
+        }
+      ]
+    },
+    "writesOnClick": false,
+    "clickChanged": false,
+    "visualChanged": true,
+    "pageMode": "advanced",
+    "panelMode": "static"
+  },
+  {
+    "id": "16-loop-none",
+    "title": "循环「不循环」",
+    "before": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        3
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 38229,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 40
+          },
+          "l1": {
+            "type": 3,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 500,
+            "p5": 120,
+            "flags": 0,
+            "level": 100
+          },
+          "blend": 2
+        }
+      ]
+    },
+    "afterClick": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        3
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 38229,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 40
+          },
+          "l1": {
+            "type": 3,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 500,
+            "p5": 120,
+            "flags": 0,
+            "level": 100
+          },
+          "blend": 2
+        }
+      ]
+    },
+    "afterApply": null,
+    "writesOnClick": true,
+    "clickChanged": false,
+    "visualChanged": null,
+    "pageMode": "advanced",
+    "panelMode": "static"
+  },
+  {
+    "id": "17-loop-all",
+    "title": "循环「全部循环」",
+    "before": {
+      "flags": 2,
+      "playback": 0,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        3
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 38229,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 40
+          },
+          "l1": {
+            "type": 3,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 500,
+            "p5": 120,
+            "flags": 0,
+            "level": 100
+          },
+          "blend": 2
+        }
+      ]
+    },
+    "afterClick": {
+      "flags": 3,
+      "playback": 1,
+      "stage": 0,
+      "scriptId": 0,
+      "segs": 0,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        3
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 38229,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 40
+          },
+          "l1": {
+            "type": 3,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 500,
+            "p5": 120,
+            "flags": 0,
+            "level": 100
+          },
+          "blend": 2
+        }
+      ]
+    },
+    "afterApply": null,
+    "writesOnClick": true,
+    "clickChanged": true,
+    "visualChanged": null,
+    "pageMode": "advanced",
+    "panelMode": "static"
+  },
+  {
+    "id": "18-loop-last",
+    "title": "循环「最后一步循环」",
+    "before": {
+      "flags": 3,
+      "playback": 1,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        3
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 38229,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 40
+          },
+          "l1": {
+            "type": 3,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 500,
+            "p5": 120,
+            "flags": 0,
+            "level": 100
+          },
+          "blend": 2
+        }
+      ]
+    },
+    "afterClick": {
+      "flags": 7,
+      "playback": 1,
+      "stage": 0,
+      "scriptId": 0,
+      "segs": 0,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        3
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 38229,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 40
+          },
+          "l1": {
+            "type": 3,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 500,
+            "p5": 120,
+            "flags": 0,
+            "level": 100
+          },
+          "blend": 2
+        }
+      ]
+    },
+    "afterApply": null,
+    "writesOnClick": true,
+    "clickChanged": true,
+    "visualChanged": null,
+    "pageMode": "advanced",
+    "panelMode": "static"
+  },
+  {
+    "id": "19-duration",
+    "title": "步骤时长改到 1.5 秒",
+    "before": {
+      "flags": 7,
+      "playback": 1,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        3
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 38229,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 40
+          },
+          "l1": {
+            "type": 3,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 500,
+            "p5": 120,
+            "flags": 0,
+            "level": 100
+          },
+          "blend": 2
+        }
+      ]
+    },
+    "afterClick": {
+      "flags": 7,
+      "playback": 1,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        3
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 38229,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 40
+          },
+          "l1": {
+            "type": 3,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 500,
+            "p5": 120,
+            "flags": 0,
+            "level": 100
+          },
+          "blend": 2
+        }
+      ]
+    },
+    "afterApply": {
+      "flags": 7,
+      "playback": 1,
+      "stage": 0,
+      "scriptId": 0,
+      "segs": 0,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        3
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 38229,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 40
+          },
+          "l1": {
+            "type": 3,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 500,
+            "p5": 120,
+            "flags": 0,
+            "level": 100
+          },
+          "blend": 2
+        }
+      ]
+    },
+    "writesOnClick": false,
+    "clickChanged": false,
+    "visualChanged": false,
+    "pageMode": "advanced",
+    "panelMode": "static"
+  },
+  {
+    "id": "20-effect-off",
+    "title": "点灯效「空」",
+    "before": {
+      "flags": 7,
+      "playback": 1,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        3
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 38229,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 40
+          },
+          "l1": {
+            "type": 3,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 500,
+            "p5": 120,
+            "flags": 0,
+            "level": 100
+          },
+          "blend": 2
+        }
+      ]
+    },
+    "afterClick": {
+      "flags": 7,
+      "playback": 1,
+      "stage": 2,
+      "scriptId": 0,
+      "segs": 1,
+      "layerTypes": [
+        0
+      ],
+      "overlayTypes": [
+        3
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 0,
+            "hue": 38229,
+            "sat": 255,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 40
+          },
+          "l1": {
+            "type": 3,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 500,
+            "p5": 120,
+            "flags": 0,
+            "level": 100
+          },
+          "blend": 2
+        }
+      ]
+    },
+    "afterApply": {
+      "flags": 7,
+      "playback": 1,
+      "stage": 0,
+      "scriptId": 0,
+      "segs": 0,
+      "layerTypes": [
+        6
+      ],
+      "overlayTypes": [
+        3
+      ],
+      "ranges": [
+        "0-29"
+      ],
+      "layers": [
+        {
+          "l0": {
+            "type": 6,
+            "hue": 0,
+            "sat": 0,
+            "periodMs": 0,
+            "p5": 0,
+            "flags": 0,
+            "level": 0
+          },
+          "l1": {
+            "type": 3,
+            "hue": 7281,
+            "sat": 255,
+            "periodMs": 500,
+            "p5": 120,
+            "flags": 0,
+            "level": 100
+          },
+          "blend": 2
+        }
+      ]
+    },
+    "writesOnClick": false,
+    "clickChanged": false,
+    "visualChanged": true,
+    "pageMode": "advanced",
+    "panelMode": "off"
+  }
+]

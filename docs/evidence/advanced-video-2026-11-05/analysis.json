@@ -1,0 +1,3451 @@
+{
+  "camera": {
+    "frames": 2521,
+    "duration_s": 252.43,
+    "measured_fps": 10.042
+  },
+  "clips": [
+    {
+      "id": "01-mode-advanced--click",
+      "step": "01-mode-advanced",
+      "title": "点「进阶」",
+      "phase": "click",
+      "clip": "clips/01-mode-advanced--click.mp4",
+      "duration_s": 3.4,
+      "frames": 34,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 0,
+        "scriptId": 0,
+        "segs": 0,
+        "layerTypes": [],
+        "overlayTypes": [],
+        "ranges": [],
+        "layers": []
+      },
+      "after": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 0,
+        "scriptId": 0,
+        "segs": 0,
+        "layerTypes": [],
+        "overlayTypes": [],
+        "ranges": [],
+        "layers": []
+      },
+      "camera_before": {
+        "lit_px": 3,
+        "lit_max": 18,
+        "mean_v": 23.41,
+        "v_range": 0.4,
+        "hue": 198.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 1,
+        "lit_max": 12,
+        "mean_v": 23.52,
+        "v_range": 0.22,
+        "hue": null,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "gap",
+        "text": "只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。"
+      }
+    },
+    {
+      "id": "02-step-add--click",
+      "step": "02-step-add",
+      "title": "点「加步骤」",
+      "phase": "click",
+      "clip": "clips/02-step-add--click.mp4",
+      "duration_s": 3.4,
+      "frames": 34,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 0,
+        "scriptId": 0,
+        "segs": 0,
+        "layerTypes": [],
+        "overlayTypes": [],
+        "ranges": [],
+        "layers": []
+      },
+      "after": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 0,
+        "scriptId": 0,
+        "segs": 0,
+        "layerTypes": [],
+        "overlayTypes": [],
+        "ranges": [],
+        "layers": []
+      },
+      "camera_before": {
+        "lit_px": 2,
+        "lit_max": 3,
+        "mean_v": 23.27,
+        "v_range": 0.46,
+        "hue": null,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 2,
+        "lit_max": 2,
+        "mean_v": 23.38,
+        "v_range": 0.26,
+        "hue": null,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "gap",
+        "text": "只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。"
+      }
+    },
+    {
+      "id": "03-zone-add--click",
+      "step": "03-zone-add",
+      "title": "点「加分区」→ 划选整条灯带 → 确定",
+      "phase": "click",
+      "clip": "clips/03-zone-add--click.mp4",
+      "duration_s": 3.4,
+      "frames": 34,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 0,
+        "scriptId": 0,
+        "segs": 0,
+        "layerTypes": [],
+        "overlayTypes": [],
+        "ranges": [],
+        "layers": []
+      },
+      "after": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 0,
+        "scriptId": 0,
+        "segs": 0,
+        "layerTypes": [],
+        "overlayTypes": [],
+        "ranges": [],
+        "layers": []
+      },
+      "camera_before": {
+        "lit_px": 3,
+        "lit_max": 23,
+        "mean_v": 23.31,
+        "v_range": 0.47,
+        "hue": 198.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 11,
+        "lit_max": 22,
+        "mean_v": 23.5,
+        "v_range": 0.1,
+        "hue": 198.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "gap",
+        "text": "只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。"
+      }
+    },
+    {
+      "id": "03-zone-add--apply",
+      "step": "03-zone-add",
+      "title": "点「加分区」→ 划选整条灯带 → 确定",
+      "phase": "apply",
+      "clip": "clips/03-zone-add--apply.mp4",
+      "duration_s": 6.21,
+      "frames": 62,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 0,
+        "scriptId": 0,
+        "segs": 0,
+        "layerTypes": [],
+        "overlayTypes": [],
+        "ranges": [],
+        "layers": []
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 0,
+        "scriptId": 0,
+        "segs": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 5,
+        "lit_max": 8302,
+        "mean_v": 23.39,
+        "v_range": 3.7,
+        "hue": 36.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 40,
+        "lit_max": 463,
+        "mean_v": 3.31,
+        "v_range": 2.19,
+        "hue": 36.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "04-zone-select--click",
+      "step": "04-zone-select",
+      "title": "选中分区",
+      "phase": "click",
+      "clip": "clips/04-zone-select--click.mp4",
+      "duration_s": 3.4,
+      "frames": 34,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 3635,
+        "lit_max": 3872,
+        "mean_v": 9.11,
+        "v_range": 1.32,
+        "hue": 32.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 0,
+        "lit_max": 2,
+        "mean_v": 3.28,
+        "v_range": 0.02,
+        "hue": null,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "gap",
+        "text": "只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。"
+      }
+    },
+    {
+      "id": "05-effect-breathing--click",
+      "step": "05-effect-breathing",
+      "title": "点灯效「呼吸」",
+      "phase": "click",
+      "clip": "clips/05-effect-breathing--click.mp4",
+      "duration_s": 3.4,
+      "frames": 34,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 27,
+        "lit_max": 34,
+        "mean_v": 3.27,
+        "v_range": 0.01,
+        "hue": 36.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 9,
+        "lit_max": 11,
+        "mean_v": 3.26,
+        "v_range": 0.01,
+        "hue": null,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "gap",
+        "text": "只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。"
+      }
+    },
+    {
+      "id": "05-effect-breathing--apply",
+      "step": "05-effect-breathing",
+      "title": "点灯效「呼吸」",
+      "phase": "apply",
+      "clip": "clips/05-effect-breathing--apply.mp4",
+      "duration_s": 6.21,
+      "frames": 62,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 0,
+        "scriptId": 0,
+        "segs": 0,
+        "layerTypes": [
+          1
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 1,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 2000,
+              "p5": 40,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 22,
+        "lit_max": 25,
+        "mean_v": 3.24,
+        "v_range": 0.01,
+        "hue": 42.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 3,
+        "lit_max": 1124,
+        "mean_v": 2.54,
+        "v_range": 3.47,
+        "hue": 34.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "06-effect-rainbow--click",
+      "step": "06-effect-rainbow",
+      "title": "点灯效「彩虹」",
+      "phase": "click",
+      "clip": "clips/06-effect-rainbow--click.mp4",
+      "duration_s": 3.3,
+      "frames": 33,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          1
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 1,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 2000,
+              "p5": 40,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          1
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 1,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 2000,
+              "p5": 40,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 0,
+        "lit_max": 0,
+        "mean_v": 0.84,
+        "v_range": 0.01,
+        "hue": null,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 0,
+        "lit_max": 0,
+        "mean_v": 0.85,
+        "v_range": 0.0,
+        "hue": null,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "gap",
+        "text": "只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。"
+      }
+    },
+    {
+      "id": "06-effect-rainbow--apply",
+      "step": "06-effect-rainbow",
+      "title": "点灯效「彩虹」",
+      "phase": "apply",
+      "clip": "clips/06-effect-rainbow--apply.mp4",
+      "duration_s": 6.31,
+      "frames": 63,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          1
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 1,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 2000,
+              "p5": 40,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 0,
+        "scriptId": 0,
+        "segs": 0,
+        "layerTypes": [
+          2
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 2,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 3000,
+              "p5": 255,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 0,
+        "lit_max": 0,
+        "mean_v": 0.85,
+        "v_range": 0.0,
+        "hue": null,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 4383,
+        "lit_max": 5036,
+        "mean_v": 15.34,
+        "v_range": 5.92,
+        "hue": 237.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "07-effect-comet--click",
+      "step": "07-effect-comet",
+      "title": "点灯效「流星」",
+      "phase": "click",
+      "clip": "clips/07-effect-comet--click.mp4",
+      "duration_s": 3.4,
+      "frames": 34,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          2
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 2,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 3000,
+              "p5": 255,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          2
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 2,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 3000,
+              "p5": 255,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 5241,
+        "lit_max": 5780,
+        "mean_v": 15.39,
+        "v_range": 2.39,
+        "hue": 182.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 2738,
+        "lit_max": 2752,
+        "mean_v": 9.64,
+        "v_range": 0.08,
+        "hue": 214.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "gap",
+        "text": "只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。"
+      }
+    },
+    {
+      "id": "07-effect-comet--apply",
+      "step": "07-effect-comet",
+      "title": "点灯效「流星」",
+      "phase": "apply",
+      "clip": "clips/07-effect-comet--apply.mp4",
+      "duration_s": 6.21,
+      "frames": 62,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          2
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 2,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 3000,
+              "p5": 255,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 0,
+        "scriptId": 0,
+        "segs": 0,
+        "layerTypes": [
+          3
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 2000,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 2725,
+        "lit_max": 2760,
+        "mean_v": 9.61,
+        "v_range": 0.03,
+        "hue": 216.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 12,
+        "lit_max": 544,
+        "mean_v": 0.68,
+        "v_range": 1.34,
+        "hue": 29.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "08-effect-strobe--click",
+      "step": "08-effect-strobe",
+      "title": "点灯效「爆闪」",
+      "phase": "click",
+      "clip": "clips/08-effect-strobe--click.mp4",
+      "duration_s": 3.4,
+      "frames": 34,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          3
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 2000,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          3
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 2000,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 33,
+        "lit_max": 37,
+        "mean_v": 0.74,
+        "v_range": 0.01,
+        "hue": 42.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 39,
+        "lit_max": 48,
+        "mean_v": 0.75,
+        "v_range": 0.02,
+        "hue": 37.5,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "gap",
+        "text": "只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。"
+      }
+    },
+    {
+      "id": "08-effect-strobe--apply",
+      "step": "08-effect-strobe",
+      "title": "点灯效「爆闪」",
+      "phase": "apply",
+      "clip": "clips/08-effect-strobe--apply.mp4",
+      "duration_s": 6.31,
+      "frames": 63,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          3
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 2000,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 0,
+        "scriptId": 0,
+        "segs": 0,
+        "layerTypes": [
+          4
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 4,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 250,
+              "p5": 90,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 66,
+        "lit_max": 68,
+        "mean_v": 0.82,
+        "v_range": 0.0,
+        "hue": 34.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 0,
+        "lit_max": 1146,
+        "mean_v": 0.0,
+        "v_range": 5.06,
+        "hue": 30.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "09-effect-heartbeat--click",
+      "step": "09-effect-heartbeat",
+      "title": "点灯效「心跳」",
+      "phase": "click",
+      "clip": "clips/09-effect-heartbeat--click.mp4",
+      "duration_s": 3.4,
+      "frames": 34,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          4
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 4,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 250,
+              "p5": 90,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          4
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 4,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 250,
+              "p5": 90,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 0,
+        "lit_max": 0,
+        "mean_v": 0.0,
+        "v_range": 0.0,
+        "hue": null,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 0,
+        "lit_max": 0,
+        "mean_v": 0.0,
+        "v_range": 0.0,
+        "hue": null,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "gap",
+        "text": "只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。"
+      }
+    },
+    {
+      "id": "09-effect-heartbeat--apply",
+      "step": "09-effect-heartbeat",
+      "title": "点灯效「心跳」",
+      "phase": "apply",
+      "clip": "clips/09-effect-heartbeat--apply.mp4",
+      "duration_s": 6.21,
+      "frames": 62,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          4
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 4,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 250,
+              "p5": 90,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 0,
+        "scriptId": 0,
+        "segs": 0,
+        "layerTypes": [
+          5
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 5,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 1000,
+              "p5": 60,
+              "flags": 1,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 0,
+        "lit_max": 0,
+        "mean_v": 0.0,
+        "v_range": 0.0,
+        "hue": null,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 0,
+        "lit_max": 347,
+        "mean_v": 0.0,
+        "v_range": 2.68,
+        "hue": 30.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "10-effect-flicker--click",
+      "step": "10-effect-flicker",
+      "title": "点灯效「随机闪烁」",
+      "phase": "click",
+      "clip": "clips/10-effect-flicker--click.mp4",
+      "duration_s": 3.4,
+      "frames": 34,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          5
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 5,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 1000,
+              "p5": 60,
+              "flags": 1,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          5
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 5,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 1000,
+              "p5": 60,
+              "flags": 1,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 0,
+        "lit_max": 0,
+        "mean_v": 0.0,
+        "v_range": 0.0,
+        "hue": null,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 0,
+        "lit_max": 0,
+        "mean_v": 0.0,
+        "v_range": 0.0,
+        "hue": null,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "gap",
+        "text": "只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。"
+      }
+    },
+    {
+      "id": "10-effect-flicker--apply",
+      "step": "10-effect-flicker",
+      "title": "点灯效「随机闪烁」",
+      "phase": "apply",
+      "clip": "clips/10-effect-flicker--apply.mp4",
+      "duration_s": 6.31,
+      "frames": 63,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          5
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 5,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 1000,
+              "p5": 60,
+              "flags": 1,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 0,
+        "scriptId": 0,
+        "segs": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 0,
+        "lit_max": 0,
+        "mean_v": 0.0,
+        "v_range": 0.0,
+        "hue": null,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 800,
+        "lit_max": 1072,
+        "mean_v": 4.69,
+        "v_range": 1.91,
+        "hue": 32.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "WRONG",
+        "text": "与预期不符：背景层应为 随机闪烁 0x07，实际 常亮 0x00"
+      }
+    },
+    {
+      "id": "11-effect-static--click",
+      "step": "11-effect-static",
+      "title": "点灯效「常亮」",
+      "phase": "click",
+      "clip": "clips/11-effect-static--click.mp4",
+      "duration_s": 3.4,
+      "frames": 34,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 3911,
+        "lit_max": 4233,
+        "mean_v": 9.81,
+        "v_range": 1.74,
+        "hue": 24.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 404,
+        "lit_max": 414,
+        "mean_v": 3.5,
+        "v_range": 0.16,
+        "hue": 42.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "gap",
+        "text": "只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。"
+      }
+    },
+    {
+      "id": "11-effect-static--apply",
+      "step": "11-effect-static",
+      "title": "点灯效「常亮」",
+      "phase": "apply",
+      "clip": "clips/11-effect-static--apply.mp4",
+      "duration_s": 6.31,
+      "frames": 63,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 0,
+        "scriptId": 0,
+        "segs": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 413,
+        "lit_max": 422,
+        "mean_v": 3.55,
+        "v_range": 0.02,
+        "hue": 42.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 694,
+        "lit_max": 947,
+        "mean_v": 4.48,
+        "v_range": 1.9,
+        "hue": 32.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "12-param-level--click",
+      "step": "12-param-level",
+      "title": "把分区亮度拖到 40",
+      "phase": "click",
+      "clip": "clips/12-param-level--click.mp4",
+      "duration_s": 3.4,
+      "frames": 34,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 3777,
+        "lit_max": 4044,
+        "mean_v": 9.5,
+        "v_range": 1.58,
+        "hue": 27.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 218,
+        "lit_max": 229,
+        "mean_v": 3.27,
+        "v_range": 0.08,
+        "hue": 44.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "gap",
+        "text": "只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。"
+      }
+    },
+    {
+      "id": "12-param-level--apply",
+      "step": "12-param-level",
+      "title": "把分区亮度拖到 40",
+      "phase": "apply",
+      "clip": "clips/12-param-level--apply.mp4",
+      "duration_s": 6.31,
+      "frames": 63,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 100
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 0,
+        "scriptId": 0,
+        "segs": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 232,
+        "lit_max": 303,
+        "mean_v": 3.31,
+        "v_range": 0.08,
+        "hue": 42.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 1050,
+        "lit_max": 1338,
+        "mean_v": 2.81,
+        "v_range": 2.39,
+        "hue": 27.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "13-param-hue--click",
+      "step": "13-param-hue",
+      "title": "把色相拖到 210°",
+      "phase": "click",
+      "clip": "clips/13-param-hue--click.mp4",
+      "duration_s": 3.4,
+      "frames": 34,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 2,
+        "lit_max": 9,
+        "mean_v": 0.93,
+        "v_range": 0.04,
+        "hue": null,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 1,
+        "lit_max": 5,
+        "mean_v": 0.94,
+        "v_range": 0.0,
+        "hue": null,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "gap",
+        "text": "只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。"
+      }
+    },
+    {
+      "id": "13-param-hue--apply",
+      "step": "13-param-hue",
+      "title": "把色相拖到 210°",
+      "phase": "apply",
+      "clip": "clips/13-param-hue--apply.mp4",
+      "duration_s": 6.21,
+      "frames": 62,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 0,
+        "scriptId": 0,
+        "segs": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 1,
+        "lit_max": 1,
+        "mean_v": 0.93,
+        "v_range": 0.0,
+        "hue": null,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 1932,
+        "lit_max": 2814,
+        "mean_v": 7.21,
+        "v_range": 2.02,
+        "hue": 239.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "14-overlay-comet--click",
+      "step": "14-overlay-comet",
+      "title": "特效层选「流星」",
+      "phase": "click",
+      "clip": "clips/14-overlay-comet--click.mp4",
+      "duration_s": 3.4,
+      "frames": 34,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 1885,
+        "lit_max": 1907,
+        "mean_v": 7.13,
+        "v_range": 0.02,
+        "hue": 240.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 1895,
+        "lit_max": 1896,
+        "mean_v": 7.13,
+        "v_range": 0.02,
+        "hue": 240.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "gap",
+        "text": "只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。"
+      }
+    },
+    {
+      "id": "14-overlay-comet--apply",
+      "step": "14-overlay-comet",
+      "title": "特效层选「流星」",
+      "phase": "apply",
+      "clip": "clips/14-overlay-comet--apply.mp4",
+      "duration_s": 6.31,
+      "frames": 63,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          255
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 255,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 0,
+        "scriptId": 0,
+        "segs": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 1894,
+        "lit_max": 1897,
+        "mean_v": 7.15,
+        "v_range": 0.02,
+        "hue": 240.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 120,
+        "lit_max": 665,
+        "mean_v": 0.92,
+        "v_range": 1.98,
+        "hue": 30.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "15-overlay-blend--click",
+      "step": "15-overlay-blend",
+      "title": "混合方式改成「相加」",
+      "phase": "click",
+      "clip": "clips/15-overlay-blend--click.mp4",
+      "duration_s": 3.4,
+      "frames": 34,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 36,
+        "lit_max": 42,
+        "mean_v": 0.75,
+        "v_range": 0.04,
+        "hue": 34.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 34,
+        "lit_max": 36,
+        "mean_v": 0.75,
+        "v_range": 0.0,
+        "hue": 38.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "gap",
+        "text": "只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。"
+      }
+    },
+    {
+      "id": "15-overlay-blend--apply",
+      "step": "15-overlay-blend",
+      "title": "混合方式改成「相加」",
+      "phase": "apply",
+      "clip": "clips/15-overlay-blend--apply.mp4",
+      "duration_s": 6.31,
+      "frames": 63,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 0
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 1,
+        "stage": 0,
+        "scriptId": 0,
+        "segs": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 38,
+        "lit_max": 40,
+        "mean_v": 0.75,
+        "v_range": 0.0,
+        "hue": 42.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 1604,
+        "lit_max": 1891,
+        "mean_v": 6.11,
+        "v_range": 1.44,
+        "hue": 225.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "16-loop-none--click",
+      "step": "16-loop-none",
+      "title": "循环「不循环」",
+      "phase": "click",
+      "clip": "clips/16-loop-none--click.mp4",
+      "duration_s": 3.4,
+      "frames": 34,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "after": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 1334,
+        "lit_max": 1355,
+        "mean_v": 5.16,
+        "v_range": 0.17,
+        "hue": 222.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 1380,
+        "lit_max": 1386,
+        "mean_v": 5.36,
+        "v_range": 0.07,
+        "hue": 222.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "17-loop-all--click",
+      "step": "17-loop-all",
+      "title": "循环「全部循环」",
+      "phase": "click",
+      "clip": "clips/17-loop-all--click.mp4",
+      "duration_s": 3.4,
+      "frames": 34,
+      "before": {
+        "flags": 2,
+        "playback": 0,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "after": {
+        "flags": 3,
+        "playback": 1,
+        "stage": 0,
+        "scriptId": 0,
+        "segs": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 5213,
+        "lit_max": 20915,
+        "mean_v": 18.18,
+        "v_range": 59.47,
+        "hue": 231.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 1796,
+        "lit_max": 1865,
+        "mean_v": 6.88,
+        "v_range": 7.2,
+        "hue": 232.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "18-loop-last--click",
+      "step": "18-loop-last",
+      "title": "循环「最后一步循环」",
+      "phase": "click",
+      "clip": "clips/18-loop-last--click.mp4",
+      "duration_s": 3.4,
+      "frames": 34,
+      "before": {
+        "flags": 3,
+        "playback": 1,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "after": {
+        "flags": 7,
+        "playback": 1,
+        "stage": 0,
+        "scriptId": 0,
+        "segs": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 23283,
+        "lit_max": 23605,
+        "mean_v": 73.12,
+        "v_range": 53.84,
+        "hue": 232.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 918,
+        "lit_max": 1861,
+        "mean_v": 3.53,
+        "v_range": 7.19,
+        "hue": 231.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    },
+    {
+      "id": "19-duration--click",
+      "step": "19-duration",
+      "title": "步骤时长改到 1.5 秒",
+      "phase": "click",
+      "clip": "clips/19-duration--click.mp4",
+      "duration_s": 3.4,
+      "frames": 34,
+      "before": {
+        "flags": 7,
+        "playback": 1,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "after": {
+        "flags": 7,
+        "playback": 1,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 1843,
+        "lit_max": 1881,
+        "mean_v": 7.0,
+        "v_range": 0.16,
+        "hue": 230.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 1863,
+        "lit_max": 1895,
+        "mean_v": 7.03,
+        "v_range": 0.16,
+        "hue": 236.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "gap",
+        "text": "只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。"
+      }
+    },
+    {
+      "id": "19-duration--apply",
+      "step": "19-duration",
+      "title": "步骤时长改到 1.5 秒",
+      "phase": "apply",
+      "clip": "clips/19-duration--apply.mp4",
+      "duration_s": 6.31,
+      "frames": 63,
+      "before": {
+        "flags": 7,
+        "playback": 1,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "after": {
+        "flags": 7,
+        "playback": 1,
+        "stage": 0,
+        "scriptId": 0,
+        "segs": 0,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 1871,
+        "lit_max": 23356,
+        "mean_v": 7.11,
+        "v_range": 66.37,
+        "hue": 231.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 1925,
+        "lit_max": 2709,
+        "mean_v": 7.24,
+        "v_range": 1.89,
+        "hue": 230.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "same",
+        "text": "时长属于剧本科内容，协议只回摘要、读不回每步时长，因此设备侧无法用读回值证明；这一段只能看灯带的实际播放节奏。"
+      }
+    },
+    {
+      "id": "20-effect-off--click",
+      "step": "20-effect-off",
+      "title": "点灯效「空」",
+      "phase": "click",
+      "clip": "clips/20-effect-off--click.mp4",
+      "duration_s": 3.3,
+      "frames": 33,
+      "before": {
+        "flags": 7,
+        "playback": 1,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "after": {
+        "flags": 7,
+        "playback": 1,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 1875,
+        "lit_max": 1890,
+        "mean_v": 7.15,
+        "v_range": 0.12,
+        "hue": 234.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 1876,
+        "lit_max": 1917,
+        "mean_v": 7.17,
+        "v_range": 0.11,
+        "hue": 232.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "gap",
+        "text": "只点击时设备无任何写入 —— 当前版本进阶档不会自动下发，需再点「应用」。"
+      }
+    },
+    {
+      "id": "20-effect-off--apply",
+      "step": "20-effect-off",
+      "title": "点灯效「空」",
+      "phase": "apply",
+      "clip": "clips/20-effect-off--apply.mp4",
+      "duration_s": 6.41,
+      "frames": 64,
+      "before": {
+        "flags": 7,
+        "playback": 1,
+        "stage": 2,
+        "scriptId": 0,
+        "segs": 1,
+        "layerTypes": [
+          0
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 0,
+              "hue": 38229,
+              "sat": 255,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 40
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "after": {
+        "flags": 7,
+        "playback": 1,
+        "stage": 0,
+        "scriptId": 0,
+        "segs": 0,
+        "layerTypes": [
+          6
+        ],
+        "overlayTypes": [
+          3
+        ],
+        "ranges": [
+          "0-29"
+        ],
+        "layers": [
+          {
+            "l0": {
+              "type": 6,
+              "hue": 0,
+              "sat": 0,
+              "periodMs": 0,
+              "p5": 0,
+              "flags": 0,
+              "level": 0
+            },
+            "l1": {
+              "type": 3,
+              "hue": 7281,
+              "sat": 255,
+              "periodMs": 500,
+              "p5": 120,
+              "flags": 0,
+              "level": 100
+            },
+            "blend": 2
+          }
+        ]
+      },
+      "camera_before": {
+        "lit_px": 1920,
+        "lit_max": 23497,
+        "mean_v": 7.29,
+        "v_range": 66.71,
+        "hue": 230.0,
+        "samples": 12
+      },
+      "camera_after": {
+        "lit_px": 67,
+        "lit_max": 116,
+        "mean_v": 0.67,
+        "v_range": 0.87,
+        "hue": 27.0,
+        "samples": 12
+      },
+      "verdict": {
+        "level": "ok",
+        "text": "读回值与预期一致。"
+      }
+    }
+  ]
+}
