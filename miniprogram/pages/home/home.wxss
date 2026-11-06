@@ -12,21 +12,21 @@
 .page {
   padding-top: 0;
   /* 自定义 tabBar 是 fixed 的，内容必须自己让出它的高度。 */
-  padding-bottom: calc(140rpx + env(safe-area-inset-bottom));
+  padding-bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
 }
 
 /* ---------------- 空态 ---------------- */
 
 .empty-card {
-  margin-top: 40rpx;
-  padding: 80rpx 40rpx;
+  margin-top: var(--sp-8);
+  padding: var(--sp-10) var(--sp-8);
   border-radius: var(--radius-xl);
   background: var(--card);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-raised);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 16rpx;
+  gap: var(--sp-4);
 }
 
 .empty-card-hover {
@@ -40,7 +40,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-bottom: 12rpx;
+  margin-bottom: var(--sp-3);
 }
 
 .empty-glyph-ring {
@@ -60,13 +60,13 @@
 }
 
 .empty-title {
-  font-size: 34rpx;
+  font-size: var(--fs-h2);
   font-weight: 600;
   color: var(--text);
 }
 
 .empty-hint {
-  font-size: 24rpx;
+  font-size: var(--fs-sm);
   color: var(--text-2);
   text-align: center;
   line-height: 1.6;
@@ -74,12 +74,12 @@
 }
 
 .empty-cta {
-  margin-top: 16rpx;
-  padding: 18rpx 56rpx;
-  border-radius: 999rpx;
+  margin-top: var(--sp-4);
+  padding: var(--sp-4) var(--sp-9);
+  border-radius: var(--radius-pill);
   background: var(--accent);
   color: var(--accent-ink);
-  font-size: 27rpx;
+  font-size: var(--fs-body);
   font-weight: 600;
 }
 
@@ -88,19 +88,23 @@
 .hero-card {
   position: relative;
   /* 1:1 方形：宽度撑满（页面左右各 32rpx 内边距），高度由 aspect-ratio 决定。
-   * 兼容写法：先用 padding-top:100% 撑高（老基础库不支持 aspect-ratio）。 */
+   * 兼容写法：先用 padding-top: 100% 撑高（老基础库不支持 aspect-ratio）。 */
   width: 100%;
   height: 0;
   padding-top: 100%;
-  margin-top: 8rpx;
+  margin-top: var(--sp-2);
   border-radius: var(--radius-xl);
   overflow: hidden;
-  box-shadow: var(--shadow-card);
-  transition: transform 180ms ease;
+  /* 大卡是页面唯一的「主角」，只有它和浮动层带投影；其余卡片靠描边。
+   * 描边压在图片上会让深色封面出现一圈灰边，所以这里用内阴影代替。 */
+  box-shadow: var(--shadow-card), inset 0 0 0 1rpx var(--border);
+  transition: transform 180ms ease, box-shadow 180ms ease;
 }
 
+/* 按压时回收一点投影，卡片像被按下去（呼应 scale 缩小）。 */
 .hero-card-hover {
   transform: scale(0.985);
+  box-shadow: 0 2rpx 8rpx rgba(22, 32, 46, 0.06), inset 0 0 0 1rpx var(--border);
 }
 
 /* 封面图：绝对定位铺满整个方形 */
@@ -154,16 +158,16 @@
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 24rpx;
-  padding: 32rpx 32rpx 0;
+  gap: var(--sp-6);
+  padding: var(--sp-7) var(--sp-7) 0;
 }
 
 .hero-status {
   display: flex;
   align-items: center;
-  gap: 10rpx;
-  padding: 10rpx 20rpx;
-  border-radius: 999rpx;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-5);
+  border-radius: var(--radius-pill);
   /* 半透明底：在照片上也读得清 */
   background: rgba(0, 0, 0, 0.32);
 }
@@ -190,7 +194,7 @@
 }
 
 .hero-status-text {
-  font-size: 23rpx;
+  font-size: var(--fs-caption);
   /* 固定用白色：这里压在图片上，主题变量不适用 */
   color: rgba(255, 255, 255, 0.94);
 }
@@ -250,12 +254,12 @@
   bottom: 0;
   display: flex;
   flex-direction: column;
-  gap: 10rpx;
-  padding: 0 32rpx 30rpx;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-7) var(--sp-7);
 }
 
 .hero-name {
-  font-size: 52rpx;
+  font-size: var(--fs-display);
   font-weight: 700;
   letter-spacing: -1rpx;
   line-height: 1.15;
@@ -271,11 +275,11 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 16rpx;
+  gap: var(--sp-4);
 }
 
 .hero-meta {
-  font-size: 23rpx;
+  font-size: var(--fs-caption);
   color: rgba(255, 255, 255, 0.76);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -283,7 +287,7 @@
 }
 
 .hero-brightness {
-  font-size: 28rpx;
+  font-size: var(--fs-body);
   font-weight: 600;
   color: rgba(255, 255, 255, 0.92);
   flex-shrink: 0;
@@ -297,12 +301,12 @@
 .hero-slider {
   display: flex;
   flex-direction: column;
-  gap: 4rpx;
-  padding: 4rpx 0;
+  gap: var(--sp-1);
+  padding: var(--sp-1) 0;
 }
 
 .hero-slider-control {
-  margin: 0 -18rpx;
+  margin: 0 calc(var(--sp-4) * -1);
 }
 
 .hero-slider-control.disabled {
@@ -310,13 +314,13 @@
 }
 
 .hero-slider-hint {
-  font-size: 20rpx;
+  font-size: var(--fs-micro);
   color: rgba(255, 255, 255, 0.7);
 }
 
 /* 电源键的就地反馈（#91）：压在图片上，固定用白色系文字。 */
 .hero-power-hint {
-  font-size: 21rpx;
+  font-size: var(--fs-caption);
   color: rgba(255, 255, 255, 0.86);
   line-height: 1.5;
 }
@@ -324,8 +328,8 @@
 /* ---------------- 其他设备小图 ---------------- */
 
 .section-label {
-  margin: 16rpx 8rpx 0;
-  font-size: 23rpx;
+  margin: var(--sp-4) var(--sp-2) 0;
+  font-size: var(--fs-caption);
   font-weight: 600;
   color: var(--text-3);
   letter-spacing: 0.6rpx;
@@ -338,8 +342,8 @@
 
 .thumb-row {
   display: flex;
-  gap: 24rpx;
-  padding: 8rpx 0 4rpx;
+  gap: var(--sp-6);
+  padding: var(--sp-2) 0 var(--sp-1);
 }
 
 .thumb {
@@ -348,7 +352,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12rpx;
+  gap: var(--sp-3);
 }
 
 .thumb-hover {
@@ -362,7 +366,7 @@
   border-radius: 50%;
   overflow: hidden;
   background: var(--card-2);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-raised);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -381,7 +385,7 @@
 }
 
 .thumb-initial {
-  font-size: 40rpx;
+  font-size: var(--fs-h1);
   font-weight: 600;
   color: var(--text-2);
 }
@@ -401,7 +405,7 @@
 }
 
 .thumb-name {
-  font-size: 22rpx;
+  font-size: var(--fs-caption);
   color: var(--text-2);
   max-width: 132rpx;
   overflow: hidden;
@@ -414,10 +418,10 @@
 
 .demo-note {
   margin-top: auto;
-  padding: 20rpx 24rpx;
+  padding: var(--sp-5) var(--sp-6);
   border-radius: var(--radius-md);
   background: var(--accent-soft);
-  font-size: 21rpx;
+  font-size: var(--fs-caption);
   color: var(--text-2);
   line-height: 1.6;
 }
@@ -427,7 +431,7 @@
 .hero-actions {
   display: flex;
   align-items: center;
-  gap: 16rpx;
+  gap: var(--sp-4);
   flex-shrink: 0;
 }
 
@@ -437,11 +441,11 @@
 .searchbar {
   display: flex;
   align-items: center;
-  gap: 12rpx;
+  gap: var(--sp-3);
   height: 72rpx;
-  padding: 0 20rpx;
+  padding: 0 var(--sp-5);
   box-sizing: border-box;
-  border-radius: 18rpx;
+  border-radius: var(--radius-md);
   background: var(--card-2);
   border: 1rpx solid var(--border);
 }
@@ -479,7 +483,7 @@
   flex: 1;
   min-width: 0;
   height: 72rpx;
-  font-size: 27rpx;
+  font-size: var(--fs-body);
   color: var(--text);
 }
 
@@ -533,18 +537,17 @@
 .search-list {
   display: flex;
   flex-direction: column;
-  gap: 14rpx;
+  gap: var(--sp-3);
 }
 
 .search-row {
   display: flex;
   align-items: center;
-  gap: 20rpx;
-  padding: 18rpx;
+  gap: var(--sp-5);
+  padding: var(--sp-4);
   border-radius: var(--radius-md);
   background: var(--card);
   border: 1rpx solid var(--border);
-  box-shadow: var(--shadow);
 }
 
 .search-row-hover {
@@ -558,7 +561,7 @@
 .search-cover {
   width: 88rpx;
   height: 88rpx;
-  border-radius: 14rpx;
+  border-radius: var(--radius-sm);
   flex-shrink: 0;
   background: var(--card-2);
 }
@@ -570,7 +573,7 @@
 }
 
 .search-initial {
-  font-size: 32rpx;
+  font-size: var(--fs-h2);
   font-weight: 700;
   color: var(--text);
 }
@@ -580,11 +583,11 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 6rpx;
+  gap: var(--sp-1);
 }
 
 .search-row-name {
-  font-size: 29rpx;
+  font-size: var(--fs-h3);
   font-weight: 600;
   color: var(--text);
   overflow: hidden;
@@ -593,7 +596,7 @@
 }
 
 .search-row-meta {
-  font-size: 22rpx;
+  font-size: var(--fs-caption);
   color: var(--text-3);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -630,11 +633,10 @@
   right: 24rpx;
   z-index: 86;
   min-width: 300rpx;
-  padding: 8rpx 0;
+  padding: var(--sp-2) 0;
   border-radius: var(--radius-lg);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-card);
-  border: 1rpx solid var(--border);
   display: flex;
   flex-direction: column;
 }
@@ -643,8 +645,8 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 24rpx;
-  padding: 22rpx 28rpx;
+  gap: var(--sp-6);
+  padding: var(--sp-5) var(--sp-7);
 }
 
 .menu-item-hover {
@@ -652,12 +654,12 @@
 }
 
 .menu-item-label {
-  font-size: 28rpx;
+  font-size: var(--fs-body);
   color: var(--text);
 }
 
 .menu-item-sub {
-  font-size: 20rpx;
+  font-size: var(--fs-micro);
   color: var(--text-3);
 }
 
@@ -681,10 +683,10 @@
   z-index: 120;
   background: var(--bg-elevated);
   border-radius: var(--radius-xl) var(--radius-xl) 0 0;
-  padding: 16rpx 32rpx calc(32rpx + env(safe-area-inset-bottom));
+  padding: var(--sp-4) var(--sp-7) calc(var(--sp-7) + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
-  gap: 4rpx;
+  gap: var(--sp-1);
   box-sizing: border-box;
   animation: home-sheet-rise 180ms ease-out;
 }
@@ -706,15 +708,15 @@
   border-radius: 4rpx;
   background: var(--card-press);
   align-self: center;
-  margin: 4rpx 0 12rpx;
+  margin: var(--sp-1) 0 var(--sp-3);
 }
 
 .sheet-item {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 24rpx;
-  padding: 24rpx 8rpx;
+  gap: var(--sp-6);
+  padding: var(--sp-6) var(--sp-2);
   border-bottom: 1rpx solid var(--divider);
 }
 
@@ -731,12 +733,12 @@
 }
 
 .sheet-item-label {
-  font-size: 29rpx;
+  font-size: var(--fs-h3);
   color: var(--text);
 }
 
 .sheet-item-sub {
-  font-size: 21rpx;
+  font-size: var(--fs-caption);
   color: var(--text-3);
 }
 
@@ -749,12 +751,12 @@
 }
 
 .sheet-cancel {
-  margin-top: 12rpx;
+  margin-top: var(--sp-3);
   height: 88rpx;
   line-height: 88rpx;
   text-align: center;
   border-radius: var(--radius-md);
   background: var(--card-2);
-  font-size: 28rpx;
+  font-size: var(--fs-body);
   color: var(--text-2);
 }

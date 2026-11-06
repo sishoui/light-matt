@@ -11,14 +11,19 @@
  *
  * 所以这里按 `.nav-root` 自己声明两套值，并在深色媒体查询里整体替换。
  * 这与 `app.wxss` 的取值保持一致；`tests/theme.test.ts` 会检查这一点。
+ *
+ * ## 尺寸
+ *
+ * 组件样式隔离，拿不到 `app.wxss` 的 `--fs-*` / `--sp-*`，所以这里按同一套
+ * 阶梯写出等值数值。改阶梯时**两处一起改**（`app.wxss` 与本节）。
  */
 
 .nav-root {
   /* 浅色默认值（与 app.wxss 的 .page 同步） */
   --nav-bg: #f2f4f7;
   --nav-text: #1c2430;
-  --nav-text-2: #64707f;
-  --nav-text-3: #9aa4b1;
+  --nav-text-2: #4f5b69;
+  --nav-text-3: #6b7684;
   --nav-accent: #6B8CAE;
   --nav-press: rgba(120, 132, 148, 0.14);
 
@@ -32,8 +37,8 @@
   .nav-root {
     --nav-bg: #0F1419;
     --nav-text: #e8edf3;
-    --nav-text-2: #93a0ae;
-    --nav-text-3: #6b7784;
+    --nav-text-2: #a8b4c2;
+    --nav-text-3: #7e8b99;
     --nav-accent: #8FA9C4;
     --nav-press: rgba(255, 255, 255, 0.12);
   }
@@ -44,8 +49,8 @@
 .nav-root.use-light {
   --nav-bg: #f2f4f7;
   --nav-text: #1c2430;
-  --nav-text-2: #64707f;
-  --nav-text-3: #9aa4b1;
+  --nav-text-2: #4f5b69;
+  --nav-text-3: #6b7684;
   --nav-accent: #6B8CAE;
   --nav-press: rgba(120, 132, 148, 0.14);
 }
@@ -53,8 +58,8 @@
 .nav-root.use-dark {
   --nav-bg: #0F1419;
   --nav-text: #e8edf3;
-  --nav-text-2: #93a0ae;
-  --nav-text-3: #6b7784;
+  --nav-text-2: #a8b4c2;
+  --nav-text-3: #7e8b99;
   --nav-accent: #8FA9C4;
   --nav-press: rgba(255, 255, 255, 0.12);
 }
@@ -70,7 +75,7 @@
   right: 0;
   z-index: 90;
   background: var(--nav-bg);
-  transition: box-shadow 160ms ease;
+  /* 导航栏与页面同色，靠滚动内容自然消失来分隔，不加分隔线 */
 }
 
 .nav-row {
@@ -79,7 +84,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12rpx;
-  padding-left: 16rpx;
+  padding-left: var(--sp-4);
   box-sizing: border-box;
 }
 
@@ -99,13 +104,14 @@
   justify-content: center;
   flex-shrink: 0;
   border-radius: 50%;
+  transition: background 140ms ease;
 }
 
 .nav-back-hover {
   background: var(--nav-press);
 }
 
-/* 返回箭头：两条 2rpx 边框拼成 chevron，纯 CSS，不引资源。 */
+/* 返回箭头：两条边框拼成 chevron，纯 CSS，不引资源。 */
 .nav-back-chevron {
   width: 18rpx;
   height: 18rpx;
@@ -124,6 +130,10 @@
   min-width: 0;
 }
 
+/*
+ * 大标题：大字号需要负字距才不显松散；层级主要靠字重建立，
+ * 字号只比小标题大一档，避免顶部占去太多纵向空间。
+ */
 .nav-title-large {
   font-size: 42rpx;
   font-weight: 700;
@@ -157,6 +167,6 @@
   font-size: 30rpx;
   color: var(--nav-accent);
   font-weight: 500;
-  padding: 8rpx 12rpx;
+  padding: var(--sp-2) var(--sp-3);
   flex-shrink: 0;
 }

@@ -11,13 +11,24 @@
  * **三处必须同步改**：本文件的 `.page`（浅色默认）、媒体查询里的 `.page`、
  * 以及 `.page.theme-light` / `.page.theme-dark`。改一处漏两处就会出现某个
  * 主题下的错色。同样三套值在 `components/nav-bar`、`custom-tab-bar` 与
- * `theme.json` 里各抄了一份（组件样式隔离），`tests/theme.test.ts` 会统一校验。
+ * `theme.json` 里各抄了一份（组件样式隔离），`tests/theme.test.ts` 与
+ * `tests/theme-sync.test.ts` 会统一校验。
  *
  * 原生 `slider` / `switch` 读不到这里的变量，激活色由
  * `utils/control/theme.ts` 的 `accentColor()` 供页面数据传入。
  *
  * 手动覆盖：页面根节点加 `theme-light` / `theme-dark`（见 utils/control/theme.ts）。
  * 未加 class 时由 `prefers-color-scheme` 决定。
+ *
+ * ## 尺寸阶梯（2026-11 样式重构）
+ *
+ * 重构前全仓有 22 种字号、14 种 gap、18 种 padding，全是逐处临时决定的。
+ * 现在收敛成三组 token：字号 8 档、间距 10 档（4rpx 栅格）、圆角 6 档。
+ * **页面 wxss 里不要再出现裸的 font-size / gap / padding / border-radius 数值**
+ * ——一律引用下面的 token，否则阶梯会重新散开。
+ *
+ * 不参与 token 化的数值是有意的：`1rpx` 描边、`2rpx`/`3rpx` 的图标几何、
+ * `50%` 圆形、`100%` 尺寸——它们是形状而不是间距。
  */
 
 page {
@@ -34,10 +45,12 @@ page {
   --card: #ffffff;
   --card-2: #f6f8fa;
   --card-press: #e9eef3;
+  --card-selected: #ffffff;
   --text: #1c2430;
-  --text-2: #64707f;
-  --text-3: #9aa4b1;
+  --text-2: #4f5b69;
+  --text-3: #6b7684;
   --border: rgba(60, 76, 94, 0.12);
+  --border-strong: rgba(60, 76, 94, 0.2);
   --divider: rgba(60, 76, 94, 0.08);
   --accent: #6B8CAE;
   --accent-ink: #ffffff;
@@ -48,21 +61,51 @@ page {
   --danger-soft: rgba(229, 84, 75, 0.1);
   --ok: #3aa76d;
   --ok-soft: rgba(58, 167, 109, 0.14);
-  --shadow: 0 16rpx 48rpx rgba(0, 0, 0, 0.06);
-  --shadow-card: 0 24rpx 64rpx rgba(0, 0, 0, 0.08);
-  --radius-xl: 40rpx;
-  --radius-lg: 28rpx;
-  --radius-md: 20rpx;
-  --radius-sm: 14rpx;
+
+  /* ---- 尺寸阶梯 ---- */
+  --fs-display: 52rpx;
+  --fs-h1: 40rpx;
+  --fs-h2: 34rpx;
+  --fs-h3: 30rpx;
+  --fs-body: 28rpx;
+  --fs-sm: 25rpx;
+  --fs-caption: 22rpx;
+  --fs-micro: 20rpx;
+
+  --sp-1: 4rpx;
+  --sp-2: 8rpx;
+  --sp-3: 12rpx;
+  --sp-4: 16rpx;
+  --sp-5: 20rpx;
+  --sp-6: 24rpx;
+  --sp-7: 32rpx;
+  --sp-8: 40rpx;
+  --sp-9: 56rpx;
+  --sp-10: 80rpx;
+
+  --radius-xs: 8rpx;
+  --radius-sm: 12rpx;
+  --radius-md: 18rpx;
+  --radius-lg: 24rpx;
+  --radius-xl: 32rpx;
+  --radius-pill: 999rpx;
+
+  /* tab 页内容要给 fixed 的 tabBar 让出高度：108rpx 卡片高 + 32rpx 呼吸。 */
+  --tabbar-h: 140rpx;
+
+  /* ---- 投影：用蓝黑而不是纯黑，浅底上不发灰 ---- */
+  --shadow-raised: 0 2rpx 6rpx rgba(22, 32, 46, 0.04), 0 10rpx 28rpx rgba(22, 32, 46, 0.06);
+  --shadow-card: 0 2rpx 4rpx rgba(22, 32, 46, 0.03), 0 16rpx 40rpx rgba(22, 32, 46, 0.07);
+  --shadow-overlay: 0 24rpx 64rpx rgba(22, 32, 46, 0.16);
 
   min-height: 100vh;
   box-sizing: border-box;
-  padding: 0 32rpx calc(32rpx + env(safe-area-inset-bottom));
+  padding: 0 var(--sp-7) calc(var(--sp-7) + env(safe-area-inset-bottom));
   background: var(--bg);
   color: var(--text);
   display: flex;
   flex-direction: column;
-  gap: 24rpx;
+  gap: var(--sp-6);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -77,10 +120,12 @@ page {
     --card: #171d24;
     --card-2: #1f262f;
     --card-press: #29323c;
+    --card-selected: #29323c;
     --text: #e8edf3;
-    --text-2: #93a0ae;
-    --text-3: #6b7784;
+    --text-2: #a8b4c2;
+    --text-3: #7e8b99;
     --border: rgba(255, 255, 255, 0.12);
+    --border-strong: rgba(255, 255, 255, 0.2);
     --divider: rgba(255, 255, 255, 0.08);
     --accent: #8FA9C4;
     --accent-ink: #101820;
@@ -91,8 +136,9 @@ page {
     --danger-soft: rgba(255, 138, 138, 0.14);
     --ok: #4dd17a;
     --ok-soft: rgba(77, 209, 122, 0.16);
-    --shadow: 0 16rpx 48rpx rgba(0, 0, 0, 0.5);
-    --shadow-card: 0 24rpx 64rpx rgba(0, 0, 0, 0.6);
+    --shadow-raised: 0 2rpx 6rpx rgba(0, 0, 0, 0.24), 0 10rpx 28rpx rgba(0, 0, 0, 0.32);
+    --shadow-card: 0 2rpx 4rpx rgba(0, 0, 0, 0.2), 0 16rpx 40rpx rgba(0, 0, 0, 0.42);
+    --shadow-overlay: 0 24rpx 64rpx rgba(0, 0, 0, 0.6);
   }
 }
 
@@ -103,10 +149,12 @@ page {
   --card: #ffffff;
   --card-2: #f6f8fa;
   --card-press: #e9eef3;
+  --card-selected: #ffffff;
   --text: #1c2430;
-  --text-2: #64707f;
-  --text-3: #9aa4b1;
+  --text-2: #4f5b69;
+  --text-3: #6b7684;
   --border: rgba(60, 76, 94, 0.12);
+  --border-strong: rgba(60, 76, 94, 0.2);
   --divider: rgba(60, 76, 94, 0.08);
   --accent: #6B8CAE;
   --accent-ink: #ffffff;
@@ -117,8 +165,9 @@ page {
   --danger-soft: rgba(229, 84, 75, 0.1);
   --ok: #3aa76d;
   --ok-soft: rgba(58, 167, 109, 0.14);
-  --shadow: 0 16rpx 48rpx rgba(0, 0, 0, 0.06);
-  --shadow-card: 0 24rpx 64rpx rgba(0, 0, 0, 0.08);
+  --shadow-raised: 0 2rpx 6rpx rgba(22, 32, 46, 0.04), 0 10rpx 28rpx rgba(22, 32, 46, 0.06);
+  --shadow-card: 0 2rpx 4rpx rgba(22, 32, 46, 0.03), 0 16rpx 40rpx rgba(22, 32, 46, 0.07);
+  --shadow-overlay: 0 24rpx 64rpx rgba(22, 32, 46, 0.16);
   background: var(--bg);
   color: var(--text);
 }
@@ -129,10 +178,12 @@ page {
   --card: #171d24;
   --card-2: #1f262f;
   --card-press: #29323c;
+  --card-selected: #29323c;
   --text: #e8edf3;
-  --text-2: #93a0ae;
-  --text-3: #6b7784;
+  --text-2: #a8b4c2;
+  --text-3: #7e8b99;
   --border: rgba(255, 255, 255, 0.12);
+  --border-strong: rgba(255, 255, 255, 0.2);
   --divider: rgba(255, 255, 255, 0.08);
   --accent: #8FA9C4;
   --accent-ink: #101820;
@@ -143,8 +194,9 @@ page {
   --danger-soft: rgba(255, 138, 138, 0.14);
   --ok: #4dd17a;
   --ok-soft: rgba(77, 209, 122, 0.16);
-  --shadow: 0 16rpx 48rpx rgba(0, 0, 0, 0.5);
-  --shadow-card: 0 24rpx 64rpx rgba(0, 0, 0, 0.6);
+  --shadow-raised: 0 2rpx 6rpx rgba(0, 0, 0, 0.24), 0 10rpx 28rpx rgba(0, 0, 0, 0.32);
+  --shadow-card: 0 2rpx 4rpx rgba(0, 0, 0, 0.2), 0 16rpx 40rpx rgba(0, 0, 0, 0.42);
+  --shadow-overlay: 0 24rpx 64rpx rgba(0, 0, 0, 0.6);
   background: var(--bg);
   color: var(--text);
 }
@@ -154,14 +206,13 @@ page {
 .statusbar {
   display: flex;
   align-items: center;
-  gap: 16rpx;
+  gap: var(--sp-4);
   min-height: 104rpx;
-  padding: 20rpx 28rpx;
+  padding: var(--sp-5) var(--sp-6);
   box-sizing: border-box;
   border-radius: var(--radius-lg);
   background: var(--card);
   border: 1rpx solid var(--border);
-  box-shadow: var(--shadow);
 }
 
 .status-dot {
@@ -192,18 +243,18 @@ page {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 4rpx;
+  gap: var(--sp-1);
   min-width: 0;
 }
 
 .status-text {
-  font-size: 32rpx;
+  font-size: var(--fs-h3);
   font-weight: 600;
   letter-spacing: -0.2rpx;
 }
 
 .status-sub {
-  font-size: 23rpx;
+  font-size: var(--fs-caption);
   color: var(--text-2);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -211,7 +262,7 @@ page {
 }
 
 .status-action {
-  font-size: 27rpx;
+  font-size: var(--fs-sm);
   color: var(--accent);
   font-weight: 500;
   flex-shrink: 0;
@@ -222,11 +273,11 @@ page {
 .section {
   background: var(--card);
   border-radius: var(--radius-lg);
-  padding: 28rpx;
-  box-shadow: var(--shadow);
+  padding: var(--sp-7);
+  border: 1rpx solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 20rpx;
+  gap: var(--sp-5);
 }
 
 .section.disabled,
@@ -239,22 +290,22 @@ page {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16rpx;
+  gap: var(--sp-4);
 }
 
 .section-title {
-  font-size: 30rpx;
+  font-size: var(--fs-h3);
   font-weight: 600;
   letter-spacing: -0.2rpx;
 }
 
 .section-value {
-  font-size: 26rpx;
+  font-size: var(--fs-sm);
   color: var(--text-2);
 }
 
 .section-hint {
-  font-size: 22rpx;
+  font-size: var(--fs-caption);
   color: var(--text-3);
   line-height: 1.6;
 }
@@ -277,8 +328,8 @@ page {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 16rpx;
-  padding: 24rpx 0 8rpx;
+  gap: var(--sp-4);
+  padding: var(--sp-6) 0 var(--sp-2);
 }
 
 .power-btn {
@@ -329,7 +380,7 @@ page {
   content: "";
   position: absolute;
   left: 50%;
-  top: -12rpx;
+  top: calc(var(--sp-3) * -1);
   width: 8rpx;
   height: 48rpx;
   margin-left: -4rpx;
@@ -342,25 +393,25 @@ page {
 }
 
 .power-label {
-  font-size: 26rpx;
+  font-size: var(--fs-sm);
   color: var(--text-2);
 }
 
 /* ---------------- 滑块与读数 ---------------- */
 
 .brightness-slider {
-  margin: 8rpx 0;
+  margin: var(--sp-2) 0;
 }
 
 .row {
   display: flex;
   align-items: center;
-  gap: 12rpx;
+  gap: var(--sp-3);
 }
 
 .row-label {
   width: 84rpx;
-  font-size: 23rpx;
+  font-size: var(--fs-caption);
   color: var(--text-2);
   flex-shrink: 0;
 }
@@ -372,7 +423,7 @@ page {
 .row-value {
   width: 140rpx;
   text-align: right;
-  font-size: 23rpx;
+  font-size: var(--fs-caption);
   color: var(--text);
   flex-shrink: 0;
 }
@@ -382,15 +433,15 @@ page {
 .chip-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 12rpx;
+  gap: var(--sp-3);
 }
 
 .chip {
   flex: 1 1 40%;
   text-align: center;
-  padding: 16rpx 0;
+  padding: var(--sp-4) 0;
   border-radius: var(--radius-sm);
-  font-size: 23rpx;
+  font-size: var(--fs-caption);
   color: var(--text-2);
   background: var(--card-2);
 }
@@ -412,11 +463,11 @@ page {
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
-  gap: 12rpx 0;
-  padding: 24rpx;
+  gap: var(--sp-3) 0;
+  padding: var(--sp-6);
   background: var(--card);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow);
+  border: 1rpx solid var(--border);
 }
 
 .preset {
@@ -424,9 +475,9 @@ page {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8rpx;
-  padding: 4rpx 0;
-  border-radius: 16rpx;
+  gap: var(--sp-2);
+  padding: var(--sp-1) 0;
+  border-radius: var(--radius-sm);
 }
 
 .preset-dot {
@@ -442,7 +493,7 @@ page {
 }
 
 .preset-name {
-  font-size: 20rpx;
+  font-size: var(--fs-micro);
   color: var(--text-2);
 }
 
@@ -468,7 +519,7 @@ page {
 .color-readout {
   display: flex;
   align-items: center;
-  gap: 12rpx;
+  gap: var(--sp-3);
 }
 
 /* ---------------- 段列表 ---------------- */
@@ -476,14 +527,14 @@ page {
 .seg-list {
   display: flex;
   flex-direction: column;
-  gap: 8rpx;
+  gap: var(--sp-2);
 }
 
 .seg-row {
   display: flex;
   align-items: center;
-  gap: 16rpx;
-  padding: 18rpx 20rpx;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-5);
   border-radius: var(--radius-sm);
   background: var(--card-2);
 }
@@ -502,7 +553,7 @@ page {
 }
 
 .seg-index {
-  font-size: 24rpx;
+  font-size: var(--fs-sm);
   color: var(--text);
   flex-shrink: 0;
 }
@@ -516,13 +567,13 @@ page {
 }
 
 .seg-range {
-  font-size: 24rpx;
+  font-size: var(--fs-sm);
   color: var(--text-2);
   font-family: Menlo, Consolas, "SF Mono", monospace;
 }
 
 .seg-param {
-  font-size: 20rpx;
+  font-size: var(--fs-micro);
   color: var(--blue);
   white-space: nowrap;
   overflow: hidden;
@@ -530,10 +581,10 @@ page {
 }
 
 .seg-tag {
-  font-size: 20rpx;
+  font-size: var(--fs-micro);
   color: var(--text-2);
-  padding: 2rpx 12rpx;
-  border-radius: 999rpx;
+  padding: 2rpx var(--sp-3);
+  border-radius: var(--radius-pill);
   background: var(--card-press);
 }
 
@@ -548,15 +599,15 @@ page {
 }
 
 .seg-delete {
-  font-size: 22rpx;
+  font-size: var(--fs-caption);
   color: var(--danger);
-  padding: 4rpx 8rpx;
+  padding: var(--sp-1) var(--sp-2);
   flex-shrink: 0;
 }
 
 .seg-empty {
-  padding: 24rpx 8rpx;
-  font-size: 22rpx;
+  padding: var(--sp-6) var(--sp-2);
+  font-size: var(--fs-caption);
   line-height: 1.6;
   color: var(--text-3);
 }
@@ -566,19 +617,19 @@ page {
 .range-row {
   display: flex;
   align-items: center;
-  gap: 12rpx;
+  gap: var(--sp-3);
 }
 
 .range-input {
   flex: 1;
   min-width: 0;
   height: 76rpx;
-  padding: 0 20rpx;
+  padding: 0 var(--sp-5);
   box-sizing: border-box;
   border-radius: var(--radius-sm);
   background: var(--card-2);
   color: var(--text);
-  font-size: 27rpx;
+  font-size: var(--fs-body);
   text-align: center;
 }
 
@@ -596,7 +647,7 @@ page {
   border-radius: var(--radius-sm);
   background: var(--accent);
   color: var(--accent-ink);
-  font-size: 27rpx;
+  font-size: var(--fs-body);
   font-weight: 600;
   text-align: center;
 }
@@ -609,11 +660,11 @@ page {
   height: 88rpx;
   line-height: 88rpx;
   margin: 0;
-  padding: 0 24rpx;
+  padding: 0 var(--sp-6);
   border-radius: var(--radius-md);
   background: var(--card-2);
   color: var(--text);
-  font-size: 28rpx;
+  font-size: var(--fs-body);
   font-weight: 500;
   text-align: center;
 }
@@ -640,7 +691,7 @@ page {
 
 .btn-row {
   display: flex;
-  gap: 12rpx;
+  gap: var(--sp-3);
 }
 
 /* ---------------- 设备行 / 信息行 ---------------- */
@@ -654,11 +705,11 @@ page {
 }
 
 .device-row {
-  padding: 24rpx 20rpx;
+  padding: var(--sp-6) var(--sp-5);
   border-bottom: 1rpx solid var(--divider);
   display: flex;
   flex-direction: column;
-  gap: 6rpx;
+  gap: var(--sp-2);
   background: transparent;
 }
 
@@ -671,48 +722,48 @@ page {
 }
 
 .device-name {
-  font-size: 28rpx;
+  font-size: var(--fs-body);
   font-weight: 500;
 }
 
 .device-meta {
-  font-size: 22rpx;
+  font-size: var(--fs-caption);
   color: var(--text-2);
   font-family: Menlo, Consolas, "SF Mono", monospace;
   word-break: break-all;
 }
 
 .device-section-title {
-  margin: 16rpx 0 8rpx;
-  font-size: 24rpx;
+  margin: var(--sp-4) 0 var(--sp-2);
+  font-size: var(--fs-caption);
   color: var(--text-2);
 }
 
 .device-empty {
-  padding: 40rpx 16rpx;
-  font-size: 24rpx;
+  padding: var(--sp-8) var(--sp-4);
+  font-size: var(--fs-sm);
   color: var(--text-3);
   line-height: 1.6;
   text-align: center;
 }
 
 .scan-hint {
-  font-size: 22rpx;
+  font-size: var(--fs-caption);
   color: var(--accent);
 }
 
 .device-info {
   display: flex;
   flex-direction: column;
-  gap: 14rpx;
-  padding: 8rpx 0;
+  gap: var(--sp-4);
+  padding: var(--sp-2) 0;
 }
 
 .info-row {
   display: flex;
   justify-content: space-between;
-  gap: 24rpx;
-  font-size: 24rpx;
+  gap: var(--sp-6);
+  font-size: var(--fs-sm);
 }
 
 .info-label {
@@ -730,22 +781,22 @@ page {
 
 .footer {
   margin-top: auto;
-  padding: 24rpx 0 calc(16rpx + env(safe-area-inset-bottom));
+  padding: var(--sp-6) 0 calc(var(--sp-4) + env(safe-area-inset-bottom));
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16rpx;
+  gap: var(--sp-4);
 }
 
 .version {
-  font-size: 22rpx;
+  font-size: var(--fs-caption);
   color: var(--text-3);
   font-family: Menlo, Consolas, "SF Mono", monospace;
-  padding: 8rpx 0;
+  padding: var(--sp-2) 0;
 }
 
 .footer-hint {
-  font-size: 22rpx;
+  font-size: var(--fs-caption);
   color: var(--text-3);
   text-align: right;
 }
@@ -768,12 +819,12 @@ page {
   width: 100%;
   height: 78vh;
   box-sizing: border-box;
-  padding: 28rpx 24rpx calc(24rpx + env(safe-area-inset-bottom));
+  padding: var(--sp-7) var(--sp-6) calc(var(--sp-6) + env(safe-area-inset-bottom));
   background: var(--bg-elevated);
-  border-radius: 40rpx 40rpx 0 0;
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
   display: flex;
   flex-direction: column;
-  gap: 16rpx;
+  gap: var(--sp-4);
 }
 
 .log-head {
@@ -783,20 +834,20 @@ page {
 }
 
 .log-title {
-  font-size: 29rpx;
+  font-size: var(--fs-h3);
   font-weight: 600;
   color: var(--text);
 }
 
 .log-close {
-  font-size: 26rpx;
+  font-size: var(--fs-sm);
   color: var(--text-2);
-  padding: 4rpx 8rpx;
+  padding: var(--sp-1) var(--sp-2);
 }
 
 .log-toolbar {
   display: flex;
-  gap: 12rpx;
+  gap: var(--sp-3);
 }
 
 .log-btn {
@@ -806,12 +857,12 @@ page {
   text-align: center;
   border-radius: var(--radius-sm);
   background: var(--card-2);
-  font-size: 24rpx;
+  font-size: var(--fs-caption);
   color: var(--text);
 }
 
 .log-hint {
-  font-size: 22rpx;
+  font-size: var(--fs-caption);
   color: var(--accent);
 }
 
@@ -820,18 +871,18 @@ page {
   min-height: 0;
   border-radius: var(--radius-sm);
   background: var(--card-2);
-  padding: 8rpx;
+  padding: var(--sp-2);
   box-sizing: border-box;
 }
 
 .log-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 8rpx 12rpx;
-  padding: 8rpx 6rpx;
+  gap: var(--sp-2) var(--sp-3);
+  padding: var(--sp-2) var(--sp-1);
   border-bottom: 1rpx solid var(--divider);
   font-family: Menlo, Consolas, "SF Mono", monospace;
-  font-size: 20rpx;
+  font-size: var(--fs-micro);
   line-height: 1.5;
   color: var(--text-2);
 }
@@ -868,13 +919,13 @@ page {
 }
 
 .log-empty {
-  padding: 40rpx 12rpx;
-  font-size: 24rpx;
+  padding: var(--sp-8) var(--sp-3);
+  font-size: var(--fs-sm);
   color: var(--text-3);
   line-height: 1.6;
 }
 
 .log-foot {
-  font-size: 20rpx;
+  font-size: var(--fs-micro);
   color: var(--text-3);
 }
