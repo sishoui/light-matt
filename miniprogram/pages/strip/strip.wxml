@@ -1,3 +1,102 @@
+<!--
+  参数区的唯一模板（简单档 + 进阶档背景层 + 进阶档特效层三处共用）。
+
+  为什么用 template 而不是三份 wxml：
+    - 三份一定会漂。之前简单档只有三个滑块、进阶档能调周期/尾巴/方向/波形，
+      同一页里两套参数区，用户以为功能不一样。
+    - 现在滑块与选择项都来自 effect-panel 的 SLIDER_KEYS / CHOICE_KEYS，
+      这个模板只负责「把它们画出来」，不判断类型。
+
+  参数：
+    sliders  参数区滑块（PanelSliderView[]，含 track 渐变色）
+    choices  选择项（PanelChoiceView[]）
+    hueRamp  色相滑轨的彩虹渐变（不必每次从 JS 传）
+    disabled 是否禁用（未连接 / 未选中分区）
+    scope    事件名的前缀（"onPanel" / "onOverlay" / "onQuick"）
+
+  WXML 的 template 不能拼接事件名，所以事件用统一的三个处理器 + data-scope
+  分派；页面按 scope 决定改哪一层。
+-->
+<template name="effect-controls">
+  <view wx:for="{{sliders}}" wx:for-item="slider" wx:key="key" class="param-row">
+    <view class="param-head">
+      <text class="param-label">{{slider.label}}</text>
+      <text class="param-value mono">{{slider.display}}</text>
+    </view>
+    <!--
+      滑轨按参数含义上色：色相是彩虹、饱和度是灰→当前色、亮度是黑→当前色、
+      尾长是实色→透明。一条空拖动轴看不出在调什么。
+    -->
+    <view wx:if="{{slider.rainbow}}" class="hue-track" style="background: {{hueRamp}}">
+      <slider
+        class="param-slider hue-slider"
+        min="{{slider.min}}"
+        max="{{slider.max}}"
+        step="{{slider.step}}"
+        value="{{slider.value}}"
+        data-key="{{slider.key}}"
+        data-scope="{{scope}}"
+        disabled="{{disabled}}"
+        activeColor="rgba(0, 0, 0, 0)"
+        backgroundColor="rgba(0, 0, 0, 0)"
+        block-size="22"
+        bindchanging="onScopeSliderChanging"
+        bindchange="onScopeSliderChange"
+      />
+    </view>
+    <view wx:elif="{{slider.track}}" class="track-wrap" style="background: {{slider.track}}">
+      <slider
+        class="param-slider track-slider"
+        min="{{slider.min}}"
+        max="{{slider.max}}"
+        step="{{slider.step}}"
+        value="{{slider.value}}"
+        data-key="{{slider.key}}"
+        data-scope="{{scope}}"
+        disabled="{{disabled}}"
+        activeColor="rgba(0, 0, 0, 0)"
+        backgroundColor="rgba(0, 0, 0, 0)"
+        block-size="22"
+        bindchanging="onScopeSliderChanging"
+        bindchange="onScopeSliderChange"
+      />
+    </view>
+    <slider
+      wx:else
+      class="param-slider"
+      min="{{slider.min}}"
+      max="{{slider.max}}"
+      step="{{slider.step}}"
+      value="{{slider.value}}"
+      data-key="{{slider.key}}"
+      data-scope="{{scope}}"
+      disabled="{{disabled}}"
+      activeColor="{{accentColor}}"
+      backgroundColor="rgba(120, 120, 128, 0.2)"
+      block-size="22"
+      bindchanging="onScopeSliderChanging"
+      bindchange="onScopeSliderChange"
+    />
+    <text wx:if="{{slider.note}}" class="param-note">{{slider.note}}</text>
+  </view>
+
+  <view wx:for="{{choices}}" wx:for-item="choice" wx:key="key" class="panel-choice">
+    <text class="param-label">{{choice.label}}</text>
+    <view class="panel-choice-row">
+      <view
+        wx:for="{{choice.options}}"
+        wx:for-item="choiceOption"
+        wx:key="value"
+        class="panel-option {{choiceOption.value === choice.value ? 'on' : ''}}"
+        data-key="{{choice.key}}"
+        data-value="{{choiceOption.value}}"
+        data-scope="{{scope}}"
+        bindtap="onScopeChoiceTap"
+      >{{choiceOption.label}}</view>
+    </view>
+  </view>
+</template>
+
 <view class="page {{themeClass}}">
   <nav-bar title="{{title}}" subtitle="{{subtitle}}" back="{{true}}" />
 
@@ -119,35 +218,24 @@
       <text wx:if="{{quickHint}}" class="section-hint">{{quickHint}}</text>
     </view>
 
-    <!-- 参数区：只出现这张卡支持的滑块（色相 / 饱和度 + 亮度；熄灭卡没有滑块） -->
+    <!-- 参数区：与进阶档同一张模板，所以两边的配置项完全一致。 -->
     <view wx:if="{{simpleParams}}" class="section param-panel">
       <view class="section-head">
         <text class="section-title">{{simpleParams.title}}</text>
         <view class="param-preview" style="background: {{simpleParams.colorHex}}"></view>
       </view>
 
-      <view wx:for="{{simpleParams.sliders}}" wx:key="key" class="param-row">
-        <view class="param-head">
-          <text class="param-label">{{item.label}}</text>
-          <text class="param-value mono">{{item.display}}</text>
-        </view>
-        <slider
-          class="param-slider"
-          min="{{item.min}}"
-          max="{{item.max}}"
-          step="{{item.step}}"
-          value="{{item.value}}"
-          data-key="{{item.key}}"
-          disabled="{{!ready}}"
-          activeColor="{{accentColor}}"
-          backgroundColor="rgba(120, 120, 128, 0.2)"
-          block-size="22"
-          bindchanging="onParamChanging"
-          bindchange="onParamChange"
-        />
-        <!-- 滑块的补充说明（目前没有滑块需要说明：亮度走 v4 的逐分区 level，真实下发） -->
-        <text wx:if="{{item.note}}" class="param-note">{{item.note}}</text>
-      </view>
+      <template
+        is="effect-controls"
+        data="{{
+          sliders: simpleParams.sliders,
+          choices: simpleParams.choices,
+          hueRamp,
+          disabled: !ready,
+          accentColor,
+          scope: 'quick'
+        }}"
+      />
 
       <text wx:if="{{simpleParams.notice}}" class="param-note">{{simpleParams.notice}}</text>
       <text wx:if="{{quickHint}}" class="section-hint">{{quickHint}}</text>
@@ -377,9 +465,14 @@
       <text wx:if="{{zoneHint}}" class="section-hint">{{zoneHint}}</text>
     </view>
 
-    <!-- ---------------- 进阶档：两层效果（#100） ----------------
-         每个分区两个平级槽位：背景层（铺底）与特效层（流动）。
-         「叠加效果」这一整块已经不存在——两层本身就是叠加。 -->
+    <!-- ---------------- 进阶档：两张卡（背景层 / 特效层） ----------------
+         每个分区两个平级槽位，各自是**一张独立的卡片**，各自有完整的灯效种类
+         与配置项（与简单档同源：滑块来自 SLIDER_KEYS、选择项来自 CHOICE_KEYS）。
+
+         两层叠在一起时恒用「按亮度叠加」（§7.2.1）：特效层只盖住自己亮着的
+         地方，其余位置继续显示背景层——流星亮处显流星、暗处露彩虹。界面上
+         不再提供叠加方式选择器：覆盖会让流星把彩虹全遮了，相加会在重叠处发白，
+         两者都不是用户要的效果。 -->
     <view class="section panel-section">
       <view class="section-head">
         <text class="section-title">背景层</text>
@@ -390,9 +483,9 @@
       </view>
 
       <!--
-        效果类型行在最上：七个等宽按钮（静态 / 呼吸 / 彩虹 / 流光 / 爆闪 / 心跳 / 熄灭）。
-        切换后参数区**整体替换**（列表来自 effect-panel.SLIDER_KEYS，页面不按类型写
-        wx:if 集合）。
+        效果类型行在最上：八个等宽按钮（常亮 / 呼吸 / 彩虹 / 流星 / 爆闪 /
+        心跳 / 随机闪烁 / 空）。切换后参数区**整体替换**（列表来自
+        effect-panel.SLIDER_KEYS，页面不按类型写 wx:if 集合）。
       -->
       <view class="panel-types">
         <view
@@ -406,151 +499,66 @@
       </view>
 
       <block wx:if="{{panelHasZone}}">
-        <!-- 「熄灭」没有旋钮：只说明这一片不亮（它下发的是全零参数块）。 -->
+        <!-- 「空」没有旋钮：只说明这一片不亮（它下发的是全零参数块）。 -->
         <view wx:if="{{panelNotice}}" class="panel-notice">
           <text class="panel-notice-text">{{panelNotice}}</text>
         </view>
 
-        <view wx:for="{{panelSliders}}" wx:key="key" class="param-row">
-          <view class="param-head">
-            <text class="param-label">{{item.label}}</text>
-            <text class="param-value mono">{{item.display}}</text>
-          </view>
-          <!-- 色相滑轨铺一条彩虹渐变（hsl，不是 hex 常量）；其余滑轨走主题色。 -->
-          <view wx:if="{{item.rainbow}}" class="hue-track" style="background: {{hueRamp}}">
-            <slider
-              class="param-slider hue-slider"
-              min="{{item.min}}"
-              max="{{item.max}}"
-              step="{{item.step}}"
-              value="{{item.value}}"
-              data-key="{{item.key}}"
-              disabled="{{!ready}}"
-              activeColor="rgba(0, 0, 0, 0)"
-              backgroundColor="rgba(0, 0, 0, 0)"
-              block-size="22"
-              bindchanging="onPanelSliderChanging"
-              bindchange="onPanelSliderChange"
-            />
-          </view>
-          <slider
-            wx:else
-            class="param-slider"
-            min="{{item.min}}"
-            max="{{item.max}}"
-            step="{{item.step}}"
-            value="{{item.value}}"
-            data-key="{{item.key}}"
-            disabled="{{!ready}}"
-            activeColor="{{accentColor}}"
-            backgroundColor="rgba(120, 120, 128, 0.2)"
-            block-size="22"
-            bindchanging="onPanelSliderChanging"
-            bindchange="onPanelSliderChange"
-          />
-          <!-- 滑块的补充说明（亮度走 v4 的逐分区 level，真实下发，不需要额外提示） -->
-          <text wx:if="{{item.note}}" class="param-note">{{item.note}}</text>
-        </view>
-
-        <view wx:for="{{panelChoices}}" wx:key="key" class="panel-choice">
-          <text class="param-label">{{item.label}}</text>
-          <view class="panel-choice-row">
-            <view
-              wx:for="{{item.options}}"
-              wx:for-item="option"
-              wx:key="value"
-              class="panel-option {{option.value === item.value ? 'on' : ''}}"
-              data-key="{{item.key}}"
-              data-value="{{option.value}}"
-              bindtap="onPanelChoiceTap"
-            >{{option.label}}</view>
-          </view>
-        </view>
+        <template
+          is="effect-controls"
+          data="{{
+            sliders: panelSliders,
+            choices: panelChoices,
+            hueRamp,
+            disabled: !ready,
+            accentColor,
+            scope: 'panel'
+          }}"
+        />
 
         <text wx:if="{{panelHint}}" class="section-hint">{{panelHint}}</text>
-
-        <!-- ---------------- 特效层（#100） ----------------
-             与背景层平级的第二个槽位：流星 / 随机闪烁这类流动的效果放在这里。
-             两层本身即叠加，界面不再有「叠加效果」这一层概念。 -->
-        <view class="overlay-block">
-          <view class="section-head overlay-head">
-            <text class="section-title">特效层</text>
-            <text class="section-value">{{overlayEnabled ? overlaySummary : '空'}}</text>
-          </view>
-
-          <view class="overlay-types">
-            <view
-              wx:for="{{overlayChoices}}"
-              wx:key="value"
-              class="overlay-type {{overlayChoice === item.value ? 'on' : ''}}"
-              data-value="{{item.value}}"
-              bindtap="onOverlayTypeTap"
-            >{{item.name}}</view>
-          </view>
-
-          <block wx:if="{{overlayEnabled}}">
-            <!-- 叠加方式：只在真有叠加层时出现（关闭时问「怎么叠」没有意义） -->
-            <view class="panel-choice overlay-blend">
-              <text class="param-label">混合方式</text>
-              <view class="panel-choice-row">
-                <view
-                  wx:for="{{overlayBlendOptions}}"
-                  wx:for-item="option"
-                  wx:key="value"
-                  class="panel-option {{option.value === overlayBlend ? 'on' : ''}}"
-                  data-value="{{option.value}}"
-                  bindtap="onOverlayBlendTap"
-                >{{option.name}}</view>
-              </view>
-            </view>
-
-            <!-- 叠加层自己的参数：与主效果同一套「按类型整体替换」 -->
-            <view wx:for="{{overlaySlider}}" wx:key="key" class="param-row">
-              <view class="param-head">
-                <text class="param-label">{{item.label}}</text>
-                <text class="param-value mono">{{item.display}}</text>
-              </view>
-              <view wx:if="{{item.rainbow}}" class="hue-track" style="background: {{hueRamp}}">
-                <slider
-                  class="param-slider hue-slider"
-                  min="{{item.min}}"
-                  max="{{item.max}}"
-                  step="{{item.step}}"
-                  value="{{item.value}}"
-                  data-key="{{item.key}}"
-                  disabled="{{!ready}}"
-                  activeColor="rgba(0, 0, 0, 0)"
-                  backgroundColor="rgba(0, 0, 0, 0)"
-                  block-size="22"
-                  bindchanging="onOverlaySliderChanging"
-                  bindchange="onOverlaySliderChange"
-                />
-              </view>
-              <slider
-                wx:else
-                class="param-slider"
-                min="{{item.min}}"
-                max="{{item.max}}"
-                step="{{item.step}}"
-                value="{{item.value}}"
-                data-key="{{item.key}}"
-                disabled="{{!ready}}"
-                activeColor="{{accentColor}}"
-                backgroundColor="rgba(120, 120, 128, 0.2)"
-                block-size="22"
-                bindchanging="onOverlaySliderChanging"
-                bindchange="onOverlaySliderChange"
-              />
-              <text wx:if="{{item.note}}" class="param-note">{{item.note}}</text>
-            </view>
-          </block>
-        </view>
       </block>
-
-      <!-- 没得编辑时给引导，而不是一片空白 -->
       <view wx:else class="panel-guide">
         <text class="panel-guide-text">{{panelGuide}}</text>
       </view>
+    </view>
+
+    <!-- ---------------- 进阶档：特效层（独立的第二张卡） ---------------- -->
+    <view wx:if="{{panelHasZone}}" class="section panel-section overlay-card">
+      <view class="section-head">
+        <text class="section-title">特效层</text>
+        <view class="panel-head-right">
+          <text class="section-value">{{overlayEnabled ? overlaySummary : '空'}}</text>
+          <view wx:if="{{overlayColorHex}}" class="param-preview" style="background: {{overlayColorHex}}"></view>
+        </view>
+      </view>
+
+      <view class="panel-types">
+        <view
+          wx:for="{{overlayChoices}}"
+          wx:key="value"
+          class="panel-type {{overlayChoice === item.value ? 'on' : ''}}"
+          data-value="{{item.value}}"
+          bindtap="onOverlayTypeTap"
+          hover-class="panel-type-hover"
+        >{{item.name}}</view>
+      </view>
+
+      <block wx:if="{{overlayEnabled}}">
+        <!-- 特效层的参数：与背景层**同一张模板**，所以两边的配置项一模一样。 -->
+        <template
+          is="effect-controls"
+          data="{{
+            sliders: overlaySlider,
+            choices: overlayChoices2,
+            hueRamp,
+            disabled: !ready,
+            accentColor,
+            scope: 'overlay'
+          }}"
+        />
+      </block>
+      <text wx:else class="section-hint">这一层空着；选一个灯效就会叠在背景层上。</text>
     </view>
 
     <!-- 两条必须让用户知道的事实：内容只在本机 / 换机要重编 -->

@@ -455,6 +455,23 @@
       "note": "blend=覆盖：上层静态完全盖住下层流光（用于验证 blend 0 语义）"
     },
     {
+      "name": "set_segment_static_plus_comet_luma",
+      "direction": "app_to_device",
+      "command": 16,
+      "command_name": "SetSegment",
+      "seq": 30,
+      "payload_hex": "0200000F03000000FF000000006403AAAAFFD007780064",
+      "payload_len": 23,
+      "frame_hex": "A604101E17000200000F03000000FF000000006403AAAAFFD00778006452FA",
+      "frame_len": 31,
+      "chunks_hex": [
+        "C0A604101E17000200000F03000000FF000000006403AAAAFFD00778006452FA"
+      ],
+      "frame_valid": true,
+      "result_code": 0,
+      "note": "blend=3 按亮度叠加：流星亮处显流星，暗处透出背景层（§7.2.1）"
+    },
+    {
       "name": "set_segment_bad_blend_single",
       "direction": "app_to_device",
       "command": 16,
@@ -477,16 +494,16 @@
       "command": 16,
       "command_name": "SetSegment",
       "seq": 27,
-      "payload_hex": "030000050300E803FF000000006400D007FF0000000064",
+      "payload_hex": "030000050400E803FF000000006400D007FF0000000064",
       "payload_len": 23,
-      "frame_hex": "A604101B1700030000050300E803FF000000006400D007FF0000000064259B",
+      "frame_hex": "A604101B1700030000050400E803FF000000006400D007FF00000000643AA1",
       "frame_len": 31,
       "chunks_hex": [
-        "C0A604101B1700030000050300E803FF000000006400D007FF0000000064259B"
+        "C0A604101B1700030000050400E803FF000000006400D007FF00000000643AA1"
       ],
       "frame_valid": false,
       "result_code": 1,
-      "note": "blend 只允许 0/1/2（不做取最大）"
+      "note": "blend 只允许 0/1/2/3（不做取最大）"
     },
     {
       "name": "set_segment_bad_layer0_empty",

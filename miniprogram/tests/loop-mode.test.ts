@@ -631,8 +631,8 @@ describe("#124 应用方案：上传在停播之前", () => {
 /*
  * #125：进阶档改任何东西都自动下发，没有「应用」按钮。
  *
- * **经真实控件触发**：这些用例调的是 `onPanelTypeTap` / `onPanelSliderChange` /
- * `onOverlayBlendTap` 这些事件处理器，不是绕过控件直接调 `applyAdvanced()`。
+ * **经真实控件触发**：这些用例调的是 `onPanelTypeTap` / `onScopeSliderChange` /
+ * `onOverlayTypeTap` 这些事件处理器，不是绕过控件直接调 `applyAdvanced()`。
  * 旧用例正是直接调 `applyAdvanced()`，所以「控件根本没接上下发」这个缺陷
  * 一路绿着（#96 删掉按钮之后就这样活了很久）。
  */
@@ -670,20 +670,18 @@ describe("#125 进阶档：点一下就生效", () => {
     }
   }, 180_000);
 
-  it("切换混合方式，设备读回的 blend 随之改变", async () => {
+  it("给分区加特效层后，设备读回的 blend 是按亮度叠加（0x03）", async () => {
     const { page, session } = await openPage();
     try {
       await readyZone(page);
-      /* 先给一个特效层，混合方式才有意义。 */
+      /* 界面不再有「混合方式」选择器：两层都有内容时恒为按亮度叠加，
+       * 特效层只盖住自己亮着的地方（流星亮处显流星、暗处露彩虹）。 */
       page.onOverlayTypeTap(tap({ value: "comet" }));
-      await sleep(1800);
-
-      page.onOverlayBlendTap(tap({ value: 2 }));
       await sleep(1800);
 
       const q = await session.queryStrip(0);
       const blends = q.kind === "ok" ? q.reports.map((r: any) => r.blend) : [];
-      expect(blends, "混合方式应当变成相加 0x02").toContain(2);
+      expect(blends, "两层段的 blend 应当是按亮度叠加 0x03").toContain(3);
     } finally {
       await session.disconnect();
     }
@@ -700,8 +698,8 @@ describe("#125 进阶档：点一下就生效", () => {
       /* 拖动中：连发 5 次 changing，一帧都不该出去。 */
       const before = countTx();
       for (const value of [10, 30, 50, 70, 90]) {
-        page.onPanelSliderChanging({
-          currentTarget: { dataset: { key: "level" } },
+        page.onScopeSliderChanging({
+          currentTarget: { dataset: { key: "level", scope: "panel" } },
           detail: { value },
         } as any);
         await sleep(60);
@@ -710,8 +708,8 @@ describe("#125 进阶档：点一下就生效", () => {
       expect(during - before, "拖动中不该有任何下发").toBe(0);
 
       /* 松手：应当下发。 */
-      page.onPanelSliderChange({
-        currentTarget: { dataset: { key: "level" } },
+      page.onScopeSliderChange({
+        currentTarget: { dataset: { key: "level", scope: "panel" } },
         detail: { value: 90 },
       } as any);
       await sleep(1800);

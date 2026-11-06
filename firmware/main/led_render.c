@@ -63,12 +63,16 @@ void lumen_led_render_note_skipped(void)
  *   ① 未覆盖区清零 —— 由 lumen_segment_store_compose 的 memset 完成；
  *   ② 逐颗统一过 gamma + 亮度 —— **不在** effects 里做。
  *
- * 没有活动段时走 v1 单色路径（整条 state->r/g/b）。自检期间强制走单色（§7.1）。
+ * **没有活动段就是全黑**（docs/protocol-v4.md §9.3 第 2 条）。这里曾经有一条
+ * v1 单色回退：整条刷 `state->r/g/b`。那条回退制造了三个 bug——没设过灯效的带
+ * 亮成暖白（看着是黄）；`state_summary_apply` 把 strip0/seg0 的颜色写进 State，
+ * 于是改第一组的颜色会让所有无分区的带一起变色；调第一组的饱和度等于调这个
+ * 全局兜底色。自检仍然要覆盖整条，但那是 `lumen_selftest` 自己的输出通道，
+ * 由下面 `selftest_on` 分支处理，不再借用单色回退。
  *
- * `script_mask` 是方案作用域的归属位（#122）。置位表示这一条归方案管：此时
- * **哪怕它在这一步没有任何段**，也必须走分段路径输出全黑——退回 v1 单色会
- * 让「这一步让这条灯组熄一下」整条亮成纯色，正是「亮起再熄灭」那个瞬态的
- * 成因。未置位的带保持原判据（有活动段走分段，没有走单色）。
+ * `script_mask` 是方案作用域的归属位（#122）。**像素规则不看它**：没有段一律
+ * 全黑，归不归方案管都一样。它只用于日志口径（区分「分段渲染」与「空段表」），
+ * 「这一点归谁管」由上游 `lumen_scope_compose` 已经选好了段配置。
  */
 static uint16_t compose_frame(const lumen_state_t *snapshot,
                               const lumen_segment_store_t *segments,
@@ -76,18 +80,19 @@ static uint16_t compose_frame(const lumen_state_t *snapshot,
                               uint32_t now_ms, uint8_t strip_id, uint16_t strip_count_hint,
                               uint8_t script_mask, uint8_t *frame, uint16_t cap)
 {
+    (void)script_mask; /* 只影响日志口径，见上面的注释。 */
     if (snapshot == NULL || frame == NULL) {
         return 0;
     }
 
     uint8_t stored_rgb[3] = {snapshot->r, snapshot->g, snapshot->b};
     uint8_t brightness;
-    uint8_t rgb[3];
+    uint8_t selftest_rgb[3];
 
     /* 关灯把亮度乘 0，但保留状态里的亮度值；Color 仍参与 gamma 计算。 */
     uint8_t clamped = lumen_state_clamp_brightness(snapshot->brightness, max_brightness);
-    lumen_selftest_compose(selftest, snapshot->power, clamped, stored_rgb, max_brightness, rgb,
-                           &brightness);
+    lumen_selftest_compose(selftest, snapshot->power, clamped, stored_rgb, max_brightness,
+                           selftest_rgb, &brightness);
 
     /*
      * 灯珠数：strip 0 沿用 State 里的权威值；其它条用调用方给的 hint
@@ -105,10 +110,6 @@ static uint16_t compose_frame(const lumen_state_t *snapshot,
     }
 
     bool selftest_on = selftest != NULL && lumen_selftest_active(selftest);
-    bool script_owned = strip_id < LUMEN_MAX_STRIPS && (script_mask & (uint8_t)(1u << strip_id)) != 0;
-    bool segmented = lumen_scope_uses_segments(
-        script_owned, segments != NULL && lumen_segment_store_any_active(segments, strip_id),
-        snapshot->power != 0, selftest_on);
 
     /*
      * 每带独立开关的门控（#38，§7.3 / §9.5）：实际是否出光 = 全局 power &&
@@ -123,15 +124,17 @@ static uint16_t compose_frame(const lumen_state_t *snapshot,
         return count;
     }
 
-    if (segmented) {
-        /* ① compose 内部先 memset(buf, 0, count*3)：未覆盖的灯珠必须是 0。 */
-        (void)lumen_segment_store_compose(segments, strip_id, frame, count, now_ms);
-    } else {
+    if (selftest_on) {
+        /* 自检覆盖整条（§11.2）：忽略段配置，整条刷自检色。 */
         for (uint16_t i = 0; i < count; ++i) {
-            frame[i * 3u + 0] = rgb[0];
-            frame[i * 3u + 1] = rgb[1];
-            frame[i * 3u + 2] = rgb[2];
+            frame[i * 3u + 0] = selftest_rgb[0];
+            frame[i * 3u + 1] = selftest_rgb[1];
+            frame[i * 3u + 2] = selftest_rgb[2];
         }
+    } else {
+        /* ① compose 内部先 memset(buf, 0, count*3)：未覆盖的灯珠必须是 0。
+         * 没有活动段时整帧全 0，这就是「没设灯效 = 空 = 黑」。 */
+        (void)lumen_segment_store_compose(segments, strip_id, frame, count, now_ms);
     }
 
     /*
@@ -203,10 +206,12 @@ void lumen_led_render_snapshot(led_strip_handle_t strip, const lumen_state_t *sn
         return;
     }
 
-    bool script_owned = (script_mask & 0x01u) != 0;
-    bool segmented = lumen_scope_uses_segments(
-        script_owned, segments != NULL && lumen_segment_store_any_active(segments, 0),
-        snapshot->power != 0, selftest != NULL && lumen_selftest_active(selftest));
+    bool selftest_on = selftest != NULL && lumen_selftest_active(selftest);
+    /* 有分区或有归属位才叫「分段」；这只影响日志口径，不影响像素规则——
+     * 两条路径现在都是「未覆盖 = 0」。 */
+    bool segmented =
+        script_mask != 0 || selftest_on ||
+        (segments != NULL && lumen_segment_store_any_active(segments, 0));
 
     /* CONFIG_LUMEN_FORCE_REFRESH：错色实验要求画面恒定但持续刷帧，跳过整帧去重。
      * 必须用 #ifdef：Kconfig 的 bool 关闭时**不定义宏**，直接写
@@ -240,7 +245,7 @@ void lumen_led_render_snapshot(led_strip_handle_t strip, const lumen_state_t *sn
                      lumen_segment_store_needs_frames(segments, snapshot->strip_count);
     if (animating && (s_frames_drawn % 10u) != 0u) {
         /* 限流窗口内不打印，但仍要真正刷灯。 */
-    } else if (segmented) {
+    } else {
         uint16_t mid = (uint16_t)(count / 2u);
         ESP_LOGI(TAG,
                  "render seg: n=%u b=%u p=%u frame=%u [0]=%u,%u,%u [%u]=%u,%u,%u "
@@ -249,9 +254,6 @@ void lumen_led_render_snapshot(led_strip_handle_t strip, const lumen_state_t *sn
                  frame[1], frame[2], mid, frame[mid * 3u], frame[mid * 3u + 1],
                  frame[mid * 3u + 2], (unsigned)(count - 1), frame[(count - 1u) * 3u],
                  frame[(count - 1u) * 3u + 1], frame[(count - 1u) * 3u + 2]);
-    } else {
-        ESP_LOGI(TAG, "render: n=%u brightness=%u power=%u", count, snapshot->brightness,
-                 snapshot->power);
     }
 
     if (lumen_led_strip_owner_push_pixels(strip, frame, count) != ESP_OK) {

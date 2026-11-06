@@ -88,6 +88,39 @@ export function simpleEffectOf(id: string): SimpleEffect | null {
   return SIMPLE_EFFECTS.find((effect) => effect.id === id) ?? null;
 }
 
+/**
+ * 八个灯效 id ↔ 参数面板的类型（`effect-panel` 的 `PanelType`）。
+ *
+ * 两张表必须一一对应：`simple-effects` 只负责「界面上叫什么、按什么顺序排」，
+ * `effect-panel` 负责「这个类型有哪些配置项、怎么编码」。这里是它们之间唯一
+ * 的桥——简单档与进阶两张卡因此共用同一套参数模型。
+ */
+export const PANEL_TYPE_OF_EFFECT: Readonly<Record<string, string>> = {
+  empty: "off",
+  solid: "static",
+  breathe: "breathing",
+  rainbow: "rainbow",
+  comet: "comet",
+  strobe: "strobe",
+  heartbeat: "heartbeat",
+  flicker: "flicker",
+};
+
+/** 面板类型 → 灯效 id（`PANEL_TYPE_OF_EFFECT` 的反向表）。 */
+export const EFFECT_OF_PANEL_TYPE: Readonly<Record<string, string>> = Object.fromEntries(
+  Object.entries(PANEL_TYPE_OF_EFFECT).map(([effectId, type]) => [type, effectId]),
+);
+
+/** 灯效 id → 面板类型；未知返回 null。 */
+export function panelTypeOfEffect(effectId: string): string | null {
+  return PANEL_TYPE_OF_EFFECT[effectId] ?? null;
+}
+
+/** 面板类型 → 灯效 id；未知返回 null。 */
+export function effectIdOfPanelType(type: string): string | null {
+  return EFFECT_OF_PANEL_TYPE[type] ?? null;
+}
+
 /** 按协议类型反查灯效 id（设备读回时用）；未知类型返回 null。 */
 export function simpleEffectIdOfType(type: number): string | null {
   if (type === SEGMENT_TYPE.OFF) {
@@ -141,7 +174,7 @@ export function buildEffectRows(selectedId: string | null): EffectRowView[] {
     {
       key: "effect",
       label: "灯效",
-      value: effect?.name ?? "未设置",
+      value: effect?.name ?? "空",
     },
   ];
 }

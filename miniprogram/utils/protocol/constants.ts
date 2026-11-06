@@ -163,12 +163,22 @@ export const SEGMENT_TYPE = {
   EMPTY: 0xff,
 } as const;
 
-/** blend：层 1 如何叠加到层 0（§7.2）。 */
+/**
+ * blend：层 1 如何叠加到层 0（§7.2）。
+ *
+ * `LUMA` 是「按亮度叠加」：`a = max(L1)/255`，`out = L1 + L0 × (1 − a)`。
+ * 流动效果（流星 / 随机闪烁）叠在静态或彩虹之上时必须用它——`OVER` 会让
+ * 上层每个黑像素都盖住背景，表现为「流星把彩虹全遮了」。
+ */
 export const BLEND = {
   OVER: 0x00,
   MULTIPLY: 0x01,
   ADD: 0x02,
+  LUMA: 0x03,
 } as const;
+
+/** blend 的合法上界（§7.2）。命令层用它做整体校验。 */
+export const BLEND_MAX = BLEND.LUMA;
 
 /**
  * 哪些类型值是**真实灯效**（不含空层 `0xFF`）。

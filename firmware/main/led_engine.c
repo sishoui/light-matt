@@ -180,10 +180,12 @@ static uint32_t now_ms(void)
  *    **层 0** 的基准色」，由 layer[0] 的 hue+sat 算出（不含动画包络、不含
  *    layer1 与 blend、**也不含这一层的 level**）；seg 0 不活动或不存在时是 0。
  *
- * 一个活动段都没有时保留 v1 的单色值（s_state.r/g/b）：这是刻意的向后兼容——
- * 现有单灯带功能不退化，且与协议默认值（255,180,120 / seg_count 0，
- * 见 docs/protocol-v4.md §7.1 与共享向量 state_read_example_hex）一致。
- * 一旦有活动段，State 就完全由段配置决定。
+ * 一个活动段都没有时 R/G/B 报 0：`seg 0 不存在 → 基准色为 0`（§7.3）。
+ *
+ * 这里曾经「保留 v1 单色」——无段时沿用暖白 255,180,120。那让渲染层把 strip0/seg0
+ * 的颜色当成**全局兜底色**铺满所有无分区的带，于是没设过灯效的带亮成暖黄、改一组
+ * 的颜色会让所有带一起变、调饱和度等于调这个全局色。渲染层现在不再有单色回退
+ * （`led_render.c::compose_frame`），State 也必须如实报 0。
  *
  * `script_mask`（#122）决定每条带取 `stage` 还是 `live`：摘要必须与这一帧
  * **真正渲染的段配置**同源，否则方案只驱动 strip0 时 State 会按整份方案
@@ -200,7 +202,10 @@ static void state_summary_apply(lumen_state_t *state, const lumen_segment_store_
      */
     state->strip_anim_mask = lumen_scope_anim_mask(stage, live, script_mask, state->strip_count);
     if (state->seg_count == 0) {
-        return; /* 保持 v1 单色 */
+        state->r = 0;
+        state->g = 0;
+        state->b = 0;
+        return;
     }
     uint8_t rgb[3];
     lumen_segment_store_state_rgb(strip0, 0, rgb);
@@ -248,20 +253,11 @@ static uint8_t script_mask_locked(void)
  */
 static void refresh_state_summary_from_active_locked(void)
 {
-    /* 方案接管时 stage 是当前阶段，其余带取实时分区（#122 归属口径）。 */
+    /* 方案接管时 stage 是当前阶段，其余带取实时分区（#122 归属口径）。
+     * 「该阶段没有 strip 0 段 → 基准色报 0」已由 state_summary_apply 统一处理，
+     * 播放中与静态配置不再有两套口径。 */
     state_summary_apply(&s_state, script_rendering_locked() ? &s_stage_segments : NULL, &s_segments,
                         script_mask_locked());
-    /*
-     * 剧本播放中「这一阶段没给 strip 0 段」意味着该条应当熄灭，而不是沿用
-     * 静态配置的 v1 单色。静态配置里 seg_count == 0 保留单色是刻意的向后
-     * 兼容（现有单灯带功能不退化），剧本里则必须报 0（协议 §7：无 seg 0 时
-     * 基准色为 0），否则暂停/播完时 State 会显示一个并不存在的颜色。
-     */
-    if (script_rendering_locked() && s_state.seg_count == 0) {
-        s_state.r = 0;
-        s_state.g = 0;
-        s_state.b = 0;
-    }
 }
 
 /*

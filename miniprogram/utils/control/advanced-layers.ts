@@ -8,13 +8,22 @@
  *
  * ## 两层模型
  *
- * 每个分区两个平级槽位：**背景层**（常亮 / 呼吸 / 彩虹这类铺底的）与
- * **特效层**（流星 / 随机闪烁这类流动的）。分组只影响排序与提示，任何灯效
- * 在任一层都能选。混合方式只剩「相加」与「覆盖」——「相乘」界面上说不清，
- * 也已从选项里移除（协议仍接受它，只是界面不再产生）。
+ * 每个分区两个平级槽位：**背景层**（铺底的）与**特效层**（叠在上面的）。
+ * 两层提供完全相同的灯效与参数（配置项同源见 `effect-panel.SLIDER_KEYS`），
+ * 分组只影响排序与提示。
  *
- * 「空」在编码上写成既有的「熄灭」类型 + 相加，输出等价于不贡献光。
- * 界面上不出现「熄灭」这个词。
+ * ## 混合方式只有一种：按亮度叠加（`BLEND.LUMA = 0x03`）
+ *
+ * 界面上**不再提供混合方式选择器**。两层同时有内容时恒用「按亮度叠加」：
+ * `a = max(L1)/255`，`out = L1 + L0 × (1 − a)`。也就是「特效层只盖住它自己
+ * 亮着的地方，其余位置继续显示背景层」——流星亮处显流星、暗处露彩虹。
+ *
+ * 早期的「覆盖」让特效层每个黑像素都盖住背景（流星把彩虹全遮了），「相加」
+ * 又会在重叠处加色发白。两者都不是用户想要的效果，所以不给入口；协议仍接受
+ * `0x00`-`0x02`（老配置不炸），只是界面不再产生它们。
+ *
+ * 「空」在编码上写成既有的「熄灭」类型，输出等价于不贡献光。界面上不出现
+ * 「熄灭」这个词。
  */
 
 import { BLEND, NO_EFFECT, SEGMENT_TYPE } from "../protocol/constants";
@@ -122,46 +131,54 @@ export function defaultLayers(): { background: LayerDraft; effect: LayerDraft } 
   };
 }
 
-/** 界面上的混合方式（只剩两种）。 */
+/**
+ * 界面上的混合方式：只有「按亮度叠加」。
+ *
+ * 保留成数组是为了让页面 / 测试有同一处来源，但它的长度是 1——界面不该让
+ * 用户选回「覆盖」（那正是「流星把彩虹全遮了」的原因）。
+ */
 export const BLEND_OPTIONS: ReadonlyArray<{ value: number; label: string; hint: string }> = [
-  { value: BLEND.ADD, label: "相加", hint: "两层亮度叠加" },
-  { value: BLEND.OVER, label: "覆盖", hint: "特效层盖住背景层" },
+  { value: BLEND.LUMA, label: "按亮度叠加", hint: "特效层只盖住自己亮着的地方" },
 ];
 
-/** 是否是界面上允许的混合方式（相乘已被移除）。 */
+/**
+ * 是否是界面允许的混合方式。
+ *
+ * 只认 `LUMA`：`OVER` / `ADD` / `MULTIPLY` 都是旧配置或其它入口留下的值，
+ * 界面上不产生它们。
+ */
 export function isUiBlend(value: number): boolean {
-  return value === BLEND.ADD || value === BLEND.OVER;
+  return value === BLEND.LUMA;
 }
 
 /**
- * 把界面上的混合方式钳到合法值。
+ * 把任意 blend 钳到界面口径。
  *
- * 设备读回「相乘」时（旧配置）按「覆盖」展示——界面不再提供它，但绝不能
- * 把它当成非法值让整块面板读不出来。
+ * 设备读回旧值（覆盖 / 相乘 / 相加）时一律按「按亮度叠加」展示：界面不提供
+ * 那三种，绝不能把它们当非法值让整块面板读不出来。用户下一次动这个分区的
+ * 任何参数，就会把它重写成 `0x03`。
  */
-export function clampUiBlend(value: number): number {
-  return value === BLEND.ADD ? BLEND.ADD : BLEND.OVER;
+export function clampUiBlend(_value: number): number {
+  return BLEND.LUMA;
 }
 
 /**
- * 特效层有颜色时「盖住」背景、没颜色时「透出」背景。
+ * 两层同时有内容时的混合方式。
  *
- * 这在协议里就是「覆盖」（OVER）与「相加」（ADD）的差别：覆盖时输出只看
- * 特效层，相加时背景仍透出来。所以**默认混合由这个判定给出**，用户也可以在
- * 两种之间改。
+ * 恒为「按亮度叠加」——参数留着 `effectEmpty` 是为了让调用点读起来仍然是
+ * 「按两层状态决定」，但结果与它无关。特效层为空时协议要求 `blend = 0`，
+ * 那条规则由 `backgroundBlendOf` 单独处理。
  */
-export function defaultBlendFor(effectEmpty: boolean): number {
-  return effectEmpty ? BLEND.ADD : BLEND.OVER;
+export function defaultBlendFor(_effectEmpty: boolean): number {
+  return BLEND.LUMA;
 }
 
 /**
  * 一层 → 协议层。
  *
  * - 「空」写成既有的熄灭类型（`0x06`，输出恒为黑，等价于不贡献光）；
- * - 背景层为空时用「相加」混合，否则熄灭会把整段变黑（相减不属于协议）。
- *
- * 参数（色相 / 饱和度 / 周期等）由调用方按灯效类型给；这里只决定**类型与
- * 空层编码**，保证「空」的语义只有一处。
+ * - 参数（色相 / 饱和度 / 周期等）由调用方按灯效类型给；这里只决定**类型与
+ *   空层编码**，保证「空」的语义只有一处。
  */
 export function encodeLayer(input: {
   effectId: string;
@@ -185,16 +202,16 @@ export function encodeLayer(input: {
 }
 
 /**
- * 背景层「空」时的混合方式。
+ * 这一段的混合方式（两层状态 → 写进设备的 `blend` 字节）。
  *
- * 协议要求每段的背景层是真实灯效，所以「空」只能靠熄灭 + 相加等价实现；
- * 若用覆盖，两层会一起变黑。这里是界面与协议之间唯一的对接点。
+ * 特效层为空时协议**要求** `blend = 0`（§7.1 第 5 步），无论背景层是什么。
+ * 两层都有内容时恒用「按亮度叠加」。
+ *
+ * 背景层为空的情况：此时特效层是唯一的光源，`LUMA` 在 `L0 = 0` 时就退化成
+ * `out = L1`，与「覆盖」等价——不需要特例。
  */
-export function backgroundBlendOf(backgroundEmpty: boolean, effectEmpty: boolean): number {
-  if (backgroundEmpty) {
-    return BLEND.ADD;
-  }
-  return effectEmpty ? BLEND.ADD : BLEND.OVER;
+export function backgroundBlendOf(_backgroundEmpty: boolean, effectEmpty: boolean): number {
+  return effectEmpty ? BLEND.OVER : BLEND.LUMA;
 }
 
 /** 这一层是否为空（背景层允许空；特效层也允许）。 */
@@ -226,14 +243,14 @@ export function buildLayerViews(input: {
       label: "背景层",
       effectName: input.backgroundEmpty ? "空" : input.backgroundName,
       empty: input.backgroundEmpty,
-      hint: "铺底：常亮 / 呼吸 / 彩虹",
+      hint: "铺在下面的一层",
     },
     {
       kind: LAYER_KIND.EFFECT,
       label: "特效层",
       effectName: input.effectEmpty ? "空" : input.effectName,
       empty: input.effectEmpty,
-      hint: "流动：流星 / 随机闪烁",
+      hint: "盖在上面，只占自己亮着的地方",
     },
   ];
 }

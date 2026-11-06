@@ -55,7 +55,6 @@ import {
   overlayLayer,
   HUE_RAMP_GRADIENT,
   layersCheck,
-  OVERLAY_BLEND_OPTIONS,
   OVERLAY_CHOICE_OPTIONS,
   overlayDraftOf,
   overlayEnabled,
@@ -66,12 +65,14 @@ import {
   PANEL_FACTS,
   PANEL_NO_ZONE_GUIDE,
   PANEL_TYPE_OPTIONS,
+  isPanelChoiceKey,
   isPanelSliderKey,
   panelCheck,
   panelLayer,
   panelTypeOf,
   paramsFromLayer,
   switchPanelType,
+  type EffectParams,
   type OverlayChoice,
   type OverlayDraft,
   type PanelChoiceView,
@@ -141,11 +142,6 @@ import {
   type PickerState,
 } from "../../utils/control/led-picker";
 import {
-  buildQuickSpec,
-  quickCardOf,
-  type QuickParams,
-} from "../../utils/control/quick-effects";
-import {
   buildEffectRows,
   buildWheelOptions,
   simpleEffectIdOfType,
@@ -160,12 +156,12 @@ import { statusView } from "../../utils/control/status-view";
 import {
   buildSimpleParams,
   clampLevel,
-  hueFromDegrees,
+  clampZoneLevel,
   inferSimpleState,
   LEVEL_DEFAULT,
-  levelAfterCardTap,
-  levelDraftFromDevice,
-  satFromPercent,
+  levelDraftFromEffect,
+  panelTypeForEffectId,
+  simpleEffectName,
   type SimpleParamView,
 } from "../../utils/control/strip-simple";
 import type { ThemeMode } from "../../utils/control/theme";
@@ -217,8 +213,10 @@ import {
   type ZoneAxisBlock,
 } from "../../utils/control/zone-axis";
 import type { ScriptDraft } from "../../utils/control/script-view";
+import { buildZoneSpec } from "../../utils/control/zone-model";
 import { layerFromFlat } from "../../utils/control/segment-model";
 import {
+  BLEND,
   LOOP,
   MAX_LEDS,
   MAX_SCRIPTS,
@@ -302,6 +300,20 @@ function overlayPanelSliders(draft: OverlayDraft): PanelSliderView[] {
     return [];
   }
   return buildEffectPanel(draft.type as PanelType, draft.params).sliders;
+}
+
+/**
+ * 特效层的选择控件（波形 / 方向 / 占空比 / 脉冲）。
+ *
+ * 与滑块同一个来源，所以「背景层有的配置项，特效层也有」是结构性的，不是
+ * 靠人记得去补。之前 `onOverlayChoiceTap` 在 wxml 里根本没绑，特效层的波形 /
+ * 方向 / 占空比改不了——现在两边走同一张模板。
+ */
+function overlayPanelChoices(draft: OverlayDraft): PanelChoiceView[] {
+  if (!overlayEnabled(draft)) {
+    return [];
+  }
+  return buildEffectPanel(draft.type as PanelType, draft.params).choices;
 }
 
 Page({
@@ -440,7 +452,12 @@ Page({
     effectWheelOpen: false,
     /** 滚轮的八个选项（当前选中高亮）。 */
     effectOptions: [] as WheelOptionView[],
-    /** 当前选中的灯效 id（`simple-effects` 的 id）；`null` = 未设置（#135）。 */
+    /**
+     * 当前选中的灯效 id（`simple-effects` 的 id）。
+     *
+     * `null` = 设备上这一组**没有分区**，界面显示「空」（与固件的「无分区 =
+     * 全黑」一致）。
+     */
     effectId: null as string | null,
     simpleParams: null as SimpleParamView | null,
     quickDisabledReason: "",
@@ -488,17 +505,20 @@ Page({
   autoConnectTried: false,
   /** 设备权威的分区列表（当前灯组，最近一次 QueryStrip）。 */
   segmentReports: [] as SegmentReport[],
-  /** 当前选中的效果卡；null = 设备上不是「整组一张卡」。 */
-  quickCardId: null as string | null,
   /**
-   * #96 / #135：当前选中的灯效 id（八个灯效之一）。
+   * 当前选中的灯效 id（八个灯效之一）。
    *
-   * `null` = 设备上这一组**根本没有分区**，界面如实显示「未设置」，
-   * 不再冒充「常亮」——用户没点过任何灯效时，设备上确实什么都没有。
+   * `null` = 设备上这一组**根本没有分区**，界面如实显示「空」——用户没点过
+   * 任何灯效时，设备上确实什么都没有（固件也把它渲染成全黑）。
    */
   effectId: null as string | null,
-  /** 当前卡片的 HSV 草稿（协议值，不是滑块刻度）。 */
-  quickParams: {} as QuickParams,
+  /**
+   * 简单档的参数草稿（完整的 `EffectParams`，与进阶档同一套模型）。
+   *
+   * 早期这里是 `QuickParams`（只有色相 / 饱和度 + 几个档位），因为成品卡
+   * 只暴露那几个旋钮。现在两边配置项完全一致，草稿也统一成一份。
+   */
+  quickParams: {} as Partial<EffectParams>,
   /** 简单档的亮度草稿（v4 的层亮度 0-100；松手即下发）。 */
   levelDraft: LEVEL_DEFAULT,
   /** 参数松手后的防抖定时器（只发最后一次）。 */
@@ -652,7 +672,6 @@ Page({
     this.themeMode = "system";
     this.autoConnectTried = false;
     this.segmentReports = [];
-    this.quickCardId = null;
     this.effectId = null;
     this.quickParams = {};
     this.levelDraft = LEVEL_DEFAULT;
@@ -995,8 +1014,8 @@ Page({
   /** 断开 / 切设备时清空本页派生态（不编造上一次的画面）。 */
   clearStripViews() {
     this.segmentReports = [];
-    this.quickCardId = null;
-    this.effectId = "solid";
+    /* 断开 / 切设备后显示「空」：不编造上一次的灯效。 */
+    this.effectId = null;
     this.quickParams = {};
     this.dirty = false;
     this.planStepCounts = null;
@@ -1608,8 +1627,9 @@ Page({
       } else {
         this.panelMode = panelTypeOf(zone.layer0.type);
         this.panelParams = paramsFromLayer(this.panelMode, zone.layer0);
-        /* 叠加层从设备权威值还原（空层 → 关闭）。 */
-        this.panelOverlay = overlayDraftOf(zone.layer1, zone.blend);
+        /* 叠加层从设备权威值还原（空层 → 关闭）。混合方式恒为按亮度叠加，
+         * 旧配置的覆盖/相乘/相加在这里归一到新语义。 */
+        this.panelOverlay = overlayDraftOf(zone.layer1);
       }
       /* 还没写进草稿的滑块值：按目标记在页面里，切回来还在。 */
       const remembered = this.panelLevels[key];
@@ -1645,15 +1665,14 @@ Page({
       panelFacts: PANEL_FACTS,
       hueRamp: HUE_RAMP_GRADIENT,
       panelHint: this.panelHintText,
-      /* ---- 叠加层（#71 US49/US50）：没有分区时整块隐藏 ---- */
+      /* ---- 特效层（第二张卡）：没有分区时整块隐藏 ---- */
       overlayChoices: zone === null ? [] : OVERLAY_CHOICE_OPTIONS,
       overlayChoice: this.panelOverlay.type,
       overlayEnabled: zone !== null && overlayEnabled(this.panelOverlay),
       overlaySummary: zone === null ? "" : overlaySummary(this.panelOverlay),
-      overlayBlendOptions: zone === null ? [] : OVERLAY_BLEND_OPTIONS,
-      overlayBlend: this.panelOverlay.blend,
-      /* 叠加层自己的旋钮：与主效果同一套「按类型整体替换」的规则。 */
+      /* 特效层的参数区：与背景层同一张模板、同一套 SLIDER_KEYS/CHOICE_KEYS。 */
       overlaySlider: zone === null ? [] : overlayPanelSliders(this.panelOverlay),
+      overlayChoices2: zone === null ? [] : overlayPanelChoices(this.panelOverlay),
       overlayColorHex:
         zone === null || !overlayEnabled(this.panelOverlay)
           ? ""
@@ -1746,23 +1765,6 @@ Page({
     this.renderTimeline();
   },
 
-  /** 滑块拖动中：只改本地草稿与预览色块（绝不逐帧写设备，#125）。 */
-  onPanelSliderChanging(e: WechatMiniprogram.SliderChanging) {
-    this.applyPanelSlider(String((e.currentTarget.dataset as { key?: string }).key ?? ""), Number(e.detail.value));
-  },
-
-  /** 松开滑块：落进草稿并**立即下发**（#125；拖动中一帧都不写）。 */
-  onPanelSliderChange(e: WechatMiniprogram.SliderChange) {
-    const key = String((e.currentTarget.dataset as { key?: string }).key ?? "");
-    if (this.applyPanelSlider(key, Number(e.detail.value))) {
-      /* 松手才下发：拖动过程中一帧都不写（#125）。 */
-      if (this.commitPanel()) {
-        this.scheduleAdvancedApply(true);
-      }
-      this.renderTimeline();
-    }
-  },
-
   /** 滑块值 → 面板草稿（返回是否真的变了）。 */
   applyPanelSlider(key: string, value: number): boolean {
     if (!isPanelSliderKey(key) || !Number.isFinite(value)) {
@@ -1819,41 +1821,6 @@ Page({
     this.renderTimeline();
   },
 
-  /** 叠加方式：覆盖 / 相乘 / 相加。只在有叠加层时可用。 */
-  onOverlayBlendTap(e: WechatMiniprogram.TouchEvent) {
-    const value = Number(e.currentTarget.dataset.value);
-    if (!OVERLAY_BLEND_OPTIONS.some((option) => option.value === value)) {
-      return;
-    }
-    if (!overlayEnabled(this.panelOverlay)) {
-      return;
-    }
-    this.panelOverlay = { ...this.panelOverlay, blend: value as typeof this.panelOverlay.blend };
-    if (this.commitPanel()) {
-      this.scheduleAdvancedApply(true);
-    }
-    this.renderTimeline();
-  },
-
-  /** 叠加层滑块拖动中：只改本地草稿与预览（绝不逐帧写设备，#125）。 */
-  onOverlaySliderChanging(e: WechatMiniprogram.SliderChanging) {
-    this.applyOverlaySlider(
-      String((e.currentTarget.dataset as { key?: string }).key ?? ""),
-      Number(e.detail.value),
-    );
-  },
-
-  /** 叠加层滑块松手：落进草稿并立即下发（#125）。 */
-  onOverlaySliderChange(e: WechatMiniprogram.SliderChange) {
-    const key = String((e.currentTarget.dataset as { key?: string }).key ?? "");
-    if (this.applyOverlaySlider(key, Number(e.detail.value))) {
-      if (this.commitPanel()) {
-        this.scheduleAdvancedApply(true);
-      }
-      this.renderTimeline();
-    }
-  },
-
   /** 叠加层滑块值 → 叠加层草稿（返回是否真的变了）。 */
   applyOverlaySlider(key: string, value: number): boolean {
     if (!isPanelSliderKey(key) || !Number.isFinite(value) || !overlayEnabled(this.panelOverlay)) {
@@ -1869,25 +1836,6 @@ Page({
     return true;
   },
 
-  /** 叠加层的波形 / 方向 / 占空比。 */
-  onOverlayChoiceTap(e: WechatMiniprogram.TouchEvent) {
-    const key = String(e.currentTarget.dataset.key ?? "");
-    const value = Number(e.currentTarget.dataset.value);
-    if (key !== "waveform" && key !== "direction" && key !== "duty") {
-      return;
-    }
-    if (!Number.isFinite(value) || !overlayEnabled(this.panelOverlay)) {
-      return;
-    }
-    this.panelOverlay = {
-      ...this.panelOverlay,
-      params: applyChoice(this.panelOverlay.params, key, value),
-    };
-    if (this.commitPanel()) {
-      this.clearPanelHint();
-    }
-    this.renderTimeline();
-  },
 
   /**
    * 量时间轴行的真实宽度。
@@ -3053,125 +3001,149 @@ Page({
   },
 
   /**
+   * 参数区模板的统一切换点（简单档 / 背景层 / 特效层）。
+   *
+   * WXML 的 `template` 不能拼事件名，所以三处都绑同一个处理器，靠
+   * `data-scope` 决定改哪一层。这样「模板只有一份」才真的只有一份。
+   */
+  scopeOf(e: WechatMiniprogram.TouchEvent | WechatMiniprogram.SliderChange): "quick" | "panel" | "overlay" {
+    const scope = String((e.currentTarget.dataset as { scope?: string } | undefined)?.scope ?? "");
+    if (scope === "quick") {
+      return "quick";
+    }
+    return scope === "overlay" ? "overlay" : "panel";
+  },
+
+  /** 参数区模板：拖动中（只改本地草稿）。 */
+  onScopeSliderChanging(e: WechatMiniprogram.SliderChanging): void {
+    this.applyScopeSlider(e, false);
+  },
+
+  /** 参数区模板：松手（提交并下发）。 */
+  onScopeSliderChange(e: WechatMiniprogram.SliderChange): void {
+    this.applyScopeSlider(e, true);
+  },
+
+  applyScopeSlider(
+    e: WechatMiniprogram.SliderChange | WechatMiniprogram.SliderChanging,
+    commit: boolean,
+  ): void {
+    const key = this.paramKeyOf(e);
+    const value = Number(e.detail.value);
+    if (!Number.isFinite(value) || this.disabledReason() !== "") {
+      return;
+    }
+    const scope = this.scopeOf(e as unknown as WechatMiniprogram.TouchEvent);
+    if (scope === "quick") {
+      this.applyParam(key, value, commit);
+      return;
+    }
+    if (scope === "overlay") {
+      if (this.applyOverlaySlider(key, value) && commit) {
+        this.commitAndApply();
+      }
+      return;
+    }
+    if (this.applyPanelSlider(key, value) && commit) {
+      this.commitAndApply();
+    }
+  },
+
+  /** 参数区模板：选择一个选项（波形 / 方向 / 占空比 / 脉冲）。 */
+  onScopeChoiceTap(e: WechatMiniprogram.TouchEvent): void {
+    const scope = this.scopeOf(e);
+    if (scope === "quick" || scope === "overlay") {
+      /* 简单档与特效层：改完立即下发。背景层走它自己的 `onPanelChoiceTap`。 */
+      this.applyScopeChoice(scope, e);
+      return;
+    }
+    this.onPanelChoiceTap(e);
+  },
+
+  applyScopeChoice(scope: "quick" | "overlay", e: WechatMiniprogram.TouchEvent): void {
+    const dataset = e.currentTarget.dataset as { key?: string; value?: number };
+    const key = String(dataset.key ?? "");
+    const value = Number(dataset.value);
+    if (!isPanelChoiceKey(key) || !Number.isFinite(value) || this.disabledReason() !== "") {
+      return;
+    }
+    if (scope === "quick") {
+      const type = panelTypeForEffectId(this.effectId);
+      if (type === null) {
+        return;
+      }
+      this.quickParams = applyChoice({ ...defaultParams(type), ...this.quickParams }, key, value);
+      this.dirty = true;
+      this.renderQuick();
+      this.scheduleQuickWrite(true);
+      return;
+    }
+    this.panelOverlay = {
+      ...this.panelOverlay,
+      params: applyChoice(this.panelOverlay.params, key, value),
+    };
+    this.commitAndApply();
+  },
+
+  /** 落进草稿后下发（进阶档的统一收尾）。 */
+  commitAndApply(): void {
+    if (this.commitPanel()) {
+      this.scheduleAdvancedApply(true);
+      this.renderTimeline();
+    }
+  },
+
+  /**
    * 重画简单档（唯一派生入口）：一行式灯效 + 参数区 + 滚轮选项。
    *
-   * #96：不再有色块网格。`effectId` 是选中态的唯一真相；`quickCardId` 继续
-   * 作为「设备上读回的是哪张卡」的镜像，两者同步更新。
+   * `effectId` 是选中态的唯一真相。参数区由 `buildSimpleParams` 从
+   * **同一套** `SLIDER_KEYS` / `CHOICE_KEYS` 展开——与进阶档的两张卡完全一致，
+   * 差异只有「作用范围」（整条灯组 vs 某个分区）。
    */
   renderQuick(patch: Record<string, unknown> = {}): void {
-    /*
-     * #96：`effectId` 是选中态的**唯一真相**，不再每次从卡片反推。
-     *
-     * 「随机闪烁」没有成品卡（卡片表是旧模型），它借「常亮」卡作壳——从卡片
-     * 反推会把它显示成「常亮」。设备回读时由 `syncQuickFromDevice` 按协议类型
-     * 重设 effectId，两个方向因此一致。
-     */
     const effectId = this.effectId;
+    const panelType = panelTypeForEffectId(effectId);
     this.setData({
       effectId,
       effectRows: buildEffectRows(effectId),
       effectOptions: buildWheelOptions(effectId),
-      /* #135：把灯效名传进去，参数区标题与灯效行同一个来源。 */
-      simpleParams: buildSimpleParams(
-        this.quickCardId,
-        this.quickParams,
-        this.levelDraft,
-        effectId === null ? null : simpleEffectOf(effectId)?.name ?? null,
-      ),
+      /* 没有灯效（设备上这一组没有分区）时整块参数区不出现。 */
+      simpleParams: panelType === null ? null : buildSimpleParams(panelType, this.quickParams),
       quickDisabledReason: this.disabledReason(),
       ...patch,
     });
   },
 
   /**
-   * 效果卡 id（`quick-effects` 的 id）→ 八个灯效 id（`simple-effects` 的 id）。
-   *
-   * 两套表服务于不同目的：卡片表带默认色与档位，灯效表只有名字与协议类型。
-   * 映射缺失时退回「常亮」——界面永远要有一个可读的当前值。
-   */
-  effectIdForCard(cardId: string | null): string {
-    if (cardId === null) {
-      return "solid";
-    }
-    switch (cardId) {
-      case "warm":
-      case "ice":
-      case "violet":
-        return "solid";
-      case "breathe":
-        return "breathe";
-      case "rainbow":
-        return "rainbow";
-      case "comet":
-        return "comet";
-      case "strobe":
-        return "strobe";
-      case "heartbeat":
-        return "heartbeat";
-      case "off":
-        return "empty";
-      default:
-        return "solid";
-    }
-  },
-
-  /** 八个灯效 id → 效果卡 id（用于构建协议层）。 */
-  cardIdForEffect(effectId: string): string | null {
-    switch (effectId) {
-      case "solid":
-        return "warm";
-      case "breathe":
-        return "breathe";
-      case "rainbow":
-        return "rainbow";
-      case "comet":
-        return "comet";
-      case "strobe":
-        return "strobe";
-      case "heartbeat":
-        return "heartbeat";
-      case "empty":
-        return "off";
-      case "flicker":
-        /* 随机闪烁没有对应的成品卡（卡片表的九张是旧模型）；用常亮卡作壳，
-         * 真正的类型由 `effectTypeOf` 写进层里。 */
-        return "warm";
-      default:
-        return null;
-    }
-  },
-
-  /**
-   * 从设备读回值推断「现在是哪张卡」。
+   * 从设备读回值推断「现在是哪个灯效、参数是多少」。
    *
    * 只有整组一个分区、覆盖到最后一颗、无叠加层时才回填；否则清掉选中态，
    * 免得界面一直高亮一个设备上早就不存在的效果。
+   *
+   * 参数是**完整**的（`paramsFromLayer` 把七种灯效的全部字段都读回来），
+   * 不再是成品卡时代的「只有颜色与亮度能反推」。
    */
   syncQuickFromDevice() {
     const inferred = inferSimpleState(this.segmentReports, this.stripLedCount());
     if (inferred === null) {
-      this.quickCardId = null;
-      /* #135：设备上读不出「整组一张卡」= 这一组没有分区。灯效行如实写
-       * 「未设置」，参数区整块不出现。以前这里写 "solid"，于是刚打开页面
-       * 就写着「常亮」，而设备上一个分区都没有。 */
+      /* 设备上读不出「整组一个灯效」= 这一组没有分区。灯效行如实写「空」，
+       * 参数区整块不出现。 */
       this.effectId = null;
       this.quickParams = {};
     } else {
-      this.quickCardId = inferred.cardId;
-      this.effectId = this.effectIdForCard(inferred.cardId);
-      /* 只回填颜色与亮度（hue / sat / level 是精确的协议值）；其它档位设备上无法唯一反推。 */
-      this.quickParams = { hue: inferred.hue, sat: inferred.sat };
-      /* 熄灭卡读回的 level 恒为 0（协议要求），不能当成用户的亮度选择——
-       * 否则从熄灯切回亮灯时会「拖了亮度也还是全黑」。 */
-      this.levelDraft = levelDraftFromDevice(inferred.cardId, inferred.level, this.levelDraft);
+      this.effectId = inferred.effectId;
+      this.quickParams = inferred.params;
+      /* 熄灭读回的 level 恒为 0（协议要求），不能当成用户的亮度选择——
+       * 否则从熄灭切回亮灯时会「拖了亮度也还是全黑」。 */
+      this.levelDraft = levelDraftFromEffect(inferred.panelType, inferred.params.level, this.levelDraft);
     }
     this.renderQuick();
   },
 
   /**
-   * 设备上那一层是什么灯效（#96）：按协议类型反查八个灯效之一。
+   * 设备上那一层是什么灯效：按协议类型反查八个灯效之一。
    *
-   * 「空」= 熄灭类型；未知类型返回 null（界面显示「未设置」）。
+   * 「空」= 熄灭类型；未知类型返回 null（界面显示「空」）。
    */
   effectIdOfDeviceLayer(): string | null {
     const zone = this.segmentReports[0];
@@ -3183,7 +3155,7 @@ Page({
 
   // ---------------- 简单档：交互 ----------------
 
-  /** 点「灯效」行：从底部弹出滚轮（#96）。 */
+  /** 点「灯效」行：从底部弹出滚轮。 */
   onEffectRowTap() {
     if (this.disabledReason() !== "") {
       return;
@@ -3209,42 +3181,38 @@ Page({
    */
   onEffectPick(e: WechatMiniprogram.TouchEvent) {
     const id = String(e.currentTarget.dataset.id ?? "");
-    const effect = simpleEffectOf(id);
-    const cardId = this.cardIdForEffect(id);
-    if (effect === null || cardId === null || this.disabledReason() !== "") {
+    if (simpleEffectOf(id) === null || this.disabledReason() !== "") {
       return;
     }
     this.setData({ effectWheelOpen: false });
-    this.selectEffect(id, cardId);
+    this.selectEffect(id);
   },
 
   /**
    * 选中一个灯效并立即写入设备。
    *
-   * 拆出来是因为「点行 → 滚轮 → 选」与「设备读回」两个方向都要用同一套
-   * 参数重置规则（换效果时参数回到该效果默认值）。
+   * 换效果时**参数回到该效果的默认值**（把呼吸的最暗档带进流星没有意义），
+   * 但色相 / 饱和度 / 亮度跨类型保留——那是用户已经挑好的东西。
+   * 这一点由 `switchPanelType` 实现，简单档与进阶档共用。
    */
-  selectEffect(effectId: string, cardId: string): void {
-    this.quickCardId = cardId;
+  selectEffect(effectId: string): void {
+    const nextType = panelTypeForEffectId(effectId);
+    const prevType = panelTypeForEffectId(this.effectId);
     this.effectId = effectId;
-    /* 换效果时参数回到默认值（把呼吸的最暗档带进流星没有意义）。
-     * 亮度草稿保留用户值；只有读回过 0（空效果）时才回到默认满亮。 */
-    this.quickParams = {};
-    this.levelDraft = levelAfterCardTap(this.levelDraft);
+    this.quickParams =
+      nextType === null
+        ? {}
+        : switchPanelType(
+            { ...defaultParams(nextType), ...this.quickParams },
+            prevType ?? nextType,
+            nextType,
+          );
     this.dirty = true;
     this.renderQuick({ quickHint: "" });
     this.scheduleQuickWrite(true);
   },
 
-  onParamChanging(e: WechatMiniprogram.SliderChanging) {
-    this.applyParam(this.paramKeyOf(e), Number(e.detail.value), false);
-  },
-
-  onParamChange(e: WechatMiniprogram.SliderChange) {
-    this.applyParam(this.paramKeyOf(e), Number(e.detail.value), true);
-  },
-
-  /** 滑块自己的 key（hue / sat / level）：一个处理器服务三个滑块。 */
+  /** 滑块自己的 key（hue / sat / level / period …）：一个处理器服务所有滑块。 */
   paramKeyOf(e: WechatMiniprogram.SliderChange | WechatMiniprogram.SliderChanging): string {
     return String((e.currentTarget.dataset as { key?: string } | undefined)?.key ?? "");
   },
@@ -3253,27 +3221,46 @@ Page({
    * 应用一个参数。
    *
    * 拖动中只改本地草稿（逐帧写设备会连发几十帧）；松手（`commit`）才写。
-   * 三个滑块（色相 / 饱和度 / 亮度）松手都立刻下发——亮度是 v4 的层字段
-   * `level`，写的是**这一条灯组**，与全局亮度无关。
+   * 参数换算走 `applySlider`——与进阶档是同一个函数，所以两边的刻度与钳位
+   * 不会漂。
    */
   applyParam(key: string, value: number, commit: boolean) {
-    if (this.quickCardId === null || this.disabledReason() !== "" || !Number.isFinite(value)) {
+    const type = panelTypeForEffectId(this.effectId);
+    if (type === null || this.disabledReason() !== "" || !Number.isFinite(value)) {
       return;
     }
-    if (key === "hue") {
-      this.quickParams = { ...this.quickParams, hue: hueFromDegrees(value) };
-    } else if (key === "sat") {
-      this.quickParams = { ...this.quickParams, sat: satFromPercent(value) };
-    } else if (key === "level") {
-      this.levelDraft = clampLevel(value);
-    } else {
+    if (!isPanelSliderKey(key)) {
       return;
     }
+    const base = { ...defaultParams(type), ...this.quickParams };
+    const next = applySlider(base, key, value);
+    this.quickParams = next;
+    /* 亮度单独记在 levelDraft：滑块显示下限是 5，但设备上的 0 必须保留。 */
+    this.levelDraft = clampLevel(next.level);
     this.dirty = true;
     this.renderQuick();
     if (commit) {
       this.scheduleQuickWrite(true);
     }
+  },
+
+  /** 简单档的一个选择控件（波形 / 方向 / 占空比 / 脉冲）。 */
+  onQuickChoiceTap(e: WechatMiniprogram.TouchEvent) {
+    const dataset = e.currentTarget.dataset as { key?: string; value?: number };
+    const key = String(dataset.key ?? "");
+    const value = Number(dataset.value);
+    const type = panelTypeForEffectId(this.effectId);
+    if (type === null || this.disabledReason() !== "" || !Number.isFinite(value)) {
+      return;
+    }
+    const choice = isPanelChoiceKey(key) ? key : null;
+    if (choice === null) {
+      return;
+    }
+    this.quickParams = applyChoice({ ...defaultParams(type), ...this.quickParams }, choice, value);
+    this.dirty = true;
+    this.renderQuick();
+    this.scheduleQuickWrite(true);
   },
 
   clearQuickTimer() {
@@ -3305,19 +3292,26 @@ Page({
   },
 
   /**
-   * 把当前卡片 + 参数写成「整组单层分区」并发给设备。
+   * 把当前灯效 + 参数写成「整组单层分区」并发给设备。
    *
    * 顺序必须是这样（票面陷阱 #3）：
    *  1. 先 `queryStrip` 读回设备上的真实分区（不信任本地缓存）；
    *  2. 清掉槽位 0 以外的**所有**分区——协议要求同组分区不重叠，不清就被拒；
    *  3. 再 `SetSegment` 写整组（槽位 0，区间 0..n-1）；
    *  4. 重新读回，界面以设备为准（失败也读，绝不保留假的成功画面）。
+   *
+   * 选「空」时走另一条路（`clearQuick`）：**不写 OFF 分区，而是清掉这条带
+   * 的全部分区**——「空」在设备上的正确表示就是「没有分区」，固件渲染成全黑。
    */
   async writeQuick(): Promise<void> {
     const session = this.session;
     const stripId = this.data.stripId;
-    const card = this.quickCardId === null ? null : quickCardOf(this.quickCardId);
-    if (session === null || card === null || this.disabledReason() !== "") {
+    if (this.effectId === "empty") {
+      await this.clearQuick();
+      return;
+    }
+    const type = panelTypeForEffectId(this.effectId);
+    if (session === null || type === null || this.disabledReason() !== "") {
       return;
     }
     if (this.data.quickBusy) {
@@ -3372,9 +3366,8 @@ Page({
       }
 
       const ledCount = this.stripLedCount();
-      /* v4：亮度是逐分区的层字段，真实写进这一条灯组（不碰全局亮度）。
-       * #96：随机闪烁没有成品卡，用「常亮」卡作壳再把类型换成 FLICKER。 */
-      const spec = this.specForEffect(card, stripId, ledCount);
+      /* v4：亮度是逐分区的层字段，真实写进这一条灯组（不碰全局亮度）。 */
+      const spec = this.specForEffect(type, stripId, ledCount);
       const ack = await session.setSegment(spec);
       if (!ack.ok) {
         throw new Error(resultText(ack.resultCode));
@@ -3391,8 +3384,7 @@ Page({
       this.segmentReports = [
         { ...spec, stripId, segId: 0 } as unknown as (typeof this.segmentReports)[number],
       ];
-      const effectLabel =
-        this.effectId === null ? card.name : simpleEffectOf(this.effectId)?.name ?? card.name;
+      const effectLabel = simpleEffectName(this.effectId);
       /*
        * #139：简单档改色**只改实时灯效**，不动用户编排的方案。
        *
@@ -3426,12 +3418,75 @@ Page({
   },
 
   /**
-   * 简单档写进设备的段（#96）。
+   * 选「空」时下发：**清掉这条灯带的全部实时分区**。
    *
-   * 八个灯效里只有「随机闪烁」没有成品卡（卡片表是旧模型），它的层由卡壳
-   * 复制而来、类型换成 FLICKER、参数取该类型的默认密度。其余全部走
-   * `buildQuickSpec`，规则只有一份。
+   * 「空」在设备上的正确表示就是「没有分区」——把整条带清空，固件渲染全黑
+   * （§9.3 第 2 条）。不写一条 `OFF` 分区：那会在设备里留下一个用户没画过的
+   * 段，进阶档进去会看到一个多余的分区，而且反复点空 / 点效果会越积越多。
+   *
+   * 失败回读，与写灯效走同一套反馈。
    */
+  async clearQuick(): Promise<void> {
+    const session = this.session;
+    const stripId = this.data.stripId;
+    if (session === null || this.disabledReason() !== "") {
+      return;
+    }
+    if (this.data.quickBusy) {
+      this.quickQueued = true;
+      return;
+    }
+    this.quickQueued = false;
+    this.setData({ quickBusy: true, applyError: "" });
+    try {
+      const current = await session.queryStrip(stripId);
+      if (current.kind === "ok") {
+        this.segmentReports = current.reports.filter((report) => report.stripId === stripId);
+      }
+      for (const report of this.segmentReports) {
+        const cleared = await session.clearSegment(stripId, report.segId);
+        if (!cleared.ok) {
+          throw new Error(resultText(cleared.resultCode));
+        }
+      }
+      this.segmentReports = [];
+      this.dirty = false;
+      this.setData({ quickHint: "空：这条灯组不再出光（灯组本身仍然开着）" });
+      this.renderQuick();
+    } catch (err) {
+      this.dirty = true;
+      this.setData({ quickHint: `写入失败：${errorText(err)}` });
+      await this.refreshSegments();
+    } finally {
+      this.setData({ quickBusy: false });
+      if (this.quickQueued) {
+        this.quickQueued = false;
+        this.scheduleQuickWrite(true);
+      }
+    }
+  },
+
+  /**
+   * 简单档写进设备的段：整组一个分区，层由 `panelLayer` 按完整参数编码。
+   *
+   * 与进阶档的 `applyStepZones` 走同一个 `panelLayer`，所以两边的参数换算
+   * 与钳位完全一致。`blend` 恒为 0（单层段协议要求），`layer1` 是空层。
+   */
+  specForEffect(type: PanelType, stripId: number, ledCount: number): SegmentSpec {
+    const params = { ...defaultParams(type), ...this.quickParams };
+    /* 亮度草稿优先：滑块下限是 5，但设备上的 0 必须能保留（`clampLevel` 只管拖动）。 */
+    const layer = panelLayer(type, { ...params, level: clampZoneLevel(params.level) });
+    return buildZoneSpec({
+      stripId,
+      segId: 0,
+      start: 0,
+      end: Math.max(0, Math.floor(ledCount) - 1),
+      blend: BLEND.OVER,
+      layer0: layer,
+      layer1: null,
+    });
+  },
+
   /**
    * 静默下发整份方案（#96）。
    *
@@ -3464,24 +3519,6 @@ Page({
     } catch {
       /* 方案同步是旁路：实时分区已经生效，这里不覆盖用户看到的结果。 */
     }
-  },
-
-  specForEffect(
-    card: ReturnType<typeof quickCardOf> & object,
-    stripId: number,
-    ledCount: number,
-  ): SegmentSpec {
-    const base = buildQuickSpec(card, this.quickParams, stripId, ledCount, this.levelDraft);
-    if (this.effectId !== "flicker") {
-      return base;
-    }
-    /* 随机闪烁：色相 / 饱和度沿用用户选的（壳卡的默认色），周期与密度取该类型默认值。 */
-    const flicker = panelLayer("flicker", {
-      ...defaultParams("flicker"),
-      hue: base.layer0.hue,
-      sat: base.layer0.sat,
-    });
-    return { ...base, layer0: { ...flicker, level: base.layer0.level } } as SegmentSpec;
   },
 
   /**

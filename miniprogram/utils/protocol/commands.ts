@@ -22,6 +22,7 @@
 import {
   ANIMATION_MIN_PERIOD_MS,
   BLEND,
+  BLEND_MAX,
   BREATHING_MIN_PERIOD_MS,
   COMET_DENSITY_MASK,
   COMET_DENSITY_SHIFT,
@@ -331,8 +332,11 @@ function writeLayer(out: Uint8Array, offset: number, layer: EffectLayer, field: 
 }
 
 function assertBlend(blend: number): BlendMode {
-  if (blend !== BLEND.OVER && blend !== BLEND.MULTIPLY && blend !== BLEND.ADD) {
-    throw new RangeError(`blend 只允许 0(覆盖) / 1(相乘) / 2(相加)，收到 ${blend}`);
+  if (blend !== BLEND.OVER && blend !== BLEND.MULTIPLY && blend !== BLEND.ADD &&
+      blend !== BLEND.LUMA) {
+    throw new RangeError(
+      `blend 只允许 0(覆盖) / 1(相乘) / 2(相加) / 3(按亮度叠加)，收到 ${blend}`,
+    );
   }
   return blend;
 }
@@ -974,7 +978,7 @@ export function parseSegmentPayload(payload: Uint8Array): SegmentSpec {
   const layer0 = parseLayer(payload, SEGMENT_HEADER_BYTES);
   const layer1 = parseLayer(payload, SEGMENT_HEADER_BYTES + LAYER_BYTES);
   const blend = payload[4];
-  if (blend > BLEND.ADD) {
+  if (blend > BLEND_MAX) {
     throw new RangeError(`段载荷的 blend 非法：0x${blend.toString(16)}`);
   }
   if (layer0.type === NO_EFFECT) {

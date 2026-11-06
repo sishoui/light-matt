@@ -38,15 +38,6 @@ uint8_t lumen_script_strip_union_mask(const lumen_script_t *script)
     return mask;
 }
 
-bool lumen_scope_uses_segments(bool script_owned, bool has_active_segments, bool power_on,
-                               bool selftest_active)
-{
-    if (selftest_active || !power_on) {
-        return false;
-    }
-    return script_owned || has_active_segments;
-}
-
 const lumen_segment_store_t *lumen_scope_source_for_strip(const lumen_segment_store_t *stage,
                                                           const lumen_segment_store_t *live,
                                                           uint8_t script_mask, uint8_t strip_id)

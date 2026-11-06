@@ -113,7 +113,7 @@ uint8_t lumen_segment_store_count(const lumen_segment_store_t *store, uint8_t st
 /* 活动段位图：bit i = 槽位 i 活动（SegmentListEnd 的 seg_mask）。 */
 uint8_t lumen_segment_store_mask(const lumen_segment_store_t *store, uint8_t strip_id);
 
-/* 该灯带是否有任何活动段（渲染层判断走分段路径还是 v1 单色路径）。 */
+/* 该灯带是否有任何活动段（渲染层用它区分日志口径；像素规则不依赖它）。 */
 bool lumen_segment_store_any_active(const lumen_segment_store_t *store, uint8_t strip_id);
 
 /*

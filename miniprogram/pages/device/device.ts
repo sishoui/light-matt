@@ -612,7 +612,7 @@ Page({
    */
   summaryOfReports(reports: readonly SegmentReport[], ledCount: number): string {
     if (reports.length === 0) {
-      return "未设置灯效";
+      return "空";
     }
     if (reports.length > 1) {
       return `${reports.length} 个分区`;

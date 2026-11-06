@@ -264,6 +264,11 @@ addApp({
   payload: segment(1, 0, 0, 31, 0x00, layerAnim(0x03, 30000, 255, 1200, 8, 0), layerStatic(0, 255)),
   note: 'blend=覆盖：上层静态完全盖住下层流光（用于验证 blend 0 语义）',
 });
+addApp({
+  name: 'set_segment_static_plus_comet_luma', command: 0x10, commandName: 'SetSegment', seq: 30,
+  payload: segment(2, 0, 0, 15, 0x03, layerStatic(0, 255), layerAnim(0x03, 43690, 255, 2000, 120, 0)),
+  note: 'blend=3 按亮度叠加：流星亮处显流星，暗处透出背景层（§7.2.1）',
+});
 
 // 非法段
 addApp({
@@ -273,8 +278,8 @@ addApp({
 });
 addApp({
   name: 'set_segment_bad_blend_value', command: 0x10, commandName: 'SetSegment', seq: 27,
-  payload: segment(3, 0, 0, 5, 0x03, layerStatic(1000, 255), layerStatic(2000, 255)),
-  result: 0x01, note: 'blend 只允许 0/1/2（不做取最大）',
+  payload: segment(3, 0, 0, 5, 0x04, layerStatic(1000, 255), layerStatic(2000, 255)),
+  result: 0x01, note: 'blend 只允许 0/1/2/3（不做取最大）',
 });
 addApp({
   name: 'set_segment_bad_layer0_empty', command: 0x10, commandName: 'SetSegment', seq: 28,

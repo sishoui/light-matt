@@ -82,26 +82,35 @@ describe("八个灯效（进阶档）", () => {
   });
 });
 
-describe("混合方式只剩两种", () => {
-  it("界面上只有相加 / 覆盖", () => {
-    expect(OVERLAY_BLEND_OPTIONS.map((option) => option.value)).toEqual([BLEND.ADD, BLEND.OVER]);
-    expect(BLEND_OPTIONS.map((option) => option.value)).toEqual([BLEND.ADD, BLEND.OVER]);
+describe("混合方式只有「按亮度叠加」", () => {
+  it("界面上只有按亮度叠加", () => {
+    expect(OVERLAY_BLEND_OPTIONS.map((option) => option.value)).toEqual([BLEND.LUMA]);
+    expect(BLEND_OPTIONS.map((option) => option.value)).toEqual([BLEND.LUMA]);
   });
 
-  it("没有「相乘」", () => {
-    const labels = [...OVERLAY_BLEND_OPTIONS, ...BLEND_OPTIONS].map((option) => option.label ?? option.name);
+  it("没有「覆盖」「相加」「相乘」", () => {
+    const labels = [...OVERLAY_BLEND_OPTIONS, ...BLEND_OPTIONS].map(
+      (option) => option.label ?? option.name,
+    );
     expect(labels).not.toContain("相乘");
+    expect(labels).not.toContain("覆盖");
+    expect(labels).not.toContain("相加");
   });
 
-  it("设备读回「相乘」时按「覆盖」展示（不把它当非法值）", () => {
+  it("设备读回旧值（覆盖 / 相乘 / 相加）时归一为按亮度叠加", () => {
+    /* 界面不再产生这些值，但协议仍接受它们——读回时绝不能当非法值。 */
     expect(isUiBlend(BLEND.MULTIPLY)).toBe(false);
-    expect(clampUiBlend(BLEND.MULTIPLY)).toBe(BLEND.OVER);
-    expect(clampUiBlend(BLEND.ADD)).toBe(BLEND.ADD);
+    expect(isUiBlend(BLEND.OVER)).toBe(false);
+    expect(isUiBlend(BLEND.ADD)).toBe(false);
+    expect(isUiBlend(BLEND.LUMA)).toBe(true);
+    expect(clampUiBlend(BLEND.MULTIPLY)).toBe(BLEND.LUMA);
+    expect(clampUiBlend(BLEND.ADD)).toBe(BLEND.LUMA);
+    expect(clampUiBlend(BLEND.OVER)).toBe(BLEND.LUMA);
   });
 
-  it("特效层有颜色 → 覆盖；没颜色 → 相加（透出背景）", () => {
-    expect(defaultBlendFor(false)).toBe(BLEND.OVER);
-    expect(defaultBlendFor(true)).toBe(BLEND.ADD);
+  it("两层都有内容时恒为按亮度叠加（与「有没有颜色」无关）", () => {
+    expect(defaultBlendFor(false)).toBe(BLEND.LUMA);
+    expect(defaultBlendFor(true)).toBe(BLEND.LUMA);
   });
 });
 
@@ -140,11 +149,14 @@ describe("两层的编码", () => {
     });
   });
 
-  it("背景层为空时混合必须是「相加」（覆盖会把整段变黑）", () => {
-    expect(backgroundBlendOf(true, false)).toBe(BLEND.ADD);
-    expect(backgroundBlendOf(true, true)).toBe(BLEND.ADD);
-    expect(backgroundBlendOf(false, true)).toBe(BLEND.ADD);
-    expect(backgroundBlendOf(false, false)).toBe(BLEND.OVER);
+  it("两层都有内容时用按亮度叠加；特效层为空时协议要求 blend = 0", () => {
+    /* 背景层为空也照样是 LUMA：`L0 = 0` 时它就退化成 `out = L1`，
+     * 与「覆盖」等价，不需要特例。 */
+    expect(backgroundBlendOf(true, false)).toBe(BLEND.LUMA);
+    expect(backgroundBlendOf(false, false)).toBe(BLEND.LUMA);
+    /* 特效层为空 → 单层段，协议硬要求 blend = 0（§7.1 第 5 步）。 */
+    expect(backgroundBlendOf(true, true)).toBe(BLEND.OVER);
+    expect(backgroundBlendOf(false, true)).toBe(BLEND.OVER);
   });
 
   it("空层判定覆盖 0xFF 与熄灭两种形态", () => {

@@ -305,7 +305,7 @@ describe("演示模式：快捷档写入", () => {
       readBack.reports.filter((report) => report.stripId === 0),
       ledCount,
     );
-    expect(state?.cardId).toBe("off");
+    expect(state?.effectId).toBe("empty");
   });
 
   it("方案播放中写实时分区前先停止播放（否则设备不出光）", async () => {

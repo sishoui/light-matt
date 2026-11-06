@@ -21,16 +21,18 @@
  * 两条路径（docs/v2-effects-engine.md §3 / §4）：
  *  - 有活动段：段合成到像素缓冲（**先 memset 0**，未覆盖区必须熄灭），
  *    再对每颗灯统一施加 gamma + 亮度；
- *  - 没有活动段：沿用 v1 的单色路径（state->r/g/b），现有单灯带功能不退化。
+ *  - 没有活动段：**整条全黑**（docs/protocol-v4.md §9.3 第 2 条）。v1 的
+ *    「整条铺 state->r/g/b」回退已删除，它让没设灯效的带亮成暖白，并把
+ *    strip0/seg0 的颜色漏到所有带上。
  */
 
 /*
  * 渲染一份快照，并把「已渲染像素」记下来供下次去重。
  * selftest 是渲染任务在锁内拷出的一份自检快照（不能直接读引擎里的 s_selftest：
  * BLE 回调可能并发取消/重启）。
- * segments 可以为 NULL（视为没有任何活动段，走 v1 单色路径）。
+ * segments 可以为 NULL（视为没有任何活动段 → 全黑）。
  * `script_mask`（#122）：strip 0 是否归方案管（bit0）。置位时即使没有活动段
- * 也走分段路径输出全黑，而不是退回 v1 单色。
+ * 也是全黑——与「没有分区就是黑」同一条规则，只是多一层显式说明。
  */
 void lumen_led_render_snapshot(led_strip_handle_t strip, const lumen_state_t *snapshot,
                                const lumen_segment_store_t *segments,
@@ -41,11 +43,11 @@ void lumen_led_render_snapshot(led_strip_handle_t strip, const lumen_state_t *sn
  * 把一条灯带的当前画面合成为像素缓冲（用户空间 RGB 已过 gamma + 亮度），
  * 不刷灯、不改去重状态。TDM 轮询用它为每条灯带各自生成一帧（#29）。
  *
- * 与 lumen_led_render_snapshot 共用同一套合成规则（分段 memset + gamma），
+ * 与 lumen_led_render_snapshot 共用同一套合成规则（memset + gamma），
  * 区别只是「不负责刷灯」。strip_id 决定用哪条的段配置与灯珠数。
  *
- * `script_mask`（#122）：该条是否归方案管。置位时这一条即使没有活动段也走
- * 分段路径输出全黑，而不是退回 v1 单色（整条纯色）。0 表示全部按实时分区判。
+ * `script_mask`（#122）：该条是否归方案管。置位时这一条即使没有活动段也是
+ * 全黑。0 表示全部按实时分区判。
  *
  * 返回实际填充的灯珠数；参数非法返回 0。
  */
