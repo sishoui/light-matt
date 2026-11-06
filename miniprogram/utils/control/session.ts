@@ -1197,17 +1197,47 @@ export class ControlSession {
     loop: number,
     on: boolean,
   ): Promise<EditResult> {
-    return this.sendEdit(cmdScenePart(sceneId, stripId, partId, stepCount, loop, on));
+    const result = await this.sendEditSafe(() =>
+      cmdScenePart(sceneId, stripId, partId, stepCount, loop, on),
+    );
+    this.invalidateScene(sceneId, result);
+    return result;
   }
 
   /** 写一步（SceneStep 0x26）：**单步增量**，不重传整场景（E5）。 */
   async setSceneStep(step: SceneStep): Promise<EditResult> {
-    return this.sendEdit(cmdSceneStep(step));
+    const result = await this.sendEditSafe(() => cmdSceneStep(step));
+    this.invalidateScene(step.sceneId, result);
+    return result;
   }
 
   /** 写场景名（SceneName 0x27）。 */
   async setSceneName(sceneId: number, name: string): Promise<EditResult> {
-    return this.sendEdit(cmdSceneName(sceneId, name));
+    const result = await this.sendEditSafe(() => cmdSceneName(sceneId, name));
+    this.invalidateScene(sceneId, result);
+    return result;
+  }
+
+  /**
+   * 写成功后作废该场景的读回缓存。
+   *
+   * 为什么必须有：`sceneOf()` 是**页面的第一读取入口**（读到就直接用，读不到
+   * 才发 `QueryScene`）。写入之后不作废的话，页面下一次 `load()` 会拿回**写入
+   * 前**的那一份，表现是「点了下发、提示成功、界面却还是旧的」。`writeLayout`
+   * 早有这一步（`layoutsByStrip[stripId] = null`），场景这三条以前漏了。
+   *
+   * 只在真的可能改了设备时作废：`ok`（RAM 与落盘都成功）与 `storage`
+   * （RAM 已改、只是没落盘，§10.4）都要作废；`stale` / `error` / `ack-error`
+   * 一律不动——它们代表「这次写入没生效」，缓存仍是权威。
+   */
+  private invalidateScene(sceneId: number, result: EditResult): void {
+    if (result.kind !== "ok" && result.kind !== "storage") {
+      return;
+    }
+    if (!Number.isInteger(sceneId) || sceneId < 0 || sceneId >= MAX_SCENES) {
+      return;
+    }
+    this.scenesById[sceneId] = null;
   }
 
   /**
@@ -1231,6 +1261,27 @@ export class ControlSession {
     } catch (err) {
       return this.editFailure(err, epoch);
     }
+  }
+
+  /**
+   * 先构造请求再发：构造器抛的 `RangeError` 折成 `error` 结果。
+   *
+   * 为什么需要：`cmdScenePart` / `cmdSceneStep` / `cmdSceneName` 是**提前拒绝**
+   * 的唯一机会（越界的 loop / 步数 / 名字字节数），它们抛 `RangeError`。若直接
+   * 把构造结果传给 `sendEdit`，异常会在 `await` 之前就冒到调用方，页面拿到的是
+   * 一个抛出而不是 `{ kind: "error" }` —— 与 `setLedCount` 等其它写入口不一致，
+   * 页面里那句 `if (result.kind === ...)` 根本没机会执行。
+   *
+   * 这里仍然**不发帧**：异常发生在构造阶段，传输层没被碰过。
+   */
+  private async sendEditSafe(build: () => CommandRequest): Promise<EditResult> {
+    let request: CommandRequest;
+    try {
+      request = build();
+    } catch (err) {
+      return { kind: "error", message: errorText(err) };
+    }
+    return this.sendEdit(request);
   }
 
   /** 布局 / 场景写命令的公共路径：一帧、等 ACK、StorageFailed 单独一支。 */
