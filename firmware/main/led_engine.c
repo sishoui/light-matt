@@ -957,6 +957,27 @@ esp_err_t lumen_led_engine_init(void)
 
     /* State 报实际配置的灯带数（小程序据此知道要查几条）。 */
     s_state.strip_count = strip_n > 1 ? strip_n : 1;
+
+    /*
+     * 把每条链的灯珠数写回 State。
+     *
+     * 上面那份 counts[] 只喂给了 lumen_planar_init（渲染要按它建句柄），而
+     * State 的 led_count[] 一直是默认值：首条有数、其余 0。后果不是「显示不
+     * 对」——lumen_layout_store_validate 拿 strip_counts 校验每条已配置的链
+     * 都不得为 0，于是**每一句 LayoutCommit 都被 InvalidParam 拒掉**，布局永远
+     * 落不了盘，部位划分改了也不生效（真机实测 55/58，三条失败全是它）。
+     *
+     * 多条链时以 counts[] 为准（它已经合成了「恢复值 / 默认值」）；单条链时
+     * led_count[0] 就是唯一那条，保持原样即可。
+     */
+    if (strip_n > 1) {
+        for (uint8_t i = 0; i < strip_n; ++i) {
+            s_state.led_count[i] = counts[i];
+        }
+        for (uint8_t i = strip_n; i < LUMEN_MAX_STRIPS; ++i) {
+            s_state.led_count[i] = 0;
+        }
+    }
     refresh_layout_summary_locked();
 
     BaseType_t created =
