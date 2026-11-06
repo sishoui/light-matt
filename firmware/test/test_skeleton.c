@@ -27,10 +27,13 @@
 #include "chunk_reasm.h"
 #include "effects.h"
 #include "gamma.h"
+#include "layout_store.h"
 #include "led_count_job.h"
 #include "led_engine_slots.h"
 #include "protocol.h"
 #include "save_scheduler.h"
+#include "scene_compose.h"
+#include "scene_store.h"
 #include "script_blob.h"
 #include "script_scope.h"
 #include "script_store.h"
@@ -8744,6 +8747,1444 @@ static void test_gamma_hue_loss_clip(void)
     CHECK(inplace_scaled[0] > 0 && inplace_scaled[1] > 0);
 }
 
+/* ================= v5（#155）：布局存储 ================= */
+
+/* 建一条 3 部位 / 1 链的典型布局：眼灯 0-1、监视器 2、散热 3-9（30 灯）。 */
+static void build_three_parts(lumen_layout_store_t *layout)
+{
+    lumen_layout_store_init(layout);
+    CHECK(lumen_layout_store_write(layout, 0, 3, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_part(layout, 0, 0, 6, (const uint8_t *)"眼灯", 1, 1) ==
+          LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_part(layout, 0, 1, 0, NULL, 1, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_part(layout, 0, 2, 0, NULL, 1, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_seg(layout, 0, 0, 0, 0, 1, 30, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_seg(layout, 0, 1, 0, 2, 2, 30, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_seg(layout, 0, 2, 0, 3, 9, 30, 1) == LUMEN_RESULT_OK);
+}
+
+static void test_layout_sizes(void)
+{
+    /* 编译期断言之外再在运行时钉一次：这两块 RAM 的预算进验收报告。 */
+    CHECK(sizeof(lumen_part_layout_t) == 42);
+    CHECK(sizeof(lumen_layout_store_t) == 2696);
+    CHECK(LUMEN_LAYOUT_BLOB_SIZE == 2760);
+    CHECK(LUMEN_LAYOUT_BLOB_SIZE <= LUMEN_LAYOUT_BLOB_MAX);
+    /* 每部位记录的内部分量必须装得下 8 段 × 2 字节。 */
+    CHECK(LUMEN_MAX_PART_SEGS * 2 + 1 + LUMEN_NAME_BYTES + 1 == 42);
+}
+
+static void test_layout_part_of_pixel(void)
+{
+    lumen_layout_store_t layout;
+    build_three_parts(&layout);
+
+    /* 每颗灯珠归属谁（S3：一颗只属一个部位）。 */
+    CHECK(lumen_layout_part_of_pixel(&layout, 0, 0) == 0);
+    CHECK(lumen_layout_part_of_pixel(&layout, 0, 1) == 0);
+    CHECK(lumen_layout_part_of_pixel(&layout, 0, 2) == 1);
+    CHECK(lumen_layout_part_of_pixel(&layout, 0, 3) == 2);
+    CHECK(lumen_layout_part_of_pixel(&layout, 0, 9) == 2);
+    /* 未覆盖的灯珠恒黑 → 归属是 NONE，不是 0（不能误归给眼灯）。 */
+    CHECK(lumen_layout_part_of_pixel(&layout, 0, 10) == LUMEN_PART_NONE);
+    CHECK(lumen_layout_part_of_pixel(&layout, 0, 29) == LUMEN_PART_NONE);
+    /* 别的链没有任何部位。 */
+    CHECK(lumen_layout_part_of_pixel(&layout, 1, 0) == LUMEN_PART_NONE);
+
+    CHECK(lumen_layout_store_has_segments(&layout, 0));
+    CHECK(!lumen_layout_store_has_segments(&layout, 1));
+}
+
+static void test_layout_write_clears(void)
+{
+    lumen_layout_store_t layout;
+    build_three_parts(&layout);
+
+    /* LayoutWrite 声明新数量：名字与段全清（§6.1 第 1 条）。 */
+    CHECK(lumen_layout_store_write(&layout, 0, 2, 1) == LUMEN_RESULT_OK);
+    CHECK(layout.part_count[0] == 2);
+    const lumen_part_layout_t *p0 = lumen_layout_store_part(&layout, 0, 0);
+    CHECK(p0 != NULL);
+    CHECK(p0->name_len == 0);
+    CHECK(p0->segs.seg_count == 0);
+    CHECK(!lumen_layout_store_has_segments(&layout, 0));
+    /* 被缩掉的第 3 个部位不再可见。 */
+    CHECK(lumen_layout_store_part(&layout, 0, 2) == NULL);
+
+    /* 0 个部位：这条链没有部位，未覆盖灯珠恒黑。 */
+    CHECK(lumen_layout_store_write(&layout, 0, 0, 1) == LUMEN_RESULT_OK);
+    CHECK(layout.part_count[0] == 0);
+    CHECK(lumen_layout_part_of_pixel(&layout, 0, 0) == LUMEN_PART_NONE);
+
+    /* 越界拒绝且不改动。 */
+    CHECK(lumen_layout_store_write(&layout, 0, 9, 1) == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(lumen_layout_store_write(&layout, 8, 1, 8) == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(lumen_layout_store_write(&layout, 1, 1, 1) == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(layout.part_count[0] == 0);
+}
+
+static void test_layout_part_name_padding(void)
+{
+    lumen_layout_store_t layout;
+    lumen_layout_store_init(&layout);
+    CHECK(lumen_layout_store_write(&layout, 0, 1, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 6, (const uint8_t *)"眼灯", 0, 1) ==
+          LUMEN_RESULT_OK);
+
+    const lumen_part_layout_t *p = lumen_layout_store_part(&layout, 0, 0);
+    CHECK(p != NULL);
+    CHECK(p->name_len == 6);
+    /* 6 字节 UTF-8 之后必须全是 0（NUL 补齐，§6.1 第 2 条）。 */
+    for (uint8_t i = 6; i < LUMEN_NAME_BYTES; ++i) {
+        CHECK(p->name[i] == 0);
+    }
+
+    /* 空名合法（name_len = 0）。 */
+    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 0, NULL, 0, 1) == LUMEN_RESULT_OK);
+    CHECK(p->name_len == 0);
+
+    /* 25 字节超上限。 */
+    uint8_t too_long[32];
+    memset(too_long, 'A', sizeof(too_long));
+    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 25, too_long, 0, 1) ==
+          LUMEN_RESULT_INVALID_PARAM);
+    /* 恰好 24 字节合法。 */
+    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 24, too_long, 0, 1) == LUMEN_RESULT_OK);
+    CHECK(p->name_len == 24);
+    /* part_id 超过已声明数量。 */
+    CHECK(lumen_layout_store_set_part(&layout, 0, 1, 0, NULL, 0, 1) ==
+          LUMEN_RESULT_INVALID_PARAM);
+    /* seg_count 超上限。 */
+    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 0, NULL, 9, 1) ==
+          LUMEN_RESULT_INVALID_PARAM);
+}
+
+static void test_layout_seg_rejects_overlap(void)
+{
+    lumen_layout_store_t layout;
+    build_three_parts(&layout);
+
+    /*
+     * S4：压到别的部位 → 整个命令拒绝，且**别的部位一块灯珠都没变**。
+     * 散热占 3-9，眼灯想占 5-5 必须被拒。
+     */
+    CHECK(lumen_layout_store_set_seg(&layout, 0, 0, 0, 5, 5, 30, 1) ==
+          LUMEN_RESULT_INVALID_PARAM);
+    CHECK(lumen_layout_store_part(&layout, 0, 2)->segs.seg[0][0] == 3);
+    CHECK(lumen_layout_store_part(&layout, 0, 2)->segs.seg[0][1] == 9);
+    CHECK(lumen_layout_store_part(&layout, 0, 0)->segs.seg[0][0] == 0);
+    CHECK(lumen_layout_store_part(&layout, 0, 0)->segs.seg[0][1] == 1);
+    /* 不自动裁剪：眼灯自己的旧段也保持原样。 */
+    CHECK(lumen_layout_part_of_pixel(&layout, 0, 0) == 0);
+
+    /* 半开区间不算冲突（3-9 与 10-12 相邻合法）。先把散热的段数放宽到 2。 */
+    CHECK(lumen_layout_store_set_part(&layout, 0, 2, 0, NULL, 2, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_seg(&layout, 0, 2, 0, 3, 9, 30, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_seg(&layout, 0, 2, 1, 10, 12, 30, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_part_of_pixel(&layout, 0, 11) == 2);
+    CHECK(lumen_layout_store_set_seg(&layout, 0, 0, 0, 11, 11, 30, 1) ==
+          LUMEN_RESULT_INVALID_PARAM);
+
+    /* 同一部位的另一个段也不能与自己的其它段冲突。 */
+    CHECK(lumen_layout_store_part(&layout, 0, 2)->segs.seg_count == 2);
+    CHECK(lumen_layout_store_set_seg(&layout, 0, 2, 0, 5, 20, 30, 1) ==
+          LUMEN_RESULT_INVALID_PARAM);
+    /* 替换自身不算冲突（段号相同）。 */
+    CHECK(lumen_layout_store_set_seg(&layout, 0, 2, 0, 3, 9, 30, 1) == LUMEN_RESULT_OK);
+
+    /* 段号 ≥ seg_count 被拒（必须先 LayoutPart 声明数量）。 */
+    CHECK(lumen_layout_store_set_seg(&layout, 0, 2, 2, 20, 21, 30, 1) ==
+          LUMEN_RESULT_INVALID_PARAM);
+}
+
+/*
+ * 分帧下发：LayoutPart 声明 seg_count 后、LayoutSeg 到达之前，剩下的槽位是
+ * 「未写」而不是 0-0。否则第二个段会被误判成占用 0-0，把合法的 1-2 顶掉。
+ */
+static void test_layout_partial_write(void)
+{
+    lumen_layout_store_t layout;
+    lumen_layout_store_init(&layout);
+    CHECK(lumen_layout_store_write(&layout, 0, 1, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 0, NULL, 2, 1) == LUMEN_RESULT_OK);
+
+    /* 只写了段 1，段 0 还没到：段 1 不该被「段 0 的 0-0」顶掉。 */
+    CHECK(lumen_layout_store_set_seg(&layout, 0, 0, 1, 1, 2, 30, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_part_of_pixel(&layout, 0, 1) == 0);
+    /* 未写的槽位不该占住灯珠 0。 */
+    CHECK(lumen_layout_part_of_pixel(&layout, 0, 0) == LUMEN_PART_NONE);
+    /* 此时整份校验必须失败：声明了 2 段却只写了 1 段。 */
+    uint16_t counts[LUMEN_MAX_STRIPS] = {30, 0, 0, 0, 0, 0, 0, 0};
+    CHECK(lumen_layout_store_validate(&layout, 1, counts) == LUMEN_RESULT_INVALID_PARAM);
+
+    /* 补上段 0 之后整份合法。 */
+    CHECK(lumen_layout_store_set_seg(&layout, 0, 0, 0, 0, 0, 30, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_validate(&layout, 1, counts) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_part_of_pixel(&layout, 0, 0) == 0);
+    CHECK(lumen_layout_part_of_pixel(&layout, 0, 1) == 0);
+    CHECK(lumen_layout_part_of_pixel(&layout, 0, 2) == 0);
+}
+
+static void test_layout_seg_range(void)
+{
+    lumen_layout_store_t layout;
+    lumen_layout_store_init(&layout);
+    CHECK(lumen_layout_store_write(&layout, 0, 1, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 0, NULL, 2, 1) == LUMEN_RESULT_OK);
+
+    /* start > end → 拒。 */
+    CHECK(lumen_layout_store_set_seg(&layout, 0, 0, 0, 10, 9, 30, 1) ==
+          LUMEN_RESULT_INVALID_PARAM);
+    /* end ≥ led_count → 拒（30 灯的链上第 30 颗是 0..29）。 */
+    CHECK(lumen_layout_store_set_seg(&layout, 0, 0, 0, 29, 30, 30, 1) ==
+          LUMEN_RESULT_INVALID_PARAM);
+    /* end == led_count-1 合法。 */
+    CHECK(lumen_layout_store_set_seg(&layout, 0, 0, 0, 25, 29, 30, 1) == LUMEN_RESULT_OK);
+    /* 单颗段合法。 */
+    CHECK(lumen_layout_store_set_seg(&layout, 0, 0, 1, 7, 7, 30, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_part_pixel_count(lumen_layout_store_part(&layout, 0, 0)) == 5 + 1);
+
+    /* 一条链只能占 8 段 × 8 部位。 */
+    CHECK(LUMEN_MAX_PART_SEGS == 8);
+    CHECK(LUMEN_MAX_PARTS == 8);
+}
+
+static void test_layout_multi_segment_logical_index(void)
+{
+    /* 一个部位占 1-5 与 20-25（对称部位，S5 / S6）。 */
+    lumen_part_layout_t part;
+    memset(&part, 0, sizeof(part));
+    part.segs.seg_count = 2;
+    part.segs.seg[0][0] = 1;
+    part.segs.seg[0][1] = 5;
+    part.segs.seg[1][0] = 20;
+    part.segs.seg[1][1] = 25;
+
+    CHECK(lumen_layout_part_pixel_count(&part) == 5 + 6);
+
+    /* 连续相位：逻辑下标是升序名次 → 1..5 是 0..4，20..25 是 5..10。 */
+    CHECK(lumen_layout_logical_index(&part, 1, LUMEN_PHASE_CONTINUOUS) == 0);
+    CHECK(lumen_layout_logical_index(&part, 5, LUMEN_PHASE_CONTINUOUS) == 4);
+    CHECK(lumen_layout_logical_index(&part, 20, LUMEN_PHASE_CONTINUOUS) == 5);
+    CHECK(lumen_layout_logical_index(&part, 25, LUMEN_PHASE_CONTINUOUS) == 10);
+
+    /* 各自起点相位：第二段从自己的 0 开始。 */
+    CHECK(lumen_layout_logical_index(&part, 20, LUMEN_PHASE_PER_SEGMENT) == 0);
+    CHECK(lumen_layout_logical_index(&part, 25, LUMEN_PHASE_PER_SEGMENT) == 5);
+    CHECK(lumen_layout_logical_index(&part, 3, LUMEN_PHASE_PER_SEGMENT) == 2);
+
+    /* 段顺序颠倒不影响结果（LayoutSeg 逐条写，写入顺序不该影响相位）。 */
+    lumen_part_layout_t swapped = part;
+    swapped.segs.seg[0][0] = 20;
+    swapped.segs.seg[0][1] = 25;
+    swapped.segs.seg[1][0] = 1;
+    swapped.segs.seg[1][1] = 5;
+    for (uint8_t i = 1; i <= 5; ++i) {
+        uint16_t want = (uint16_t)(i - 1);
+        CHECK(lumen_layout_logical_index(&swapped, i, LUMEN_PHASE_CONTINUOUS) == want);
+    }
+    for (uint8_t i = 20; i <= 25; ++i) {
+        uint16_t want = (uint16_t)(i - 20 + 5);
+        CHECK(lumen_layout_logical_index(&swapped, i, LUMEN_PHASE_CONTINUOUS) == want);
+    }
+}
+
+static void test_layout_validate_whole(void)
+{
+    lumen_layout_store_t layout;
+    build_three_parts(&layout);
+
+    uint16_t counts[LUMEN_MAX_STRIPS] = {30, 0, 0, 0, 0, 0, 0, 0};
+    CHECK(lumen_layout_store_validate(&layout, 1, counts) == LUMEN_RESULT_OK);
+    /* 没有灯珠数表时按协议上限 100 校验，仍然合法。 */
+    CHECK(lumen_layout_store_validate(&layout, 1, NULL) == LUMEN_RESULT_OK);
+
+    /* 段超出该链真实灯珠数 → 整份拒（散热是 3-9，链只有 5 颗时越界）。 */
+    uint16_t short_counts[LUMEN_MAX_STRIPS] = {5, 0, 0, 0, 0, 0, 0, 0};
+    CHECK(lumen_layout_store_validate(&layout, 1, short_counts) == LUMEN_RESULT_INVALID_PARAM);
+
+    /* 未配置的链上有内容 → 整份拒（半套布局不许悄悄留着）。 */
+    CHECK(lumen_layout_store_write(&layout, 3, 1, 4) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_validate(&layout, 1, counts) == LUMEN_RESULT_INVALID_PARAM);
+
+    /* 链数越界。 */
+    CHECK(lumen_layout_store_validate(&layout, 0, counts) == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(lumen_layout_store_validate(&layout, 9, counts) == LUMEN_RESULT_INVALID_PARAM);
+}
+
+static void test_layout_blob_roundtrip(void)
+{
+    lumen_layout_store_t layout;
+    build_three_parts(&layout);
+    /* 散热的段数先放宽到 2，再写第二个不连续段。 */
+    CHECK(lumen_layout_store_set_part(&layout, 0, 2, 0, NULL, 2, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_seg(&layout, 0, 2, 0, 3, 9, 30, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_seg(&layout, 0, 2, 1, 20, 25, 30, 1) == LUMEN_RESULT_OK);
+
+    uint16_t counts[LUMEN_MAX_STRIPS] = {30, 60, 0, 0, 0, 0, 0, 0};
+    uint8_t blob[LUMEN_LAYOUT_BLOB_MAX];
+    size_t n = lumen_layout_blob_encode(&layout, 2, counts, blob, sizeof(blob));
+    CHECK(n == LUMEN_LAYOUT_BLOB_SIZE);
+
+    /* magic / 版本 / 链数逐字节可读。 */
+    CHECK(blob[0] == 'L' && blob[1] == 'M' && blob[2] == 'L' && blob[3] == '1');
+    CHECK(blob[4] == LUMEN_LAYOUT_BLOB_VERSION);
+    CHECK(blob[5] == 2);
+    /* 每链记录：led_count | part_count | 6 个保留字节全 0。 */
+    CHECK(blob[8] == 30);
+    CHECK(blob[9] == 3);
+    for (uint8_t i = 10; i < 16; ++i) {
+        CHECK(blob[i] == 0);
+    }
+    CHECK(blob[16] == 60);
+    CHECK(blob[17] == 0);
+
+    lumen_layout_store_t back;
+    uint8_t strips = 0;
+    CHECK(lumen_layout_blob_decode(blob, n, &strips, &back));
+    CHECK(strips == 2);
+    CHECK(back.part_count[0] == 3);
+    CHECK(back.part_count[1] == 0);
+    const lumen_part_layout_t *p0 = lumen_layout_store_part(&back, 0, 0);
+    CHECK(p0 != NULL && p0->name_len == 6);
+    CHECK(memcmp(p0->name, "眼灯", 6) == 0);
+    CHECK(p0->segs.seg_count == 1);
+    CHECK(p0->segs.seg[0][0] == 0 && p0->segs.seg[0][1] == 1);
+    const lumen_part_layout_t *p2 = lumen_layout_store_part(&back, 0, 2);
+    CHECK(p2 != NULL && p2->segs.seg_count == 2);
+    CHECK(p2->segs.seg[0][0] == 3 && p2->segs.seg[0][1] == 9);
+    CHECK(p2->segs.seg[1][0] == 20 && p2->segs.seg[1][1] == 25);
+
+    /* 冗余灯珠数可单独读出。 */
+    uint16_t got_counts[LUMEN_MAX_STRIPS];
+    lumen_layout_blob_strip_counts(blob, n, got_counts);
+    CHECK(got_counts[0] == 30);
+    CHECK(got_counts[1] == 60);
+}
+
+static void test_layout_blob_rejects_bad(void)
+{
+    lumen_layout_store_t layout;
+    build_three_parts(&layout);
+    uint16_t counts[LUMEN_MAX_STRIPS] = {30, 0, 0, 0, 0, 0, 0, 0};
+    uint8_t blob[LUMEN_LAYOUT_BLOB_MAX];
+    size_t n = lumen_layout_blob_encode(&layout, 1, counts, blob, sizeof(blob));
+    CHECK(n == LUMEN_LAYOUT_BLOB_SIZE);
+
+    lumen_layout_store_t out;
+    uint8_t strips = 0;
+
+    /* 长度不符。 */
+    CHECK(!lumen_layout_blob_decode(blob, n - 1, &strips, &out));
+    CHECK(!lumen_layout_blob_decode(blob, n + 1, &strips, &out));
+
+    /* 每个坏字节都必须整份拒绝，且不写 out。 */
+    struct {
+        size_t off;
+        uint8_t value;
+    } mutations[] = {
+        {0, 'X'},   /* magic */
+        {4, 2},     /* version */
+        {5, 0},     /* strip_count 0 */
+        {5, 9},     /* strip_count 9 */
+        {9, 9},     /* part_count 9 */
+        {10, 1},    /* 保留字节必须为 0 */
+        {8, 200},   /* led_count > 100 */
+    };
+    for (size_t i = 0; i < sizeof(mutations) / sizeof(mutations[0]); ++i) {
+        uint8_t bad[LUMEN_LAYOUT_BLOB_MAX];
+        memcpy(bad, blob, n);
+        bad[mutations[i].off] = mutations[i].value;
+        lumen_layout_store_t keep;
+        memset(&keep, 0xAB, sizeof(keep));
+        CHECK(!lumen_layout_blob_decode(bad, n, &strips, &keep));
+        /* out 必须原封不动（0xAB 填充仍在）。 */
+        CHECK(((const uint8_t *)&keep)[0] == 0xAB);
+    }
+
+    /*
+     * 部位记录从偏移 72 开始，每 42 字节。部位 0 的段 0 从记录内偏移 26 起。
+     * 把眼灯的第一个段改成 5-5（与散热的 3-9 重叠）。
+     */
+    size_t part0 = 72;
+    uint8_t overlapping[LUMEN_LAYOUT_BLOB_MAX];
+    memcpy(overlapping, blob, n);
+    overlapping[part0 + 26] = 5;
+    overlapping[part0 + 27] = 5;
+    CHECK(!lumen_layout_blob_decode(overlapping, n, &strips, &out));
+
+    /* start > end。 */
+    uint8_t inverted[LUMEN_LAYOUT_BLOB_MAX];
+    memcpy(inverted, blob, n);
+    inverted[part0 + 26] = 9;
+    inverted[part0 + 27] = 0;
+    CHECK(!lumen_layout_blob_decode(inverted, n, &strips, &out));
+
+    /* 名字 name_len 之后有非 0 字节。 */
+    uint8_t dirty_name[LUMEN_LAYOUT_BLOB_MAX];
+    memcpy(dirty_name, blob, n);
+    dirty_name[part0 + 1 + 10] = 'X';
+    CHECK(!lumen_layout_blob_decode(dirty_name, n, &strips, &out));
+
+    /* 未使用的部位槽位非 0（半套写入）。 */
+    uint8_t ghost[LUMEN_LAYOUT_BLOB_MAX];
+    memcpy(ghost, blob, n);
+    size_t part5 = 72 + 5 * 42;
+    ghost[part5 + 25] = 1; /* seg_count = 1，但 part_count[0] = 3 */
+    CHECK(!lumen_layout_blob_decode(ghost, n, &strips, &out));
+
+    /* 原样的 blob 仍然能解（证明上面的失败都来自变异，不是解析器坏了）。 */
+    CHECK(lumen_layout_blob_decode(blob, n, &strips, &out));
+}
+
+/* ================= v5（#155）：场景存储 ================= */
+
+static lumen_effect_layer_t make_static_layer(uint16_t hue, uint8_t sat, uint8_t level)
+{
+    lumen_effect_layer_t l;
+    memset(&l, 0, sizeof(l));
+    l.type = LUMEN_EFFECT_STATIC;
+    l.param[0] = (uint8_t)(hue & 0xFF);
+    l.param[1] = (uint8_t)(hue >> 8);
+    l.param[2] = sat;
+    l.level = level;
+    return l;
+}
+
+static lumen_effect_layer_t make_empty_layer(void)
+{
+    lumen_effect_layer_t l;
+    memset(&l, 0, sizeof(l));
+    l.type = LUMEN_LAYER_EMPTY;
+    return l;
+}
+
+static lumen_effect_layer_t make_anim_layer(uint8_t type, uint16_t hue, uint8_t sat,
+                                            uint16_t period, uint8_t p5, uint8_t flags,
+                                            uint8_t level)
+{
+    lumen_effect_layer_t l;
+    memset(&l, 0, sizeof(l));
+    l.type = type;
+    l.param[0] = (uint8_t)(hue & 0xFF);
+    l.param[1] = (uint8_t)(hue >> 8);
+    l.param[2] = sat;
+    l.param[3] = (uint8_t)(period & 0xFF);
+    l.param[4] = (uint8_t)(period >> 8);
+    l.param[5] = p5;
+    l.param[6] = flags;
+    l.level = level;
+    return l;
+}
+
+/* 建一个「整条 / 1 步 / 常亮」的默认场景（票 #155 验收项）。 */
+static void build_default_scene(lumen_scene_t *scene)
+{
+    lumen_scene_init(scene);
+    CHECK(lumen_scene_set_name(scene, 6, (const uint8_t *)"待机") == LUMEN_RESULT_OK);
+    CHECK(lumen_scene_set_part(scene, 0, 0, 1, LUMEN_LOOP_ALL_V5, 1, 1, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_scene_set_step(scene, 0, 0, 0, 1000, make_static_layer(0, 255, 100),
+                               make_empty_layer(), 1, 1) == LUMEN_RESULT_OK);
+}
+
+static void test_scene_sizes(void)
+{
+    CHECK(sizeof(lumen_scene_step_t) == 20);
+    CHECK(sizeof(lumen_part_scene_t) == 164);
+    CHECK(sizeof(lumen_scene_t) == 10530);
+    CHECK(sizeof(lumen_scene_set_t) == 3 * 10530);
+    CHECK(LUMEN_SCENE_BLOB_MAX == 12288);
+    CHECK(LUMEN_SCENE_PART_MAX_BYTES == 163);
+}
+
+static void test_scene_set_part_clears(void)
+{
+    lumen_scene_t scene;
+    build_default_scene(&scene);
+    CHECK(scene.part[0][0].step_count == 1);
+    CHECK(scene.part[0][0].on == 1);
+
+    /* 改时间轴头：步数、循环、开关都能改，写步数会清空旧步骤。 */
+    CHECK(lumen_scene_set_part(&scene, 0, 0, 0, LUMEN_LOOP_NONE_V5, 0, 1, 1) ==
+          LUMEN_RESULT_OK);
+    CHECK(scene.part[0][0].step_count == 0);
+    CHECK(scene.part[0][0].loop == LUMEN_LOOP_NONE_V5);
+    CHECK(scene.part[0][0].on == 0);
+    CHECK(scene.part[0][0].step[0].duration_ms == 0);
+
+    /* 0 步 = 本场景不演（S10），合法。 */
+    CHECK(!lumen_scene_part_plays(&scene, 0, 0));
+
+    /* 越界值。 */
+    CHECK(lumen_scene_set_part(&scene, 0, 0, 9, LUMEN_LOOP_ALL_V5, 1, 1, 1) ==
+          LUMEN_RESULT_INVALID_PARAM);
+    CHECK(lumen_scene_set_part(&scene, 0, 0, 1, 3, 1, 1, 1) == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(lumen_scene_set_part(&scene, 0, 0, 1, LUMEN_LOOP_ALL_V5, 2, 1, 1) ==
+          LUMEN_RESULT_INVALID_PARAM);
+    /* part_id 必须小于布局给的部位数。 */
+    CHECK(lumen_scene_set_part(&scene, 0, 1, 1, LUMEN_LOOP_ALL_V5, 1, 1, 1) ==
+          LUMEN_RESULT_INVALID_PARAM);
+    /* 链越界。 */
+    CHECK(lumen_scene_set_part(&scene, 1, 0, 1, LUMEN_LOOP_ALL_V5, 1, 1, 1) ==
+          LUMEN_RESULT_INVALID_PARAM);
+}
+
+static void test_scene_set_step_rules(void)
+{
+    lumen_scene_t scene;
+    build_default_scene(&scene);
+
+    /* 时长两端（T6：100ms - 60s）。 */
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, LUMEN_STEP_MIN_MS,
+                               make_static_layer(0, 255, 100), make_empty_layer(), 1, 1) ==
+          LUMEN_RESULT_OK);
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, LUMEN_STEP_MAX_MS,
+                               make_static_layer(0, 255, 100), make_empty_layer(), 1, 1) ==
+          LUMEN_RESULT_OK);
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, 99, make_static_layer(0, 255, 100),
+                               make_empty_layer(), 1, 1) == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, 0, make_static_layer(0, 255, 100),
+                               make_empty_layer(), 1, 1) == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, 60001, make_static_layer(0, 255, 100),
+                               make_empty_layer(), 1, 1) == LUMEN_RESULT_INVALID_PARAM);
+
+    /* layer0 不能为空（§7.1）。 */
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, 1000, make_empty_layer(),
+                               make_static_layer(0, 255, 100), 1, 1) ==
+          LUMEN_RESULT_INVALID_PARAM);
+
+    /* 空层的 level 必须为 0。 */
+    lumen_effect_layer_t bad_empty = make_empty_layer();
+    bad_empty.level = 50;
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, 1000, make_static_layer(0, 255, 100), bad_empty,
+                               1, 1) == LUMEN_RESULT_INVALID_PARAM);
+
+    /* 层亮度 ≤ 100。 */
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, 1000, make_static_layer(0, 255, 101),
+                               make_empty_layer(), 1, 1) == LUMEN_RESULT_INVALID_PARAM);
+
+    /* 未知灯效类型。 */
+    lumen_effect_layer_t unknown = make_static_layer(0, 255, 100);
+    unknown.type = 0x09;
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, 1000, unknown, make_empty_layer(), 1, 1) ==
+          LUMEN_RESULT_INVALID_PARAM);
+
+    /* 呼吸周期下限 334ms。 */
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, 1000,
+                               make_anim_layer(LUMEN_EFFECT_BREATHING, 0, 255, 333, 30, 0, 100),
+                               make_empty_layer(), 1, 1) == LUMEN_RESULT_INVALID_PARAM);
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, 1000,
+                               make_anim_layer(LUMEN_EFFECT_BREATHING, 0, 255, 334, 30, 0, 100),
+                               make_empty_layer(), 1, 1) == LUMEN_RESULT_OK);
+
+    /* 爆闪 flags 必须 0。 */
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, 1000,
+                               make_anim_layer(LUMEN_EFFECT_STROBE, 0, 255, 100, 90, 0x01, 100),
+                               make_empty_layer(), 1, 1) == LUMEN_RESULT_INVALID_PARAM);
+
+    /* 步号 ≥ step_count 被拒（必须先 ScenePart 声明步数）。 */
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 1, 1000, make_static_layer(0, 255, 100),
+                               make_empty_layer(), 1, 1) == LUMEN_RESULT_INVALID_PARAM);
+    /* 步号 8 超上限。 */
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 8, 1000, make_static_layer(0, 255, 100),
+                               make_empty_layer(), 1, 1) == LUMEN_RESULT_INVALID_PARAM);
+}
+
+static void test_scene_loop_and_clock(void)
+{
+    lumen_scene_t scene;
+    lumen_scene_init(&scene);
+    CHECK(lumen_scene_set_part(&scene, 0, 0, 3, LUMEN_LOOP_LAST_V5, 1, 1, 1) ==
+          LUMEN_RESULT_OK);
+
+    /* 三档循环值。 */
+    for (uint8_t loop = 0; loop <= 2; ++loop) {
+        CHECK(lumen_scene_set_part(&scene, 0, 0, 3, loop, 1, 1, 1) == LUMEN_RESULT_OK);
+        CHECK(scene.part[0][0].loop == loop);
+    }
+
+    /* 总时长是所有步之和（3 步 × 500 / 1000 / 1500）。 */
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, 500, make_static_layer(0, 255, 100),
+                               make_empty_layer(), 1, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 1, 1000, make_static_layer(0, 255, 100),
+                               make_empty_layer(), 1, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 2, 1500, make_static_layer(0, 255, 100),
+                               make_empty_layer(), 1, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_scene_part_total_ms(&scene.part[0][0]) == 3000);
+
+    /* 开关只灭灯、不停时钟：plays 为假但步表与总时长不变（T8）。 */
+    CHECK(lumen_scene_set_part(&scene, 0, 0, 3, LUMEN_LOOP_ALL_V5, 0, 1, 1) ==
+          LUMEN_RESULT_OK);
+    CHECK(!lumen_scene_part_plays(&scene, 0, 0));
+    CHECK(scene.part[0][0].step_count == 3);
+    /* 子开关状态独立保留（父开关不动它，T9）。 */
+    CHECK(scene.part[0][0].on == 0);
+}
+
+static void test_scene_layer_sizes(void)
+{
+    /* 变长层的编码长度：空 1 / 静态与熄灭 5 / 带动画 9（§10.4）。 */
+    lumen_effect_layer_t empty = make_empty_layer();
+    CHECK(lumen_scene_layer_encoded_size(&empty) == 1);
+    lumen_effect_layer_t stat = make_static_layer(1000, 200, 100);
+    CHECK(lumen_scene_layer_encoded_size(&stat) == 5);
+    lumen_effect_layer_t off = make_anim_layer(LUMEN_EFFECT_OFF, 0, 0, 0, 0, 0, 100);
+    CHECK(lumen_scene_layer_encoded_size(&off) == 5);
+    lumen_effect_layer_t rainbow =
+        make_anim_layer(LUMEN_EFFECT_RAINBOW, 0, 255, 4000, 255, 0, 100);
+    CHECK(lumen_scene_layer_encoded_size(&rainbow) == 9);
+    CHECK(LUMEN_SCENE_LAYER_EMPTY_BYTES == 1);
+    CHECK(LUMEN_SCENE_LAYER_STATIC_BYTES == 5);
+    CHECK(LUMEN_SCENE_LAYER_ANIM_BYTES == 9);
+}
+
+/*
+ * 票 #155 的验收项：「最大形态（8 链 × 8 部位 × 8 步 × 两层）编码后 ≤ 12 KB
+ * 有单测」。这是三条存储风险里的第 1 条（体积全是设计期算术）的可执行答案。
+ */
+static void test_scene_blob_max_size(void)
+{
+    lumen_scene_t *scene = calloc(1, sizeof(lumen_scene_t));
+    if (scene == NULL) {
+        CHECK(false);
+        return;
+    }
+    lumen_scene_init(scene);
+
+    /* 全填满：8 链 × 8 部位 × 8 步，每步两层都带动画（最坏形态）。 */
+    for (uint8_t strip = 0; strip < 8; ++strip) {
+        for (uint8_t part = 0; part < 8; ++part) {
+            CHECK(lumen_scene_set_part(scene, strip, part, 8, LUMEN_LOOP_ALL_V5, 1, 8, 8) ==
+                  LUMEN_RESULT_OK);
+            for (uint8_t step = 0; step < 8; ++step) {
+                CHECK(lumen_scene_set_step(
+                          scene, strip, part, step, 60000,
+                          make_anim_layer(LUMEN_EFFECT_RAINBOW, 0, 255, 4000, 255, 0, 100),
+                          make_anim_layer(LUMEN_EFFECT_COMET, 30000, 255, 1200, 8, 0x0F, 100), 8,
+                          8) == LUMEN_RESULT_OK);
+            }
+        }
+    }
+
+    size_t worst = lumen_scene_blob_size(scene);
+    /* 契约算术：40（头）+ 64×3（部位头）+ 512 步 × (2 + 9 + 9) = 40 + 192 + 10240。 */
+    CHECK(worst == 10472);
+    CHECK(worst <= LUMEN_SCENE_BLOB_MAX);
+    printf("scene worst-case blob: %u bytes (limit %u)\n", (unsigned)worst,
+           (unsigned)LUMEN_SCENE_BLOB_MAX);
+
+    uint8_t *blob = malloc(LUMEN_SCENE_BLOB_MAX);
+    if (blob == NULL) {
+        CHECK(false);
+        free(scene);
+        return;
+    }
+    size_t n = lumen_scene_blob_encode(scene, blob, LUMEN_SCENE_BLOB_MAX);
+    CHECK(n == worst);
+
+    /* 能解回来，而且步数 / 时长 / 两层都在。 */
+    lumen_scene_t *back = calloc(1, sizeof(lumen_scene_t));
+    if (back != NULL) {
+        CHECK(lumen_scene_blob_decode(blob, n, back));
+        CHECK(back->part[7][7].step_count == 8);
+        CHECK(back->part[7][7].step[7].duration_ms == 60000);
+        CHECK(back->part[0][0].step[0].layer[0].type == LUMEN_EFFECT_RAINBOW);
+        CHECK(back->part[0][0].step[0].layer[1].type == LUMEN_EFFECT_COMET);
+        /* 变长编码不能丢字节：comet 的 flags 与 p5 必须原样回来。 */
+        CHECK(back->part[0][0].step[0].layer[1].param[5] == 8);
+        CHECK(back->part[0][0].step[0].layer[1].param[6] == 0x0F);
+        free(back);
+    }
+    free(blob);
+    free(scene);
+}
+
+static void test_scene_blob_roundtrip(void)
+{
+    lumen_scene_t scene;
+    build_default_scene(&scene);
+    /* 一步两层：静态打底 + 流光叠加（混合方式不在线上，由有无 layer1 决定）。 */
+    CHECK(lumen_scene_set_part(&scene, 0, 0, 2, LUMEN_LOOP_LAST_V5, 1, 1, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, 500, make_static_layer(0, 255, 100),
+                               make_anim_layer(LUMEN_EFFECT_COMET, 30000, 255, 1200, 8, 0x01,
+                                               100),
+                               1, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 1, 1500,
+                               make_anim_layer(LUMEN_EFFECT_BREATHING, 21845, 200, 2000, 30, 0,
+                                               50),
+                               make_empty_layer(), 1, 1) == LUMEN_RESULT_OK);
+
+    uint8_t blob[LUMEN_SCENE_BLOB_MAX];
+    size_t n = lumen_scene_blob_encode(&scene, blob, sizeof(blob));
+    CHECK(n > 0);
+    CHECK(n == lumen_scene_blob_size(&scene));
+
+    /* magic / 版本 / 名字。 */
+    CHECK(blob[0] == 'L' && blob[1] == 'M' && blob[2] == 'S' && blob[3] == '5');
+    CHECK(blob[4] == LUMEN_SCENE_BLOB_VERSION);
+    CHECK(blob[5] == 6);
+    CHECK(memcmp(&blob[6], "待机", 6) == 0);
+
+    lumen_scene_t back;
+    CHECK(lumen_scene_blob_decode(blob, n, &back));
+    CHECK(back.name_len == 6);
+    CHECK(memcmp(back.name, "待机", 6) == 0);
+    CHECK(back.part[0][0].step_count == 2);
+    CHECK(back.part[0][0].loop == LUMEN_LOOP_LAST_V5);
+    CHECK(back.part[0][0].on == 1);
+    CHECK(back.part[0][0].step[0].duration_ms == 500);
+    CHECK(back.part[0][0].step[0].layer[0].type == LUMEN_EFFECT_STATIC);
+    CHECK(back.part[0][0].step[0].layer[1].type == LUMEN_EFFECT_COMET);
+    CHECK(back.part[0][0].step[0].layer[1].param[6] == 0x01);
+    CHECK(back.part[0][0].step[1].duration_ms == 1500);
+    CHECK(back.part[0][0].step[1].layer[0].type == LUMEN_EFFECT_BREATHING);
+    CHECK(back.part[0][0].step[1].layer[0].level == 50);
+    CHECK(back.part[0][0].step[1].layer[1].type == LUMEN_LAYER_EMPTY);
+
+    /* 逐字节往返：再编码一次必须完全一致。 */
+    uint8_t again[LUMEN_SCENE_BLOB_MAX];
+    size_t n2 = lumen_scene_blob_encode(&back, again, sizeof(again));
+    CHECK(n2 == n);
+    CHECK(memcmp(blob, again, n) == 0);
+}
+
+static void test_scene_blob_rejects_bad(void)
+{
+    lumen_scene_t scene;
+    build_default_scene(&scene);
+    uint8_t blob[LUMEN_SCENE_BLOB_MAX];
+    size_t n = lumen_scene_blob_encode(&scene, blob, sizeof(blob));
+    CHECK(n > 0);
+
+    lumen_scene_t out;
+
+    /* 长度：过短、超过硬上限。 */
+    CHECK(!lumen_scene_blob_decode(blob, n - 1, &out));
+    CHECK(!lumen_scene_blob_decode(blob, LUMEN_SCENE_BLOB_MAX + 1, &out));
+
+    struct {
+        size_t off;
+        uint8_t value;
+    } mutations[] = {
+        {0, 'X'},   /* magic */
+        {4, 9},     /* version */
+        {5, 25},    /* name_len 超 24 */
+        {6 + 7, 1}, /* name 填充里塞非 0 */
+    };
+    for (size_t i = 0; i < sizeof(mutations) / sizeof(mutations[0]); ++i) {
+        uint8_t bad[LUMEN_SCENE_BLOB_MAX];
+        memcpy(bad, blob, n);
+        bad[mutations[i].off] = mutations[i].value;
+        lumen_scene_t keep;
+        memset(&keep, 0xCD, sizeof(keep));
+        CHECK(!lumen_scene_blob_decode(bad, n, &keep));
+        CHECK(((const uint8_t *)&keep)[0] == 0xCD);
+    }
+
+    /*
+     * 每链 part_count 在偏移 32 起；部位头在 40 起。
+     * 把一个部位的 step_count 改成 9（超过 MAX_STEPS）。
+     */
+    uint8_t bad_steps[LUMEN_SCENE_BLOB_MAX];
+    memcpy(bad_steps, blob, n);
+    CHECK(bad_steps[32] == 1); /* strip0 有 1 个部位 */
+    bad_steps[40] = 9;
+    CHECK(!lumen_scene_blob_decode(bad_steps, n, &out));
+
+    /* loop 改成 3（三值只有 0/1/2）。 */
+    uint8_t bad_loop[LUMEN_SCENE_BLOB_MAX];
+    memcpy(bad_loop, blob, n);
+    bad_loop[41] = 3;
+    CHECK(!lumen_scene_blob_decode(bad_loop, n, &out));
+
+    /* on 改成 2。 */
+    uint8_t bad_on[LUMEN_SCENE_BLOB_MAX];
+    memcpy(bad_on, blob, n);
+    bad_on[42] = 2;
+    CHECK(!lumen_scene_blob_decode(bad_on, n, &out));
+
+    /* 时长改到 99ms（低于下限）。 */
+    uint8_t bad_dur[LUMEN_SCENE_BLOB_MAX];
+    memcpy(bad_dur, blob, n);
+    bad_dur[43] = 99;
+    bad_dur[44] = 0;
+    CHECK(!lumen_scene_blob_decode(bad_dur, n, &out));
+
+    /* 时长改到 60001ms（高于上限）。 */
+    uint8_t bad_dur_hi[LUMEN_SCENE_BLOB_MAX];
+    memcpy(bad_dur_hi, blob, n);
+    bad_dur_hi[43] = (uint8_t)(60001 & 0xFF);
+    bad_dur_hi[44] = (uint8_t)(60001 >> 8);
+    CHECK(!lumen_scene_blob_decode(bad_dur_hi, n, &out));
+
+    /* layer0 改成空层（§7.1 要求非空）。 */
+    uint8_t bad_layer0[LUMEN_SCENE_BLOB_MAX];
+    memcpy(bad_layer0, blob, n);
+    bad_layer0[45] = LUMEN_LAYER_EMPTY;
+    CHECK(!lumen_scene_blob_decode(bad_layer0, n, &out));
+
+    /* 尾部多一个字节（长度必须与内容一致）。 */
+    uint8_t extra[LUMEN_SCENE_BLOB_MAX + 1];
+    memcpy(extra, blob, n);
+    extra[n] = 0;
+    CHECK(!lumen_scene_blob_decode(extra, n + 1, &out));
+
+    /* 原样的仍能解。 */
+    CHECK(lumen_scene_blob_decode(blob, n, &out));
+}
+
+static void test_scene_encode_capacity(void)
+{
+    lumen_scene_t scene;
+    build_default_scene(&scene);
+
+    /* out_cap 不足 → 0（调用方据此回 StorageFailed）。 */
+    uint8_t small[16];
+    CHECK(lumen_scene_blob_encode(&scene, small, sizeof(small)) == 0);
+
+    /* 空场景也有固定头部（32 字节头 + 每链 1 字节 + 每部位 3 字节头）。 */
+    lumen_scene_t empty;
+    lumen_scene_init(&empty);
+    CHECK(lumen_scene_blob_size(&empty) == 32 + 8 + 64 * 3);
+    uint8_t blob[LUMEN_SCENE_BLOB_MAX];
+    size_t n = lumen_scene_blob_encode(&empty, blob, sizeof(blob));
+    CHECK(n == 32 + 8 + 64 * 3);
+    lumen_scene_t back;
+    CHECK(lumen_scene_blob_decode(blob, n, &back));
+    CHECK(back.part[0][0].step_count == 0);
+}
+
+/* ================= v5（#155）：播放头推进（纯函数） ================= */
+
+/* 建一个 n 步的部位时间轴，每步时长取 durations[]。 */
+static void build_part_timeline(lumen_part_scene_t *part, const uint16_t *durations, uint8_t n,
+                                uint8_t loop)
+{
+    memset(part, 0, sizeof(*part));
+    part->step_count = n;
+    part->loop = loop;
+    part->on = 1;
+    for (uint8_t i = 0; i < n; ++i) {
+        part->step[i].duration_ms = durations[i];
+        part->step[i].layer[0] = make_static_layer((uint16_t)(i * 1000), 255, 100);
+        part->step[i].layer[1] = make_empty_layer();
+    }
+}
+
+static void test_part_clock_basics(void)
+{
+    lumen_part_scene_t part;
+    uint16_t durs[3] = {1000, 2000, 3000};
+    build_part_timeline(&part, durs, 3, LUMEN_LOOP_ALL_V5);
+
+    /* 未启动：finished、步 0、无进度。 */
+    lumen_part_clock_t clock;
+    memset(&clock, 0, sizeof(clock));    lumen_part_position_t pos = lumen_part_clock_advance(&part, &clock, 5000);
+    CHECK(pos.finished);
+    CHECK(pos.step_index == 0);
+    CHECK(pos.elapsed_ms == 0);
+
+    /* 启动后从 0 开始。 */
+    lumen_part_clock_start(&clock, 1000);
+    CHECK(clock.started);
+    CHECK(clock.origin_ms == 1000);
+
+    /* 重复启动不重置（编辑不打断时钟，E2）。 */
+    lumen_part_clock_start(&clock, 9999);
+    CHECK(clock.origin_ms == 1000);
+
+    /* t = origin：第 1 步第 0 ms。 */
+    pos = lumen_part_clock_advance(&part, &clock, 1000);
+    CHECK(pos.step_index == 0 && pos.elapsed_ms == 0 && !pos.finished);
+
+    /* t = origin + 999：第 1 步最后 1ms（边界：正好小于时长）。 */
+    pos = lumen_part_clock_advance(&part, &clock, 1999);
+    CHECK(pos.step_index == 0 && pos.elapsed_ms == 999);
+
+    /* t = origin + 1000：正好等于时长 → 第 2 步第 0 ms（边界）。 */
+    pos = lumen_part_clock_advance(&part, &clock, 2000);
+    CHECK(pos.step_index == 1 && pos.elapsed_ms == 0);
+
+    /* t = origin + 3000：第 3 步起点。 */
+    pos = lumen_part_clock_advance(&part, &clock, 4000);
+    CHECK(pos.step_index == 2 && pos.elapsed_ms == 0);
+
+    /* 总时长 6000：全部循环 → t = origin + 6000 回到第 1 步。 */
+    pos = lumen_part_clock_advance(&part, &clock, 7000);
+    CHECK(pos.step_index == 0 && pos.elapsed_ms == 0 && !pos.finished);
+
+    /* step_start_ms = now - elapsed，供 compose 当 t0 用。 */
+    pos = lumen_part_clock_advance(&part, &clock, 7400);
+    CHECK(pos.step_index == 0 && pos.elapsed_ms == 400);
+    CHECK(pos.step_start_ms == 7000);
+
+    /* now < origin（时钟回绕）按 0 处理，不出负数。 */
+    pos = lumen_part_clock_advance(&part, &clock, 500);
+    CHECK(pos.step_index == 0 && pos.elapsed_ms == 0);
+}
+
+static void test_part_clock_no_loop(void)
+{
+    lumen_part_scene_t part;
+    uint16_t durs[2] = {1000, 2000};
+    build_part_timeline(&part, durs, 2, LUMEN_LOOP_NONE_V5);
+
+    lumen_part_clock_t clock;
+    memset(&clock, 0, sizeof(clock));
+    lumen_part_clock_start(&clock, 100);
+
+    /* 走到末步中间。 */
+    lumen_part_position_t pos = lumen_part_clock_advance(&part, &clock, 100 + 2000);
+    CHECK(pos.step_index == 1 && pos.elapsed_ms == 1000 && !pos.finished);
+
+    /* 越过总时长 → 停在最后一帧（T4：不熄灭、不回头）。 */
+    pos = lumen_part_clock_advance(&part, &clock, 100 + 3000);
+    CHECK(pos.step_index == 1 && pos.finished);
+    CHECK(pos.elapsed_ms == 2000); /* 冻结在末步时长处 */
+    /* 再往后也一样（最后一帧不再变化）。 */
+    pos = lumen_part_clock_advance(&part, &clock, 100 + 100000);
+    CHECK(pos.step_index == 1 && pos.elapsed_ms == 2000 && pos.finished);
+
+    /* 单步 + 不循环：立即 finished，画面一直显示那一帧。 */
+    lumen_part_scene_t single;
+    uint16_t one[1] = {1000};
+    build_part_timeline(&single, one, 1, LUMEN_LOOP_NONE_V5);
+    lumen_part_clock_t c2;
+    memset(&c2, 0, sizeof(c2));
+    lumen_part_clock_start(&c2, 0);
+    pos = lumen_part_clock_advance(&single, &c2, 0);
+    CHECK(pos.step_index == 0 && !pos.finished);
+    pos = lumen_part_clock_advance(&single, &c2, 1000);
+    CHECK(pos.step_index == 0 && pos.finished);
+}
+
+static void test_part_clock_loop_last(void)
+{
+    lumen_part_scene_t part;
+    uint16_t durs[3] = {1000, 2000, 4000};
+    build_part_timeline(&part, durs, 3, LUMEN_LOOP_LAST_V5);
+    /* 前 N-1 步合计 3000，末步 4000。 */
+
+    lumen_part_clock_t clock;
+    memset(&clock, 0, sizeof(clock));
+    lumen_part_clock_start(&clock, 0);
+
+    /* 前 N-1 步各播一次：t = 0/1000/3000 正常推进。 */
+    lumen_part_position_t pos = lumen_part_clock_advance(&part, &clock, 0);
+    CHECK(pos.step_index == 0 && pos.elapsed_ms == 0);
+    pos = lumen_part_clock_advance(&part, &clock, 1000);
+    CHECK(pos.step_index == 1 && pos.elapsed_ms == 0);
+    pos = lumen_part_clock_advance(&part, &clock, 2999);
+    CHECK(pos.step_index == 1 && pos.elapsed_ms == 1999);
+
+    /* 进入末步。 */
+    pos = lumen_part_clock_advance(&part, &clock, 3000);
+    CHECK(pos.step_index == 2 && pos.elapsed_ms == 0);
+
+    /* 末步中途。 */
+    pos = lumen_part_clock_advance(&part, &clock, 5000);
+    CHECK(pos.step_index == 2 && pos.elapsed_ms == 2000);
+    CHECK(pos.step_start_ms == 3000);
+
+    /* 末步走完 → 原地重播末步（不是回到第 1 步）。 */
+    pos = lumen_part_clock_advance(&part, &clock, 7000);
+    CHECK(pos.step_index == 2 && pos.elapsed_ms == 0);
+    CHECK(pos.step_start_ms == 7000);
+
+    /* 再过两轮仍然是末步。 */
+    pos = lumen_part_clock_advance(&part, &clock, 3000 + 4000 * 3 + 1000);
+    CHECK(pos.step_index == 2 && pos.elapsed_ms == 1000);
+
+    /* 只有一个部位时，最后一步循环等价于全部循环。 */
+    lumen_part_scene_t single;
+    uint16_t one[1] = {500};
+    build_part_timeline(&single, one, 1, LUMEN_LOOP_LAST_V5);
+    lumen_part_clock_t c2;
+    memset(&c2, 0, sizeof(c2));
+    lumen_part_clock_start(&c2, 0);
+    for (uint32_t t = 0; t < 3000; t += 100) {
+        pos = lumen_part_clock_advance(&single, &c2, t);
+        CHECK(pos.step_index == 0);
+        CHECK(pos.elapsed_ms == t % 500);
+    }
+}
+
+static void test_part_clock_zero_steps(void)
+{
+    lumen_part_scene_t part;
+    memset(&part, 0, sizeof(part));
+    part.loop = LUMEN_LOOP_ALL_V5;
+    part.on = 1; /* 开关开着但 0 步 = 本场景不演（S10） */
+
+    lumen_part_clock_t clock;
+    memset(&clock, 0, sizeof(clock));
+    lumen_part_clock_start(&clock, 1234);
+    lumen_part_position_t pos = lumen_part_clock_advance(&part, &clock, 99999);
+    CHECK(pos.finished);
+    CHECK(pos.step_index == 0);
+    CHECK(pos.elapsed_ms == 0);
+}
+
+/*
+ * 长时间不漂移：播放头用绝对时间差值推进，不做累加。
+ * 在 origin + 4 小时的位置求值，必须与「按总时长折回」的算术结果逐毫秒一致。
+ */
+static void test_part_clock_no_drift(void)
+{
+    lumen_part_scene_t part;
+    uint16_t durs[3] = {333, 777, 1500};
+    build_part_timeline(&part, durs, 3, LUMEN_LOOP_ALL_V5);
+    const uint32_t total = 333 + 777 + 1500; /* 2610 */
+
+    lumen_part_clock_t clock;
+    memset(&clock, 0, sizeof(clock));
+    lumen_part_clock_start(&clock, 1);
+    for (uint32_t hour = 0; hour < 4; ++hour) {
+        uint32_t now = 1 + hour * 3600000u + 12347u;
+        uint32_t elapsed = (now - 1) % total;
+        lumen_part_position_t pos = lumen_part_clock_advance(&part, &clock, now);
+        /* 手工按同一份算术定位。 */
+        uint32_t want_step = 0;
+        uint32_t want_elapsed = elapsed;
+        if (elapsed >= 333) {
+            want_elapsed = elapsed - 333;
+            want_step = 1;
+            if (want_elapsed >= 777) {
+                want_elapsed -= 777;
+                want_step = 2;
+            }
+        }
+        CHECK(pos.step_index == want_step);
+        CHECK(pos.elapsed_ms == want_elapsed);
+    }
+
+    /*
+     * 真实的 uint32 回绕：origin 接近上限、now 已绕到开头。
+     * 差值 (now - origin) mod 2^32 = 0x300 = 768ms，必须照常推进，
+     * 而不是被当成「now 比 origin 早」卡在 0。
+     * 768 落在第 2 步（第 1 步 333ms 之后 435ms）。
+     */
+    lumen_part_clock_t wrap;
+    memset(&wrap, 0, sizeof(wrap));
+    lumen_part_clock_start(&wrap, 0xFFFFFF00u);
+    lumen_part_position_t wrapped = lumen_part_clock_advance(&part, &wrap, 0x200u);
+    CHECK(wrapped.step_index == 1);
+    CHECK(wrapped.elapsed_ms == 768 - 333);
+
+    /*
+     * 反向跳变（调用方把时钟往前调、或 origin 还没写）：按 0 处理，
+     * 不给出一个接近 2^32 的天文数字。
+     */
+    lumen_part_clock_t back;
+    memset(&back, 0, sizeof(back));
+    lumen_part_clock_start(&back, 5000);
+    lumen_part_position_t rewound = lumen_part_clock_advance(&part, &back, 100);
+    CHECK(rewound.step_index == 0);
+    CHECK(rewound.elapsed_ms == 0);
+}
+
+/* ================= v5（#155）：合成（唯一渲染接缝） ================= */
+
+/* 建一个「一条链 / 一个部位 / 覆盖整条」的布局 + 场景对。 */
+static void build_whole_strip_pair(lumen_layout_store_t *layout, lumen_scene_t *scene,
+                                   uint16_t led_count)
+{
+    lumen_layout_store_init(layout);
+    CHECK(lumen_layout_store_write(layout, 0, 1, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_part(layout, 0, 0, 0, NULL, 1, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_seg(layout, 0, 0, 0, 0, (uint8_t)(led_count - 1), led_count, 1) ==
+          LUMEN_RESULT_OK);
+
+    lumen_scene_init(scene);
+    CHECK(lumen_scene_set_part(scene, 0, 0, 1, LUMEN_LOOP_ALL_V5, 1, 1, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_scene_set_step(scene, 0, 0, 0, 1000, make_static_layer(0, 255, 100),
+                               make_empty_layer(), 1, 1) == LUMEN_RESULT_OK);
+}
+
+static void test_compose_uncovered_is_black(void)
+{
+    /*
+     * 票 #155 验收项：「未覆盖的灯珠恒黑」。布局里故意留一条没有部位的链、
+     * 以及一条部位只覆盖前 3 颗的链——其余必须是**真黑**（不是上一帧残留，
+     * 也不是暖白兜底）。
+     */
+    lumen_layout_store_t layout;
+    lumen_scene_t scene;
+    lumen_part_clocks_t clocks;
+    lumen_part_clocks_init(&clocks);
+
+    lumen_layout_store_init(&layout);
+    /* 链 0：只有「整条 0-9」的一部分被覆盖（0-2）。 */
+    CHECK(lumen_layout_store_write(&layout, 0, 1, 2) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 0, NULL, 1, 2) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_seg(&layout, 0, 0, 0, 0, 2, 30, 2) == LUMEN_RESULT_OK);
+    /* 链 1：故意一个部位都不建。 */
+    CHECK(lumen_layout_store_write(&layout, 1, 0, 2) == LUMEN_RESULT_OK);
+
+    lumen_scene_init(&scene);
+    CHECK(lumen_scene_set_part(&scene, 0, 0, 1, LUMEN_LOOP_ALL_V5, 1, 2, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, 1000, make_static_layer(0, 255, 100),
+                               make_empty_layer(), 2, 1) == LUMEN_RESULT_OK);
+
+    lumen_part_clocks_reset_strip(&clocks, 0, 1, 500);
+    lumen_part_clocks_reset_strip(&clocks, 1, 0, 500);
+
+    uint8_t buf[30 * 3];
+    /* 先用脏值填满，证明 compose 真的清零（不是碰巧）。 */
+    memset(buf, 0xAA, sizeof(buf));
+    uint16_t n = lumen_scene_compose(&layout, &scene, &clocks, 600, 0, LUMEN_PHASE_CONTINUOUS, buf,
+                                     30);
+    CHECK(n == 30);
+
+    /* 0-2：被覆盖，静态暖红出光（hue 0 sat 255 → 纯红）。 */
+    CHECK(buf[0] > 0);
+    CHECK(buf[1] == 0 && buf[2] == 0);
+    CHECK(buf[6] > 0);
+    CHECK(buf[2 * 3] > 0);
+    /* 3-29：灰缝恒黑（真黑，不是 0xAA 残留）。 */
+    for (uint16_t i = 3; i < 30; ++i) {
+        CHECK(buf[i * 3] == 0);
+        CHECK(buf[i * 3 + 1] == 0);
+        CHECK(buf[i * 3 + 2] == 0);
+    }
+
+    /* 一条没有部位的链：整条黑。 */
+    memset(buf, 0xAA, sizeof(buf));
+    n = lumen_scene_compose(&layout, &scene, &clocks, 600, 1, LUMEN_PHASE_CONTINUOUS, buf, 30);
+    CHECK(n == 30);
+    for (uint16_t i = 0; i < 30; ++i) {
+        CHECK(buf[i * 3] == 0 && buf[i * 3 + 1] == 0 && buf[i * 3 + 2] == 0);
+    }
+}
+
+static void test_compose_part_switch(void)
+{
+    /* 部位开关只灭灯、不停时钟：关掉时全黑，重新打开时画面接着往下走（T8/T9）。 */
+    lumen_layout_store_t layout;
+    lumen_scene_t scene;
+    lumen_part_clocks_t clocks;
+    lumen_part_clocks_init(&clocks);
+    build_whole_strip_pair(&layout, &scene, 10);
+
+    /* 两步：第 1 步红 1000ms、第 2 步蓝 1000ms。 */
+    CHECK(lumen_scene_set_part(&scene, 0, 0, 2, LUMEN_LOOP_ALL_V5, 1, 1, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, 1000, make_static_layer(0, 255, 100),
+                               make_empty_layer(), 1, 1) == LUMEN_RESULT_OK);
+    /* hue 43690 ≈ 240°（蓝）。 */
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 1, 1000, make_static_layer(43690, 255, 100),
+                               make_empty_layer(), 1, 1) == LUMEN_RESULT_OK);
+
+    lumen_part_clocks_reset_strip(&clocks, 0, 1, 0);
+    uint8_t buf[10 * 3];
+    /* t=100：第 1 步（红）。 */
+    lumen_scene_compose(&layout, &scene, &clocks, 100, 0, LUMEN_PHASE_CONTINUOUS, buf, 10);
+    CHECK(buf[0] > 0);
+    CHECK(buf[2] == 0);
+    uint8_t red_sample = buf[0];
+
+    /* 关掉部位：全黑。 */
+    CHECK(lumen_scene_set_part(&scene, 0, 0, 2, LUMEN_LOOP_ALL_V5, 0, 1, 1) == LUMEN_RESULT_OK);
+    lumen_scene_compose(&layout, &scene, &clocks, 100, 0, LUMEN_PHASE_CONTINUOUS, buf, 10);
+    CHECK(buf[0] == 0 && buf[1] == 0 && buf[2] == 0);
+
+    /*
+     * 关着的时候时间照走：t=1100 仍在黑（关就是不亮），但时钟已经推进到第 2 步。
+     * 「时钟没停」的证据必须从播放头本身读，不能从像素读——像素在关掉时恒黑。
+     */
+    lumen_scene_compose(&layout, &scene, &clocks, 1100, 0, LUMEN_PHASE_CONTINUOUS, buf, 10);
+    CHECK(buf[0] == 0 && buf[1] == 0 && buf[2] == 0);
+    lumen_part_position_t pos = lumen_part_clock_advance(&scene.part[0][0], &clocks.clock[0][0],
+                                                         1100);
+    CHECK(pos.step_index == 1); /* 已经在第 2 步，没有因为关掉而冻结 */
+    CHECK(!pos.finished);
+
+    /* 重新打开：画面接着第 2 步往下走（不是从头闪）。 */
+    CHECK(lumen_scene_set_part(&scene, 0, 0, 2, LUMEN_LOOP_ALL_V5, 1, 1, 1) == LUMEN_RESULT_OK);
+    /* 开关切换不能清掉时间轴（T9：重新打开时原来的编排仍在）。 */
+    CHECK(scene.part[0][0].step_count == 2);
+    CHECK(scene.part[0][0].step[1].layer[0].param[0] == (uint8_t)(43690 & 0xFF));
+    lumen_scene_compose(&layout, &scene, &clocks, 1100, 0, LUMEN_PHASE_CONTINUOUS, buf, 10);
+    CHECK(buf[2] > 0); /* 仍是蓝，不是红的第 1 步 */
+    /* t=2100 → 折回第 1 步。 */
+    lumen_scene_compose(&layout, &scene, &clocks, 2100, 0, LUMEN_PHASE_CONTINUOUS, buf, 10);
+    CHECK(buf[0] == red_sample);
+}
+
+static void test_compose_multi_segment_shared_phase(void)
+{
+    /*
+     * 一个部位占 0-4 与 10-14（多段共享全部参数，S5）。
+     * 用彩虹验证「连续相位」下两段拼成一条逻辑灯带：20 颗一起铺满一圈色相，
+     * 所以第 0 颗与第 10 颗的色相相差半圈。
+     */
+    lumen_layout_store_t layout;
+    lumen_scene_t scene;
+    lumen_part_clocks_t clocks;
+    lumen_part_clocks_init(&clocks);
+
+    lumen_layout_store_init(&layout);
+    CHECK(lumen_layout_store_write(&layout, 0, 1, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 0, NULL, 2, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_seg(&layout, 0, 0, 0, 0, 4, 20, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_seg(&layout, 0, 0, 1, 10, 14, 20, 1) == LUMEN_RESULT_OK);
+
+    lumen_scene_init(&scene);
+    CHECK(lumen_scene_set_part(&scene, 0, 0, 1, LUMEN_LOOP_ALL_V5, 1, 1, 1) == LUMEN_RESULT_OK);
+    /* 彩虹 span 255 = 沿整条铺满一圈，period 0 = 静止（便于断言）。 */
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, 1000,
+                               make_anim_layer(LUMEN_EFFECT_RAINBOW, 0, 255, 0, 255, 0, 100),
+                               make_empty_layer(), 1, 1) == LUMEN_RESULT_OK);
+    lumen_part_clocks_reset_strip(&clocks, 0, 1, 0);
+
+    uint8_t buf[20 * 3];
+    lumen_scene_compose(&layout, &scene, &clocks, 0, 0, LUMEN_PHASE_CONTINUOUS, buf, 20);
+
+    /* 两段都出光。 */
+    for (uint8_t i = 0; i <= 4; ++i) {
+        CHECK(buf[i * 3] + buf[i * 3 + 1] + buf[i * 3 + 2] > 0);
+    }
+    for (uint8_t i = 10; i <= 14; ++i) {
+        CHECK(buf[i * 3] + buf[i * 3 + 1] + buf[i * 3 + 2] > 0);
+    }
+    /* 中间灰缝恒黑。 */
+    for (uint8_t i = 5; i <= 9; ++i) {
+        CHECK(buf[i * 3] == 0 && buf[i * 3 + 1] == 0 && buf[i * 3 + 2] == 0);
+    }
+    /* 未覆盖的 15-19 也是黑。 */
+    for (uint8_t i = 15; i < 20; ++i) {
+        CHECK(buf[i * 3] == 0 && buf[i * 3 + 1] == 0 && buf[i * 3 + 2] == 0);
+    }
+
+    /*
+     * 连续相位：第 7 个逻辑位置（物理 12）与第 2 个逻辑位置（物理 2）
+     * 应该差 5/20 = 1/4 圈色相，所以两个像素不该相同。
+     */
+    CHECK(memcmp(&buf[12 * 3], &buf[2 * 3], 3) != 0);
+
+    /*
+     * 各自起点相位：两段各自从 0 起波，所以物理 0 与物理 10 的逻辑下标都是 0
+     * → 颜色完全相同。
+     */
+    uint8_t buf2[20 * 3];
+    lumen_scene_compose(&layout, &scene, &clocks, 0, 0, LUMEN_PHASE_PER_SEGMENT, buf2, 20);
+    CHECK(memcmp(&buf2[0], &buf2[10 * 3], 3) == 0);
+    /* 段内仍按位置推进。 */
+    CHECK(memcmp(&buf2[0], &buf2[4 * 3], 3) != 0);
+    /* 连续相位下同一对不相同（证明两种模式真的不同）。 */
+    CHECK(memcmp(&buf[0], &buf[10 * 3], 3) != 0);
+}
+
+static void test_compose_two_layers(void)
+{
+    /* 两层：静态打底 + 流光叠加。混合方式不在线上，由有无 layer1 决定（E6）。 */
+    lumen_layout_store_t layout;
+    lumen_scene_t scene;
+    lumen_part_clocks_t clocks;
+    lumen_part_clocks_init(&clocks);
+    build_whole_strip_pair(&layout, &scene, 16);
+
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, 1000, make_static_layer(0, 255, 100),
+                               make_anim_layer(LUMEN_EFFECT_COMET, 30000, 255, 1200, 8, 0x01,
+                                               100),
+                               1, 1) == LUMEN_RESULT_OK);
+    lumen_part_clocks_reset_strip(&clocks, 0, 1, 0);
+
+    uint8_t buf[16 * 3];
+    uint16_t n = lumen_scene_compose(&layout, &scene, &clocks, 0, 0, LUMEN_PHASE_CONTINUOUS, buf,
+                                     16);
+    CHECK(n == 16);
+
+    /* 按亮度叠加：流星亮处显流星、暗处透出背景层 —— 所以整条都不该全黑。 */
+    size_t lit = 0;
+    for (uint16_t i = 0; i < 16; ++i) {
+        if (buf[i * 3] + buf[i * 3 + 1] + buf[i * 3 + 2] > 0) {
+            ++lit;
+        }
+    }
+    CHECK(lit == 16);
+
+    /* 叠加层让画面随时间变化（动画在跑）。 */
+    uint8_t later[16 * 3];
+    lumen_scene_compose(&layout, &scene, &clocks, 400, 0, LUMEN_PHASE_CONTINUOUS, later, 16);
+    CHECK(memcmp(buf, later, sizeof(buf)) != 0);
+}
+
+static void test_compose_phase_not_reset_by_edit(void)
+{
+    /*
+     * 票 #155 验收项：「改颜色时动画相位不重置」。
+     *
+     * 做法：让动画（彩虹）跑到 t=500，然后**只改 layer0 的饱和 / 亮度**（不动
+     * 步长与步数、不重启时钟），再在同一个 t 求值——除了颜色本身，相位必须还
+     * 在 500ms 的位置，而不是回到 0。
+     */
+    lumen_layout_store_t layout;
+    lumen_scene_t scene;
+    lumen_part_clocks_t clocks;
+    lumen_part_clocks_init(&clocks);
+    build_whole_strip_pair(&layout, &scene, 8);
+
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, 1000,
+                               make_anim_layer(LUMEN_EFFECT_RAINBOW, 0, 255, 1000, 255, 0, 100),
+                               make_empty_layer(), 1, 1) == LUMEN_RESULT_OK);
+    lumen_part_clocks_reset_strip(&clocks, 0, 1, 0);
+
+    uint8_t before[8 * 3];
+    lumen_scene_compose(&layout, &scene, &clocks, 500, 0, LUMEN_PHASE_CONTINUOUS, before, 8);
+
+    /* 改层亮度（典型的「改效果参数」编辑），时钟不动。 */
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, 1000,
+                               make_anim_layer(LUMEN_EFFECT_RAINBOW, 0, 255, 1000, 255, 0, 50),
+                               make_empty_layer(), 1, 1) == LUMEN_RESULT_OK);
+
+    uint8_t after[8 * 3];
+    lumen_scene_compose(&layout, &scene, &clocks, 500, 0, LUMEN_PHASE_CONTINUOUS, after, 8);
+
+    /*
+     * 色相的**相对分布**必须不变：亮度 100 → 50 是把每个通道整体减半，
+     * 所以「第 0 颗 vs 第 4 颗」的亮度关系保持。如果相位被重置成 0，
+     * 两者会退化成相同的色相（t=0 与 t=500 的分布不同）。
+     */
+    CHECK(after[0] <= before[0]);
+    CHECK(after[4 * 3] <= before[4 * 3]);
+    /* 相位没重置的关键证据：t=500 的画面与 t=0 的画面不同。 */
+    uint8_t at_zero[8 * 3];
+    lumen_scene_compose(&layout, &scene, &clocks, 0, 0, LUMEN_PHASE_CONTINUOUS, at_zero, 8);
+    CHECK(memcmp(after, at_zero, sizeof(after)) != 0);
+}
+
+static void test_compose_needs_frames(void)
+{
+    lumen_layout_store_t layout;
+    lumen_scene_t scene;
+    build_whole_strip_pair(&layout, &scene, 8);
+
+    /* 单步静态 → 不需要帧（与 v4 的静态段一致，零额外 CPU / RMT）。 */
+    CHECK(!lumen_scene_strip_needs_frames(&layout, &scene, 0));
+
+    /* 换成呼吸 → 需要帧。 */
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, 1000,
+                               make_anim_layer(LUMEN_EFFECT_BREATHING, 0, 255, 1000, 30, 0, 100),
+                               make_empty_layer(), 1, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_scene_strip_needs_frames(&layout, &scene, 0));
+
+    /* 熄灭不是动画。 */
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, 1000,
+                               make_anim_layer(LUMEN_EFFECT_OFF, 0, 0, 0, 0, 0, 100),
+                               make_empty_layer(), 1, 1) == LUMEN_RESULT_OK);
+    CHECK(!lumen_scene_strip_needs_frames(&layout, &scene, 0));
+
+    /* 有动画但部位关掉 → 不需要帧。 */
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, 1000,
+                               make_anim_layer(LUMEN_EFFECT_BREATHING, 0, 255, 1000, 30, 0, 100),
+                               make_empty_layer(), 1, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_scene_set_part(&scene, 0, 0, 1, LUMEN_LOOP_ALL_V5, 0, 1, 1) == LUMEN_RESULT_OK);
+    CHECK(!lumen_scene_strip_needs_frames(&layout, &scene, 0));
+
+    /* 0 步也不需要帧。 */
+    CHECK(lumen_scene_set_part(&scene, 0, 0, 0, LUMEN_LOOP_ALL_V5, 1, 1, 1) == LUMEN_RESULT_OK);
+    CHECK(!lumen_scene_strip_needs_frames(&layout, &scene, 0));
+
+    /* 没有部位划分的链永远不需要帧。 */
+    lumen_scene_init(&scene);
+    CHECK(lumen_scene_set_part(&scene, 1, 0, 1, LUMEN_LOOP_ALL_V5, 1, 2, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_scene_set_step(&scene, 1, 0, 0, 1000,
+                               make_anim_layer(LUMEN_EFFECT_RAINBOW, 0, 255, 4000, 255, 0, 100),
+                               make_empty_layer(), 2, 1) == LUMEN_RESULT_OK);
+    CHECK(!lumen_scene_strip_needs_frames(&layout, &scene, 1));
+}
+
+static void test_compose_isolated_parts(void)
+{
+    /*
+     * 「编辑一个部位时其它部位完全不受影响」（规格 E3 / 用户故事 45）。
+     * 两个部位各占一半灯珠、各自不同颜色与不同步表；推进时间后各自的步号
+     * 各自走，互不拖累（T2：循环各走各的）。
+     */
+    lumen_layout_store_t layout;
+    lumen_scene_t scene;
+    lumen_part_clocks_t clocks;
+    lumen_part_clocks_init(&clocks);
+
+    lumen_layout_store_init(&layout);
+    CHECK(lumen_layout_store_write(&layout, 0, 2, 1) == LUMEN_RESULT_OK);
+    /* 部位 0：0-4（眼睛），部位 1：5-9（散热）。 */
+    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 0, NULL, 1, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_part(&layout, 0, 1, 0, NULL, 1, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_seg(&layout, 0, 0, 0, 0, 4, 10, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_seg(&layout, 0, 1, 0, 5, 9, 10, 1) == LUMEN_RESULT_OK);
+
+    lumen_scene_init(&scene);
+    /* 眼睛：0.5 秒一步、两步循环（快）。 */
+    CHECK(lumen_scene_set_part(&scene, 0, 0, 2, LUMEN_LOOP_ALL_V5, 1, 1, 2) == LUMEN_RESULT_OK);
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 0, 500, make_static_layer(0, 255, 100),
+                               make_empty_layer(), 1, 2) == LUMEN_RESULT_OK);
+    CHECK(lumen_scene_set_step(&scene, 0, 0, 1, 500, make_static_layer(43690, 255, 100),
+                               make_empty_layer(), 1, 2) == LUMEN_RESULT_OK);
+    /* 散热：2 秒一步、单步循环（慢）。 */
+    CHECK(lumen_scene_set_part(&scene, 0, 1, 1, LUMEN_LOOP_ALL_V5, 1, 1, 2) == LUMEN_RESULT_OK);
+    CHECK(lumen_scene_set_step(&scene, 0, 1, 0, 2000, make_static_layer(21845, 255, 100),
+                               make_empty_layer(), 1, 2) == LUMEN_RESULT_OK);
+
+    lumen_part_clocks_reset_strip(&clocks, 0, 2, 0);
+
+    /* t=600：眼睛已到第 2 步（蓝），散热还在第 1 步（绿）。 */
+    uint8_t buf[10 * 3];
+    lumen_scene_compose(&layout, &scene, &clocks, 600, 0, LUMEN_PHASE_CONTINUOUS, buf, 10);
+    CHECK(buf[0] == 0 && buf[2] > 0);          /* 眼睛：蓝 */
+    CHECK(buf[5 * 3] == 0 && buf[5 * 3 + 1] > 0); /* 散热：绿 */
+    CHECK(buf[5 * 3 + 2] == 0);
+
+    /* t=1100：眼睛回到第 1 步（红），散热仍是第 1 步（绿）。 */
+    lumen_scene_compose(&layout, &scene, &clocks, 1100, 0, LUMEN_PHASE_CONTINUOUS, buf, 10);
+    CHECK(buf[0] > 0 && buf[2] == 0);
+    CHECK(buf[5 * 3 + 1] > 0);
+
+    /* 两条时间轴的总时长不同，说明它们真的各走各的。 */
+    CHECK(lumen_scene_part_total_ms(&scene.part[0][0]) == 1000);
+    CHECK(lumen_scene_part_total_ms(&scene.part[0][1]) == 2000);
+}
+
+static void test_compose_null_safety(void)
+{
+    lumen_layout_store_t layout;
+    lumen_scene_t scene;
+    lumen_part_clocks_t clocks;
+    lumen_part_clocks_init(&clocks);
+    build_whole_strip_pair(&layout, &scene, 4);
+    lumen_part_clocks_reset_strip(&clocks, 0, 1, 0);
+
+    uint8_t buf[12];
+    memset(buf, 0x77, sizeof(buf));
+    /* 无效参数一律返回 0 且不写 buf。 */
+    CHECK(lumen_scene_compose(NULL, &scene, &clocks, 0, 0, LUMEN_PHASE_CONTINUOUS, buf, 4) == 0);
+    CHECK(lumen_scene_compose(&layout, NULL, &clocks, 0, 0, LUMEN_PHASE_CONTINUOUS, buf, 4) == 0);
+    CHECK(lumen_scene_compose(&layout, &scene, NULL, 0, 0, LUMEN_PHASE_CONTINUOUS, buf, 4) == 0);
+    CHECK(lumen_scene_compose(&layout, &scene, &clocks, 0, 0, LUMEN_PHASE_CONTINUOUS, NULL, 4) ==
+          0);
+    CHECK(lumen_scene_compose(&layout, &scene, &clocks, 0, 8, LUMEN_PHASE_CONTINUOUS, buf, 4) ==
+          0);
+    CHECK(lumen_scene_compose(&layout, &scene, &clocks, 0, 0, LUMEN_PHASE_CONTINUOUS, buf, 0) ==
+          0);
+    CHECK(buf[0] == 0x77);
+
+    /* build_segment 的边界。 */
+    lumen_segment_t seg;
+    lumen_part_clock_t *clock = &clocks.clock[0][0];
+    CHECK(!lumen_scene_build_segment(NULL, 0, 0, 4, clock, 0, &seg));
+    CHECK(!lumen_scene_build_segment(&scene, 8, 0, 4, clock, 0, &seg));
+    CHECK(!lumen_scene_build_segment(&scene, 0, 8, 4, clock, 0, &seg));
+    CHECK(!lumen_scene_build_segment(&scene, 0, 0, 4, clock, 0, NULL));
+    CHECK(lumen_scene_build_segment(&scene, 0, 0, 4, clock, 0, &seg));
+    /* 段的几何是逻辑 [0, n-1]，t0 是步起点，blend 由有无叠加层推出。 */
+    CHECK(seg.start == 0 && seg.end == 3);
+    CHECK(seg.t0_ms == 0);
+    CHECK(seg.blend == LUMEN_BLEND_OVER);
+    /* 部位开关关掉 → 不构造段。 */
+    CHECK(lumen_scene_set_part(&scene, 0, 0, 1, LUMEN_LOOP_ALL_V5, 0, 1, 1) == LUMEN_RESULT_OK);
+    CHECK(!lumen_scene_build_segment(&scene, 0, 0, 4, clock, 0, &seg));
+}
+
 int main(int argc, char **argv)
 {
     /* 默认路径只是兜底：run-tests.cmd 会显式传 v4 向量（docs/protocol-testvectors-v4.json）。 */
@@ -8880,6 +10321,43 @@ int main(int argc, char **argv)
     RUN_TEST(test_script_scope_anim_mask);
     RUN_TEST(test_no_segment_strip_is_black);
     RUN_TEST(test_script_scope_compose);
+
+    /* v5（#155）：布局与场景两套存储 */
+    RUN_TEST(test_layout_sizes);
+    RUN_TEST(test_layout_part_of_pixel);
+    RUN_TEST(test_layout_write_clears);
+    RUN_TEST(test_layout_part_name_padding);
+    RUN_TEST(test_layout_seg_rejects_overlap);
+    RUN_TEST(test_layout_seg_range);
+    RUN_TEST(test_layout_partial_write);
+    RUN_TEST(test_layout_multi_segment_logical_index);
+    RUN_TEST(test_layout_validate_whole);
+    RUN_TEST(test_layout_blob_roundtrip);
+    RUN_TEST(test_layout_blob_rejects_bad);
+    RUN_TEST(test_scene_sizes);
+    RUN_TEST(test_scene_set_part_clears);
+    RUN_TEST(test_scene_set_step_rules);
+    RUN_TEST(test_scene_loop_and_clock);
+    RUN_TEST(test_scene_layer_sizes);
+    RUN_TEST(test_scene_blob_max_size);
+    RUN_TEST(test_scene_blob_roundtrip);
+    RUN_TEST(test_scene_blob_rejects_bad);
+    RUN_TEST(test_scene_encode_capacity);
+
+    /* v5（#155）：播放头推进与唯一渲染接缝 */
+    RUN_TEST(test_part_clock_basics);
+    RUN_TEST(test_part_clock_no_loop);
+    RUN_TEST(test_part_clock_loop_last);
+    RUN_TEST(test_part_clock_zero_steps);
+    RUN_TEST(test_part_clock_no_drift);
+    RUN_TEST(test_compose_uncovered_is_black);
+    RUN_TEST(test_compose_part_switch);
+    RUN_TEST(test_compose_multi_segment_shared_phase);
+    RUN_TEST(test_compose_two_layers);
+    RUN_TEST(test_compose_phase_not_reset_by_edit);
+    RUN_TEST(test_compose_needs_frames);
+    RUN_TEST(test_compose_isolated_parts);
+    RUN_TEST(test_compose_null_safety);
 
     if (g_failures != 0) {
         fprintf(stderr, "\n%d/%d checks failed\n", g_failures, g_checks);
