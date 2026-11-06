@@ -38,43 +38,26 @@ import {
   moveStepStage,
   removeStepStage,
   seedStepFromReports,
-  setStageDurationMs,
-  stageDurationMs,
   stepZonesOf,
   timelineStepsOf,
   writeStepZones,
 } from "../../utils/control/advanced-draft";
 import {
   applyChoice,
-  applyPanelToZone,
   applySlider,
-  buildEffectPanel,
   defaultParams,
   buildTypeViews,
-  emptyOverlayDraft,
-  overlayLayer,
   HUE_RAMP_GRADIENT,
   layersCheck,
-  OVERLAY_CHOICE_OPTIONS,
-  overlayDraftOf,
-  overlayEnabled,
-  overlaySummary,
-  switchOverlayType,
   PANEL_EMPTY_PLAN_GUIDE,
-  PANEL_EMPTY_STEP_GUIDE,
   PANEL_FACTS,
-  PANEL_NO_ZONE_GUIDE,
   PANEL_TYPE_OPTIONS,
   isPanelChoiceKey,
   isPanelSliderKey,
-  panelCheck,
   panelLayer,
-  panelTypeOf,
-  paramsFromLayer,
   switchPanelType,
   type EffectParams,
   type OverlayChoice,
-  type OverlayDraft,
   type PanelChoiceView,
   type PanelSliderView,
   type PanelType,
@@ -181,25 +164,64 @@ import {
 import { resolveStripMeta } from "../../utils/control/strip-meta";
 import { pageThemeData } from "../../utils/control/page-theme";
 import {
-  chooseGap,
-  clampDuration,
-  COMPACT_BLOCK_GAP_PX,
-  DEFAULT_STEP_MS,
   dragFollowOffset,
   dragTapSuppressUntil,
   dragTargetAtRects,
   durationText,
   durationTicks,
-  layoutBlocks,
   LONG_PRESS_MS,
   MAX_STEPS,
-  MIN_BLOCK_PX,
   selectionAfterMove,
   tapSuppressedAt,
-  timelineRowWidth,
   type DurationTickView,
   type TimelineBlockView,
 } from "../../utils/control/timeline";
+/*
+ * #154：时间轴与效果面板各自是一个**可独立驱动**的单元。
+ *
+ * 页面只负责事件与 `setData`：交互状态（选中哪一步 / 拖到哪 / 面板在编辑哪
+ * 一层）住在单元里，派生走单元，改参数也走单元。以前这些散在本文件的十几个
+ * 私有字段里，部位编辑器没法复用。
+ */
+import {
+  applyTimelineDrag,
+  cancelTimelineDrag,
+  clampTimelineSelection,
+  createTimelineUnit,
+  applyTimelineDuration,
+  forgetTimelineWidth,
+  isTimelineDragging,
+  isTimelinePressCurrent,
+  measureTimelineWidth,
+  pressTimelineStep,
+  readTimelineDrag,
+  resetTimelineSelection,
+  selectTimelineStep,
+  setTimelineLedCount,
+  startTimelineDrag,
+  timelineStepDurationMs,
+  timelineUnitView,
+  trackTimelinePress,
+  type TimelineUnit,
+} from "../../utils/control/timeline-unit";
+import {
+  applyOverlayChoiceParam,
+  applyOverlayChoiceValue,
+  applyOverlaySliderValue,
+  applyPanelChoiceValue,
+  applyPanelSliderValue,
+  createPanelUnit,
+  forgetPanelTarget,
+  panelUnitCheck,
+  panelUnitView,
+  panelUnitZoneSpecs,
+  resetPanelUnit,
+  selectPanelTarget,
+  setPanelUnitHint,
+  switchPanelMode,
+  type PanelUnit,
+  type PanelUnitView,
+} from "../../utils/control/panel-unit";
 import {
   axisColorMap,
   axisZonesOf,
@@ -222,12 +244,10 @@ import {
   MAX_SCRIPTS,
   MIN_LEDS,
   NO_EFFECT,
-  SEGMENT_TYPE,
 } from "../../utils/protocol/constants";
 import { stateLoopMode } from "../../utils/protocol/commands";
 import type {
   DeviceState,
-  EffectLayer,
   LinkState,
   SegmentConfig,
   SegmentReport,
@@ -269,51 +289,6 @@ function showModal(title: string, content: string, confirmText: string): Promise
       fail: () => resolve(false),
     });
   });
-}
-
-/**
- * 面板草稿的默认层（静态、暖白、满亮）。
- *
- * 抽成函数而不是字面量：`EffectLayer` 的字段随协议版本增长（v4 多了 `level`），
- * 页面里四处重复的 6 字段字面量会各漏一个。返回副本，避免共享实例被就地改。
- */
-function defaultPanelLayer(): EffectLayer {
-  return {
-    type: SEGMENT_TYPE.STATIC,
-    hue: 7281,
-    sat: 255,
-    periodMs: 0,
-    p5: 0,
-    flags: 0,
-    level: 100,
-  };
-}
-
-/**
- * 叠加层的参数滑块（#71）。
- *
- * 与主效果走同一个 `buildEffectPanel`，所以「按类型整体替换」的规则只有一份；
- * 关闭叠加层时不给任何旋钮（用户看到的应该是「选一个叠加效果」，不是一堆灰色滑块）。
- */
-function overlayPanelSliders(draft: OverlayDraft): PanelSliderView[] {
-  if (!overlayEnabled(draft)) {
-    return [];
-  }
-  return buildEffectPanel(draft.type as PanelType, draft.params).sliders;
-}
-
-/**
- * 特效层的选择控件（波形 / 方向 / 占空比 / 脉冲）。
- *
- * 与滑块同一个来源，所以「背景层有的配置项，特效层也有」是结构性的，不是
- * 靠人记得去补。之前 `onOverlayChoiceTap` 在 wxml 里根本没绑，特效层的波形 /
- * 方向 / 占空比改不了——现在两边走同一张模板。
- */
-function overlayPanelChoices(draft: OverlayDraft): PanelChoiceView[] {
-  if (!overlayEnabled(draft)) {
-    return [];
-  }
-  return buildEffectPanel(draft.type as PanelType, draft.params).choices;
 }
 
 Page({
@@ -575,60 +550,41 @@ Page({
   draftOwned: [false, false, false, false] as boolean[],
   /** 草稿落盘用的设备键（hardwareId 优先）；空串 = 设备身份还没确定。 */
   draftsKey: "",
-  /** 时间轴选中步骤的下标（0 起）。 */
-  timelineIndex: 0,
-  /** 时间轴容器（现在就是时间轴行）的宽度（px）；0 = 还没测量。 */
-  timelineContainerWidth: 0,
+  /**
+   * 时间轴的交互状态（选中哪一步 / 有没有在长按拖动 / 容器宽多少）。
+   *
+   * #154：这一份状态以前是本文件的十几个私有字段（`timelineIndex` /
+   * `dragFrom` / `dragTo` / `dragFollow` / `dragStartX` / `dragOutside` /
+   * `dragEpoch` / `timelineContainerWidth` / `timelineMeasured`）。现在它是一个
+   * 普通对象，变更全部经 `timeline-unit` 的纯函数——部位编辑器可以原样复用。
+   */
+  timeline: createTimelineUnit() as TimelineUnit,
   /** 长按定时器：到时进入拖动状态。 */
   longPressTimer: null as ReturnType<typeof setTimeout> | null,
-  /** 拖动中的源下标；-1 = 没有拖动。 */
-  dragFrom: -1,
-  /** 拖动落点下标；-1 = 没在拖。 */
-  dragTo: -1,
-  /**
-   * 被拖块「跟手指走」的横向位移（px）。
-   *
-   * 由纯函数 `dragFollowOffset` 算出后原样传进 `layoutBlocks`；页面只记这个
-   * 数字，不自己算位移规则。
-   */
-  dragFollow: 0,
-  /** 进入拖动那一刻的指尖横坐标；`dragFollow` 的零点。 */
-  dragStartX: 0,
-  /** 这一次触摸是否已经拖出时间轴（出界松手 = 取消，不提交顺序）。 */
-  dragOutside: false,
-  /**
-   * 触摸代次：每次按下 / 抬起 / 取消自增。
-   *
-   * 长按进入拖动前要先异步量块矩形；代次变了说明这次触摸已经结束，回调不能
-   * 再挂拖动状态（否则会留下一个「幽灵拖动」，下次移动凭空拖起一块）。
-   */
-  dragEpoch: 0,
-  /** 拖动开始时量到的块屏幕矩形（按顺序）。 */
+  /** 拖动开始时量到的块屏幕矩形（按顺序；只能由渲染层量出来，所以留在页面）。 */
   blockRects: [] as Array<{ left: number; right: number }>,
   /** 时间轴容器左边缘（px，屏幕坐标），只用于诊断。 */
   timelineLeft: 0,
   /** 这次触摸已经变成了拖动：紧接着的 tap 不能改选中（时间戳自愈，不会永久吞掉点击）。 */
   dragTapUntil: 0,
-  /** 已经做过测量的标记（不需要每次 setData 后重新测量）。 */
-  timelineMeasured: false,
   /** 分区轴选中的槽位；-1 = 没选中。 */
   pickedSegId: -1,
   /** 灯珠弹窗的选择状态（纯数据，规则在 `led-picker`）。 */
   picker: { segId: null, anchor: null, cursor: null } as PickerState,
-  /** 面板参数属于「哪一步 × 哪个分区」；变化时从草稿重新读层（保住未下发的亮度草稿）。 */
-  panelKey: "",
-  /** 面板当前的效果类型（同时镜像到 `data.panelType` 给 WXML）。 */
+  /**
+   * 效果面板的交互状态（在编辑哪一层、类型、参数草稿、叠加层、亮度记忆）。
+   *
+   * #154：以前是 `panelKey` / `panelMode` / `panelParams` / `panelOverlay` /
+   * `panelLevels` / `panelHintText` 六个私有字段，现在由 `panel-unit` 持有。
+   */
+  panel: createPanelUnit() as PanelUnit,
+  /**
+   * 面板当前的效果类型（`panel.mode` 的镜像）。
+   *
+   * 留着这个字段是给页面测试读的：`page.panelMode` 是历史上被断言的观察点。
+   * 唯一真相在 `panel.mode`，这里每次都跟着它走。
+   */
   panelMode: "static" as PanelType,
-  /** 面板的本地参数草稿（颜色 / 亮度跨类型保留）。 */
-  panelParams: paramsFromLayer("static", {
-    type: SEGMENT_TYPE.STATIC,
-    hue: 7281,
-    sat: 255,
-    periodMs: 0,
-    p5: 0,
-    flags: 0,
-    level: 100,
-  }),
   /**
    * 灯珠数滑块上「用户拖过但还没松手 / 还没下发成功」的值（#79）。
    *
@@ -645,23 +601,6 @@ Page({
    * 重读并裁剪，否则「应用并播放」会被预检以越界拒绝，用户无路可走。
    */
   ledCountSeen: 0,
-  /** 面板的一次性反馈（`data.panelHint` 的镜像，换目标时清空）。 */
-  panelHintText: "",
-  /**
-   * 逐分区的亮度草稿（`panelKey → level`）。
-   *
-   * v4 起 `level` 有落盘位置（`layer0.level`），所以这张表只剩一个用途：
-   * 记住**用户刚拖过、但还没写进设备**的滑块值，跨「切分区再切回来」不丢。
-   * 一旦落进草稿/设备，`paramsFromLayer` 会从层里读回来，不再依赖这张表。
-   */
-  panelLevels: {} as Record<string, number>,
-  /**
-   * 叠加层草稿（#71 US49）：跟随 `panelKey`，与主效果的参数互相独立。
-   *
-   * 叠加层也有自己的亮度与周期，所以整份 `EffectParams` 都要记住；
-   * 关闭时**保留参数**，用户再开回来还能接着调。
-   */
-  panelOverlay: emptyOverlayDraft() as OverlayDraft,
 
   onLoad(options: Record<string, string | undefined>) {
     /* 私有状态显式兜底：Page() 不保证对象字面量字段被复制到实例上，漏掉会让
@@ -690,27 +629,16 @@ Page({
     this.drafts = createAdvancedDrafts();
     this.draftOwned = [false, false, false, false];
     this.draftsKey = "";
-    this.timelineIndex = 0;
-    this.timelineContainerWidth = 0;
     this.longPressTimer = null;
-    this.dragFrom = -1;
-    this.dragTo = -1;
-    this.dragFollow = 0;
-    this.dragStartX = 0;
-    this.dragOutside = false;
-    this.dragEpoch = 0;
+    /* #154：时间轴与面板的全部交互状态住在各自的单元里。 */
+    this.timeline = createTimelineUnit();
     this.blockRects = [];
     this.timelineLeft = 0;
     this.dragTapUntil = 0;
-    this.timelineMeasured = false;
     this.pickedSegId = -1;
     this.picker = createPickerState(null);
-    this.panelKey = "";
-    this.panelMode = "static";
-    this.panelParams = paramsFromLayer("static", defaultPanelLayer());
-    this.panelHintText = "";
-    this.panelLevels = {};
-    this.panelOverlay = emptyOverlayDraft();
+    this.panel = createPanelUnit();
+    this.panelMode = this.panel.mode;
     this.ledDraft = null;
     this.ledCountSeen = 0;
     this.dialDrag = null;
@@ -1027,7 +955,7 @@ Page({
     this.draftsKey = "";
     this.planIds = visiblePlanIds();
     this.planPlayingId = -1;
-    this.timelineIndex = 0;
+    this.timeline = resetTimelineSelection(this.timeline);
     this.pickedSegId = -1;
     this.resetPanel();
     this.ledDraft = null;
@@ -1101,7 +1029,7 @@ Page({
       return;
     }
     const draft = this.currentDraft();
-    const next = seedStepFromReports(draft, this.timelineIndex, this.data.stripId, reports);
+    const next = seedStepFromReports(draft, this.timeline.selected, this.data.stripId, reports);
     if (next !== draft) {
       this.setDraft(next);
     }
@@ -1110,33 +1038,13 @@ Page({
   // ---------------- 进阶档：时间轴（#65） ----------------
 
   /**
-   * 时间轴块的派生（`layoutBlocks` 的唯一调用点）。
+   * 时间轴块与行几何的派生（`timeline-unit.timelineUnitView` 的唯一调用点）。
    *
    * 抽出来是为了拖动：`touchmove` 只需要重画块（位移 / 落点），不必重算分区轴
    * 与效果面板。两条路径共用这一个函数，块宽与位移规则因此不会分叉。
    */
-  timelineBlocksOf(timelineSteps: ReturnType<typeof timelineStepsOf>): {
-    blocks: TimelineBlockView[];
-    gapPx: number | undefined;
-  } {
-    /* 容器宽度没量到之前不能算像素（会把首帧算成每个块几像素），退回时长权重 +
-     * CSS 最小宽度；量到之后行宽恒等于容器宽，块宽在容器内部按比例 / 最小宽度
-     * 分配——任何步骤数都不出容器，页面不滚动（#76）。 */
-    const measured = this.timelineContainerWidth > 0;
-    const durations = timelineSteps.map((step) => clampDuration(step.durationMs));
-    const rowWidth = timelineRowWidth(durations, this.timelineContainerWidth);
-    /* 8px 间隙放不下最小块宽时收紧到 4px（`layoutBlocks` 也按同一规则兜底）。 */
-    const gapPx = measured ? chooseGap(timelineSteps.length, rowWidth, MIN_BLOCK_PX) : undefined;
-    const blocks = layoutBlocks(timelineSteps, {
-      widthPx: measured ? rowWidth : 0,
-      ...(gapPx === undefined ? {} : { gapPx }),
-      selected: this.timelineIndex,
-      dragIndex: this.dragFrom >= 0 ? this.dragFrom : -1,
-      dropIndex: this.dragFrom >= 0 ? this.dragTo : -1,
-      followPx: this.dragFrom >= 0 ? this.dragFollow : 0,
-      ledCount: this.stripLedCount(),
-    });
-    return { blocks, gapPx };
+  timelineBlocksOf(timelineSteps: ReturnType<typeof timelineStepsOf>) {
+    return timelineUnitView(timelineSteps, this.timeline);
   },
 
   /**
@@ -1165,11 +1073,12 @@ Page({
     const stripId = this.data.stripId;
     const draft = this.currentDraft();
     const timelineSteps = timelineStepsOf(draft, stripId);
-    const { blocks, gapPx } = this.timelineBlocksOf(timelineSteps);
-    const durations = timelineSteps.map((step) => clampDuration(step.durationMs));
+    /* 灯珠数可能在别处改过（设备信息页）：喂给单元，缩略色带才按新颗数换算。 */
+    this.timeline = setTimelineLedCount(this.timeline, ledCount);
+    const { blocks, compact, totalMs } = this.timelineBlocksOf(timelineSteps);
     const durationMs = this.currentDurationMs();
-    const totalMs = durations.reduce((sum, ms) => sum + ms, 0);
-    const zones = stepZonesOf(draft, this.timelineIndex, stripId);
+    const stepIndex = this.timeline.selected;
+    const zones = stepZonesOf(draft, stepIndex, stripId);
     const axisZones = axisZonesOf(zones);
     const selected = selectedZoneAfter(axisZones, this.pickedSegId);
     this.pickedSegId = selected;
@@ -1180,9 +1089,9 @@ Page({
       ...panel,
       steps: blocks,
       stepCount: timelineSteps.length,
-      stepIndex: this.timelineIndex,
+      stepIndex,
       stepCanAdd: canAddStepStage(draft),
-      timelineCompact: gapPx === COMPACT_BLOCK_GAP_PX,
+      timelineCompact: compact,
       /* 默认恢复过渡；只有提交重排那一帧由 `patch` 临时关掉（#82）。 */
       timelineSettling: false,
       timelineSummary: timelineSubtitle(timelineSteps.length, totalMs),
@@ -1326,12 +1235,9 @@ Page({
     this.renderPlans();
     /* 已经在进阶档时（0x88 晚到 / 从后台回来）要重画两条轴，否则屏幕上还是默认草稿。 */
     if (this.data.mode === "advanced") {
-      this.timelineIndex = Math.min(
-        this.timelineIndex,
-        Math.max(0, this.currentDraft().stages.length - 1),
-      );
+      this.timeline = clampTimelineSelection(this.timeline, this.currentDraft().stages.length);
       this.pickedSegId = -1;
-      this.panelKey = "";
+      this.panel = forgetPanelTarget(this.panel);
       this.renderTimeline();
     }
   },
@@ -1355,13 +1261,12 @@ Page({
 
   /** 当前步骤里当前灯组的分区。 */
   currentZones() {
-    return stepZonesOf(this.currentDraft(), this.timelineIndex, this.data.stripId);
+    return stepZonesOf(this.currentDraft(), this.timeline.selected, this.data.stripId);
   },
 
-  /** 当前步骤的时长（毫秒，已钳位）。 */
+  /** 当前步骤的时长（毫秒，已钳位）。越界下标给默认 1 秒（规则在时间轴单元）。 */
   currentDurationMs(): number {
-    const stage = this.currentDraft().stages[this.timelineIndex];
-    return stage === undefined ? clampDuration(DEFAULT_STEP_MS) : stageDurationMs(stage);
+    return timelineStepDurationMs(this.currentDraft(), this.timeline.selected);
   },
 
   /** 当前灯组的灯珠数（门禁：没读到就不能划分区）。 */
@@ -1534,12 +1439,9 @@ Page({
     this.ensureDraftsLoaded();
     this.shrinkDraftsForStrip(newLedCount);
     if (this.data.mode === "advanced") {
-      this.timelineIndex = Math.min(
-        this.timelineIndex,
-        Math.max(0, this.currentDraft().stages.length - 1),
-      );
+      this.timeline = clampTimelineSelection(this.timeline, this.currentDraft().stages.length);
       this.pickedSegId = -1;
-      this.panelKey = "";
+      this.panel = forgetPanelTarget(this.panel);
       this.renderTimeline();
     }
   },
@@ -1605,84 +1507,35 @@ Page({
   /**
    * 面板的派生数据（`setData` 片段）。
    *
-   * 两件事在这里发生：
+   * 三件事：
    *
-   *  1. **换目标时从草稿重新读层**。`panelKey = 方案:步骤:分区`，一变就把那一片
-   *     `layer0`（含 v4 的 `level`）读成面板草稿；没变就**保留**页面上的草稿——
-   *     拖动中的读数不该被一次重画冲掉；
+   *  1. **换目标时从草稿重新读层**（`panel-unit.selectPanelTarget`）：键是
+   *     `方案:步骤:分区`，一变就把那一片 `layer0`（含 v4 的 `level`）读成面板
+   *     草稿；没变就**保留**页面上的草稿——拖动中的读数不该被一次重画冲掉；
    *  2. **没得编辑时给引导**。方案为空 / 这一步为空 / 有分区但没选中，三种情况
-   *     文案不同：一片空白会让人以为界面坏了。
+   *     文案不同：一片空白会让人以为界面坏了；
+   *  3. 面板单元是**唯一状态所有者**，页面只把它派生成 `setData` 片段。
    */
-  panelData(): Record<string, unknown> {
+  panelData(): PanelUnitView {
     const zones = this.currentZones();
     const zone = zones.find((item) => item.segId === this.pickedSegId) ?? null;
-    const key = `${this.data.planSlot}:${this.timelineIndex}:${zone === null ? -1 : zone.segId}`;
-    if (key !== this.panelKey) {
-      this.panelKey = key;
-      this.panelHintText = "";
-      if (zone === null) {
-        this.panelMode = "static";
-        this.panelParams = paramsFromLayer("static", defaultPanelLayer());
-        this.panelOverlay = emptyOverlayDraft();
-      } else {
-        this.panelMode = panelTypeOf(zone.layer0.type);
-        this.panelParams = paramsFromLayer(this.panelMode, zone.layer0);
-        /* 叠加层从设备权威值还原（空层 → 关闭）。混合方式恒为按亮度叠加，
-         * 旧配置的覆盖/相乘/相加在这里归一到新语义。 */
-        this.panelOverlay = overlayDraftOf(zone.layer1);
-      }
-      /* 还没写进草稿的滑块值：按目标记在页面里，切回来还在。 */
-      const remembered = this.panelLevels[key];
-      if (remembered !== undefined) {
-        this.panelParams = { ...this.panelParams, level: remembered };
-      }
-    }
-    const view = buildEffectPanel(this.panelMode, this.panelParams);
-    let guide = "";
-    if (zone === null) {
-      if (zones.length > 0) {
-        guide = PANEL_NO_ZONE_GUIDE;
-      } else {
-        guide = planIsEmpty(this.currentDraft()) ? PANEL_EMPTY_PLAN_GUIDE : PANEL_EMPTY_STEP_GUIDE;
-      }
-    }
-    return {
-      panelTypes: view.types,
-      panelType: view.type,
-      /* 没有可编辑的分区时不留任何滑块 / 选择控件：用户不该看到一个改不动的旋钮，
-       * 引导文字会告诉他下一步做什么。 */
-      panelSliders: zone === null ? [] : view.sliders,
-      panelChoices: zone === null ? [] : view.choices,
-      /* 预览色块与摘要也只在真有可编辑的分区时才显示：没有目标时的「静态 · 40°」
-       * 是一句凭空捏造的描述。 */
-      panelColorHex: zone === null ? "" : view.colorHex,
-      panelSummary: zone === null ? "" : view.summary,
-      /* 「熄灭」没有任何旋钮：说明必须跟着分区一起出现 / 消失，否则没选中分区时
-       * 它会变成一句凭空捏造的描述。 */
-      panelNotice: zone === null ? "" : view.notice,
-      panelHasZone: zone !== null,
-      panelGuide: guide,
-      panelFacts: PANEL_FACTS,
-      hueRamp: HUE_RAMP_GRADIENT,
-      panelHint: this.panelHintText,
-      /* ---- 特效层（第二张卡）：没有分区时整块隐藏 ---- */
-      overlayChoices: zone === null ? [] : OVERLAY_CHOICE_OPTIONS,
-      overlayChoice: this.panelOverlay.type,
-      overlayEnabled: zone !== null && overlayEnabled(this.panelOverlay),
-      overlaySummary: zone === null ? "" : overlaySummary(this.panelOverlay),
-      /* 特效层的参数区：与背景层同一张模板、同一套 SLIDER_KEYS/CHOICE_KEYS。 */
-      overlaySlider: zone === null ? [] : overlayPanelSliders(this.panelOverlay),
-      overlayChoices2: zone === null ? [] : overlayPanelChoices(this.panelOverlay),
-      overlayColorHex:
-        zone === null || !overlayEnabled(this.panelOverlay)
-          ? ""
-          : buildEffectPanel(this.panelOverlay.type as PanelType, this.panelOverlay.params).colorHex,
+    const target = {
+      planSlot: this.data.planSlot,
+      stepIndex: this.timeline.selected,
+      segId: zone === null ? -1 : zone.segId,
     };
+    this.panel = selectPanelTarget(this.panel, target, zone);
+    this.panelMode = this.panel.mode;
+    return panelUnitView(this.panel, {
+      zoneCount: zones.length,
+      hasZone: zone !== null,
+      planEmpty: planIsEmpty(this.currentDraft()),
+    });
   },
 
-  /** 面板的一次性反馈：私有字段与 `data` 一起写，重画时不会又冒出来 / 又消失。 */
+  /** 面板的一次性反馈：单元与 `data` 一起写，重画时不会又冒出来 / 又消失。 */
   setPanelHint(text: string): void {
-    this.panelHintText = text;
+    this.panel = setPanelUnitHint(this.panel, text);
     this.setData({ panelHint: text });
   },
 
@@ -1691,14 +1544,10 @@ Page({
     this.setPanelHint("");
   },
 
-  /** 面板草稿回到「静态 + 默认色」（断开 / 换目标 / 无选中时用）。 */
+  /** 面板草稿回到「常亮 + 默认色」（断开 / 换设备时用：亮度记忆一并作废）。 */
   resetPanel(): void {
-    this.panelKey = "";
-    this.panelMode = "static";
-    this.panelParams = paramsFromLayer("static", defaultPanelLayer());
-    this.panelOverlay = emptyOverlayDraft();
-    /* 亮度草稿属于「这台设备的这条灯组」：断开后连表一起作废。 */
-    this.panelLevels = {};
+    this.panel = resetPanelUnit(this.panel);
+    this.panelMode = this.panel.mode;
     this.clearPanelHint();
   },
 
@@ -1710,11 +1559,8 @@ Page({
   /**
    * 把面板草稿写进「当前步骤 × 当前灯组 × 当前分区」的那一片。
    *
-   * 装配走 `applyPanelToZone` → `zone-model.buildZoneSpec`：叠加层为空时叠加方式
-   * 归一为覆盖、两层定宽、深拷贝——面板只改效果，不顺手把叠加层弄丢。
-   *
-   * 写入前先过 `panelCheck`：频率过快 / 节奏过快或过慢在本地就拦住，
-   * 草稿保持原样、界面给出一行原因（不会悄悄把越界值写进去）。
+   * 装配与两道预检（主效果 + 叠加层）都在 `panel-unit`：越界时**不发帧**、
+   * 草稿保持原样、界面给出一行原因。
    *
    * 返回是否真的写进了草稿——调用方据此决定要不要清掉提示。
    */
@@ -1727,20 +1573,12 @@ Page({
     if (!zones.some((zone) => zone.segId === segId)) {
       return false;
     }
-    const check = panelCheck(this.panelMode, this.panelParams);
+    const check = panelUnitCheck(this.panel);
     if (!check.ok) {
       this.setPanelHint(check.message);
       return false;
     }
-    /* 叠加层也要过同一道预检：两层都是真实帧内容，越界一样会被设备拒。 */
-    const overlayCheck = layersCheck([overlayLayer(this.panelOverlay)]);
-    if (!overlayCheck.ok) {
-      this.setPanelHint(overlayCheck.message);
-      return false;
-    }
-    this.applyStepZones(
-      applyPanelToZone(zones, segId, this.panelMode, this.panelParams, this.panelOverlay),
-    );
+    this.applyStepZones(panelUnitZoneSpecs(this.panel, zones, segId));
     return true;
   },
 
@@ -1751,13 +1589,12 @@ Page({
       return;
     }
     /* 没有可编辑的分区时类型行是灰的（点不动），这里再挡一次渲染层的意外事件。 */
-    if (this.data.panelHasZone !== true || type === this.panelMode) {
+    if (this.data.panelHasZone !== true || type === this.panel.mode) {
       return;
     }
-    /* 先换算再改类型：`switchPanelType` 需要知道「从哪个类型切过来」。
-     * 切换后的默认值一定在区间内，所以这里不会触发预检拒绝。 */
-    this.panelParams = switchPanelType(this.panelParams, this.panelMode, type);
-    this.panelMode = type;
+    /* 先换算再改类型：切换后的默认值一定在区间内，所以不会触发预检拒绝。 */
+    this.panel = switchPanelMode(this.panel, type);
+    this.panelMode = this.panel.mode;
     /* 类型是离散动作：落进草稿后**立刻下发**（#125，没有「应用」按钮）。 */
     if (this.commitPanel()) {
       this.scheduleAdvancedApply(true);
@@ -1770,11 +1607,8 @@ Page({
     if (!isPanelSliderKey(key) || !Number.isFinite(value)) {
       return false;
     }
-    const next = applySlider(this.panelParams, key, value);
-    this.panelParams = next;
-    if (key === "level") {
-      this.panelLevels[this.panelKey] = next.level;
-    }
+    this.panel = applyPanelSliderValue(this.panel, key, value);
+    this.panelMode = this.panel.mode;
     if (this.data.mode === "advanced") {
       this.renderPanel();
     }
@@ -1791,7 +1625,7 @@ Page({
     if (!Number.isFinite(value) || this.data.panelHasZone !== true) {
       return;
     }
-    this.panelParams = applyChoice(this.panelParams, key, value);
+    this.panel = applyPanelChoiceValue(this.panel, key, value);
     if (this.commitPanel()) {
       this.scheduleAdvancedApply(true);
     }
@@ -1803,18 +1637,19 @@ Page({
   /**
    * 选叠加层类型（「关闭」或六种效果之一）。
    *
-   * 「熄灭」在选项里根本不存在（US50），这里再挡一次：叠加一层黑等于把下面
-   * 那层乘成黑，用户真正想要的是「不加东西」，应该点「关闭」。
+   * 「熄灭」在选项里根本不存在（US50）：叠加一层黑等于把下面那层乘成黑，
+   * 用户真正想要的是「不加东西」，应该点「关闭」。单元的选项表与界面同一份。
    */
   onOverlayTypeTap(e: WechatMiniprogram.TouchEvent) {
     const next = String(e.currentTarget.dataset.value ?? "") as OverlayChoice;
-    if (!OVERLAY_CHOICE_OPTIONS.some((option) => option.value === next)) {
-      return;
-    }
     if (this.data.panelHasZone !== true) {
       return;
     }
-    this.panelOverlay = switchOverlayType(this.panelOverlay, next);
+    const updated = applyOverlayChoiceValue(this.panel, next);
+    if (updated === this.panel) {
+      return;
+    }
+    this.panel = updated;
     if (this.commitPanel()) {
       this.scheduleAdvancedApply(true);
     }
@@ -1823,19 +1658,19 @@ Page({
 
   /** 叠加层滑块值 → 叠加层草稿（返回是否真的变了）。 */
   applyOverlaySlider(key: string, value: number): boolean {
-    if (!isPanelSliderKey(key) || !Number.isFinite(value) || !overlayEnabled(this.panelOverlay)) {
+    if (!isPanelSliderKey(key) || !Number.isFinite(value)) {
       return false;
     }
-    this.panelOverlay = {
-      ...this.panelOverlay,
-      params: applySlider(this.panelOverlay.params, key, value),
-    };
+    const updated = applyOverlaySliderValue(this.panel, key, value);
+    if (updated === this.panel) {
+      return false;
+    }
+    this.panel = updated;
     if (this.data.mode === "advanced") {
       this.renderPanel();
     }
     return true;
   },
-
 
   /**
    * 量时间轴行的真实宽度。
@@ -1845,7 +1680,7 @@ Page({
    * 所以量到的就是可用宽度——它只影响块宽，不影响是否滚动（#76：永不滚动）。
    */
   measureTimeline(force = false): void {
-    if (this.timelineMeasured && !force) {
+    if (this.timeline.measured && !force) {
       return;
     }
     wx.createSelectorQuery()
@@ -1853,21 +1688,17 @@ Page({
       .boundingClientRect((rect) => {
         /* 容器不在 DOM 里（还在简单档）时回调给 null：保持未测量状态。 */
         if (!rect) {
-          this.timelineMeasured = false;
+          this.timeline = forgetTimelineWidth(this.timeline);
           return;
         }
         const box = rect as WechatMiniprogram.BoundingClientRectCallbackResult;
-        this.timelineMeasured = true;
         this.timelineLeft = box.left;
         const width = Math.round(box.width);
+        this.timeline = measureTimelineWidth(this.timeline, width);
+        /* 量回来的宽度不可用（0 / 非有限值）：保持未测量，不重画。 */
         if (!Number.isFinite(width) || width <= 0) {
           return;
         }
-        if (width === this.timelineContainerWidth) {
-          this.renderTimeline();
-          return;
-        }
-        this.timelineContainerWidth = width;
         this.renderTimeline();
       })
       .exec();
@@ -1881,13 +1712,15 @@ Page({
       return;
     }
     const index = Number(e.currentTarget.dataset.index);
-    if (!Number.isInteger(index) || index < 0 || index >= this.currentDraft().stages.length) {
+    const count = this.currentDraft().stages.length;
+    if (!Number.isInteger(index) || index < 0 || index >= count) {
       return;
     }
-    if (index === this.timelineIndex) {
+    const next = selectTimelineStep(this.timeline, index, count);
+    if (next === this.timeline) {
       return;
     }
-    this.timelineIndex = index;
+    this.timeline = next;
     /* 换步骤后原来选中的分区可能不存在了：让 `selectedZoneAfter` 重新挑一个。 */
     this.renderTimeline({ stepHint: "" });
   },
@@ -1898,7 +1731,7 @@ Page({
    * 定时器到点才进入拖动状态——直接按下变拖动会与「点一下选中」抢事件，用户
    * 也没法「先看一眼再点」。300 毫秒（`LONG_PRESS_MS`，#82）。
    *
-   * `dragStartX` 是「跟手位移」的零点：等待期间手指若有轻微移动，就跟着更新，
+   * 起点的作用是「跟手位移」的零点：等待期间手指若有轻微移动，就跟着更新，
    * 于是块抬起的那一刻位移正好是 0，不会先跳一下。
    *
    * 进入拖动时先量块的屏幕位置，再挂上拖动状态：测量必须在**没有 transform**
@@ -1906,36 +1739,36 @@ Page({
    */
   onStepTouchStart(e: WechatMiniprogram.TouchEvent) {
     const index = Number(e.currentTarget.dataset.index);
-    if (!Number.isInteger(index) || index < 0 || index >= this.currentDraft().stages.length) {
+    const count = this.currentDraft().stages.length;
+    if (!Number.isInteger(index) || index < 0 || index >= count) {
       return;
     }
     const touch = firstTouch(e);
-    this.dragStartX = touch === null ? 0 : touch.clientX;
     this.clearLongPress();
     /*
      * 代次：测量是异步的（`boundingClientRect` 要等一个渲染回合）。若手指在
      * 测量回来之前就抬起，回调里再挂拖动状态会留下一个「幽灵拖动」——下一次
      * 移动就凭空拖起来。代次在 touchstart / touchend / cancel 都自增，回调
-     * 只在代次没变时生效。
+     * 只在代次没变时生效（`isTimelinePressCurrent`）。
      */
-    this.dragEpoch += 1;
-    const epoch = this.dragEpoch;
+    const pressed = pressTimelineStep(this.timeline, index, touch === null ? 0 : touch.clientX, count);
+    this.timeline = pressed.unit;
+    if (!pressed.pending) {
+      return;
+    }
+    const epoch = pressed.epoch;
     this.longPressTimer = setTimeout(() => {
       this.longPressTimer = null;
-      if (epoch !== this.dragEpoch) {
+      if (!isTimelinePressCurrent(this.timeline, epoch)) {
         return;
       }
       /* 先量后挂：测量必须在**没有 transform** 的时候做，被拖块的 1.06 放大
        * 会进矩形，命中范围就偏了。 */
       this.measureBlockRects(() => {
-        if (epoch !== this.dragEpoch) {
+        if (!isTimelinePressCurrent(this.timeline, epoch)) {
           return;
         }
-        this.dragFrom = index;
-        this.dragTo = index;
-        this.dragFollow = 0;
-        this.dragOutside = false;
-        this.timelineIndex = index;
+        this.timeline = startTimelineDrag(this.timeline, index, epoch);
         this.renderTimeline({ stepHint: "拖到目标位置松手" });
       });
     }, LONG_PRESS_MS);
@@ -1960,7 +1793,7 @@ Page({
    * 拖动中：被拖块跟手指走，落点预览跟着变（顺序还没提交）。
    *
    * 位移量与落点全部交给纯函数（`dragFollowOffset` / `dragTargetAtRects`），
-   * 页面只搬运数字——「看到的位移」和「实际的落点」因此不会成为两套真相。
+   * 单元只做状态搬运——「看到的位移」和「实际的落点」因此不会成为两套真相。
    */
   onStepTouchMove(e: WechatMiniprogram.TouchEvent) {
     const touch = firstTouch(e);
@@ -1968,38 +1801,40 @@ Page({
       return;
     }
     /* 还没长按到点：手指在动就把零点跟着挪，抬起那一刻不会跳。 */
-    if (this.dragFrom < 0) {
-      this.dragStartX = touch.clientX;
+    if (!isTimelineDragging(this.timeline)) {
+      this.timeline = trackTimelinePress(this.timeline, touch.clientX);
       return;
     }
-    const follow = dragFollowOffset(this.dragStartX, touch.clientX, this.blockRects, this.dragFrom);
+    const follow = dragFollowOffset(
+      this.timeline.drag.startX,
+      touch.clientX,
+      this.blockRects,
+      this.timeline.drag.from,
+    );
     const target = dragTargetAtRects(this.blockRects, touch.clientX);
-    /* 拖出时间轴 = 取消：不给让位预览，也不高亮落点（松手后原地回弹）。 */
-    const nextTo = target.outside || target.index < 0 ? this.dragFrom : target.index;
-    const followChanged = Math.round(follow * 2) !== Math.round(this.dragFollow * 2);
-    const targetChanged = nextTo !== this.dragTo;
-    const outsideChanged = target.outside !== this.dragOutside;
-    if (!followChanged && !targetChanged && !outsideChanged) {
+    /* 拖出时间轴 = 取消：不给让位预览，也不高亮落点（松手后原地回弹）。
+     * 位移与落点都没变时单元返回同一个状态，这里就不重画。 */
+    const updated = applyTimelineDrag(this.timeline, follow, target);
+    if (updated === this.timeline) {
       return;
     }
-    this.dragFollow = follow;
-    this.dragTo = nextTo;
-    this.dragOutside = target.outside;
+    this.timeline = updated;
     /* 只重画块：分区轴与效果面板在拖动中没变，不必跟着重算（跟手更顺）。 */
     this.renderDragBlocks();
   },
 
   onStepTouchEnd() {
     this.clearLongPress();
-    const from = this.dragFrom;
-    const to = this.dragTo;
-    const outside = this.dragOutside;
+    /* 先读「这次拖动指向哪」，再清状态：清完就读不到了。 */
+    const drag = readTimelineDrag(this.timeline);
+    const from = drag.from;
+    const to = drag.to;
+    const outside = drag.outside;
     /* 定时器没到点就没有进入拖动：这次触摸只是「按住了一下」，不改顺序。
      * 拖过（无论有没有真的换位置）都要让随后的 tap 闭嘴。 */
-    const dragged = from >= 0;
     /* 触摸已经结束：清状态并作废任何还在路上的长按回调。 */
     this.resetDragState();
-    if (!dragged) {
+    if (!drag.dragged) {
       return;
     }
     this.dragTapUntil = dragTapSuppressUntil(Date.now());
@@ -2015,9 +1850,9 @@ Page({
       this.renderTimeline({ stepHint: "" });
       return;
     }
-    const selected = selectionAfterMove(this.timelineIndex, from, to);
+    const selected = selectionAfterMove(this.timeline.selected, from, to);
     this.setDraft(moved);
-    this.timelineIndex = selected;
+    this.timeline = selectTimelineStep(this.timeline, selected, moved.stages.length);
     /*
      * 提交重排的那一帧不要过渡（`timelineSettling`）：块的 key 是下标，重排后
      * 同一个节点会换成别的内容；让内联 transform 从「跟手位置」过渡回原位，
@@ -2035,7 +1870,7 @@ Page({
 
   onStepTouchCancel() {
     this.clearLongPress();
-    if (this.dragFrom >= 0) {
+    if (isTimelineDragging(this.timeline)) {
       this.dragTapUntil = dragTapSuppressUntil(Date.now());
     }
     this.resetDragState();
@@ -2045,16 +1880,13 @@ Page({
   /**
    * 清空拖动状态（抬指 / 取消 / 页面隐藏都走这里）。
    *
-   * 单独一个方法是为了不漏字段：漏掉 `dragFollow` 会让块停在半路；同时自增
-   * `dragEpoch`——还在路上的「长按 → 量矩形 → 挂拖动」回调据此作废，否则会
-   * 留下一个「幽灵拖动」，下次移动凭空拖起一块。
+   * 单独一个方法是为了不漏字段：漏掉跟手位移会让块停在半路；同时自增代次
+   * ——还在路上的「长按 → 量矩形 → 挂拖动」回调据此作废，否则会留下一个
+   * 「幽灵拖动」，下次移动凭空拖起一块。规则全在 `cancelTimelineDrag`。
+   *
    */
   resetDragState() {
-    this.dragEpoch += 1;
-    this.dragFrom = -1;
-    this.dragTo = -1;
-    this.dragFollow = 0;
-    this.dragOutside = false;
+    this.timeline = cancelTimelineDrag(this.timeline);
   },
 
   clearLongPress() {
@@ -2073,7 +1905,7 @@ Page({
     }
     const next = addStepStage(draft);
     this.setDraft(next);
-    this.timelineIndex = next.stages.length - 1;
+    this.timeline = selectTimelineStep(this.timeline, next.stages.length - 1, next.stages.length);
     this.pickedSegId = -1;
     this.renderTimeline({ stepHint: "" });
   },
@@ -2090,15 +1922,16 @@ Page({
       this.renderTimeline({ stepHint: "至少要留一个步骤" });
       return;
     }
-    const next = removeStepStage(draft, this.timelineIndex);
+    const next = removeStepStage(draft, this.timeline.selected);
     if (next === draft) {
       return;
     }
     this.setDraft(next);
-    this.timelineIndex = Math.max(0, Math.min(this.timelineIndex, next.stages.length - 1));
+    this.timeline = clampTimelineSelection(this.timeline, next.stages.length);
     this.pickedSegId = -1;
     this.renderTimeline({ stepHint: "已删除这一步" });
   },
+
   /** 拖时长条：块宽实时跟着变（拖动中也走 `renderTimeline`，只是不写设备）。 */
   onDurationChanging(e: WechatMiniprogram.SliderChanging) {
     this.applyDuration(Number(e.detail.value));
@@ -2116,15 +1949,12 @@ Page({
   /**
    * 时长条的值（秒）→ 当前步骤的时长。
    *
-   * 滑块步进 0.5 秒，但真机上仍可能给出 0.4999 之类的值：`setStageDurationMs`
-   * 会再钳一次，所以这里只管传。
+   * 滑块步进 0.5 秒，但真机上仍可能给出 0.4999 之类的值：钳位与「没变化就
+   * 返回原对象」都在 `timeline-unit.applyTimelineDuration` 里（同一份规则）。
    */
   applyDuration(seconds: number) {
     const draft = this.currentDraft();
-    if (draft.stages.length === 0 || !Number.isFinite(seconds)) {
-      return;
-    }
-    const next = setStageDurationMs(draft, this.timelineIndex, seconds * 1000);
+    const next = applyTimelineDuration(draft, this.timeline.selected, seconds);
     if (next === draft) {
       return;
     }
@@ -2153,7 +1983,7 @@ Page({
     }
     const draft = this.currentDraft();
     const stripId = this.data.stripId;
-    const index = this.timelineIndex;
+    const index = this.timeline.selected;
     const stage = draft.stages[index];
     const zones = stepZonesOf(draft, index, stripId);
     const axisZones = axisZonesOf(zones);
@@ -2196,7 +2026,7 @@ Page({
 
   /** 长按气泡里的步骤名：改名（默认「第 N 步」，改完摘要同步）。 */
   async onStepRename() {
-    const index = this.timelineIndex;
+    const index = this.timeline.selected;
     const draft = this.currentDraft();
     const stage = draft.stages[index];
     if (stage === undefined) {
@@ -2234,7 +2064,7 @@ Page({
       return;
     }
     this.pickedSegId = segId;
-    this.panelKey = "";
+    this.panel = forgetPanelTarget(this.panel);
     this.renderTimeline();
   },
 
@@ -2535,7 +2365,7 @@ Page({
   /** 把分区列表写进「当前步骤 × 当前灯组」（多灯组语义只在这一处落地）。 */
   applyStepZones(zones: Parameters<typeof writeStepZones>[3]): void {
     const draft = this.currentDraft();
-    this.setDraft(writeStepZones(draft, this.timelineIndex, this.data.stripId, zones));
+    this.setDraft(writeStepZones(draft, this.timeline.selected, this.data.stripId, zones));
   },
 
   /** 点遮罩：等同取消（不会误删正在划的选择——选择本来就只存在弹窗里）。 */
@@ -2715,9 +2545,9 @@ Page({
     }
     this.setData({ planSlot: id, planHint: "" });
     /* 换方案 = 换一份草稿：步骤下标与分区选中都要重新落到合法值。 */
-    this.timelineIndex = 0;
+    this.timeline = resetTimelineSelection(this.timeline);
     this.pickedSegId = -1;
-    this.panelKey = "";
+    this.panel = forgetPanelTarget(this.panel);
     this.renderPlans();
     if (this.data.mode === "advanced") {
       this.renderTimeline();
@@ -3078,10 +2908,7 @@ Page({
       this.scheduleQuickWrite(true);
       return;
     }
-    this.panelOverlay = {
-      ...this.panelOverlay,
-      params: applyChoice(this.panelOverlay.params, key, value),
-    };
+    this.panel = applyOverlayChoiceParam(this.panel, key, value);
     this.commitAndApply();
   },
 
