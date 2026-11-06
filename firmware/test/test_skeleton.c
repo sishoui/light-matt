@@ -5779,33 +5779,41 @@ static void test_script_scope_anim_mask(void)
 }
 
 /*
- * 验收项 3：参与方案但在某一步没有段的带，该步输出**黑**。
+ * 没有段的带，整条输出**黑**——`state->r/g/b` 不再泄漏到灯带上。
  *
- * 判据在 `lumen_scope_uses_segments`：归属位让「零活动段」与「不归我管」
- * 分开。这里锁的是判据本身，以及它退化为单色时会发生什么。
+ * 这条原本锁的是 `lumen_scope_uses_segments`（「归方案管但没有段」vs「不归我管」
+ * 两条路径的选择）。那个判据已被删除：不再有单色回退，**零活动段一律全黑**。
+ *
+ * 这也是「连上设备所有引脚都亮黄」的回归：曾经零活动段时渲染层整条铺
+ * `state->r/g/b`（默认暖白 255,180,120，WS2812B 上看是黄），而且
+ * `state_summary_apply` 拿 strip0/seg0 的颜色覆写它——于是改第一组的颜色或
+ * 饱和度，所有没分区的带一起变。
+ *
+ * 渲染层（led_render.c）依赖 ESP-IDF 的 led_strip 句柄，host 编不了；这里锁的
+ * 是它唯一一条像素来源：空段表合成出来的整帧必须是 0。视觉验收在真机探针
+ * （`scripts/probe-v4.py`）与渲染回归里。
  */
-static void test_script_scope_empty_step_is_black(void)
+static void test_no_segment_strip_is_black(void)
 {
-    /* 归方案管、这一段没有任何活动段 → 必须走分段路径（compose 会 memset 0）。 */
-    CHECK(lumen_scope_uses_segments(true, false, true, false));
-    /* 同样的空段表，但不归方案管 → 老行为（走 v1 单色，整条纯色）。 */
-    CHECK(!lumen_scope_uses_segments(false, false, true, false));
-    /* 有活动段：两条路径都走分段。 */
-    CHECK(lumen_scope_uses_segments(false, true, true, false));
-    CHECK(lumen_scope_uses_segments(true, true, true, false));
-    /* 总闸关 / 自检期间一律单色（渲染层原有规则不变）。 */
-    CHECK(!lumen_scope_uses_segments(true, true, false, false));
-    CHECK(!lumen_scope_uses_segments(true, true, true, true));
+    lumen_state_t state;
+    lumen_state_defaults(&state, 10);
+    state.power = 1;
+    state.brightness = 200;
+    /* 故意给一个刺眼的颜色：它绝不能出现在合成结果里。 */
+    state.r = 255;
+    state.g = 180;
+    state.b = 120;
 
-    /* 端到端形态：空阶段配一个归属位，分段合成出来的就是全黑。 */
-    lumen_segment_store_t stage;
-    lumen_segment_store_init(&stage);
+    lumen_segment_store_t empty;
+    lumen_segment_store_init(&empty);
+
+    /* 空段表：compose 先 memset 0，所以整条是黑，不是上一帧的残留。 */
     const uint8_t led_count = 10;
-    uint8_t buf[LUMEN_MAX_LEDS * 3];
-    memset(buf, 0xAA, sizeof(buf));
-    CHECK(lumen_segment_store_compose(&stage, 0, buf, led_count, 0) == led_count);
+    uint8_t frame[LUMEN_MAX_LEDS * 3];
+    memset(frame, 0xAA, sizeof(frame));
+    CHECK(lumen_segment_store_compose(&empty, 0, frame, led_count, 0) == led_count);
     for (uint16_t i = 0; i < (uint16_t)led_count * 3u; ++i) {
-        CHECK(buf[i] == 0x00);
+        CHECK(frame[i] == 0x00);
     }
 }
 
@@ -7833,10 +7841,45 @@ static void test_blend_math(void)
     lumen_blend_pixel(0x7F, l0, l1, out);
     CHECK(out[0] == 1 && out[1] == 2 && out[2] == 3);
 
+    /*
+     * 按亮度叠加（§7.2.1）：a = max(L1)/255，out = L1 + L0 × (1 − a)。
+     *
+     * 这是「流星叠彩虹」的正确形状：L1 的黑处必须原样露出 L0，L1 的亮处
+     * 必须完全接管，中间值按亮度线性混合。
+     */
+    /* L1 全黑 → L0 原样透出（这是 OVER 做不到的那一条）。 */
+    uint8_t bg[3] = {200, 100, 50};
+    lumen_blend_pixel(LUMEN_BLEND_LUMA, bg, zero, out);
+    CHECK(out[0] == 200 && out[1] == 100 && out[2] == 50);
+    /* L1 满亮 → 完全接管，等价于覆盖。 */
+    lumen_blend_pixel(LUMEN_BLEND_LUMA, bg, full, out);
+    CHECK(out[0] == 255 && out[1] == 255 && out[2] == 255);
+    /* 单通道亮：纯红流星（255,0,0）叠在灰背景上，a 必须取 1，不能被 0 通道拉低。 */
+    uint8_t red_stream[3] = {255, 0, 0};
+    uint8_t grey[3] = {128, 128, 128};
+    lumen_blend_pixel(LUMEN_BLEND_LUMA, grey, red_stream, out);
+    CHECK(out[0] == 255 && out[1] == 0 && out[2] == 0);
+    /* 半亮：a = 128/255，L0 保留 (255−128)/255 ≈ 一半。 */
+    uint8_t half_white[3] = {128, 128, 128};
+    lumen_blend_pixel(LUMEN_BLEND_LUMA, full, half_white, out);
+    /* scaled = (255 × 127 + 127)/255 = 127；out = 128 + 127 = 255（钳位）。 */
+    CHECK(out[0] == 255);
+    uint8_t bg64[3] = {64, 64, 64};
+    lumen_blend_pixel(LUMEN_BLEND_LUMA, bg64, half_white, out);
+    /* scaled = (64 × 127 + 127)/255 = 32；out = 128 + 32 = 160。 */
+    CHECK(out[0] == 160);
+    /* L0 全黑 + L1 半亮 → 就是 L1 本身（背景不贡献光）。 */
+    lumen_blend_pixel(LUMEN_BLEND_LUMA, zero, half_white, out);
+    CHECK(out[0] == 128);
+
     /* 别名安全：out 与输入同一块内存。 */
     uint8_t alias[3] = {100, 100, 100};
     lumen_blend_pixel(LUMEN_BLEND_MULTIPLY, alias, alias, alias);
     CHECK(alias[0] == 39); /* (100*100+127)/255 = 39.7 → 39 */
+    uint8_t alias_luma[3] = {100, 100, 100};
+    lumen_blend_pixel(LUMEN_BLEND_LUMA, alias_luma, alias_luma, alias_luma);
+    /* a = 100/255，keep = 155：scaled = (100×155+127)/255 = 61；out = 100+61 = 161。 */
+    CHECK(alias_luma[0] == 161);
 }
 
 /*
@@ -7879,16 +7922,16 @@ static void test_two_layer_validation_matrix(void)
               (blend == 0 ? LUMEN_RESULT_OK : LUMEN_RESULT_INVALID_PARAM));
     }
 
-    /* 第 5 步：blend > 2 → 非法（两层都非空也一样）。 */
+    /* 第 5 步：blend > 3 → 非法（两层都非空也一样）。0-3 都合法。 */
     lumen_segment_t two;
     memset(&two, 0, sizeof(two));
     layer_set(LUMEN_EFFECT_STATIC, 0, 255, 0, 0, 0, &two.layer[0]);
     layer_set(LUMEN_EFFECT_STATIC, 0, 128, 0, 0, 0, &two.layer[1]);
-    for (uint8_t blend = 0; blend <= 2; ++blend) {
+    for (uint8_t blend = 0; blend <= 3; ++blend) {
         two.blend = blend;
         CHECK(lumen_segment_validate_shape(&two) == LUMEN_RESULT_OK);
     }
-    two.blend = 3;
+    two.blend = 4;
     CHECK(lumen_segment_validate_shape(&two) == LUMEN_RESULT_INVALID_PARAM);
     two.blend = 0xFF;
     CHECK(lumen_segment_validate_shape(&two) == LUMEN_RESULT_INVALID_PARAM);
@@ -8563,9 +8606,9 @@ static void test_state_blob_v4_two_layers(void)
     const uint8_t off = LUMEN_SEGMENTS_OFFSET;
     uint8_t bad[LUMEN_STATE_BLOB_SIZE];
 
-    /* blend > 2。 */
+    /* blend > 3。 */
     memcpy(bad, blob, sizeof(bad));
-    bad[off + 3] = 3;
+    bad[off + 3] = 4;
     lumen_persist_t keep;
     memset(&keep, 0x55, sizeof(keep));
     lumen_persist_t before = keep;
@@ -8835,7 +8878,7 @@ int main(int argc, char **argv)
 
     RUN_TEST(test_script_scope_union_mask);
     RUN_TEST(test_script_scope_anim_mask);
-    RUN_TEST(test_script_scope_empty_step_is_black);
+    RUN_TEST(test_no_segment_strip_is_black);
     RUN_TEST(test_script_scope_compose);
 
     if (g_failures != 0) {

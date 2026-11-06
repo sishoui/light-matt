@@ -140,8 +140,11 @@ export const OVERLAY_BLEND_OPTIONS: ReadonlyArray<{
   name: string;
   hint: string;
 }> = [
-  { value: BLEND.ADD, name: "相加", hint: "特效层透明地叠在背景层上" },
-  { value: BLEND.OVER, name: "覆盖", hint: "特效层有颜色时盖住背景层" },
+  {
+    value: BLEND.LUMA,
+    name: "按亮度叠加",
+    hint: "特效层只盖住自己亮着的地方，其余位置透出背景层",
+  },
 ];
 
 /** 一个分区的叠加层草稿：没有叠加层时 `type = "none"`。 */
@@ -152,21 +155,22 @@ export interface OverlayDraft {
   blend: BlendMode;
 }
 
-/** 没有叠加层时的草稿（关闭 + 覆盖）。 */
+/** 没有叠加层时的草稿（关闭 + 按亮度叠加）。 */
 export function emptyOverlayDraft(): OverlayDraft {
-  return { type: "none", params: defaultParams("static"), blend: BLEND.OVER };
+  return { type: "none", params: defaultParams("static"), blend: BLEND.LUMA };
 }
 
 /**
  * 从设备读回的分区还原叠加层草稿。空层 → 「关闭」。
  *
  * 设备上若是「熄灭」叠加层（旧数据 / 别的客户端写的），这里如实还原成
- * 「关闭」并把叠加方式归一为覆盖——界面不提供这个选项，也不该假装它存在。
+ * 「关闭」——界面不提供这个选项，也不该假装它存在。
+ *
+ * **读回时不看设备上的 `blend`**：界面只有「按亮度叠加」一种，旧配置的
+ * 覆盖 / 相乘 / 相加一律按新语义展示（用户下一次改这个分区就把它重写）。
+ * 协议仍然接受那三个值，所以读回旧数据不会让面板读不出来。
  */
-export function overlayDraftOf(
-  layer1: EffectLayer | null | undefined,
-  blend: BlendMode,
-): OverlayDraft {
+export function overlayDraftOf(layer1: EffectLayer | null | undefined): OverlayDraft {
   if (layer1 === null || layer1 === undefined || layer1.type === SEGMENT_TYPE.EMPTY) {
     return emptyOverlayDraft();
   }
@@ -174,7 +178,7 @@ export function overlayDraftOf(
   if (type === "off") {
     return emptyOverlayDraft();
   }
-  return { type, params: paramsFromLayer(type, layer1), blend };
+  return { type, params: paramsFromLayer(type, layer1), blend: BLEND.LUMA };
 }
 
 /** 叠加层是否真的启用。 */
@@ -337,6 +341,8 @@ export interface EffectParams {
   duty: number;
   /** 心跳节奏 40-120 BPM（面板单位；编码时换成周期毫秒）。 */
   bpm: number;
+  /** 心跳双脉冲开关（协议 `flags` bit0）：true = 一大一小两次，false = 单脉冲。 */
+  doublePulse: boolean;
   /** 随机闪烁密度 0-255（协议 `p5`，同时亮着的比例）。 */
   density: number;
 }
@@ -362,6 +368,8 @@ export function defaultParams(type: PanelType): EffectParams {
     frequencyHz: 4,
     duty: 90,
     bpm: 60,
+    /* 默认双脉冲：一大一小两次才像心跳（单脉冲更像普通的闪）。 */
+    doublePulse: true,
     density: 128,
   };
   switch (type) {
@@ -405,6 +413,7 @@ export function normalizeParams(params: Partial<EffectParams>): EffectParams {
     frequencyHz: clampFrequency(merged.frequencyHz),
     duty: nearestDuty(merged.duty),
     bpm: clampBpm(merged.bpm),
+    doublePulse: merged.doublePulse !== false,
     density: clampByte(merged.density),
   };
 }
@@ -512,8 +521,8 @@ export type PanelSliderKey =
   | "bpm"
   | "density";
 
-/** 选择键（波形 / 方向 / 占空比）。 */
-export type PanelChoiceKey = "waveform" | "direction" | "duty";
+/** 选择键（波形 / 方向 / 占空比 / 双脉冲）。 */
+export type PanelChoiceKey = "waveform" | "direction" | "duty" | "pulse";
 
 /**
  * 每种类型的滑块列表。
@@ -521,14 +530,18 @@ export type PanelChoiceKey = "waveform" | "direction" | "duty";
  * 这张表就是「用户永远看不到当前类型用不上的旋钮」的唯一真相：参数区整体替换
  * 的依据是它，不是页面里的 `wx:if` 集合。熄灭一个滑块都没有——它下发的是全零
  * 参数块，给旋钮只会让人以为那些参数有用。
+ *
+ * **简单档与进阶档共用这张表**（两边灯效种类与配置项完全一致）。彩虹也拿到
+ * 色相 / 饱和度 / 亮度：色相是彩虹的基准相位、饱和度是浓淡——早期把它们藏起来，
+ * 用户就没法调「柔和彩虹」。
  */
 export const SLIDER_KEYS: Record<PanelType, readonly PanelSliderKey[]> = {
   static: ["hue", "sat", "level"],
   breathing: ["hue", "sat", "level", "period", "minLevel"],
-  rainbow: ["period", "span"],
+  rainbow: ["hue", "sat", "level", "period", "span"],
   comet: ["hue", "sat", "level", "period", "tail"],
-  strobe: ["hue", "sat", "frequency", "level"],
-  heartbeat: ["hue", "sat", "bpm", "level"],
+  strobe: ["hue", "sat", "level", "frequency"],
+  heartbeat: ["hue", "sat", "level", "bpm"],
   /* #100 随机闪烁：密度（p5）控制同时亮着的比例。 */
   flicker: ["hue", "sat", "level", "period", "density"],
   off: [],
@@ -553,6 +566,11 @@ export function isPanelSliderKey(key: string): key is PanelSliderKey {
   return (ALL_SLIDER_KEYS as readonly string[]).includes(key);
 }
 
+/** 这个 key 是不是一个选择键（来自渲染层的数据不算可信）。 */
+export function isPanelChoiceKey(key: string): key is PanelChoiceKey {
+  return key === "waveform" || key === "direction" || key === "duty" || key === "pulse";
+}
+
 /** 每种类型的选择控件（永远排在滑块之后）。 */
 export const CHOICE_KEYS: Record<PanelType, readonly PanelChoiceKey[]> = {
   static: [],
@@ -560,7 +578,9 @@ export const CHOICE_KEYS: Record<PanelType, readonly PanelChoiceKey[]> = {
   rainbow: ["direction"],
   comet: ["direction"],
   strobe: ["duty"],
-  heartbeat: [],
+  /* 心跳的双脉冲开关（flags bit0）一直是协议里的真实参数，以前两边都没有
+   * 入口，恒为「双」。既然要求配置项完全展开，就不该留一个改不了的隐藏位。 */
+  heartbeat: ["pulse"],
   flicker: [],
   off: [],
 };
@@ -578,6 +598,14 @@ export interface PanelSliderView {
   display: string;
   /** 滑轨是否画彩虹渐变（只有色相）。 */
   rainbow: boolean;
+  /**
+   * 滑轨的 CSS 背景（`hue` 走彩虹，其余按参数含义算渐变）。
+   *
+   * 「空拖动轴」看不了自己在调什么：拖饱和度时轨上应该从灰渐变到当前色，
+   * 拖亮度时从黑渐变到当前色。渐变由 `sliderTrack` 从「当前色相 + 饱和度 +
+   * 参数含义」算出，拖动色相时其余滑块的轨色同步变。
+   */
+  track: string;
   /** 滑块是否真的会改变设备（现存滑块全部为 true）。 */
   sends: boolean;
   /** 不下发时的说明；空串表示正常生效。 */
@@ -632,6 +660,12 @@ const DIRECTION_OPTIONS: ReadonlyArray<{ value: number; label: string }> = [
   { value: 1, label: "反转" },
 ];
 
+/** 心跳双脉冲选项（协议 `flags` bit0）。 */
+const PULSE_OPTIONS: ReadonlyArray<{ value: number; label: string }> = [
+  { value: 0, label: "单脉冲" },
+  { value: 1, label: "双脉冲" },
+];
+
 /** 波形选项（「正弦 / 三角 / 锯齿 / 方波」）。 */
 const WAVEFORM_CHOICE_OPTIONS = WAVEFORM_OPTIONS.map((option) => ({
   value: option.value,
@@ -656,6 +690,50 @@ export function p5FromPercent(percent: number): number {
   return Math.round((value / 100) * 255);
 }
 
+/**
+ * 一个滑块该画什么样的滑轨。
+ *
+ * 判据是**参数含义**，不是类型：同样的 `tail` 在彩虹里不存在、在流星里就是从
+ * 实色到透明的拖尾；`period` 的轨与颜色无关，用主题色空轨。
+ *
+ * 颜色一律用 `hsl()` 而不是 hex：这样「拖色相 → 其余轨道的颜色跟着变」是纯函数
+ * 的结果，不需要页面在拖动时改一堆 data 字段。
+ */
+export function sliderTrack(key: PanelSliderKey, params: EffectParams): string {
+  const hue = hueDegreesOf(params.hue);
+  const satPercent = satPercentOf(params.sat);
+  /* 当前色：饱和度滑块拖到 0 时它会变成灰——这正是「饱和度」想表达的东西。 */
+  const color = `hsl(${hue}, ${satPercent}%, 50%)`;
+  switch (key) {
+    case "hue":
+      return HUE_RAMP_GRADIENT;
+    case "sat":
+      /* 灰 → 当前色相满饱和：一眼看出自己在调「浓淡」。 */
+      return `linear-gradient(90deg, hsl(${hue}, 0%, 50%), hsl(${hue}, 100%, 50%))`;
+    case "level":
+      /* 黑 → 当前色：亮度滑块拖到头就是这颗灯珠最亮的样子。 */
+      return `linear-gradient(90deg, #000000, ${color})`;
+    case "minLevel":
+      /* 呼吸谷底：同一个色，从黑到当前色。 */
+      return `linear-gradient(90deg, #000000, ${color})`;
+    case "span":
+      /* 彩虹跨度：0 = 整条同色，满 = 铺满一整圈。 */
+      return `${HUE_RAMP_GRADIENT}`;
+    case "tail":
+      /* 拖尾：从实色渐隐到透明（用同一个色相的透明度表达）。 */
+      return `linear-gradient(90deg, hsl(${hue}, ${satPercent}%, 50%), hsla(${hue}, ${satPercent}%, 50%, 0))`;
+    case "density":
+      /* 密度：零星亮点 → 半数亮着。 */
+      return `linear-gradient(90deg, hsla(${hue}, ${satPercent}%, 50%, 0.05), ${color})`;
+    default:
+      /*
+       * 周期 / 频率 / 节奏与颜色无关：给一条主题色空轨（不是彩虹轨——那会让人
+       * 以为拖它能改颜色）。用 currentColor 让深色主题自动跟随。
+       */
+      return "";
+  }
+}
+
 /** 一个滑块的位置与读数（按 key 与草稿换算）。 */
 export function sliderView(key: PanelSliderKey, params: EffectParams): PanelSliderView {
   switch (key) {
@@ -670,6 +748,7 @@ export function sliderView(key: PanelSliderKey, params: EffectParams): PanelSlid
         step: 1,
         display: `${degrees}°`,
         rainbow: true,
+        track: sliderTrack(key, params),
         sends: true,
         note: "",
       };
@@ -685,6 +764,7 @@ export function sliderView(key: PanelSliderKey, params: EffectParams): PanelSlid
         step: PERCENT_STEP,
         display: `${percent}%`,
         rainbow: false,
+        track: sliderTrack("sat", params),
         sends: true,
         note: "",
       };
@@ -701,6 +781,7 @@ export function sliderView(key: PanelSliderKey, params: EffectParams): PanelSlid
         step: 1,
         display: `${level}%`,
         rainbow: false,
+        track: sliderTrack("level", params),
         sends: true,
         note: "",
       };
@@ -717,6 +798,7 @@ export function sliderView(key: PanelSliderKey, params: EffectParams): PanelSlid
         step: PERIOD_STEP_MS / 1000,
         display: secondsText(Math.max(PERIOD_MIN_MS, ms)),
         rainbow: false,
+        track: sliderTrack("period", params),
         sends: true,
         note: "",
       };
@@ -733,6 +815,7 @@ export function sliderView(key: PanelSliderKey, params: EffectParams): PanelSlid
         step: PERCENT_STEP,
         display: `${percent}%`,
         rainbow: false,
+        track: sliderTrack("minLevel", params),
         sends: true,
         note: "",
       };
@@ -748,6 +831,7 @@ export function sliderView(key: PanelSliderKey, params: EffectParams): PanelSlid
         step: PERCENT_STEP,
         display: spanText(clampByte(params.span)),
         rainbow: false,
+        track: sliderTrack("span", params),
         sends: true,
         note: "",
       };
@@ -763,6 +847,7 @@ export function sliderView(key: PanelSliderKey, params: EffectParams): PanelSlid
         step: PERCENT_STEP,
         display: tailText(clampByte(params.tail)),
         rainbow: false,
+        track: sliderTrack("tail", params),
         sends: true,
         note: "",
       };
@@ -778,6 +863,7 @@ export function sliderView(key: PanelSliderKey, params: EffectParams): PanelSlid
         step: PERCENT_STEP,
         display: `${percent}%`,
         rainbow: false,
+        track: sliderTrack("density", params),
         sends: true,
         note: "",
       };
@@ -793,6 +879,7 @@ export function sliderView(key: PanelSliderKey, params: EffectParams): PanelSlid
         step: FREQUENCY_STEP,
         display: `${hz} Hz`,
         rainbow: false,
+        track: sliderTrack("frequency", params),
         sends: true,
         note: "",
       };
@@ -808,6 +895,7 @@ export function sliderView(key: PanelSliderKey, params: EffectParams): PanelSlid
         step: BPM_STEP,
         display: `${bpm} BPM`,
         rainbow: false,
+        track: sliderTrack("bpm", params),
         sends: true,
         note: "",
       };
@@ -831,6 +919,14 @@ function choiceView(key: PanelChoiceKey, params: EffectParams): PanelChoiceView 
       label: "占空比",
       options: DUTY_OPTIONS,
       value: nearestDuty(params.duty),
+    };
+  }
+  if (key === "pulse") {
+    return {
+      key,
+      label: "脉冲",
+      options: PULSE_OPTIONS,
+      value: params.doublePulse ? 1 : 0,
     };
   }
   return {
@@ -858,7 +954,7 @@ export function panelSummary(type: PanelType, params: EffectParams): string {
     return parts.join(" · ");
   }
   if (type === "heartbeat") {
-    parts.push(`${clampBpm(params.bpm)} BPM`, "双脉冲");
+    parts.push(`${clampBpm(params.bpm)} BPM`, params.doublePulse === false ? "单脉冲" : "双脉冲");
     return parts.join(" · ");
   }
   parts.push(secondsText(Math.max(PERIOD_MIN_MS, clampPeriodMs(params.periodMs))));
@@ -1022,6 +1118,9 @@ export function applyChoice(
   if (key === "duty") {
     return { ...params, duty: nearestDuty(value) };
   }
+  if (key === "pulse") {
+    return { ...params, doublePulse: Number(value) === 1 };
+  }
   return { ...params, reverse: Number(value) === 1 };
 }
 
@@ -1097,7 +1196,7 @@ export function panelLayer(type: PanelType, params: EffectParams): EffectLayer {
         sat,
         periodMs: heartbeatPeriodMs(normalized.bpm),
         p5: HEARTBEAT_PULSE,
-        flags: HEARTBEAT_FLAGS,
+        flags: normalized.doublePulse ? HEARTBEAT_FLAGS : 0x00,
         level,
       };
     case "flicker":
@@ -1222,6 +1321,7 @@ export function paramsFromLayer(type: PanelType, layer: EffectLayer): EffectPara
         sat: clampByte(layer.sat),
         level,
         bpm: period === 0 ? base.bpm : clampBpm(roundBpm(period)),
+        doublePulse: (layer.flags & 0x01) !== 0,
       };
     case "flicker":
       /* 密度直接是 p5（0-255），周期为 0 时退回默认（0 = 冻结画面，滑块没有这一档）。 */

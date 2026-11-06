@@ -1,13 +1,69 @@
 # 交接：lumen 当前状态与下一步
 
-**最后更新**：2026-11-05（第九轮）　**分支**：`integration/test-flow`（测试流程改造，待合入 `master`）
+**最后更新**：2026-11-06（第十轮）　**分支**：`fix/no-segment-black-and-layer-blend`
 
 这份文件是给**新会话**的入口。它只写「新会话必须知道、但代码和文档里读不到」的东西；
 其余一律给指针，不重复。
 
 ---
 
-## 0. 2026-11-05 第九轮：进阶灯效的方案作用域与自动下发（**已完成，未合入**）
+## 0. 2026-11-06 第十轮：无分区全黑 + 按亮度叠加（**已完成，待合入**）
+
+用户拿真机试出来的四个现象，根因只有两处：
+
+1. **零活动段时渲染层整条铺 `state->r/g/b`**（`led_render.c` 的 v1 单色回退）。
+   默认暖白 255,180,120 在 WS2812B 上就是「黄」；而 `state_summary_apply` 又把
+   strip0/seg0 层0 的 hue+sat 反算进 State——于是「改一组的颜色」「调一组的饱和度」
+   等于改那个全局兜底色，**所有没分区的带一起变**。
+2. **两层叠加默认 `blend = 0x00`（覆盖）**。流星的黑像素整片盖掉背景，
+   所以「彩虹打底 + 流星」看不见彩虹。
+
+修法：
+
+| 改了什么 | 落点 |
+|---|---|
+| 删掉单色回退：零分区 = 全黑（§9.3 第 2 条） | `led_render.c::compose_frame`；`script_scope.c/h` 删 `lumen_scope_uses_segments`；`led_strip_owner.c` 删无调用方的 `push_frame` |
+| 零分区时 State R/G/B 报 `0,0,0` | `led_engine.c::state_summary_apply` |
+| 新增 `blend = 0x03`「按亮度叠加」 | 契约 §7.2.1 + 向量 + `effects.h/c` 的 `LUMEN_BLEND_LUMA` + 两端常量 |
+| 界面只有一种叠加方式，删「混合方式」行 | `advanced-layers.ts`；`effect-panel.ts` 的 `OVERLAY_BLEND_OPTIONS` |
+| 两层拆成两张独立卡片，配置项与简单档完全一致 | `strip.wxml` 的 `effect-controls` 模板（三处共用）；`SLIDER_KEYS` / `CHOICE_KEYS` 并集表 |
+| 九张成品卡退役，读回直接还原完整参数 | `strip-simple.ts`；`simple-effects.ts` 加 `PANEL_TYPE_OF_EFFECT` 桥 |
+| 每个滑块按参数含义上色（饱和度灰→当前色等） | `effect-panel.ts::sliderTrack` + `strip.wxss` 的 `.track-wrap` |
+| 心跳加单 / 双脉冲开关 | `EffectParams.doublePulse` + `CHOICE_KEYS.heartbeat` |
+| 选「空」= 清掉这条带的全部实时分区 | `strip.ts::clearQuick`（**不写 OFF 分区**） |
+
+### 验证（两条腿，都不靠摄像头）
+
+| 腿 | 结果 |
+|---|---|
+| 真机探针 `scripts/probe-layer-fixes.py` | **8/8**；含「断开重启后仍是 `rgb=0,0,0`」 |
+| 真机回归 `scripts/probe-v4.py` | **43/43**，零回归 |
+| 模拟器 `scripts/simulate-strips.py` | **32/32**，含 `over-blend` 对照组 |
+| 固件 host / 小程序 / 后端 | 14163 断言 / 1858 用例 / 140 用例 |
+
+证据：[`evidence/layer-blend-fix-2026-11-06.md`](evidence/layer-blend-fix-2026-11-06.md)。
+
+### 摄像头为什么被放弃（**不要再试同一条路**）
+
+`verify-scope-camera.py` 这套工具依赖 `.scope-boxes.json` 的采样框，而采样框依赖机位。
+本轮实测只点亮 strip 0 时，画面里只有一个小光点（`.layout-shots/layout-0.png`）——
+摄像头根本没拍到灯带本体。用拍不到灯的设备做「肉眼验收」只会得到噪声。
+
+取代它的是 `scripts/simulate-strips.py`：在宿主上编译**固件真实的渲染代码**
+（`effects.c` / `segment_store.c` / `gamma.c` / `led_render.c`），把 8 条灯带的逐颗像素
+画成图片。像素与真机逐字节同源。它证明不了色域压缩 / 压降 / RMT 时序，这三项仍需真机。
+详见 [`simulator.md`](simulator.md)。
+
+### 这一轮踩到的两个工具坑
+
+- **`cv2.imwrite` 写不了含中文的路径**（本仓库有 `项目`）。它静默返回 `False`、
+  一个字节都不写，表现是「断言全绿但一张图都没有」。用 `cv2.imencode` + Python 文件对象。
+- **模拟器的 JSON 层不能用 `lumen_effect_layer_t` 承接**：那是 9 字节线上编码，
+  与「解析出来的 int 字段」布局不同，强转会静默错位（表现为「彩虹层被拒，result=0x01」）。
+
+---
+
+## 1. 2026-11-05 第九轮：进阶灯效的方案作用域与自动下发（**已完成，未合入**）
 
 **规格 [#120](https://github.com/sishoui/light-matt/issues/120)，六张实现票 `#121`–`#126`。**
 
@@ -70,7 +126,7 @@
 
 ---
 
-## 0. 2026-11-05 第八轮：测试流程改造（**在集成分支，待 PR**）
+## 2. 2026-11-05 第八轮：测试流程改造（**在集成分支，待 PR**）
 
 **规格 [#102](https://github.com/sishoui/light-matt/issues/102)，九张实现票 `#103`–`#111` 全部关闭。**
 
@@ -129,7 +185,7 @@
 
 ---
 
-## 0.1 2026-11-04 第七轮：小程序 UI / 交互第五轮（**已合入 `master`**）
+## 3. 2026-11-04 第七轮：小程序 UI / 交互第五轮（**已合入 `master`**）
 
 **规格 [#85](https://github.com/sishoui/light-matt/issues/85) + 12 张实现票 `#90`–`#101`。**
 本地副本 `.scratch/ui-v5-spec.md`、`.scratch/ui-v5-tickets/`。
@@ -187,7 +243,7 @@
 
 ---
 
-## 0.1 2026-11-03 第五轮：UI 重构 + 协议 v4（**已完成**，集成分支 `integration/ui-refactor-v4`）
+## 4. 2026-11-03 第五轮：UI 重构 + 协议 v4（**已完成**，集成分支 `integration/ui-refactor-v4`）
 
 **规格 [#60](https://github.com/sishoui/light-matt/issues/60) + 9 张实现票 `#61`–`#69` 全部落地。**
 本地副本：`.scratch/ui-refactor-v4-spec.md`、`.scratch/ui-refactor-tickets/`、裁决在

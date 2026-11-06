@@ -46,9 +46,17 @@ typedef enum {
     LUMEN_BLEND_OVER = 0x00,     /* out = L1 */
     LUMEN_BLEND_MULTIPLY = 0x01, /* out = (L0 * L1 + 127) / 255 */
     LUMEN_BLEND_ADD = 0x02,      /* out = min(255, L0 + L1) */
+    /*
+     * 按亮度叠加（§7.2.1）：a = max(L1)/255，out = L1 + L0 × (1 − a)。
+     *
+     * 这是「上层只盖住它自己亮着的地方」：流动效果（流星 / 随机闪烁）叠在
+     * 静态或彩虹之上时，只有头部与尾巴亮着，其余位置继续显示背景层。
+     * `LUMEN_BLEND_OVER` 做不到这一点——它让上层的每个黑像素都盖住背景。
+     */
+    LUMEN_BLEND_LUMA = 0x03,
 } lumen_blend_mode_t;
 
-#define LUMEN_BLEND_MAX LUMEN_BLEND_ADD
+#define LUMEN_BLEND_MAX LUMEN_BLEND_LUMA
 
 /* 空层标记（docs/protocol-v4.md §7.1）。合法值恰为 0xFF。 */
 #define LUMEN_LAYER_EMPTY 0xFF
@@ -265,9 +273,10 @@ void lumen_effect_pixel(const lumen_segment_t *seg, uint16_t index_in_strip, uin
 
 /*
  * blend 合成（纯函数，§7.2）：
- *   0 覆盖  out = L1
- *   1 相乘  out = (L0 * L1 + 127) / 255
- *   2 相加  out = min(255, L0 + L1)
+ *   0 覆盖          out = L1
+ *   1 相乘          out = (L0 * L1 + 127) / 255
+ *   2 相加          out = min(255, L0 + L1)
+ *   3 按亮度叠加     a = max(L1)/255；out = L1 + L0 × (1 − a)
  * 未知 blend 按「覆盖」处理（命令层已拒绝非法值，这里只是防御）。
  * out 可与 l0 / l1 指向同一块内存。
  */

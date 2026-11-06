@@ -323,10 +323,40 @@ void lumen_blend_pixel(uint8_t blend, const uint8_t l0[3], const uint8_t l1[3],
             result[c] = (uint8_t)(sum > 255u ? 255u : sum);
         }
         break;
+    case LUMEN_BLEND_LUMA: {
+        /*
+         * 按亮度叠加（§7.2.1）：a = max(L1)/255，out = L1 + L0 × (1 − a)。
+         *
+         * 取三通道最大值而不是平均值：单色流动效果（纯红流星）只有红通道非 0，
+         * 取平均会让 a 被另外两个 0 通道拉到 1/3，表现为「流星永远半透明」。
+         *
+         * 形状上等价于「上层按自己的亮度当不透明度」：L1 全黑 → 背景原样透出；
+         * L1 满亮 → 上层完全接管；中间值按亮度线性混合。
+         */
+        uint8_t peak = l1[0];
+        if (l1[1] > peak) {
+            peak = l1[1];
+        }
+        if (l1[2] > peak) {
+            peak = l1[2];
+        }
+        if (peak == 0xFFu) {
+            /* 满亮：上层完全接管，等价于覆盖（省掉一次乘除）。 */
+            memcpy(result, l1, 3);
+            break;
+        }
+        uint16_t keep = (uint16_t)(0xFFu - peak); /* L0 的保留权重，0..254 */
+        for (uint8_t c = 0; c < 3; ++c) {
+            uint16_t scaled = (uint16_t)(((uint32_t)l0[c] * keep + 127u) / 255u);
+            uint16_t sum = (uint16_t)l1[c] + scaled;
+            result[c] = (uint8_t)(sum > 255u ? 255u : sum);
+        }
+        break;
+    }
     case LUMEN_BLEND_OVER:
     default:
         /*
-         * out = L1。未知 blend 也按覆盖处理：命令层已把 >2 判为 InvalidParam，
+         * out = L1。未知 blend 也按覆盖处理：命令层已把 >3 判为 InvalidParam，
          * 这里只是防御，不让一个损坏的段把整条灯带变黑。
          */
         memcpy(result, l1, 3);

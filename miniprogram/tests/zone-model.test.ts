@@ -93,7 +93,7 @@ describe("buildZoneSpec：单层 / 两层", () => {
     expect(spec.layer1.type).toBe(SEGMENT_TYPE.BREATHING);
   });
 
-  it("有叠加效果但没给叠加方式 → 覆盖（保守默认）", () => {
+  it("有叠加效果但没给叠加方式 → 按亮度叠加（界面唯一口径）", () => {
     const spec = buildZoneSpec({
       stripId: 0,
       segId: 0,
@@ -102,7 +102,8 @@ describe("buildZoneSpec：单层 / 两层", () => {
       layer0: layer(SEGMENT_TYPE.STATIC),
       layer1: layer(SEGMENT_TYPE.COMET, { periodMs: 800 }),
     });
-    expect(spec.blend).toBe(BLEND.OVER);
+    /* 两层都有内容时的默认：特效层只盖住自己亮着的地方（§7.2.1）。 */
+    expect(spec.blend).toBe(BLEND.LUMA);
   });
 
   it("两层都是副本：改输入不会污染产出，改产出也不会污染输入", () => {

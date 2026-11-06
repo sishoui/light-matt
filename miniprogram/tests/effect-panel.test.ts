@@ -180,9 +180,17 @@ describe("参数区按类型整体替换", () => {
     ]);
   });
 
-  it("彩虹没有颜色与亮度滑块，只有周期 / 跨度 + 方向", () => {
+  it("彩虹是色相 / 饱和度 / 亮度 + 周期 / 跨度，外加方向", () => {
+    /* 彩虹也有颜色与亮度：色相是它的基准相位、饱和度是浓淡、亮度是这一层
+     * 多亮。早期把这三个藏起来，用户就没法调「柔和彩虹」。 */
     const view = buildEffectPanel("rainbow", params());
-    expect(view.sliders.map((slider) => slider.key)).toEqual(["period", "span"]);
+    expect(view.sliders.map((slider) => slider.key)).toEqual([
+      "hue",
+      "sat",
+      "level",
+      "period",
+      "span",
+    ]);
     expect(view.choices.map((choice) => choice.key)).toEqual(["direction"]);
     expect(view.choices[0].options.map((option) => option.label)).toEqual(["正转", "反转"]);
   });
@@ -199,19 +207,19 @@ describe("参数区按类型整体替换", () => {
     expect(view.choices.map((choice) => choice.key)).toEqual(["direction"]);
   });
 
-  it("爆闪是色相 / 饱和度 / 频率 / 亮度，外加占空比三档", () => {
+  it("爆闪是色相 / 饱和度 / 亮度 / 频率，外加占空比三档", () => {
     const view = buildEffectPanel("strobe", params());
     expect(view.sliders.map((slider) => slider.key)).toEqual([
       "hue",
       "sat",
-      "frequency",
       "level",
+      "frequency",
     ]);
     expect(view.sliders.map((slider) => slider.label)).toEqual([
       "色相",
       "饱和度",
-      "频率",
       "亮度",
+      "频率",
     ]);
     expect(view.choices.map((choice) => choice.key)).toEqual(["duty"]);
     expect(view.choices[0].label).toBe("占空比");
@@ -220,16 +228,20 @@ describe("参数区按类型整体替换", () => {
     expect(DUTY_OPTIONS.map((option) => option.value)).toEqual([40, 90, 153]);
   });
 
-  it("心跳是色相 / 饱和度 / 节奏 / 亮度，没有周期与波形", () => {
+  it("心跳是色相 / 饱和度 / 亮度 / 节奏，外加单 / 双脉冲开关", () => {
     const view = buildEffectPanel("heartbeat", params());
-    expect(view.sliders.map((slider) => slider.key)).toEqual(["hue", "sat", "bpm", "level"]);
+    expect(view.sliders.map((slider) => slider.key)).toEqual(["hue", "sat", "level", "bpm"]);
     expect(view.sliders.map((slider) => slider.label)).toEqual([
       "色相",
       "饱和度",
-      "节奏",
       "亮度",
+      "节奏",
     ]);
-    expect(view.choices).toEqual([]);
+    /* 双脉冲是协议里的真实参数（flags bit0），以前两边都没有入口。 */
+    expect(view.choices.map((choice) => choice.key)).toEqual(["pulse"]);
+    expect(view.choices[0].options.map((option) => option.label)).toEqual(["单脉冲", "双脉冲"]);
+    /* 默认双脉冲。 */
+    expect(view.choices[0].value).toBe(1);
   });
 
   it("熄灭一个旋钮都没有，只有一行「这里不亮」的说明", () => {
@@ -259,10 +271,10 @@ describe("参数区按类型整体替换", () => {
     const allowed: Record<PanelType, string[]> = {
       static: ["hue", "sat", "level"],
       breathing: ["hue", "sat", "level", "period", "minLevel"],
-      rainbow: ["period", "span"],
+      rainbow: ["hue", "sat", "level", "period", "span"],
       comet: ["hue", "sat", "level", "period", "tail"],
-      strobe: ["hue", "sat", "frequency", "level"],
-      heartbeat: ["hue", "sat", "bpm", "level"],
+      strobe: ["hue", "sat", "level", "frequency"],
+      heartbeat: ["hue", "sat", "level", "bpm"],
       flicker: ["hue", "sat", "level", "period", "density"],
       off: [],
     };
@@ -273,8 +285,8 @@ describe("参数区按类型整体替换", () => {
     }
   });
 
-  it("彩虹不显示亮度滑块（它自己循环变色、没有单一亮度可调）", () => {
-    expect(buildEffectPanel("rainbow", params()).sliders.some((s) => s.key === "level")).toBe(false);
+  it("彩虹也显示亮度滑块（整层亮度，与其它灯效一致）", () => {
+    expect(buildEffectPanel("rainbow", params()).sliders.some((s) => s.key === "level")).toBe(true);
   });
 });
 
@@ -951,11 +963,14 @@ describe("叠加层：选项、草稿与装配", () => {
     expect(OVERLAY_CHOICE_OPTIONS).toHaveLength(8);
   });
 
-  it("混合方式只剩相加 / 覆盖两种（#100 移除了相乘）", () => {
-    expect(OVERLAY_BLEND_OPTIONS.map((option) => option.value)).toEqual([BLEND.ADD, BLEND.OVER]);
-    expect(OVERLAY_BLEND_OPTIONS.map((option) => option.name)).toEqual(["相加", "覆盖"]);
-    /* 界面上再也找不到「相乘」。 */
-    expect(OVERLAY_BLEND_OPTIONS.map((option) => option.name)).not.toContain("相乘");
+  it("混合方式只有「按亮度叠加」一种（界面不再产生覆盖 / 相加）", () => {
+    expect(OVERLAY_BLEND_OPTIONS.map((option) => option.value)).toEqual([BLEND.LUMA]);
+    expect(OVERLAY_BLEND_OPTIONS.map((option) => option.name)).toEqual(["按亮度叠加"]);
+    /* 「覆盖」会让特效层每个黑像素盖住背景（流星把彩虹全遮了），
+     * 「相加」会在重叠处加色发白——两者都不该出现在选项里。 */
+    const names = OVERLAY_BLEND_OPTIONS.map((option) => option.name);
+    expect(names).not.toContain("覆盖");
+    expect(names).not.toContain("相加");
   });
 
   it("默认草稿是关闭状态，且不产出任何叠加层", () => {
@@ -1004,23 +1019,24 @@ describe("叠加层：选项、草稿与装配", () => {
   });
 
   it("从设备读回空层 → 关闭态", () => {
-    const draft = overlayDraftOf(layer(NO_EFFECT), BLEND.OVER);
+    const draft = overlayDraftOf(layer(NO_EFFECT));
     expect(draft.type).toBe("none");
     expect(overlayEnabled(draft)).toBe(false);
   });
 
   it("从设备读回真实叠加层 → 原类型与参数", () => {
     const src = panelLayer("comet", { ...defaultParams("comet"), hue: 1234, sat: 200 });
-    const draft = overlayDraftOf(src, BLEND.MULTIPLY);
+    const draft = overlayDraftOf(src);
     expect(draft.type).toBe("comet");
-    expect(draft.blend).toBe(BLEND.MULTIPLY);
+    /* 界面只有「按亮度叠加」一种，读回旧配置时归一。 */
+    expect(draft.blend).toBe(BLEND.LUMA);
     expect(draft.params.hue).toBe(1234);
     expect(draft.params.sat).toBe(200);
   });
 
   it("设备上是「熄灭」叠加层时按关闭处理（界面不提供这个选项）", () => {
     const offLayer = panelLayer("off", defaultParams("off"));
-    const draft = overlayDraftOf(offLayer, BLEND.OVER);
+    const draft = overlayDraftOf(offLayer);
     expect(draft.type).toBe("none");
   });
 

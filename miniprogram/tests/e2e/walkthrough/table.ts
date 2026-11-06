@@ -311,7 +311,7 @@ export const WALKTHROUGH: readonly Step[] = [
       if (zones > 0) {
         return { agrees: false, blame: "device", why: `设备上还有 ${zones} 个分区，这一行的前提不成立` };
       }
-      return ui === "未设置"
+      return ui === "空"
         ? AGREE
         : { agrees: false, blame: "ui", why: `设备零分区，灯效行却写「${ui}」` };
     },

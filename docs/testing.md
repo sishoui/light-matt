@@ -77,6 +77,18 @@ failed，逼你摘掉标记，而不是被一条永远跳过的用例永久掩�
 `scripts/stress-fragment-v3.py`（分片压力）都需要真机，且产出的是**一次性的证据**而不是
 稳定的回归断言。它们不进编排器，结果写进 `docs/evidence/`。
 
+`scripts/simulate-strips.py` 不需要真机：它在宿主上编译并运行**固件真实的渲染代码**
+（`firmware/sim/sim_main.c` 链接 `effects.c` / `segment_store.c` / `gamma.c` /
+`led_render.c`），把 8 条灯带的逐颗像素画成图片。像素与真机逐字节同源，所以它能替代
+「肉眼在灯带上看效果」这一步——但它证明不了 WS2812B 的色域压缩、电源压降与 RMT 时序。
+改了渲染层 / blend / 灯效公式时**必跑**：
+
+```bash
+python scripts/simulate-strips.py          # 32 项断言 + 图，落在 .sim-out/
+```
+
+详见 [`simulator.md`](simulator.md)。
+
 ---
 
 ## 2. 改哪类代码 → 跑哪几层

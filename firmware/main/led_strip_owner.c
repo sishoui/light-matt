@@ -163,20 +163,3 @@ esp_err_t lumen_led_strip_owner_push_pixels_n(led_strip_handle_t strip, const ui
     }
     return err;
 }
-
-esp_err_t lumen_led_strip_owner_push_frame(led_strip_handle_t strip, uint8_t r, uint8_t g,
-                                           uint8_t b, uint16_t count)
-{
-    if (strip == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    /* v1 单色：整条同色。复用 push_pixels，保证两条路径只有一份 refresh 逻辑。 */
-    uint8_t frame[LUMEN_MAX_LEDS * 3];
-    uint16_t n = count > LUMEN_MAX_LEDS ? LUMEN_MAX_LEDS : count;
-    for (uint16_t i = 0; i < n; ++i) {
-        frame[i * 3u + 0] = r;
-        frame[i * 3u + 1] = g;
-        frame[i * 3u + 2] = b;
-    }
-    return lumen_led_strip_owner_push_pixels(strip, frame, n);
-}

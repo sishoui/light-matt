@@ -73,16 +73,17 @@ export function hasOverlay(layer1: EffectLayer | null | undefined): boolean {
 }
 
 /**
- * 实际要下发的叠加方式：没有叠加效果时一律归一为覆盖。
+ * 实际要下发的叠加方式：没有叠加效果时一律归一为覆盖，有叠加效果时默认按亮度叠加。
  *
- * 这是协议的硬约束（§7.1 第 4 条），不是风格问题——单层带非 0 的 blend
- * 会被设备直接拒。
+ * 前半句是协议的硬约束（§7.1 第 4 条），不是风格问题——单层带非 0 的 blend
+ * 会被设备直接拒。后半句是界面口径：两层都有内容时只有「按亮度叠加」是正确
+ * 语义（特效层只盖住自己亮着的地方），见 `advanced-layers.ts` 的模块注释。
  */
 export function normalizedBlend(layer1: EffectLayer | null | undefined, blend: BlendMode | undefined): BlendMode {
   if (!hasOverlay(layer1)) {
     return BLEND.OVER;
   }
-  return blend ?? BLEND.OVER;
+  return blend ?? BLEND.LUMA;
 }
 
 function copyLayer(layer: EffectLayer): EffectLayer {

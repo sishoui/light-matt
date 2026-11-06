@@ -1300,6 +1300,26 @@
   margin: 0;
 }
 
+/*
+ * 其余参数滑轨的渐变底（饱和度 / 亮度 / 尾长 / 密度 / 跨度）。
+ *
+ * 与色相轨同一个思路：slider 自己的轨道与已滑过部分都透明，让底下的渐变
+ * 透出来。渐变由 `effect-panel.sliderTrack` 按「当前色相 + 饱和度 + 参数含义」
+ * 算好放进 `item.track`——拖色相时这些轨的颜色会跟着变。
+ */
+.track-wrap {
+  border-radius: 999rpx;
+  padding: 0 18rpx;
+  height: 44rpx;
+  display: flex;
+  align-items: center;
+}
+
+.track-slider {
+  flex: 1;
+  margin: 0;
+}
+
 /* 波形 / 方向：一行选项按钮，与类型行同一套选中语义。 */
 .panel-choice {
   display: flex;
@@ -1620,54 +1640,10 @@
 
 /* #96：没有「应用并播放」按钮——任何改动在防抖后立即生效。 */
 
-/* ---------------- 叠加层（#71 US49）：主效果之上再加一层 ---------------- */
+/* ---------------- 特效层：独立的第二张卡 ----------------
+   与背景层是**平级的两张卡片**，各自完整的灯效种类与配置项。类型行复用
+   `.panel-types`（八个按钮），所以两个卡片版式一致。 */
 
-.overlay-block {
-  display: flex;
-  flex-direction: column;
-  gap: 12rpx;
-  margin-top: 8rpx;
-  padding-top: 16rpx;
-  border-top: 1rpx solid var(--divider);
-}
-
-.overlay-head {
-  margin-bottom: 0;
-}
-
-/* 七个选项（关闭 + 六种效果）排一行会挤：允许换行，两个一行更易点。 */
-.overlay-types {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8rpx;
-}
-
-.overlay-type {
-  flex: 1 1 calc(25% - 8rpx);
-  min-width: 0;
-  text-align: center;
-  padding: 12rpx 0;
-  border-radius: var(--radius-sm);
-  font-size: 22rpx;
-  color: var(--text-2);
-  background: var(--card-2);
-  box-shadow: inset 0 0 0 1rpx var(--border);
-  transition: background 160ms ease;
-}
-
-.overlay-type.on {
-  background: var(--accent);
-  color: var(--accent-ink);
-  box-shadow: none;
-}
-
-/* 「关闭」选中时不要用强调色：它表示「没有叠加」，不该看起来像一种效果。 */
-.overlay-type.on[data-value="none"] {
-  background: var(--card-press);
-  color: var(--text);
-  box-shadow: inset 0 0 0 1rpx var(--border);
-}
-
-.overlay-blend {
-  margin-top: 4rpx;
+.overlay-card {
+  margin-top: 24rpx;
 }

@@ -123,8 +123,8 @@ describe("一行式视图与滚轮", () => {
     expect(rows[0].value).toBe("呼吸");
   });
 
-  it("没选中时显示「未设置」", () => {
-    expect(buildEffectRows(null)[0].value).toBe("未设置");
+  it("没选中时显示「空」", () => {
+    expect(buildEffectRows(null)[0].value).toBe("空");
   });
 
   it("滚轮给出八个选项，当前选中带勾", () => {
@@ -164,7 +164,7 @@ describe("页面结构：一行式 + 无「应用并播放」", () => {
   });
 
   it("选中灯效立即写入（selectEffect → scheduleQuickWrite(true)）", () => {
-    const body = /\n {2}selectEffect\(effectId: string, cardId: string\): void \{([\s\S]*?)\n {2}\},/.exec(
+    const body = /\n {2}selectEffect\(effectId: string\): void \{([\s\S]*?)\n {2}\},/.exec(
       STRIP_TS,
     );
     expect(body).not.toBeNull();
@@ -231,10 +231,47 @@ describe("立即生效的顺序：停播 → 写 → 恢复", () => {
 });
 
 describe("参数控件与进阶档一致", () => {
-  it("简单档参数区与进阶档共用同一个滑块组件结构（param-row / param-slider）", () => {
+  it("简单档参数区与进阶档共用同一张模板（effect-controls）", () => {
+    /* 三处引用同一张模板：简单档 / 背景层 / 特效层。 */
+    const uses = STRIP_WXML.match(/is="effect-controls"/g) ?? [];
+    expect(uses.length, "简单档 + 背景层 + 特效层三处都要引用模板").toBe(3);
     expect(STRIP_WXML).toMatch(/class="param-row"/);
     expect(STRIP_WXML).toMatch(/class="param-slider"/);
     /* 色相用色环色带（彩虹渐变），不是纯色滑块。 */
     expect(STRIP_TS).toContain("HUE_RAMP_GRADIENT");
+  });
+
+  it("模板里每个控件都带 data-scope（否则分派不到正确的层）", () => {
+    /*
+     * 这是 #135 那类缺陷的重演风险：模板参数只是数据，事件处理器读的是
+     * `dataset`。少一个 `data-scope`，那一路的改动会静默落到「背景层」上
+     * ——看起来点了有反应，改的却是另一层。
+     */
+    const tpl = /<template name="effect-controls">([\s\S]*?)<\/template>/.exec(STRIP_WXML);
+    expect(tpl).not.toBeNull();
+    const body = tpl![1];
+    /*
+     * 滑块有三个变体（彩虹轨 / 渐变轨 / 主题色轨），三个都绑同一组处理器；
+     * 选项组一个。每个会触发事件的元素都要有 data-scope。
+     */
+    const sliders = body.split("<slider").length - 1;
+    const elements = sliders + (body.includes('bindtap="onScopeChoiceTap"') ? 1 : 0);
+    const scopes = body.match(/data-scope="\{\{scope\}\}"/g) ?? [];
+    expect(scopes.length, "每个会触发事件的元素都要带 data-scope").toBe(elements);
+    /* 三个滑块变体都要绑上，不能只有一个能拖动。 */
+    expect(body.match(/bindchange="onScopeSliderChange"/g)?.length).toBe(3);
+  });
+
+  it("混合方式选择器已经删除（两层恒用按亮度叠加）", () => {
+    expect(STRIP_WXML).not.toContain("混合方式");
+    expect(STRIP_WXML).not.toContain("onOverlayBlendTap");
+    expect(STRIP_TS).not.toContain("onOverlayBlendTap");
+  });
+
+  it("进阶档是两个独立的卡片，不是一个卡片里的两块", () => {
+    /* 两张卡各自有 section-head 与独立的类型行。 */
+    expect(STRIP_WXML).toContain('class="section panel-section overlay-card"');
+    const titles = STRIP_WXML.match(/<text class="section-title">(背景层|特效层)<\/text>/g) ?? [];
+    expect(titles.length).toBe(2);
   });
 });

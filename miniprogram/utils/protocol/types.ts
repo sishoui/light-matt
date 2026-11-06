@@ -48,8 +48,13 @@ export const EMPTY_EFFECT: EffectLayer = {
   level: 0,
 };
 
-/** blend：层 1 如何叠加到层 0（§7.2）。0 覆盖 / 1 相乘 / 2 相加。 */
-export type BlendMode = 0 | 1 | 2;
+/**
+ * blend：层 1 如何叠加到层 0（§7.2）。
+ *
+ * 0 覆盖 / 1 相乘 / 2 相加 / 3 按亮度叠加（`a = max(L1)/255`，
+ * `out = L1 + L0 × (1 − a)`；两层叠加的界面口径，见 `advanced-layers.ts`）。
+ */
+export type BlendMode = 0 | 1 | 2 | 3;
 
 /**
  * 一条段配置的线上形状（SetSegment / ScriptSegment / SegmentReport 同构）。

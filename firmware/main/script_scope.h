@@ -24,10 +24,13 @@
  * - 一条灯带只要在**任意一个阶段**出现过，整份方案期间都归方案管（并集口径，
  *   中途不切换渲染源）。判定只依赖已提交的脚本内容，不依赖播放头。
  * - 参与但在**当前这一步**没有段 → 该步输出黑（不是「保持上一步」，也不是
- *   「回退实时分区」）。这一条由调用方把归属位传给合成路径实现：只有归属位
- *   能让「零个活动段」与「这一条根本不归我管」区分开。
+ *   「回退实时分区」）。
  * - `loop=0` 走完、播放头停在最后一阶段时，参与带冻结最后一帧；未参与的带
  *   仍然逐帧合成自己的实时分区。
+ *
+ * **没有分区的灯带一律全黑**（docs/protocol-v4.md §9.3 第 2 条）。渲染层不再有
+ * 「退回 v1 单色铺满 state->r/g/b」的分支——那条回退会让一条没设过灯效的带
+ * 亮成暖白，并且让 strip0/seg0 的颜色漏到其它带上（改一组、全体跟着变）。
  */
 
 /* 一条灯带是否归当前方案管：`script_mask` 的第 `strip_id` 位。 */
@@ -63,20 +66,6 @@ const lumen_segment_store_t *lumen_scope_source_for_strip(const lumen_segment_st
 void lumen_scope_compose(lumen_segment_store_t *out, const lumen_segment_store_t *stage,
                          const lumen_segment_store_t *live, uint8_t script_mask,
                          uint8_t strip_count);
-
-/*
- * 这一条该走「分段合成」还是「v1 单色」（整条铺满全局 RGB）。
- *
- * `led_render.c::compose_frame` 的唯一判据，抽出来是为了让 host 能断言它：
- * 归方案管的带**即使这一步没有任何段**也必须走分段路径（于是输出全黑），
- * 退回单色会让「这一步让这条灯组熄一下」整条亮成纯色——那正是用户看到的
- * 「亮起再熄灭」。未归方案管的带保持老判据（有活动段才分段），
- * 单灯带 v1 行为因此逐字节不变。
- *
- * `power` 为 0（总闸关）或自检期间一律走单色，与渲染层原有规则一致。
- */
-bool lumen_scope_uses_segments(bool script_owned, bool has_active_segments, bool power_on,
-                               bool selftest_active);
 
 /*
  * 按归属口径推导 `strip_anim_mask`（State 字节 12）。

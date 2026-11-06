@@ -204,7 +204,7 @@ const twoLayer = setSegs.filter((c) => {
 check(twoLayer.length >= 3, `has >=3 two-layer vectors, got ${twoLayer.length}`);
 
 const blends = new Set(twoLayer.map((c) => parseInt(c.payload_hex.slice(8, 10), 16)));
-for (const b of [0x00, 0x01, 0x02]) {
+for (const b of [0x00, 0x01, 0x02, 0x03]) {
   check(blends.has(b), `blend 0x${b.toString(16)} has no two-layer vector`);
 }
 
