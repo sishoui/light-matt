@@ -1,263 +1,314 @@
-/** 帧解析文本：面板、console、复制共用同一套描述（#13 / #40）。 */
+/**
+ * 帧解析文本：面板、console、复制共用同一套描述（docs/protocol-v5.md §7）。
+ *
+ * 这些字符串是串口 / 调试面板上的唯一线索，所以断言的是「字段与名字」而不是
+ * 排版：改了字段顺序或漏了字段，日志就会误导排查。
+ */
 
 import { describe, expect, it } from "vitest";
 
+import { EMPTY_LAYER, staticLayer } from "../utils/protocol/commands";
 import {
   describeAck,
   describeCommand,
   describeDeviceInfo,
   describeEvent,
-  describeSegmentReport,
+  describeLayer,
+  describeLayoutListEnd,
+  describeLayoutReport,
+  describeSceneListEnd,
+  describeScenePartReport,
+  describeSceneStepReport,
   describeState,
   describeStateRead,
   describeStateReadBytes,
   describeStripConfig,
   deviceCommandName,
+  layerTypeName,
 } from "../utils/protocol/describe";
-import {
-  cmdClearSegment,
-  cmdQueryDeviceInfo,
-  cmdScriptBegin,
-  cmdScriptStage,
-  cmdSetBrightness,
-  cmdSetLedCount,
-  cmdSetPower,
-  cmdSetStripPower,
-  parseDeviceInfoReport,
-  parseSegmentReport,
-  parseStripConfigReport,
-} from "../utils/protocol/commands";
-import { CMD, DEVICE_CMD } from "../utils/protocol/constants";
-import type { DeviceState } from "../utils/protocol/types";
-import { hexToBytes } from "../utils/protocol/hex";
-import { baseState } from "./helpers/state";
 
-function state(overrides: Partial<DeviceState> = {}): DeviceState {
-  return baseState(overrides);
+function hex(s: string): Uint8Array {
+  const out = new Uint8Array(s.length / 2);
+  for (let i = 0; i < out.length; i += 1) {
+    out[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
 }
 
 describe("describeCommand", () => {
-  it("从载荷解析出命令名与参数", () => {
-    expect(describeCommand(CMD.SET_POWER, cmdSetPower(true).payload)).toBe("SetPower power=1");
-    expect(describeCommand(CMD.SET_BRIGHTNESS, cmdSetBrightness(128).payload)).toBe(
-      "SetBrightness brightness=128",
-    );
-    expect(describeCommand(CMD.SET_LED_COUNT, cmdSetLedCount(0, 30).payload)).toBe(
+  it("整机命令的参数", () => {
+    expect(describeCommand(0x01, Uint8Array.from([1]))).toBe("SetPower power=1");
+    expect(describeCommand(0x02, Uint8Array.from([128]))).toBe("SetBrightness brightness=128");
+    expect(describeCommand(0x05, new Uint8Array([]))).toBe("QueryState");
+    expect(describeCommand(0x07, new Uint8Array([]))).toBe("SelfTest");
+    expect(describeCommand(0x06, Uint8Array.from([0, 0x1e, 0]))).toBe(
       "SetLedCount strip=0 count=30",
     );
-    expect(describeCommand(CMD.SET_LED_COUNT, cmdSetLedCount(3, 64).payload)).toBe(
-      "SetLedCount strip=3 count=64",
-    );
-    expect(describeCommand(CMD.QUERY_STATE, new Uint8Array(0))).toBe("QueryState");
-    expect(describeCommand(CMD.SELF_TEST, new Uint8Array(0))).toBe("SelfTest");
-    expect(describeCommand(CMD.QUERY_STRIP_CONFIG, new Uint8Array(0))).toBe("QueryStripConfig");
-    expect(describeCommand(CMD.QUERY_DEVICE_INFO, cmdQueryDeviceInfo().payload)).toBe(
-      "QueryDeviceInfo",
-    );
   });
 
-  it("v4 段命令：两层一起写出来（含各自亮度；单层也显式写 layer1=empty）", () => {
-    /* 23 字节单层静态段：strip 0 / seg 0 / [0-9] / blend 0 / 静态红(level 100) / 空层。 */
-    expect(
-      describeCommand(
-        CMD.SET_SEGMENT,
-        hexToBytes("0000000900000000FF0000000064FF0000000000000000") as Uint8Array,
-      ),
-    ).toBe(
-      "SetSegment strip=0 seg=0 range=0-9 blend=over " +
-        "layer0=static(hue=0 sat=255 level=100) layer1=empty",
-    );
-
-    /* 两层：彩虹打底 + 呼吸相乘。 */
-    expect(
-      describeCommand(
-        CMD.SET_SEGMENT,
-        hexToBytes("0003003F01020000FFA00FFF006401000000DC05140064") as Uint8Array,
-      ),
-    ).toBe(
-      "SetSegment strip=0 seg=3 range=0-63 blend=multiply " +
-        "layer0=rainbow(hue=0 sat=255 level=100 period=4000 span=255 reverse=0 flags=0x00) " +
-        "layer1=breathing(hue=0 sat=0 level=100 period=1500 min_level=20 waveform=正弦 flags=0x00)",
-    );
+  it("灯组命令", () => {
+    expect(describeCommand(0x1b, Uint8Array.from([3, 1]))).toBe("SetStripPower strip=3 on=1");
+    expect(describeCommand(0x1c, new Uint8Array([]))).toBe("QueryStripConfig");
+    expect(describeCommand(0x1d, new Uint8Array([]))).toBe("QueryDeviceInfo");
   });
 
-  it("v4 新灯效类型（#74）：名称与各自专属字段", () => {
-    /* 23 字节单层段：爆闪 period=100 duty=90。 */
-    expect(
-      describeCommand(
-        CMD.SET_SEGMENT,
-        hexToBytes("0000000900040000FF64005A0064FF0000000000000000") as Uint8Array,
-      ),
-    ).toBe(
-      "SetSegment strip=0 seg=0 range=0-9 blend=over " +
-        "layer0=strobe(hue=0 sat=255 level=100 period=100 duty=90) layer1=empty",
+  it("布局族：写部位 / 写段 / 提交 / 查询", () => {
+    expect(describeCommand(0x20, Uint8Array.from([0, 3]))).toBe("LayoutWrite strip=0 parts=3");
+    const partPayload = new Uint8Array(28);
+    partPayload[0] = 1;
+    partPayload[1] = 2;
+    partPayload[2] = 6;
+    partPayload[27] = 4;
+    expect(describeCommand(0x21, partPayload)).toBe("LayoutPart strip=1 part=2 name_len=6 segs=4");
+    expect(describeCommand(0x22, Uint8Array.from([0, 1, 2, 10, 29]))).toBe(
+      "LayoutSeg strip=0 part=1 seg=2 range=10-29",
     );
-
-    /* 心跳 period=1000 pulse=60 双脉冲开。 */
-    expect(
-      describeCommand(
-        CMD.SET_SEGMENT,
-        hexToBytes("0000000900050000FFE8033C0164FF0000000000000000") as Uint8Array,
-      ),
-    ).toBe(
-      "SetSegment strip=0 seg=0 range=0-9 blend=over " +
-        "layer0=heartbeat(hue=0 sat=255 level=100 period=1000 pulse=60 double=1) layer1=empty",
-    );
-
-    /* 熄灭：参数全 0。 */
-    expect(
-      describeCommand(
-        CMD.SET_SEGMENT,
-        hexToBytes("0000000900060000000000000064FF0000000000000000") as Uint8Array,
-      ),
-    ).toBe(
-      "SetSegment strip=0 seg=0 range=0-9 blend=over " +
-        "layer0=off(hue=0 sat=0 level=100) layer1=empty",
-    );
+    expect(describeCommand(0x23, new Uint8Array([]))).toBe("LayoutCommit");
+    expect(describeCommand(0x24, Uint8Array.from([7]))).toBe("QueryLayout strip=7");
   });
 
-  it("段命令长度不符 / 解析失败时保留 hex，不猜半截参数", () => {
-    expect(describeCommand(CMD.SET_SEGMENT, new Uint8Array(0))).toBe("SetSegment");
-    expect(describeCommand(CMD.SET_SEGMENT, new Uint8Array([1, 2]))).toBe("SetSegment 01 02");
-    expect(describeCommand(CMD.CLEAR_SEGMENT, cmdClearSegment(0, 3).payload)).toBe(
-      "ClearSegment strip=0 seg=3",
+  it("场景族：部位头 / 一步的两层 / 名字 / 激活 / 查询", () => {
+    expect(describeCommand(0x25, Uint8Array.from([0, 1, 2, 3, 2, 1]))).toBe(
+      "ScenePart scene=0 strip=1 part=2 steps=3 loop=2 on=1",
     );
-    expect(describeCommand(CMD.SET_STRIP_POWER, cmdSetStripPower(3, false).payload)).toBe(
-      "SetStripPower strip=3 on=0",
-    );
-  });
-
-  it("剧本命令：ScriptStage 带 fade", () => {
-    expect(describeCommand(0x14, cmdScriptBegin(1, 4, 2).payload)).toBe(
-      "ScriptBegin script=1 stages=4 strips=2",
-    );
-    expect(describeCommand(0x15, cmdScriptStage(0, 2, 1500).payload)).toBe(
-      "ScriptStage script=0 stage=2 duration=1500ms fade=0ms",
-    );
-    expect(describeCommand(0x15, cmdScriptStage(0, 2, 1500, 250).payload)).toBe(
-      "ScriptStage script=0 stage=2 duration=1500ms fade=250ms",
-    );
+    const stepPayload = new Uint8Array(24);
+    stepPayload[0] = 0;
+    stepPayload[1] = 1;
+    stepPayload[2] = 2;
+    stepPayload[3] = 0;
+    stepPayload[4] = 0xe8;
+    stepPayload[5] = 0x03;
+    stepPayload.set([0x00, 0, 0, 255, 0, 0, 0, 0, 100], 6);
+    stepPayload[15] = 0xff;
+    const text = describeCommand(0x26, stepPayload);
+    expect(text).toContain("scene=0 strip=1 part=2 step=0 duration=1000ms");
+    expect(text).toContain("layer0=static");
+    expect(text).toContain("layer1=empty");
+    const namePayload = new Uint8Array(26);
+    namePayload[0] = 0;
+    namePayload[1] = 6;
+    expect(describeCommand(0x27, namePayload)).toBe("SceneName scene=0 name_len=6");
+    expect(describeCommand(0x28, Uint8Array.from([2]))).toBe("ActivateScene scene=2");
+    expect(describeCommand(0x29, Uint8Array.from([1]))).toBe("QueryScene scene=1");
   });
 
   it("载荷长度不符时保留命令名与原始 hex，不丢证据", () => {
-    expect(describeCommand(CMD.SET_POWER, new Uint8Array([0, 1]))).toBe("SetPower 00 01");
-    expect(describeCommand(CMD.SET_LED_COUNT, new Uint8Array([1]))).toBe("SetLedCount 01");
-    expect(describeCommand(0x7f, new Uint8Array([0xde]))).toBe("0x7F DE");
+    expect(describeCommand(0x20, Uint8Array.from([0]))).toBe("LayoutWrite 00");
+    /* 空载荷：命令名 + 空 hex（bytesToHex 对空数组给空串）。 */
+    expect(describeCommand(0x24, new Uint8Array([])).trim()).toBe("QueryLayout");
   });
 
-  it("设备命令名覆盖全部 v3 报告", () => {
-    expect(deviceCommandName(DEVICE_CMD.ACK)).toBe("ACK");
-    expect(deviceCommandName(DEVICE_CMD.EVENT)).toBe("Event");
-    expect(deviceCommandName(DEVICE_CMD.STATE_REPORT)).toBe("StateReport");
-    expect(deviceCommandName(DEVICE_CMD.SEGMENT_REPORT)).toBe("SegmentReport");
-    expect(deviceCommandName(DEVICE_CMD.SCRIPT_PROGRESS)).toBe("ScriptProgress");
-    expect(deviceCommandName(DEVICE_CMD.STRIP_CONFIG_REPORT)).toBe("StripConfigReport");
-    expect(deviceCommandName(DEVICE_CMD.DEVICE_INFO_REPORT)).toBe("DeviceInfoReport");
+  it("v4 退役命令字不再有名字（给 hex）", () => {
+    expect(describeCommand(0x12, Uint8Array.from([1]))).toContain("0x12");
+    expect(describeCommand(0x17, new Uint8Array([]))).toContain("0x17");
+  });
+});
+
+describe("describeLayer", () => {
+  it("静态层带色相 / 饱和度 / 亮度", () => {
+    expect(describeLayer(staticLayer(7281, 255, 50))).toBe("static(hue=7281 sat=255 level=50)");
+  });
+
+  it("空层只说 empty（没有亮度可言）", () => {
+    expect(describeLayer(EMPTY_LAYER)).toBe("empty");
+  });
+
+  it("层类型名覆盖八种 + 空层", () => {
+    expect(layerTypeName(0x00)).toBe("static");
+    expect(layerTypeName(0x01)).toBe("breathing");
+    expect(layerTypeName(0x02)).toBe("rainbow");
+    expect(layerTypeName(0x03)).toBe("comet");
+    expect(layerTypeName(0x04)).toBe("strobe");
+    expect(layerTypeName(0x05)).toBe("heartbeat");
+    expect(layerTypeName(0x06)).toBe("off");
+    expect(layerTypeName(0x07)).toBe("flicker");
+    expect(layerTypeName(0xff)).toBe("empty");
+    expect(layerTypeName(0x09)).toContain("type0x09");
   });
 });
 
 describe("describeAck / describeState / describeEvent", () => {
   it("ACK 带原命令字、结果码与成败", () => {
-    expect(describeAck({ seq: 3, command: CMD.SET_POWER, resultCode: 0, ok: true })).toBe(
-      "ACK SetPower cmd=0x01 result=0x00 OK",
-    );
-    expect(describeAck({ seq: 9, command: CMD.SET_LED_COUNT, resultCode: 5, ok: false })).toBe(
-      "ACK SetLedCount cmd=0x06 result=0x05 FAIL",
-    );
-    /* v3 的 ScriptTooLarge。 */
-    expect(describeAck({ seq: 2, command: CMD.SCRIPT_COMMIT, resultCode: 0x0a, ok: false })).toBe(
-      "ACK ScriptCommit cmd=0x17 result=0x0A FAIL",
-    );
+    const ok = describeAck({ seq: 1, command: 0x20, resultCode: 0, ok: true });
+    expect(ok).toContain("LayoutWrite");
+    expect(ok).toContain("0x20");
+    expect(ok).toContain("OK");
+    const bad = describeAck({ seq: 2, command: 0x20, resultCode: 0x06, ok: false });
+    expect(bad).toContain("FAIL");
+    expect(bad).toContain("0x06");
   });
 
-  it("State 字段与 §7.3 顺序一致（含逐带摘要）", () => {
-    expect(describeState(state())).toBe(
-      "State power=1 brightness=128 rgb=255,180,120 leds=30 max=255 " +
-        "strips=1 counts=30 segs=0 stripPower=0x01 stripAnim=0x00 " +
-        "script=none play=0 flags=0x00",
-    );
-  });
-
-  it("激活剧本时 script 显示 script_id/stage_index", () => {
-    expect(
-      describeState(
-        state({ scriptId: 2, stageIndex: 5, playbackState: 1, flags: 0x03, segCount: 3 }),
-      ),
-    ).toBe(
-      "State power=1 brightness=128 rgb=255,180,120 leds=30 max=255 " +
-        "strips=1 counts=30 segs=3 stripPower=0x01 stripAnim=0x00 " +
-        "script=2/5 play=1 flags=0x03",
-    );
-  });
-
-  it("多灯带：counts / segs 按 strip_count 截断，掩码原样给出", () => {
-    expect(
-      describeState(
-        state({
-          stripCount: 2,
-          stripCounts: [30, 60, 0, 0, 0, 0, 0, 0],
-          stripSegCounts: [2, 4, 0, 0, 0, 0, 0, 0],
-          stripPowerMask: 0x03,
-          stripAnimMask: 0x01,
-        }),
-      ),
-    ).toBe(
-      "State power=1 brightness=128 rgb=255,180,120 leds=30 max=255 " +
-        "strips=2 counts=30,60 segs=2,4 stripPower=0x03 stripAnim=0x01 " +
-        "script=none play=0 flags=0x00",
-    );
+  it("State 字段与 §7.3 一致（32 字节：无颜色 / 无播放位置）", () => {
+    const text = describeState({
+      power: 1,
+      brightness: 128,
+      maxBrightness: 200,
+      stripCount: 2,
+      stripPowerMask: 0x03,
+      activeScene: 1,
+      layoutValid: true,
+      stripLedCounts: [30, 60, 0, 0, 0, 0, 0, 0],
+      partCounts: [2, 1, 0, 0, 0, 0, 0, 0],
+    });
+    expect(text).toContain("power=1");
+    expect(text).toContain("brightness=128");
+    expect(text).toContain("max=200");
+    expect(text).toContain("strips=2");
+    expect(text).toContain("counts=30,60");
+    expect(text).toContain("parts=2,1");
+    expect(text).toContain("stripPower=0x03");
+    expect(text).toContain("scene=1");
+    expect(text).toContain("layout=1");
+    /* v5 明确不含这几项。 */
+    expect(text).not.toContain("rgb=");
+    expect(text).not.toContain("script=");
+    expect(text).not.toContain("segs=");
   });
 
   it("State read 与 StateReport 用同一组字段但前缀不同", () => {
-    expect(describeStateRead(state({ power: 0, brightness: 0, r: 0, g: 0, b: 0 }))).toBe(
-      "State read power=0 brightness=0 rgb=0,0,0 leds=30 max=255 " +
-        "strips=1 counts=30 segs=0 stripPower=0x01 stripAnim=0x00 " +
-        "script=none play=0 flags=0x00",
-    );
+    const state = {
+      power: 0 as const,
+      brightness: 10,
+      maxBrightness: 255,
+      stripCount: 1,
+      stripPowerMask: 0xff,
+      activeScene: 0,
+      layoutValid: false,
+      stripLedCounts: [30, 0, 0, 0, 0, 0, 0, 0],
+      partCounts: [0, 0, 0, 0, 0, 0, 0, 0],
+    };
+    expect(describeState(state).startsWith("State ")).toBe(true);
+    expect(describeStateRead(state).startsWith("State read ")).toBe(true);
   });
 
-  it("State read 长度不是 37 时保留长度而不是瞎解析", () => {
-    expect(describeStateReadBytes(new Uint8Array(14))).toBe(
-      "State read（14 字节，无法解析；v4 要求 37 字节）",
-    );
+  it("State read 长度不是 32 时保留长度而不是瞎解析", () => {
+    const text = describeStateReadBytes(new Uint8Array(37));
+    expect(text).toContain("37");
+    expect(text).toContain("v5 要求 32");
   });
 
   it("存储失败 Event 指明原命令字", () => {
-    expect(describeEvent(0x01, CMD.SET_LED_COUNT)).toBe(
-      "Event storage_failed(0x01) cmd=SetLedCount(0x06) detail=0x06",
-    );
-    expect(describeEvent(0x02, 0x03)).toBe("Event script_commit_failed(0x02) script=3");
-    expect(describeEvent(0x03, 0x07)).toBe("Event 0x03 detail=0x07");
+    const text = describeEvent(0x01, 0x26);
+    expect(text).toContain("storage_failed");
+    expect(text).toContain("SceneStep");
   });
 });
 
-describe("v3 新增报告的描述", () => {
-  it("SegmentReport 描述含 blend 与两层", () => {
-    const report = parseSegmentReport(
-      hexToBytes("0003003F01020000FFA00FFF006401000000DC05140064") as Uint8Array,
+describe("v5 新报告的描述", () => {
+  it("LayoutReport 含部位号 / 名字长度 / 段区间", () => {
+    const text = describeLayoutReport({
+      stripId: 0,
+      partId: 2,
+      nameLen: 6,
+      name: "散热",
+      segCount: 2,
+      segs: [
+        [11, 29],
+        [40, 49],
+      ],
+    });
+    expect(text).toContain("strip=0 part=2");
+    expect(text).toContain("name_len=6");
+    expect(text).toContain("segs=2");
+    expect(text).toContain("11-29,40-49");
+  });
+
+  it("LayoutListEnd 把掩码展开成部位号", () => {
+    expect(describeLayoutListEnd({ stripId: 1, partMask: 0x05 })).toContain("parts=[0,2]");
+  });
+
+  it("ScenePartReport 含步数 / 循环 / 开关", () => {
+    const text = describeScenePartReport({
+      sceneId: 2,
+      stripId: 1,
+      partId: 3,
+      stepCount: 4,
+      loop: 2,
+      on: true,
+    });
+    expect(text).toContain("scene=2 strip=1 part=3");
+    expect(text).toContain("steps=4");
+    expect(text).toContain("loop=2");
+    expect(text).toContain("on=1");
+  });
+
+  it("SceneStepReport 与 SceneStep 字段一致", () => {
+    const text = describeSceneStepReport({
+      sceneId: 0,
+      stripId: 0,
+      partId: 0,
+      stepIndex: 1,
+      durationMs: 1500,
+      layer0: staticLayer(0, 255, 100),
+      layer1: EMPTY_LAYER,
+    });
+    expect(text).toContain("step=1");
+    expect(text).toContain("duration=1500ms");
+    /* v5 的混合方式不在线上：按有无叠加层推出 over / luma（§6.2）。 */
+    expect(text).toContain("blend=over");
+    expect(text).toContain("layer1=empty");
+  });
+
+  it("SceneListEnd 含场景号与名字长度", () => {
+    expect(describeSceneListEnd({ sceneId: 1, nameLen: 6, name: "待机" })).toBe(
+      "SceneListEnd scene=1 name_len=6",
     );
-    expect(describeSegmentReport(report)).toContain("blend=multiply");
-    expect(describeSegmentReport(report)).toContain("layer1=breathing(");
   });
 
   it("StripConfigReport：8 路 GPIO 与分配位", () => {
-    const config = parseStripConfigReport(
-      hexToBytes("000301010A0102000103FF0004FF0005FF0006FF0007FF00") as Uint8Array,
-    );
-    expect(describeStripConfig(config)).toBe(
-      "StripConfigReport 0:gpio=3,on=1 1:gpio=10,on=1 2:gpio=0,on=1 " +
-        "3:gpio=255,on=0 4:gpio=255,on=0 5:gpio=255,on=0 6:gpio=255,on=0 7:gpio=255,on=0",
-    );
+    const text = describeStripConfig({
+      channels: Array.from({ length: 8 }, (_, i) => ({
+        stripId: i,
+        gpio: i < 3 ? [3, 10, 0][i] : 0xff,
+        flags: i < 3 ? 1 : 0,
+        assigned: i < 3,
+      })),
+    });
+    expect(text).toContain("0:gpio=3,on=1");
+    expect(text).toContain("7:gpio=255,on=0");
   });
 
-  it("DeviceInfoReport：版本 / hw_id / 能力", () => {
-    /* #72：max_leds 字节（偏移 8）现在是 0x64 = 100。 */
-    const info = parseDeviceInfoReport(
-      hexToBytes("0003AABBCCDDEEFF64080808040100") as Uint8Array,
-    );
-    expect(describeDeviceInfo(info)).toBe(
-      "DeviceInfoReport fw=3.0 hw=AA:BB:CC:DD:EE:FF maxLeds=100 maxStrips=8 " +
-        "maxSegments=8 maxStages=8 maxScripts=4 twoLayers=1 fade=0",
-    );
+  it("DeviceInfoReport：版本 / hw_id / v5 的五个上限", () => {
+    const text = describeDeviceInfo({
+      firmwareVersion: 0x0500,
+      firmwareMajor: 5,
+      firmwareMinor: 0,
+      hwId: "AA:BB:CC:DD:EE:FF",
+      maxLeds: 100,
+      maxStrips: 8,
+      maxParts: 8,
+      maxPartSegs: 8,
+      maxSteps: 8,
+      maxScenes: 3,
+      caps: 0x01,
+      supportsTwoLayers: true,
+      fadeImplemented: false,
+    });
+    expect(text).toContain("fw=5.0");
+    expect(text).toContain("hw=AA:BB:CC:DD:EE:FF");
+    expect(text).toContain("maxParts=8");
+    expect(text).toContain("maxScenes=3");
+    expect(text).toContain("twoLayers=1");
+  });
+});
+
+describe("设备命令名（v5 报告集）", () => {
+  it("覆盖全部 0x80-0x8D 里仍在用的命令", () => {
+    expect(deviceCommandName(0x80)).toBe("ACK");
+    expect(deviceCommandName(0x81)).toBe("Event");
+    expect(deviceCommandName(0x82)).toBe("StateReport");
+    expect(deviceCommandName(0x87)).toBe("StripConfigReport");
+    expect(deviceCommandName(0x88)).toBe("DeviceInfoReport");
+    expect(deviceCommandName(0x89)).toBe("LayoutReport");
+    expect(deviceCommandName(0x8a)).toBe("LayoutListEnd");
+    expect(deviceCommandName(0x8b)).toBe("ScenePartReport");
+    expect(deviceCommandName(0x8c)).toBe("SceneStepReport");
+    expect(deviceCommandName(0x8d)).toBe("SceneListEnd");
+  });
+
+  it("v4 已删除的四条报告不再有名字", () => {
+    for (const cmd of [0x83, 0x84, 0x85, 0x86]) {
+      expect(deviceCommandName(cmd)).toContain("0x");
+    }
   });
 });

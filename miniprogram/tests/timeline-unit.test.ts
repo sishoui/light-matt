@@ -1,12 +1,15 @@
 /**
- * #154 时间轴单元：**不依赖灯组页就能驱动**。
+ * #154 时间轴单元：**不依赖任何页面就能驱动**。
  *
  * 这一票是 prefactor（零行为变更）：把「选中步骤 / 长按重排 / 改时长 / 按容器宽
- * 分配块宽」从三千多行的灯组页里抽成独立单元。所以这里的用例**不加载页面、不碰
- * wx、不碰设备**——给一组步骤，断言渲染结果、选中态、拖动的 from→to、时长钳位。
+ * 分配块宽」从页面里抽成独立单元。所以这里的用例**不加载页面、不碰 wx、不碰
+ * 设备**——给一组步骤，断言渲染结果、选中态、拖动的 from→to、时长钳位。
  *
  * 判据是票面那三条里的第一条：「给定一组步骤，能渲染、能选中、能长按重排、能改
- * 时长，不依赖灯组页」。
+ * 时长，不依赖页面」。
+ *
+ * v5 的形状：步骤只有「时长 + 分区色带」两个字段（没有剧本 / 方案 / 多灯组
+ * 切片），所以 `applyTimelineDuration` 收的是步骤列表而不是 v4 的 `ScriptDraft`。
  */
 
 import { describe, expect, it } from "vitest";
@@ -15,6 +18,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   applyTimelineDrag,
+  applyTimelineDuration,
   cancelTimelineDrag,
   clampTimelineSelection,
   createTimelineUnit,
@@ -27,6 +31,7 @@ import {
   setTimelineDuration,
   setTimelineLedCount,
   startTimelineDrag,
+  timelineStepDurationMs,
   timelineUnitView,
   trackTimelinePress,
 } from "../utils/control/timeline-unit";
@@ -34,7 +39,7 @@ import { moveBlock, selectionAfterMove, type TimelineStep } from "../utils/contr
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-/** 造一个步骤（默认 1 秒、无分区）。 */
+/** 造一个步骤（默认 1 秒、无色带）。 */
 function step(durationMs: number, zones: TimelineStep["zones"] = []): TimelineStep {
   return { durationMs, zones };
 }
@@ -63,7 +68,7 @@ describe("步骤集 → 渲染", () => {
   it("块的缩略色带原样来自步骤（单元不做颜色推导）", () => {
     const band = { start: 0, end: 4, hex: "#112233" };
     const view = timelineUnitView([step(1000, [band])], createTimelineUnit({ ledCount: 10 }));
-    /* 有颜色的那一段 + 未覆盖的灰段：两段都来自 `thumbBands`。 */
+    /* 有颜色的那一段 + 未覆盖的留白段：两段都来自 `thumbBands`。 */
     const colored = view.blocks[0].bands.filter((item) => item.hex === "#112233");
     expect(colored.length).toBe(1);
     expect(colored[0].style).toContain("#112233");
@@ -221,7 +226,7 @@ describe("改时长", () => {
   it("两端钳位：低于 0.5 秒 → 500，高于 30 秒 → 30000", () => {
     expect(setTimelineDuration([step(1000)], 0, 100)[0].durationMs).toBe(500);
     expect(setTimelineDuration([step(1000)], 0, 99_000)[0].durationMs).toBe(30_000);
-    /* 真机滑块可能给出 0.4999 这种值：钳位后再落进草稿。 */
+    /* 真机滑块可能给出 0.4999 这种值：钳位后再落进模型。 */
     expect(setTimelineDuration([step(1000)], 0, 499.9)[0].durationMs).toBe(500);
     expect(setTimelineDuration([step(1000)], 0, 1400)[0].durationMs).toBe(1500);
   });
@@ -240,6 +245,25 @@ describe("改时长", () => {
     expect(next[0].durationMs).toBe(1000);
     expect(next[1].durationMs).toBe(3000);
     expect(steps[1].durationMs, "入参不被就地改").toBe(1500);
+  });
+});
+
+describe("时长条的秒 → 模型（页面不再自己写 seconds * 1000）", () => {
+  it("2.5 秒落成 2500 毫秒", () => {
+    const steps = applyTimelineDuration([step(1000)], 0, 2.5);
+    expect(steps[0].durationMs).toBe(2500);
+    expect(timelineStepDurationMs(steps, 0)).toBe(2500);
+  });
+
+  it("非有限值 / 越界下标原样返回同一个数组", () => {
+    const steps = [step(1000)];
+    expect(applyTimelineDuration(steps, 0, Number.NaN)).toBe(steps);
+    expect(applyTimelineDuration(steps, 4, 2)).toBe(steps);
+  });
+
+  it("越界下标读时长给默认 1 秒，已钳位", () => {
+    expect(timelineStepDurationMs([step(99_000)], 0)).toBe(30_000);
+    expect(timelineStepDurationMs([], 3)).toBe(1000);
   });
 });
 
@@ -263,7 +287,7 @@ describe("灯珠数与测量", () => {
   });
 });
 
-describe("单元不依赖灯组页", () => {
+describe("单元不依赖页面", () => {
   const source = readFileSync(join(ROOT, "utils/control/timeline-unit.ts"), "utf8");
 
   it("不 import 任何页面，也不碰 wx / BLE", () => {
@@ -272,16 +296,21 @@ describe("单元不依赖灯组页", () => {
     expect(source).not.toMatch(/from\s+["'][^"']*\/ble\//);
   });
 
-  it("灯组页只是它的调用方（渲染与拖动都经单元算）", () => {
-    const page = readFileSync(join(ROOT, "pages/strip/strip.ts"), "utf8");
-    expect(page).toContain("timelineUnitView(");
-    expect(page).toContain("startTimelineDrag(");
-    expect(page).toContain("applyTimelineDrag(");
-    expect(page).toContain("pressTimelineStep(");
+  it("不 import 任何 v4 模型（剧本 / 方案草稿 / 分区）", () => {
+    for (const gone of ["script-view", "advanced-draft", "plan-editor", "zone-model"]) {
+      expect(source, `不应再依赖 ${gone}`).not.toContain(gone);
+    }
   });
 
-  it("块宽分配规则只有一份（页面不再自己调 layoutBlocks）", () => {
-    const page = readFileSync(join(ROOT, "pages/strip/strip.ts"), "utf8");
+  it("页面只是它的调用方（渲染、选中与改时长都经单元）", () => {
+    const page = readFileSync(join(ROOT, "pages/part/part.ts"), "utf8");
+    expect(page).toContain("timelineUnitView(");
+    expect(page).toContain("selectTimelineStep(");
+    expect(page).toContain("applyTimelineDuration(");
+  });
+
+  it("块宽分配规则只有一份（页面不再自己调 layoutBlocks / timelineRowWidth / chooseGap）", () => {
+    const page = readFileSync(join(ROOT, "pages/part/part.ts"), "utf8");
     expect(page).not.toContain("layoutBlocks(");
     expect(page).not.toContain("timelineRowWidth(");
     expect(page).not.toContain("chooseGap(");

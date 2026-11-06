@@ -104,7 +104,7 @@ describe("真机 e2e（PC 蓝牙 → ESP32-C3）", () => {
     expect(device.name).toMatch(/^Lumen-/);
   }, 40_000);
 
-  itReal("BleTransport 连接后读到 37 字节 State，且 MTU ≥ 23", async () => {
+  itReal("BleTransport 连接后读到 32 字节 State，且 MTU ≥ 23", async () => {
     if (!device) return;
     const { BleTransport } = await import("../../utils/ble/transport");
     const { FrameLog } = await import("../../utils/ble/log");
@@ -115,13 +115,14 @@ describe("真机 e2e（PC 蓝牙 → ESP32-C3）", () => {
     });
     const state = await connectWithRetry(() => transport.connect(device.deviceId, device.name));
 
-    /* State 是 v3 契约的核心：37 字节、8 带。这些字段错一个，
+    /* State 是 v5 契约的核心：32 字节、8 带（§7.3）。这些字段错一个，
      * 后续所有逐带 UI 都会跟着错。 */
     expect(state.stripCount).toBeGreaterThanOrEqual(1);
     expect(state.stripCount).toBeLessThanOrEqual(8);
     expect(state.maxBrightness).toBeGreaterThan(0);
     expect(state.brightness).toBeLessThanOrEqual(state.maxBrightness);
-    expect(state.stripCounts.length).toBeGreaterThanOrEqual(state.stripCount);
+    expect(state.stripLedCounts.length).toBeGreaterThanOrEqual(state.stripCount);
+    expect(state.partCounts.length).toBeGreaterThanOrEqual(state.stripCount);
 
     await transport.disconnect();
   }, 60_000);
@@ -182,61 +183,41 @@ describe("真机 e2e：协议语义（真 BLE）", () => {
     await session?.disconnect();
   });
 
-  itReal("段下发后读回逐字节一致（21B 两层定宽编码全链路）", async () => {
+  itReal("布局往返：写整条 1 部位 → 读回一致 → 再读场景", async () => {
     if (!session) return;
-    const { SEGMENT_TYPE, BLEND } = await import("../../utils/protocol/constants");
+    const state = await session.refreshState();
+    const ledCount = state.stripLedCounts[0] ?? 0;
+    if (ledCount < 1) {
+      console.warn("[e2e] strip 0 没有灯珠，跳过布局往返");
+      return;
+    }
+    /* 整份重写：一个部位覆盖整条，1 个段。 */
+    const write = await session.writeLayout(0, [
+      { stripId: 0, partId: 0, nameLen: 0, name: "", segCount: 1, segs: [[0, ledCount - 1]] },
+    ]);
+    expect(write.kind).toBe("ok");
 
-    const layer0 = { type: SEGMENT_TYPE.STATIC, hue: 12000, sat: 200, periodMs: 0, p5: 0, flags: 0, level: 100 };
-    const layer1 = { type: SEGMENT_TYPE.BREATHING, hue: 4000, sat: 255, periodMs: 1000, p5: 30, flags: 0, level: 100 };
-    const spec = { stripId: 0, segId: 0, start: 0, end: 9, blend: BLEND.MULTIPLY, layer0, layer1 };
+    const layout = await session.queryLayout(0);
+    expect(layout.kind).toBe("ok");
+    if (layout.kind !== "ok") return;
+    expect(layout.layout.parts).toHaveLength(1);
+    expect(layout.layout.parts[0].segs).toEqual([[0, ledCount - 1]]);
 
-    await session.setSegment(spec);
-    const result = await session.queryStrip(0);
-    expect(result.kind).toBe("ok");
-    if (result.kind !== "ok") return;
-
-    const got = result.reports.find((r) => r.segId === 0);
-    expect(got).toBeDefined();
-    /* 两层的 type / hue / period 必须原样回来——这是 v3 段编码的核心。 */
-    expect(got.start).toBe(0);
-    expect(got.end).toBe(9);
-    expect(got.blend).toBe(BLEND.MULTIPLY);
-    expect(got.layer0.type).toBe(SEGMENT_TYPE.STATIC);
-    expect(got.layer0.hue).toBe(12000);
-    expect(got.layer1.type).toBe(SEGMENT_TYPE.BREATHING);
-    expect(got.layer1.hue).toBe(4000);
-    expect(got.layer1.periodMs).toBe(1000);
-
-    await session.setSegment({ ...spec, layer0: { ...layer0, hue: 0 }, layer1: { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 }, blend: 0 });
-    await session.clearSegment(0, 0).catch(() => undefined);
+    const scene = await session.queryScene(state.activeScene);
+    expect(scene.kind).toBe("ok");
   }, 60_000);
 
-  itReal("非法参数在客户端就被拦下（不会发到设备）", async () => {
+  itReal("越界段被设备拒绝（客户端不知道实物长度，只能设备兜底）", async () => {
     if (!session) return;
-    const { SEGMENT_TYPE, BLEND } = await import("../../utils/protocol/constants");
-    const bad = {
-      stripId: 0, segId: 1, start: 10, end: 15, blend: BLEND.ADD,
-      layer0: { type: SEGMENT_TYPE.STATIC, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0, level: 100 },
-      layer1: { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 },
-    };
-    /* cmdSetSegment 有本地校验：单层带 blend≠0 直接抛 RangeError，
-     * 比「发出去等设备回 InvalidParam」更早、更省一次往返。 */
-    await expect(session.setSegment(bad)).rejects.toThrow(/blend 必须为 0/);
-  }, 30_000);
-
-  itReal("超出灯珠数的段被设备拒绝（客户端不知道实物长度，只能设备兜底）", async () => {
-    if (!session) return;
-    const { SEGMENT_TYPE } = await import("../../utils/protocol/constants");
-    /* end=60 在协议 uint8 范围内（客户端不拦），但远超该带实际灯珠数。
+    /* end=100 在协议 uint8 范围内（客户端只校验 ≤ 255），但远超该带实际灯珠数。
      * 这正是「客户端无从判断、必须由设备拒绝」的那一类。 */
-    const bad = {
-      stripId: 0, segId: 2, start: 0, end: 60, blend: 0,
-      layer0: { type: SEGMENT_TYPE.STATIC, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0, level: 100 },
-      layer1: { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 },
-    };
-    const ack = await session.setSegment(bad);
-    expect(ack.ok).toBe(false);
-    expect(ack.resultCode).toBe(1); // InvalidParam
+    const before = await session.queryLayout(0);
+    if (before.kind !== "ok") return;
+    const result = await session.writeLayout(0, [
+      { stripId: 0, partId: 0, nameLen: 0, name: "", segCount: 1, segs: [[0, 100]] },
+    ]);
+    /* 整份写入里只要有一帧被拒，就是失败（命令层 / 设备拦下都算）。 */
+    expect(result.kind).not.toBe("ok");
   }, 30_000);
 
   itReal("每带开关只影响该带", async () => {
@@ -259,6 +240,8 @@ describe("真机 e2e：协议语义（真 BLE）", () => {
     if (info.kind !== "ok") return;
     expect(info.info.firmwareVersion).toBeGreaterThan(0);
     expect(info.info.maxStrips).toBe(8);
+    expect(info.info.maxParts).toBe(8);
+    expect(info.info.maxScenes).toBe(3);
     expect(info.info.supportsTwoLayers).toBe(true);
     expect(info.info.fadeImplemented).toBe(false);
     expect(info.info.hwId).toMatch(/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/i);

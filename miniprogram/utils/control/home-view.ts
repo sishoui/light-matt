@@ -17,7 +17,6 @@ import type { RecentDevice } from "./device-history";
 import type { DeviceRegistryEntry } from "./device-registry";
 import { buildMyDevices, type MyDeviceRow } from "./device-list";
 import type { DeviceState } from "../protocol/types";
-import { rgbToHex } from "../color/hsv";
 import { mockSpecOf } from "./mock-devices";
 import { photoKeyOf, type DevicePhotoMap } from "./device-photo";
 
@@ -168,7 +167,12 @@ function toCard(row: MyDeviceRow, input: BuildHomeInput): DeviceCard {
     statusText,
     metaText: row.remoteOnly ? `仅云端记录 · ${stripsText}` : `${stripsText} · ${when}`,
     tone,
-    colorHex: state === null ? NEUTRAL_HEX : rgbToHex({ r: state.r, g: state.g, b: state.b }),
+    /*
+     * v5 的 State 不再带 RGB 摘要（§7.3：App 要颜色明细走 QueryScene），
+     * 所以首页大卡的光晕用中性底色而不是「设备当前颜色」。这是一个**如实**
+     * 的退让：以前那个颜色是 strip0/seg0 的投影，本来也不代表整台设备。
+     */
+    colorHex: NEUTRAL_HEX,
     glow:
       state === null || state.power !== 1
         ? 0

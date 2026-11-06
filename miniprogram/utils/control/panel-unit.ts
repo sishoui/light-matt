@@ -1,5 +1,5 @@
 /**
- * 效果面板单元（#154）：把「一层（或两层）灯效的参数编辑」从灯组详情页抽出来。
+ * 效果面板单元（#154）：把「一层的参数编辑」从页面里抽出来（v5 形状）。
  *
  * ## 这一层守的是什么
  *
@@ -7,70 +7,81 @@
  *
  *  1. **参数区按类型整体替换**——用哪几个旋钮由 `SLIDER_KEYS` / `CHOICE_KEYS`
  *     决定，页面不写任何按类型的条件渲染；
- *  2. **换目标时从草稿重新读层**，但**同一目标重画时不重读**（否则拖动中的
+ *  2. **换目标时从设备读回重新读层**，但**同一目标重画时不重读**（否则拖动中的
  *     读数会被一次 setData 冲掉）；
- *  3. **还没下发的亮度**按「方案:步骤:分区」记住，切走再切回来还在。
+ *  3. **还没下发的亮度**按「场景:灯组:部位:步骤:层」记住，切走再切回来还在。
  *
- * 以前这三条和页面生命周期缠在一起，只能通过加载整页才能在 Node 里验。现在
- * 状态收进一个普通对象，`给一层效果 → 切类型 → 改参数 → 回读当前值` 全部是
- * 纯函数，不需要页面、不需要 `wx`、不需要设备。
+ * 判据是 #154 的三条之一：**给一层效果 → 切类型 → 改参数 → 回读当前值**，全部
+ * 是纯函数，不需要页面、不需要 `wx`、不需要设备。
  *
  * ## 参数控件定义只有一份
  *
  * 这一层**不新增**任何键表：滑块与选项列表完全来自 `effect-panel` 的
  * `SLIDER_KEYS` / `CHOICE_KEYS`，视图里的读数来自 `sliderView` / `choiceView`。
- * 简单档与进阶档的两张卡继续共用同一张 wxml 模板（`effect-controls`）。
+ *
+ * ## v5 的要点
+ *
+ * 一个部位在场景里的一步有**两层**（`layer0` / `layer1`），混合方式由「叠加层
+ * 是否为空」推出（§6.2），不在线上。所以这一层有「第几层」这个维度，但**没有**
+ * 分区、方案槽位、叠加方式这些 v4 概念。
  *
  * 纯函数、不碰 wx / BLE / 页面。
  */
 
 import {
-  OVERLAY_CHOICE_OPTIONS,
   HUE_RAMP_GRADIENT,
-  PANEL_EMPTY_PLAN_GUIDE,
+  OVERLAY_CHOICE_OPTIONS,
   PANEL_EMPTY_STEP_GUIDE,
-  PANEL_FACTS,
-  PANEL_NO_ZONE_GUIDE,
+  PANEL_NO_STEP_GUIDE,
+  PANEL_OFF_NOTICE,
   applyChoice,
-  applyPanelToZone,
   applySlider,
   buildEffectPanel,
   defaultParams,
+  emptyLayer,
   emptyOverlayDraft,
   isPanelChoiceKey,
   isPanelSliderKey,
+  layerIsEmpty,
   layersCheck,
   overlayDraftOf,
   overlayEnabled,
   overlayLayer,
   overlaySummary,
   panelCheck,
+  panelLayer,
   panelTypeOf,
   paramsFromLayer,
   switchOverlayType,
   switchPanelType,
-  type EffectPanelView,
   type EffectParams,
+  type EffectPanelView,
   type OverlayChoice,
   type OverlayDraft,
+  type PanelChoiceKey,
   type PanelChoiceView,
   type PanelSliderView,
   type PanelType,
   type PanelTypeView,
 } from "./effect-panel";
-import type { SegmentSpec } from "../protocol/types";
+import type { EffectLayer } from "../protocol/types";
 
-/** 面板现在编辑的是哪一片（方案槽位 × 步骤 × 分区）。 */
+/**
+ * 面板现在编辑的是哪一层。
+ *
+ * `layer` 0 = 底层（必有内容），1 = 叠加层（可以为空层）。
+ */
 export interface PanelTarget {
-  planSlot: number;
+  sceneId: number;
+  stripId: number;
+  partId: number;
   stepIndex: number;
-  /** 分区槽位；-1 = 还没选中任何分区。 */
-  segId: number;
+  layer: 0 | 1;
 }
 
 /** 面板的全部交互状态。 */
 export interface PanelUnit {
-  /** `planSlot:stepIndex:segId`；变化时才从草稿重读层。 */
+  /** `scene:strip:part:step:layer`；变化时才从设备读回重读层。 */
   key: string;
   /** 当前效果类型（同时决定参数区里有哪几个控件）。 */
   mode: PanelType;
@@ -81,14 +92,14 @@ export interface PanelUnit {
   /**
    * 逐目标的亮度草稿（`key → level`）。
    *
-   * 只记**用户刚拖过、但还没写进草稿**的值，用于跨「切分区再切回来」不丢。
+   * 只记**用户刚拖过、但还没写进草稿**的值，用于跨「切步骤再切回来」不丢。
    */
   levels: Record<string, number>;
   /** 一次性反馈（写入失败原因）；换目标时清空。 */
   hint: string;
 }
 
-/** 面板派生出的 `setData` 片段（键名与页面历史数据键一致，页面直接展开）。 */
+/** 面板派生出的 `setData` 片段（键名与页面数据键一致，页面直接展开）。 */
 export interface PanelUnitView {
   panelTypes: PanelTypeView[];
   panelType: PanelType;
@@ -97,29 +108,24 @@ export interface PanelUnitView {
   panelColorHex: string;
   panelSummary: string;
   panelNotice: string;
-  panelHasZone: boolean;
+  panelHasLayer: boolean;
   panelGuide: string;
-  panelFacts: readonly string[];
   hueRamp: string;
   panelHint: string;
-  /* ---- 特效层（第二张卡）：没有分区时整块隐藏 ---- */
+  /* ---- 叠加层（第二层） ---- */
   overlayChoices: typeof OVERLAY_CHOICE_OPTIONS;
   overlayChoice: OverlayChoice;
   overlayEnabled: boolean;
   overlaySummary: string;
-  overlaySlider: PanelSliderView[];
+  overlaySliders: PanelSliderView[];
   overlayChoices2: PanelChoiceView[];
   overlayColorHex: string;
 }
 
-/** 派生视图需要从页面拿的两件事（面板单元不读草稿，避免与页面模型耦合）。 */
+/** 派生视图需要从页面拿的两件事（面板单元不读设备模型，避免与页面耦合）。 */
 export interface PanelUnitContext {
-  /** 当前步骤里当前灯组的分区数。 */
-  zoneCount: number;
-  /** 是否选中了其中一个分区。 */
-  hasZone: boolean;
-  /** 当前方案是否完全没有内容（引导文案三选一的依据）。 */
-  planEmpty: boolean;
+  /** 是否已经读到了这一层（设备未连接 / 读取失败时为 false）。 */
+  hasLayer: boolean;
 }
 
 /** 空面板：常亮 + 默认参数 + 无叠加层。 */
@@ -134,9 +140,9 @@ export function createPanelUnit(): PanelUnit {
   };
 }
 
-/** 面板的目标键（唯一性来自这三个维度）。 */
+/** 面板的目标键（唯一性来自这五个维度）。 */
 export function panelUnitKey(target: PanelTarget): string {
-  return `${target.planSlot}:${target.stepIndex}:${target.segId}`;
+  return `${target.sceneId}:${target.stripId}:${target.partId}:${target.stepIndex}:${target.layer}`;
 }
 
 /** 当前参数草稿（只读语义：调用方不要就地改）。 */
@@ -145,15 +151,18 @@ export function panelUnitParams(unit: PanelUnit): EffectParams {
 }
 
 /**
- * 换目标：**只在键变化时**从草稿重读那一层的值。
+ * 换目标：**只在键变化时**从读回的那一层重新读值。
  *
  * 键没变时原样返回：拖动中的读数不该被一次重画冲掉。
- * `zone` 为 `null`（没有选中分区）时回到常亮默认值——面板上没有可编辑的东西。
+ * `layer` 为 `null`（这一层读不到）时回到常亮默认值——面板上没有可编辑的东西。
+ *
+ * 这个入口只管「主效果那一个层」，**不碰叠加层草稿**；页面拿到整步快照时用
+ * `selectPanelStep` 一次把两层都读回来。
  */
 export function selectPanelTarget(
   unit: PanelUnit,
   target: PanelTarget,
-  zone: SegmentSpec | null,
+  layer: EffectLayer | null,
 ): PanelUnit {
   const key = panelUnitKey(target);
   if (key === unit.key) {
@@ -161,23 +170,44 @@ export function selectPanelTarget(
   }
   let mode: PanelType;
   let params: EffectParams;
-  let overlay: OverlayDraft;
-  if (zone === null) {
+  const empty = layer === null || layerIsEmpty(layer);
+  if (empty) {
     mode = "static";
     params = defaultParams("static");
-    overlay = emptyOverlayDraft();
   } else {
-    mode = panelTypeOf(zone.layer0.type);
-    params = paramsFromLayer(mode, zone.layer0);
-    /* 叠加层从设备权威值还原（空层 → 关闭）。混合方式恒为按亮度叠加。 */
-    overlay = overlayDraftOf(zone.layer1);
+    mode = panelTypeOf((layer as EffectLayer).type);
+    params = paramsFromLayer(mode, layer as EffectLayer);
   }
   /* 还没写进草稿的滑块值：按目标记着，切回来还在。 */
   const remembered = unit.levels[key];
   if (remembered !== undefined) {
     params = { ...params, level: remembered };
   }
-  return { ...unit, key, mode, params, overlay, hint: "" };
+  return { ...unit, key, mode, params, hint: "" };
+}
+
+/**
+ * 换目标并一次读回**这一步的两层**（页面拿 `SceneStepReport` 后调它）。
+ *
+ * 「主效果」永远是 `layer0`（协议：底层不得为空），叠加层是 `layer1`。
+ * `step` 为 `null`（还没读到这一步）时两层都回到空态。
+ */
+export function selectPanelStep(
+  unit: PanelUnit,
+  target: PanelTarget,
+  step: { layer0: EffectLayer; layer1: EffectLayer } | null,
+): PanelUnit {
+  const primary = selectPanelTarget(
+    unit,
+    { ...target, layer: 0 },
+    step === null ? null : step.layer0,
+  );
+  /* 键没变（同一目标重画）时两层都不该被重读冲掉——拖动中的读数才是用户的意图。 */
+  if (primary === unit) {
+    return unit;
+  }
+  const overlay = step === null ? emptyOverlayDraft() : overlayDraftOf(step.layer1);
+  return { ...primary, overlay };
 }
 
 /** 面板的一次性反馈（与 `data.panelHint` 一起写，重画时不会又冒出来 / 又消失）。 */
@@ -189,11 +219,9 @@ export function setPanelUnitHint(unit: PanelUnit, text: string): PanelUnit {
 }
 
 /**
- * 忘掉「现在编辑哪一片」，下一次派生会从草稿重读那一层的值。
+ * 忘掉「现在编辑哪一层」，下一次派生会从读回的值重读。
  *
- * 与 `resetPanelUnit` 的区别：**保留**亮度记忆与叠加层。草稿被整体换掉（换方案、
- * 从存储重读、灯珠数被别处改小）时用这个——目标是新的，但用户拖过还没落盘的
- * 亮度仍然有效。
+ * 与 `resetPanelUnit` 的区别：**保留**亮度记忆与叠加层草稿。
  */
 export function forgetPanelTarget(unit: PanelUnit): PanelUnit {
   return unit.key === "" ? unit : { ...unit, key: "" };
@@ -302,68 +330,53 @@ function currentView(unit: PanelUnit): EffectPanelView {
 /**
  * 面板的完整派生（页面 `setData` 的片段）。
  *
- * 没有可编辑分区时**不留任何滑块 / 选择控件**：用户不该看到一个改不动的旋钮，
+ * 没读到这一层时**不留任何滑块 / 选择控件**：用户不该看到一个改不动的旋钮，
  * 引导文字会告诉他下一步做什么。预览色块与摘要也一起消失——没有目标时的
  * 「常亮 · 40°」是一句凭空捏造的描述。
  */
 export function panelUnitView(unit: PanelUnit, context: PanelUnitContext): PanelUnitView {
   const view = currentView(unit);
-  const hasZone = context.hasZone;
-  const overlayOn = hasZone && overlayEnabled(unit.overlay);
+  const hasLayer = context.hasLayer;
+  const overlayOn = hasLayer && overlayEnabled(unit.overlay);
   return {
     panelTypes: view.types,
     panelType: view.type,
-    panelSliders: hasZone ? view.sliders : [],
-    panelChoices: hasZone ? view.choices : [],
-    panelColorHex: hasZone ? view.colorHex : "",
-    panelSummary: hasZone ? view.summary : "",
-    /* 「熄灭」没有任何旋钮：说明必须跟着分区一起出现 / 消失。 */
-    panelNotice: hasZone ? view.notice : "",
-    panelHasZone: hasZone,
-    panelGuide: hasZone
-      ? ""
-      : context.zoneCount > 0
-        ? PANEL_NO_ZONE_GUIDE
-        : context.planEmpty
-          ? PANEL_EMPTY_PLAN_GUIDE
-          : PANEL_EMPTY_STEP_GUIDE,
-    panelFacts: PANEL_FACTS,
+    panelSliders: hasLayer ? view.sliders : [],
+    panelChoices: hasLayer ? view.choices : [],
+    panelColorHex: hasLayer ? view.colorHex : "",
+    panelSummary: hasLayer ? view.summary : "",
+    /* 「熄灭」没有任何旋钮：说明必须跟着目标一起出现 / 消失。 */
+    panelNotice: hasLayer ? view.notice : "",
+    panelHasLayer: hasLayer,
+    panelGuide: hasLayer ? "" : PANEL_NO_STEP_GUIDE,
     hueRamp: HUE_RAMP_GRADIENT,
     panelHint: unit.hint,
-    overlayChoices: hasZone ? OVERLAY_CHOICE_OPTIONS : [],
+    overlayChoices: hasLayer ? OVERLAY_CHOICE_OPTIONS : [],
     overlayChoice: unit.overlay.type,
     overlayEnabled: overlayOn,
-    overlaySummary: hasZone ? overlaySummary(unit.overlay) : "",
-    overlaySlider: hasZone ? overlaySliders(unit.overlay) : [],
-    overlayChoices2: hasZone ? overlayChoiceViews(unit.overlay) : [],
+    overlaySummary: hasLayer ? overlaySummary(unit.overlay) : "",
+    overlaySliders: hasLayer ? overlaySliders(unit.overlay) : [],
+    overlayChoices2: hasLayer ? overlayChoiceViews(unit.overlay) : [],
     overlayColorHex: overlayOn
       ? buildEffectPanel(unit.overlay.type as PanelType, unit.overlay.params).colorHex
       : "",
   };
 }
 
-/* ---------------- 落进草稿 ---------------- */
+/* ---------------- 落进两层 ---------------- */
 
 /**
- * 把面板草稿写进「当前分区」那一片，别的分区一字不动。
+ * 面板草稿 → 这一步的**两层**（可直接塞进 `setSceneStep`）。
  *
- * 装配走 `applyPanelToZone` → `buildZoneSpec`：叠加层为空时叠加方式归一为
- * 覆盖、两层定宽、深拷贝——面板只改效果，不顺手把叠加层弄丢。
+ * 装配规则只有一份：
+ *  - `layer0` 由主效果草稿编码（`panelLayer`）；
+ *  - `layer1` 由叠加层草稿编码，关闭时是空层（`type = 0xFF`，其余字段全 0）；
+ *  - 叠加层为空 → 设备按「覆盖」合成；非空 → 按亮度叠加（§6.2，不在线上）。
  *
- * 没有选中分区 / 分区不在了时**返回原数组**（引用相等 = 什么都不用写）。
+ * 返回的对象**不共享**面板的状态：调用方可以安全地改它。
  */
-export function panelUnitZoneSpecs(
-  unit: PanelUnit,
-  zones: readonly SegmentSpec[],
-  segId: number,
-): SegmentSpec[] {
-  if (!Number.isInteger(segId) || segId < 0) {
-    return zones as SegmentSpec[];
-  }
-  if (!zones.some((zone) => zone.segId === segId)) {
-    return zones as SegmentSpec[];
-  }
-  return applyPanelToZone(zones, segId, unit.mode, unit.params, unit.overlay);
+export function panelUnitLayers(unit: PanelUnit): { layer0: EffectLayer; layer1: EffectLayer } {
+  return { layer0: panelLayer(unit.mode, unit.params), layer1: overlayLayer(unit.overlay) };
 }
 
 /**
@@ -378,3 +391,20 @@ export function panelUnitCheck(unit: PanelUnit): { ok: boolean; message: string 
   }
   return layersCheck([overlayLayer(unit.overlay)]);
 }
+
+/* ---------------- 空态文案 ---------------- */
+
+/** 空态引导（页面直接显示 `panelGuide`；这里再导出一次便于测试引用）。 */
+export const PANEL_GUIDES = {
+  noStep: PANEL_NO_STEP_GUIDE,
+  emptyStep: PANEL_EMPTY_STEP_GUIDE,
+  offNotice: PANEL_OFF_NOTICE,
+} as const;
+
+/** 一个未使用的层（叠加层「关闭」时的形状），供页面与测试断言引用。 */
+export function emptyPanelLayer(): EffectLayer {
+  return emptyLayer();
+}
+
+/** 代理导出：页面只需要从这一层认一个入口。 */
+export type { EffectLayer, PanelChoiceKey };

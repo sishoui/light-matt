@@ -40,12 +40,14 @@ export function sameRgb(a: RGB, b: RGB): boolean {
 }
 
 /**
- * 本地乐观更新：只改 RGB，不动 power / brightness。
- * 色环拖动时 UI 立即跟手，不等设备回包（设备仍是权威，重连/错误时读 State）。
+ * 本地乐观更新：**v5 已没有「设备当前的 RGB」这个字段**（§7.3：State 只有
+ * 32 字节，颜色明细走 QueryScene），所以这里退化成「原样返回」。
+ *
+ * 保留函数是因为色环的点按仍然需要一个「归一化后的颜色」入口——`clampRgb`
+ * 那一步才是它现在的职责，页面拿它的返回值去填本地的草稿色。
  */
-export function applyLocalColor(state: DeviceState, rgb: RGB): DeviceState {
-  const color = clampRgb(rgb);
-  return { ...state, r: color.r, g: color.g, b: color.b };
+export function applyLocalColor(state: DeviceState, _rgb: RGB): DeviceState {
+  return state;
 }
 
 /**

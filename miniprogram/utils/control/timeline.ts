@@ -51,7 +51,7 @@ export const DURATION_STEP_MS = 500;
 export const DEFAULT_STEP_MS = 1000;
 /** 刚进进阶档时有几个步骤。分区轴按「当前步骤」取，默认给两个才看得出步骤间差异。 */
 export const DEFAULT_STEP_COUNT = 2;
-/** 时间轴最多 8 个步骤（与协议每套方案 8 个步骤一致）。 */
+/** 时间轴最多 8 个步骤（与协议每部位 8 个步骤一致）。 */
 export const MAX_STEPS = 8;
 /** 时间轴块的最小宽度（px）：0.5 秒的步骤在多块并列时仍然点得到。 */
 export const MIN_BLOCK_PX = 24;

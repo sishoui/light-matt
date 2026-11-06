@@ -1,0 +1,227 @@
+/*
+ * 部位编辑器（v5 / #155）。
+ *
+ * 共享外观在 app.wxss（`.page` / `.btn` / `.section-head`），这里只放本页
+ * 独有的两件事：**写入失败提示**与**表单行**。
+ *
+ * 颜色一律走 CSS 变量（AGENTS.md：页面 wxss 不写死 hex，否则某个主题下会
+ * 白底白字）；原生 slider / switch 的激活色由页面数据 `accentColor` 传入。
+ */
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-4) calc(140rpx + env(safe-area-inset-bottom));
+}
+
+/* ---------------- 写入失败提示（页面顶部） ---------------- */
+
+.apply-error {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border-radius: var(--radius-md);
+  background: var(--danger-soft);
+}
+
+.apply-error-text {
+  flex: 1;
+  font-size: var(--fs-caption);
+  color: var(--danger);
+  line-height: 1.5;
+}
+
+.apply-error-close {
+  font-size: var(--fs-body);
+  color: var(--danger);
+}
+
+/* ---------------- 离线 / 参数缺失 ---------------- */
+
+.hint-card {
+  padding: var(--sp-6);
+  border-radius: var(--radius-md);
+  background: var(--card);
+}
+
+.hint-text {
+  font-size: var(--fs-body);
+  color: var(--text-2);
+}
+
+/* ---------------- 区块标题 ---------------- */
+
+.section-note {
+  font-size: var(--fs-caption);
+  color: var(--text-3);
+}
+
+/* ---------------- 表单 ---------------- */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-5);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  min-height: 64rpx;
+}
+
+.field-label {
+  font-size: var(--fs-body);
+  color: var(--text-2);
+}
+
+.field-value {
+  font-size: var(--fs-body);
+  color: var(--text);
+}
+
+.field-input {
+  flex: 1;
+  text-align: right;
+  font-size: var(--fs-body);
+  color: var(--text);
+}
+
+.field-hint {
+  font-size: var(--fs-caption);
+  color: var(--text-3);
+  line-height: 1.5;
+}
+
+.picker-value {
+  font-size: var(--fs-body);
+  color: var(--accent);
+}
+
+.primary-btn {
+  margin-top: var(--sp-2);
+  padding: var(--sp-4);
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: var(--fs-body);
+  text-align: center;
+}
+
+.primary-btn[disabled] {
+  opacity: 0.5;
+}
+
+/* ---------------- 时间轴（#154 单元的输出） ---------------- */
+
+.timeline-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.timeline-block {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 48rpx;
+  border-radius: var(--radius-sm);
+  background: var(--card-2);
+  color: var(--text-2);
+  overflow: hidden;
+}
+
+.timeline-block.selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.timeline-label,
+.timeline-order {
+  font-size: var(--fs-caption);
+}
+
+.tick-row {
+  position: relative;
+  height: 40rpx;
+}
+
+.tick {
+  position: absolute;
+  font-size: var(--fs-caption);
+  color: var(--text-3);
+  transform: translateX(-50%);
+}
+
+/* 两端贴边：标签不越出容器（位置仍由单元的 percent 决定）。 */
+.tick-first {
+  transform: none;
+}
+
+.tick-last {
+  transform: translateX(-100%);
+}
+
+/* ---------------- 效果面板（#154 单元的输出） ---------------- */
+
+.type-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.type-cell {
+  flex: 1 1 22%;
+  padding: var(--sp-2) 0;
+  border-radius: var(--radius-sm);
+  background: var(--card-2);
+  color: var(--text-2);
+  font-size: var(--fs-caption);
+  text-align: center;
+}
+
+.type-cell.selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.slider-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.choice-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.choice-cells {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.choice-cell {
+  flex: 1;
+  padding: var(--sp-2) 0;
+  border-radius: var(--radius-sm);
+  background: var(--card-2);
+  color: var(--text-2);
+  font-size: var(--fs-caption);
+  text-align: center;
+}
+
+.choice-cell.selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+}

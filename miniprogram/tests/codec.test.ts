@@ -1,10 +1,11 @@
 /**
- * codec 测试：直接消费仓库里 docs/protocol-testvectors-v4.json（两端共用同一份）。
+ * codec 测试：直接消费仓库里 docs/protocol-testvectors-v5.json（两端共用同一份）。
  *
  * 不复制向量、不伪造期望值：任何协议字节变化都会让这里失败。
  *
- * v4 覆盖：68 条向量（编码 / 解码两个方向）、CRC16 标准校验值、分片重组、
- * 层亮度三档（0 / 50 / 100）与越界用例，以及 232/240 的帧长上限。
+ * v5 覆盖：111 条向量（编码 / 解码两个方向，含 14 条 `retired_*` 退役命令
+ * 必须回 0x02）、CRC16 标准校验值、分片重组、层亮度三档（0 / 50 / 100）与
+ * 越界用例，以及 232/240 的帧长上限。
  *
  * **这是跨端契约**：固件 host 测试跑同一份 JSON。这里红了就说明小程序与固件
  * 对字节的理解已经不一致。
@@ -46,7 +47,7 @@ interface VectorFile {
 }
 
 const vectors: VectorFile = JSON.parse(
-  readFileSync(new URL("../../docs/protocol-testvectors-v4.json", import.meta.url), "utf8"),
+  readFileSync(new URL("../../docs/protocol-testvectors-v5.json", import.meta.url), "utf8"),
 );
 
 function payloadOf(c: VectorCase): Uint8Array {
@@ -68,12 +69,13 @@ const ENVELOPE_FAILURES: Record<number, string> = {
   0x08: "magic",
 };
 
-describe("协议测试向量（v4）", () => {
-  it("向量文件本身是 v4 且包含 94 个用例（新增 blend=3 的两层向量）", () => {
-    expect(vectors.protocol_version).toBe(4);
+describe("协议测试向量（v5）", () => {
+  it("向量文件本身是 v5 且包含 111 个用例（含 14 条退役命令）", () => {
+    expect(vectors.protocol_version).toBe(5);
     expect(vectors.magic).toBe("0xA6");
-    expect(vectors.state_bytes).toBe(37);
-    expect(vectors.cases.length).toBe(94);
+    /* State 从 37 字节改为 32 字节（§7.3）。 */
+    expect(vectors.state_bytes).toBe(32);
+    expect(vectors.cases.length).toBe(111);
   });
 
   it("app_to_device 有效帧：encode 逐字节复现 frame_hex", () => {
@@ -105,11 +107,16 @@ describe("协议测试向量（v4）", () => {
     const cases = vectors.cases.filter(
       (c) => c.direction === "app_to_device" && ENVELOPE_FAILURES[c.result_code] !== undefined,
     );
-    expect(cases.length).toBe(4);
-    /* 坏版本用例带的是非 0x04 的版本字节：decode 必须先判版本、再判 CRC（§4）。 */
+    /* v5 有 5 条信封级失败用例（bad_magic / bad_version_v4 / bad_version_v3 /
+     * bad_crc / bad_length_overflow）：多出来的一条正是「v4 帧必须被拒」。 */
+    expect(cases.length).toBe(5);
+    /* 坏版本用例带的是非 0x05 的版本字节：decode 必须先判版本、再判 CRC（§4）。 */
     const badVersion = cases.find((c) => c.result_code === 0x07);
     expect(badVersion, "bad_version").toBeDefined();
-    expect((badVersion as VectorCase).frame_hex.slice(2, 4).toUpperCase()).not.toBe("04");
+    /* 两条坏版本用例（v4 = 0x04 / v3 = 0x03）都必须不是当前版本 0x05。 */
+    for (const c of cases.filter((item) => item.result_code === 0x07)) {
+      expect(c.frame_hex.slice(2, 4).toUpperCase()).not.toBe("05");
+    }
     for (const c of cases) {
       const bytes = hexToBytes(c.frame_hex) as Uint8Array;
       const result = decodeFrame(bytes);
@@ -272,20 +279,22 @@ describe("encode 边界（v4：载荷 232 / 整帧 240）", () => {
   });
 });
 
-describe("v4 状态示例", () => {
-  it("state_read_example_hex 是 37 字节且能按 v4 布局解析", async () => {
+describe("v5 状态示例", () => {
+  it("state_read_example_hex 是 32 字节且能按 v5 布局解析", async () => {
     const { parseState } = await import("../utils/protocol/commands");
     const bytes = hexToBytes(vectors.state_read_example_hex) as Uint8Array;
-    expect(bytes.length).toBe(37);
+    /* 32 字节（§7.3）：v4 的 37 字节已作废。 */
+    expect(bytes.length).toBe(32);
     const state = parseState(bytes);
     expect(state.power).toBe(1);
     expect(state.brightness).toBe(128);
+    expect(state.maxBrightness).toBe(200);
     expect(state.stripCount).toBe(2);
     expect(state.stripPowerMask).toBe(0x03);
-    expect(state.stripCounts.slice(0, 2)).toEqual([30, 60]);
-    expect(state.stripSegCounts.slice(0, 2)).toEqual([2, 4]);
-    /* 派生字段与 strip 0 一致。 */
-    expect(state.ledCount).toBe(30);
-    expect(state.segCount).toBe(2);
+    /* v5 的逐条灯珠数与部位数（不再有「活动段数」）。 */
+    expect(state.stripLedCounts.slice(0, 2)).toEqual([30, 60]);
+    expect(state.partCounts.slice(0, 3)).toEqual([1, 2, 0]);
+    expect(state.activeScene).toBe(0);
+    expect(state.layoutValid).toBe(true);
   });
 });

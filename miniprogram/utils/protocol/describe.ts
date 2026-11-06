@@ -7,20 +7,20 @@
  * 原则：命令名 + 参数都从字节里解析，不猜、不省略；解析不了时退回 hex，
  * 保证日志永远有可对照的原始数据。
  *
- * v4：段载荷定宽 23/25 字节、两层（每层 9 字节，含 v4 的 level）；State 37 字节。
+ * v5：一步两层（每层 9 字节，含层亮度）、State 32 字节、布局与场景各一族命令。
  * 日志必须把两层（含各自亮度）都写出来，否则「设备上的第二层」与「某层被压暗」
  * 在排查时完全不可见。
  */
 
 import {
-  BLEND,
   CMD,
   DEVICE_CMD,
+  EFFECT_TYPE,
+  LAYOUT_PART_BYTES,
   MAX_STRIPS,
   NO_EFFECT,
-  NO_SCRIPT,
-  SCRIPT_SEGMENT_BYTES,
-  SEGMENT_TYPE,
+  SCENE_NAME_BYTES,
+  SCENE_STEP_BYTES,
   STATE_BYTES,
   WAVEFORM_NAMES,
   commandName,
@@ -29,23 +29,24 @@ import {
   breathingWaveform,
   cometHeads,
   cometSolidTail,
-  loopModeFromFlags,
+  layerReverse,
   parseDeviceInfoReport,
-  parseSegmentPayload,
+  parseLayer,
   parseState,
   parseStripConfigReport,
-  segmentReverse,
 } from "./commands";
-import type { ScriptProgress, ScriptSummary } from "./commands";
+
 import { bytesToHex } from "./hex";
 import type {
   AckResult,
   DeviceInfo,
   DeviceState,
   EffectLayer,
-  SegmentListEnd,
-  SegmentReport,
-  SegmentSpec,
+  LayoutListEnd,
+  LayoutReport,
+  SceneListEnd,
+  ScenePartReport,
+  SceneStepReport,
   StripConfig,
 } from "./types";
 
@@ -61,21 +62,21 @@ function waveformName(waveform: number): string {
 /** 层类型名（日志可读性，不参与协议）；未知类型给 hex。 */
 export function layerTypeName(type: number): string {
   switch (type) {
-    case SEGMENT_TYPE.STATIC:
+    case EFFECT_TYPE.STATIC:
       return "static";
-    case SEGMENT_TYPE.BREATHING:
+    case EFFECT_TYPE.BREATHING:
       return "breathing";
-    case SEGMENT_TYPE.RAINBOW:
+    case EFFECT_TYPE.RAINBOW:
       return "rainbow";
-    case SEGMENT_TYPE.COMET:
+    case EFFECT_TYPE.COMET:
       return "comet";
-    case SEGMENT_TYPE.STROBE:
+    case EFFECT_TYPE.STROBE:
       return "strobe";
-    case SEGMENT_TYPE.HEARTBEAT:
+    case EFFECT_TYPE.HEARTBEAT:
       return "heartbeat";
-    case SEGMENT_TYPE.OFF:
+    case EFFECT_TYPE.OFF:
       return "off";
-    case SEGMENT_TYPE.FLICKER:
+    case EFFECT_TYPE.FLICKER:
       return "flicker";
     case NO_EFFECT:
       return "empty";
@@ -84,22 +85,24 @@ export function layerTypeName(type: number): string {
   }
 }
 
-/** blend 名（§7.2）。 */
+/**
+ * 混合方式名（日志可读性）。
+ *
+ * v5 的 blend **不在线上**（§6.2）：`layer1` 为空 → 覆盖；非空 → 按亮度叠加。
+ * 所以这里只接受本地推导出的两个值。
+ */
 export function blendName(blend: number): string {
-  switch (blend) {
-    case BLEND.OVER:
-      return "over";
-    case BLEND.MULTIPLY:
-      return "multiply";
-    case BLEND.ADD:
-      return "add";
-    default:
-      return `blend${blend}`;
+  if (blend === 0) {
+    return "over";
   }
+  if (blend === 3) {
+    return "luma";
+  }
+  return `blend${blend}`;
 }
 
 /**
- * 一层的展示文本，按 type 解释同一个 p5 字段，并带上 v4 的 `level`：
+ * 一层的展示文本，按 type 解释同一个 p5 字段，并带上层亮度 `level`：
  *   0x00 静态：`static(hue=.. sat=.. level=..)`；
  *   0x01 呼吸：period / min_level(百分比) / waveform；
  *   0x02 彩虹：period / span / reverse；
@@ -116,60 +119,65 @@ export function describeLayer(layer: EffectLayer): string {
     return name;
   }
   const head = `${name}(hue=${layer.hue} sat=${layer.sat} level=${layer.level}`;
-  if (layer.type === SEGMENT_TYPE.STATIC) {
+  if (layer.type === EFFECT_TYPE.STATIC) {
     return `${head})`;
   }
-  if (layer.type === SEGMENT_TYPE.BREATHING) {
+  if (layer.type === EFFECT_TYPE.BREATHING) {
     return (
       `${head} period=${layer.periodMs} min_level=${layer.p5} ` +
       `waveform=${waveformName(breathingWaveform(layer.flags))} flags=${hex2(layer.flags)})`
     );
   }
-  if (layer.type === SEGMENT_TYPE.STROBE) {
+  if (layer.type === EFFECT_TYPE.STROBE) {
     return `${head} period=${layer.periodMs} duty=${layer.p5})`;
   }
-  if (layer.type === SEGMENT_TYPE.HEARTBEAT) {
+  if (layer.type === EFFECT_TYPE.HEARTBEAT) {
     return (
       `${head} period=${layer.periodMs} pulse=${layer.p5} ` +
-      `double=${segmentReverse(layer.flags) ? 1 : 0})`
+      `double=${layerReverse(layer.flags) ? 1 : 0})`
     );
   }
-  if (layer.type === SEGMENT_TYPE.OFF) {
+  if (layer.type === EFFECT_TYPE.OFF) {
     return `${head})`;
   }
-  if (layer.type === SEGMENT_TYPE.FLICKER) {
+  if (layer.type === EFFECT_TYPE.FLICKER) {
     return `${head} period=${layer.periodMs} density=${layer.p5})`;
   }
-  if (layer.type === SEGMENT_TYPE.RAINBOW) {
+  if (layer.type === EFFECT_TYPE.RAINBOW) {
     return (
       `${head} period=${layer.periodMs} span=${layer.p5} ` +
-      `reverse=${segmentReverse(layer.flags) ? 1 : 0} flags=${hex2(layer.flags)})`
+      `reverse=${layerReverse(layer.flags) ? 1 : 0} flags=${hex2(layer.flags)})`
     );
   }
-  /* 流光（#98）：除了 tail / reverse，还要写出头数量与拖尾形状。 */
+  /* 流星（#98）：除了 tail / reverse，还要写出头数量与拖尾形状。 */
   return (
     `${head} period=${layer.periodMs} tail=${layer.p5} heads=${cometHeads(layer.flags)} ` +
     `solid=${cometSolidTail(layer.flags) ? 1 : 0} ` +
-    `reverse=${segmentReverse(layer.flags) ? 1 : 0} flags=${hex2(layer.flags)})`
+    `reverse=${layerReverse(layer.flags) ? 1 : 0} flags=${hex2(layer.flags)})`
   );
 }
 
-/** 两层段的正文（SetSegment / ScriptSegment / SegmentReport 共用）。 */
-function segmentText(spec: SegmentSpec): string {
+/**
+ * 一步的正文（SceneStep / SceneStepReport 共用）。
+ *
+ * v5 的混合方式**不在线上**：`layer1` 为空 → 覆盖；非空 → 按亮度叠加
+ * （§6.2）。所以这里按「有没有叠加层」推出一个可读的 blend 名，而不是读字节。
+ */
+function stepText(step: {
+  sceneId: number;
+  stripId: number;
+  partId: number;
+  stepIndex: number;
+  durationMs: number;
+  layer0: EffectLayer;
+  layer1: EffectLayer;
+}): string {
+  const blend = step.layer1.type === NO_EFFECT ? "over" : "luma";
   return (
-    `strip=${spec.stripId} seg=${spec.segId} range=${spec.start}-${spec.end} ` +
-    `blend=${blendName(spec.blend)} layer0=${describeLayer(spec.layer0)} ` +
-    `layer1=${describeLayer(spec.layer1)}`
+    `scene=${step.sceneId} strip=${step.stripId} part=${step.partId} ` +
+    `step=${step.stepIndex} duration=${step.durationMs}ms blend=${blend} ` +
+    `layer0=${describeLayer(step.layer0)} layer1=${describeLayer(step.layer1)}`
   );
-}
-
-/** 载荷能否按 23 字节段解析（不能就退回 hex，不猜半截参数）。 */
-function trySegment(payload: Uint8Array): SegmentSpec | null {
-  try {
-    return parseSegmentPayload(payload);
-  } catch {
-    return null;
-  }
 }
 
 /** 小程序 → 设备命令：命令名 + 从载荷解析出的参数。 */
@@ -191,54 +199,51 @@ export function describeCommand(command: number, payload: Uint8Array): string {
       return payload.length === 3
         ? `${name} strip=${payload[0]} count=${payload[1] | (payload[2] << 8)}`
         : `${name} ${bytesToHex(payload)}`;
-    case CMD.SET_SEGMENT: {
-      const spec = trySegment(payload);
-      return spec === null ? fallback(name, payload) : `${name} ${segmentText(spec)}`;
-    }
-    case CMD.CLEAR_SEGMENT:
-      return payload.length === 2
-        ? `${name} strip=${payload[0]} seg=${payload[1]}`
-        : `${name} ${bytesToHex(payload)}`;
-    case CMD.QUERY_STRIP:
-      return payload.length === 1 ? `${name} strip=${payload[0]}` : `${name} ${bytesToHex(payload)}`;
     case CMD.SET_STRIP_POWER:
       return payload.length === 2
         ? `${name} strip=${payload[0]} on=${payload[1]}`
         : `${name} ${bytesToHex(payload)}`;
-    case CMD.SET_PLAYBACK:
-      /* action 0 stop / 1 play / 2 pause；loop 是三值循环模式（#98）。 */
+    case CMD.LAYOUT_WRITE:
       return payload.length === 2
-        ? `${name} action=${playbackName(payload[0])} loop=${payload[1]}`
+        ? `${name} strip=${payload[0]} parts=${payload[1]}`
         : `${name} ${bytesToHex(payload)}`;
-    case CMD.SCRIPT_BEGIN:
-      return payload.length === 3
-        ? `${name} script=${payload[0]} stages=${payload[1]} strips=${payload[2]}`
+    case CMD.LAYOUT_PART:
+      return payload.length === LAYOUT_PART_BYTES
+        ? `${name} strip=${payload[0]} part=${payload[1]} ` +
+            `name_len=${payload[2]} segs=${payload[27]}`
         : `${name} ${bytesToHex(payload)}`;
-    case CMD.SCRIPT_STAGE:
+    case CMD.LAYOUT_SEG:
+      return payload.length === 5
+        ? `${name} strip=${payload[0]} part=${payload[1]} seg=${payload[2]} ` +
+            `range=${payload[3]}-${payload[4]}`
+        : `${name} ${bytesToHex(payload)}`;
+    case CMD.LAYOUT_COMMIT:
+      return name;
+    case CMD.QUERY_LAYOUT:
+      return payload.length === 1 ? `${name} strip=${payload[0]}` : `${name} ${bytesToHex(payload)}`;
+    case CMD.SCENE_PART:
       return payload.length === 6
-        ? `${name} script=${payload[0]} stage=${payload[1]} ` +
-            `duration=${payload[2] | (payload[3] << 8)}ms fade=${payload[4] | (payload[5] << 8)}ms`
+        ? `${name} scene=${payload[0]} strip=${payload[1]} part=${payload[2]} ` +
+            `steps=${payload[3]} loop=${payload[4]} on=${payload[5]}`
         : `${name} ${bytesToHex(payload)}`;
-    case CMD.SCRIPT_SEGMENT: {
-      /* 载荷 script, stage, 再 23 字节段。 */
-      if (payload.length !== SCRIPT_SEGMENT_BYTES) {
+    case CMD.SCENE_STEP: {
+      if (payload.length !== SCENE_STEP_BYTES) {
         return fallback(name, payload);
       }
-      const spec = trySegment(payload.slice(2));
-      if (spec === null) {
-        return fallback(name, payload);
-      }
-      return `${name} script=${payload[0]} stage=${payload[1]} ${segmentText(spec)}`;
+      return (
+        `${name} scene=${payload[0]} strip=${payload[1]} part=${payload[2]} ` +
+        `step=${payload[3]} duration=${payload[4] | (payload[5] << 8)}ms ` +
+        `layer0=${describeLayer(parseLayer(payload, 6))} ` +
+        `layer1=${describeLayer(parseLayer(payload, 15))}`
+      );
     }
-    case CMD.SCRIPT_COMMIT:
-    case CMD.SCRIPT_ABORT:
-    case CMD.QUERY_SCRIPT:
-    case CMD.CLEAR_SCRIPT:
-      return payload.length === 1 ? `${name} script=${payload[0]}` : `${name} ${bytesToHex(payload)}`;
-    case CMD.ACTIVATE_SCRIPT:
-      return payload.length === 2
-        ? `${name} script=${payload[0]} loop=${payload[1]}`
+    case CMD.SCENE_NAME:
+      return payload.length === SCENE_NAME_BYTES
+        ? `${name} scene=${payload[0]} name_len=${payload[1]}`
         : `${name} ${bytesToHex(payload)}`;
+    case CMD.ACTIVATE_SCENE:
+    case CMD.QUERY_SCENE:
+      return payload.length === 1 ? `${name} scene=${payload[0]}` : `${name} ${bytesToHex(payload)}`;
     default:
       return fallback(name, payload);
   }
@@ -246,7 +251,12 @@ export function describeCommand(command: number, payload: Uint8Array): string {
 
 /** 空载荷只给命令名，否则带上原始 hex（不丢证据、不猜）。 */
 function fallback(name: string, payload: Uint8Array): string {
-  return payload.length === 0 ? name : `${name} ${bytesToHex(payload)}`;
+  if (payload.length === 0) {
+    return name;
+  }
+  const hex = bytesToHex(payload);
+  /* bytesToHex 对空数组返回空串，但对「不该为空的命令给了空载荷」要显式说明。 */
+  return hex.length === 0 ? name : `${name} ${hex}`;
 }
 
 /** SetPlayback 的 action 名（日志可读性，不参与协议）。 */
@@ -272,22 +282,21 @@ export function describeAck(ack: AckResult): string {
 }
 
 /**
- * State（State read 与 StateReport 共用），字段顺序见 §7.3。
+ * State（State read 与 StateReport 共用），字段顺序见 §7.3（32 字节）。
  *
- * `leds` 是 strip 0 的派生值（#41 之前页面只认单灯带），`counts` / `segs`
- * 是 1..strip_count 的逐带值——两条都写出来，排查多灯带时才不用自己数。
+ * v5 的 State 不含部位开关 / 播放位置 / 颜色摘要，所以日志里也没有那几项——
+ * 要部位明细走 QueryLayout / QueryScene。
  */
 export function describeState(state: DeviceState): string {
-  const script = state.scriptId === NO_SCRIPT ? "none" : `${state.scriptId}/${state.stageIndex}`;
   const strips = Math.max(1, Math.min(state.stripCount, MAX_STRIPS));
-  const counts = state.stripCounts.slice(0, strips);
-  const segs = state.stripSegCounts.slice(0, strips);
+  const counts = state.stripLedCounts.slice(0, strips);
+  const parts = state.partCounts.slice(0, strips);
   return (
     `State power=${state.power} brightness=${state.brightness} ` +
-    `rgb=${state.r},${state.g},${state.b} leds=${state.ledCount} max=${state.maxBrightness} ` +
-    `strips=${state.stripCount} counts=${counts.join(",")} segs=${segs.join(",")} ` +
-    `stripPower=${hex2(state.stripPowerMask)} stripAnim=${hex2(state.stripAnimMask)} ` +
-    `script=${script} play=${state.playbackState} flags=${hex2(state.flags)}`
+    `max=${state.maxBrightness} strips=${state.stripCount} ` +
+    `counts=${counts.join(",")} parts=${parts.join(",")} ` +
+    `stripPower=${hex2(state.stripPowerMask)} scene=${state.activeScene} ` +
+    `layout=${state.layoutValid ? 1 : 0}`
   );
 }
 
@@ -311,7 +320,7 @@ export function describeStateReadBytes(bytes: Uint8Array): string {
   try {
     return describeStateRead(parseState(bytes));
   } catch {
-    return `State read（${bytes.length} 字节，无法解析；v4 要求 ${STATE_BYTES} 字节）`;
+    return `State read（${bytes.length} 字节，无法解析；v5 要求 ${STATE_BYTES} 字节）`;
   }
 }
 
@@ -322,9 +331,6 @@ export function describeEvent(code: number, detail: number): string {
       `Event storage_failed(0x01) cmd=${commandName(detail)}(${hex2(detail)}) ` +
       `detail=${hex2(detail)}`
     );
-  }
-  if (code === 0x02) {
-    return `Event script_commit_failed(0x02) script=${detail}`;
   }
   return `Event 0x${code.toString(16).padStart(2, "0").toUpperCase()} detail=${hex2(detail)}`;
 }
@@ -344,27 +350,50 @@ export function deviceCommandName(command: number): string {
 }
 
 /**
- * SegmentReport 0x83：日志用描述。
+ * LayoutReport 0x89：一个部位的灯珠划分（§7.2）。
  *
- * 与 SET_SEGMENT 的字段顺序一致（同构载荷），但**不**复用 describeCommand 的
- * 名字——日志里必须能一眼区分「下发的段」与「设备回报的段」。
+ * 与 LayoutPart 的字段顺序一致，但**不**复用 describeCommand 的名字——
+ * 日志里必须能一眼区分「下发的部位」与「设备回报的部位」。
  */
-export function describeSegmentReport(report: SegmentReport): string {
-  return `SegmentReport ${segmentText(report)}`;
+export function describeLayoutReport(report: LayoutReport): string {
+  const segs = report.segs.map(([start, end]) => `${start}-${end}`).join(",");
+  return (
+    `LayoutReport strip=${report.stripId} part=${report.partId} ` +
+    `name_len=${report.nameLen} segs=${report.segCount} range=[${segs}]`
+  );
 }
 
-/** SegmentListEnd 0x84：某灯带的活动段位图（bit i = 槽位 i）。 */
-export function describeSegmentListEnd(end: SegmentListEnd): string {
-  const slots: number[] = [];
+/** LayoutListEnd 0x8A：某链的部位位图（bit i = 部位 i 有段）。 */
+export function describeLayoutListEnd(end: LayoutListEnd): string {
+  const parts: number[] = [];
   for (let i = 0; i < 8; i += 1) {
-    if ((end.segMask & (1 << i)) !== 0) {
-      slots.push(i);
+    if ((end.partMask & (1 << i)) !== 0) {
+      parts.push(i);
     }
   }
   return (
-    `SegmentListEnd strip=${end.stripId} mask=${hex2(end.segMask)} ` +
-    `slots=[${slots.join(",")}]`
+    `LayoutListEnd strip=${end.stripId} mask=${hex2(end.partMask)} ` +
+    `parts=[${parts.join(",")}]`
   );
+}
+
+/** ScenePartReport 0x8B：一个部位的时间轴头。 */
+export function describeScenePartReport(report: ScenePartReport): string {
+  return (
+    `ScenePartReport scene=${report.sceneId} strip=${report.stripId} ` +
+    `part=${report.partId} steps=${report.stepCount} loop=${report.loop} ` +
+    `on=${report.on ? 1 : 0}`
+  );
+}
+
+/** SceneStepReport 0x8C：一步的两层（与 SceneStep 同构）。 */
+export function describeSceneStepReport(report: SceneStepReport): string {
+  return `SceneStepReport ${stepText(report)}`;
+}
+
+/** SceneListEnd 0x8D：场景读回的收尾（id 与名字长度）。 */
+export function describeSceneListEnd(end: SceneListEnd): string {
+  return `SceneListEnd scene=${end.sceneId} name_len=${end.nameLen}`;
 }
 
 /** StripConfigReport 0x87：8 路的 GPIO 分配（只读，来自构建期 Kconfig）。 */
@@ -377,8 +406,8 @@ export function describeStripConfig(config: StripConfig): string {
 export function describeDeviceInfo(info: DeviceInfo): string {
   return (
     `DeviceInfoReport fw=${info.firmwareMajor}.${info.firmwareMinor} hw=${info.hwId} ` +
-    `maxLeds=${info.maxLeds} maxStrips=${info.maxStrips} maxSegments=${info.maxSegments} ` +
-    `maxStages=${info.maxStages} maxScripts=${info.maxScripts} ` +
+    `maxLeds=${info.maxLeds} maxStrips=${info.maxStrips} maxParts=${info.maxParts} ` +
+    `maxPartSegs=${info.maxPartSegs} maxSteps=${info.maxSteps} maxScenes=${info.maxScenes} ` +
     `twoLayers=${info.supportsTwoLayers ? 1 : 0} fade=${info.fadeImplemented ? 1 : 0}`
   );
 }
@@ -401,21 +430,3 @@ export function describeDeviceInfoBytes(payload: Uint8Array): string {
   }
 }
 
-/**
- * ScriptSummary 0x85：剧本摘要（QueryScript 的响应）。
- *
- * #98：`loop` 直接从三值位表解（0 不循环 / 1 全部循环 / 2 最后一步循环），
- * 不再是布尔投影——`loop=2` 在日志里能直接看出是「最后一步循环」。
- */
-export function describeScriptSummary(summary: ScriptSummary): string {
-  const mode = summary.loopMode ?? loopModeFromFlags(summary.flags);
-  return (
-    `ScriptSummary script=${summary.scriptId} stages=${summary.stageCount} ` +
-    `loop=${mode} active=${summary.active ? 1 : 0}`
-  );
-}
-
-/** ScriptProgress 0x86：设备侧已接受的帧数（下发进度的补充证据）。 */
-export function describeScriptProgress(progress: ScriptProgress): string {
-  return `ScriptProgress script=${progress.scriptId} frames=${progress.framesWritten}`;
-}

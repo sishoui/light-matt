@@ -2,8 +2,8 @@
 
 #include <string.h>
 
+#include "effects.h"
 #include "protocol.h"
-#include "segment_store.h"
 
 static const uint8_t s_scene_magic[4] = {'L', 'M', 'S', '5'};
 

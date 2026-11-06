@@ -2,8 +2,8 @@
  * #41 会话层：灯带维度必须是**显式参数**，activeStripId 只是会话自己记住的
  * 当前选择（App 级单例里跨 tab 保存）。
  *
- * #41 之后 `clearSegment` / `queryStrip` 不再有「缺省 strip 0」的行为：
- * 页面必须传它正在展示的那条带，否则用户在第 3 条带上删段会删到第 0 条带。
+ * v5 里对应的两条是 `setStripPower` / `queryLayout`：页面必须传它正在展示的
+ * 那条带，否则用户在第 3 条带上操作会落到第 0 条。
  */
 
 import { describe, expect, it } from "vitest";
@@ -17,38 +17,33 @@ import type {
   CommandRequest,
   DeviceInfo,
   DeviceState,
+  LayoutListEnd,
+  LayoutReport,
   LinkState,
-  SegmentListEnd,
-  SegmentReport,
+  SceneListEnd,
+  ScenePartReport,
+  SceneStepReport,
   StripConfig,
 } from "../utils/protocol/types";
-import { EMPTY_EFFECT } from "../utils/protocol/types";
 import { baseState } from "./helpers/state";
 
-/** strip 1 / seg 2 / [0-9] / 静态红。 */
-const REPORT_STATIC: SegmentReport = {
+/** 一个部位的测试夹具（v5 的布局读回形状）。 */
+const LAYOUT_PART: LayoutReport = {
   stripId: 1,
-  segId: 2,
-  start: 0,
-  end: 9,
-  blend: 0,
-  layer0: { type: 0, hue: 0, sat: 255, periodMs: 0, p5: 0, flags: 0, level: 100 },
-  layer1: { ...EMPTY_EFFECT },
-  type: 0,
-  hue: 0,
-  sat: 255,
-  periodMs: 0,
-  p5: 0,
-  flags: 0,
+  partId: 0,
+  nameLen: 0,
+  name: "",
+  segCount: 1,
+  segs: [[0, 9]],
 };
 
 class FakeTransport {
   linkState: LinkState = "ready";
   currentDeviceId: string | null = "DEV-A";
   writes: CommandRequest[] = [];
-  stripQueries: number[] = [];
-  reports: SegmentReport[] = [REPORT_STATIC];
-  end: SegmentListEnd = { stripId: 1, segMask: 0b100 };
+  layoutQueries: number[] = [];
+  layoutReports: LayoutReport[] = [LAYOUT_PART];
+  sceneReads = 0;
   stripConfigReads = 0;
   deviceInfoReads = 0;
   failConfig = false;
@@ -91,9 +86,25 @@ class FakeTransport {
     return baseState();
   }
 
-  async queryStrip(stripId: number): Promise<{ reports: SegmentReport[]; end: SegmentListEnd }> {
-    this.stripQueries.push(stripId);
-    return { reports: this.reports, end: { ...this.end, stripId } };
+  async queryLayout(stripId: number): Promise<{
+    reports: LayoutReport[];
+    end: LayoutListEnd;
+  }> {
+    this.layoutQueries.push(stripId);
+    return {
+      reports: this.layoutReports,
+      end: { stripId, partMask: 0b1 },
+    };
+  }
+
+  async queryScene(sceneId: number): Promise<{
+    sceneId: number;
+    parts: ScenePartReport[];
+    steps: SceneStepReport[];
+    end: SceneListEnd;
+  }> {
+    this.sceneReads += 1;
+    return { sceneId, parts: [], steps: [], end: { sceneId, nameLen: 0, name: "" } };
   }
 
   /* 回连重建（§9.1 步骤 2/3）用的两条只读查询。 */
@@ -166,40 +177,40 @@ async function settle(rounds = 12): Promise<void> {
 }
 
 describe("#41 stripId 是必填参数", () => {
-  it("clearSegment(stripId, segId) 用调用方给的带，不跟随 activeStripId", async () => {
+  it("setStripPower(stripId, on) 用调用方给的带，不跟随 activeStripId", async () => {
     const transport = new FakeTransport();
     const session = makeSession(transport);
     session.setActiveStripId(0);
 
-    const ack = await session.clearSegment(3, 5);
-    expect(ack.ok).toBe(true);
-    expect(Array.from(transport.writes[0].payload)).toEqual([3, 5]);
+    const result = await session.setStripPower(3, false);
+    expect(result.kind).toBe("ok");
+    expect(Array.from(transport.writes[0].payload)).toEqual([3, 0]);
     /* 只是发命令：不该偷偷改会话的当前选择。 */
     expect(session.activeStripId).toBe(0);
   });
 
-  it("queryStrip(stripId) 读调用方给的带，并缓存该带的段列表", async () => {
+  it("queryLayout(stripId) 读调用方给的带，并缓存该带的部位", async () => {
     const transport = new FakeTransport();
     const session = makeSession(transport);
 
-    const result = await session.queryStrip(1);
+    const result = await session.queryLayout(1);
     expect(result.kind).toBe("ok");
-    expect(transport.stripQueries).toEqual([1]);
-    expect(session.segmentsOf(1)).toEqual(transport.reports);
+    expect(transport.layoutQueries).toEqual([1]);
+    expect(session.layoutOf(1)?.parts).toEqual(transport.layoutReports);
     /* 没读过的带不能编出数据。 */
-    expect(session.segmentsOf(0)).toEqual([]);
-    expect(session.segmentsOf(2)).toEqual([]);
+    expect(session.layoutOf(0)).toBeNull();
+    expect(session.layoutOf(2)).toBeNull();
   });
 
-  it("断线清空逐带段缓存（描述的是上一台 / 上一次连接）", async () => {
+  it("断线清空逐带布局缓存（描述的是上一台 / 上一次连接）", async () => {
     const transport = new FakeTransport();
     const session = makeSession(transport);
-    await session.queryStrip(0);
-    expect(session.segmentsOf(0)).toHaveLength(1);
+    await session.queryLayout(0);
+    expect(session.layoutOf(0)?.parts.length).toBeGreaterThan(0);
 
     transport.emitLink("idle");
     await session.disconnect();
-    expect(session.segmentsOf(0)).toEqual([]);
+    expect(session.layoutOf(0)).toBeNull();
   });
 
   it("activeStripId 是会话自有状态：断线重连不重置（用户的选择跨连接保留）", async () => {
@@ -317,29 +328,29 @@ describe("#44 设备身份与切换清理", () => {
       storage: memoryStorage(),
     });
 
-    /* 先连 A，读一条段，并让 ready 补上 hwId。 */
+    /* 先连 A，读一条链的布局，并让 ready 补上 hwId。 */
     await session.connect("DEV-A", "Lumen-A");
-    await session.queryStrip(1);
-    expect(session.segmentsOf(1)).toHaveLength(1);
+    await session.queryLayout(1);
+    expect(session.layoutOf(1)?.parts.length).toBeGreaterThan(0);
     transport.emitLink("ready");
     await settle();
     expect(session.deviceInfo?.hwId).toBe("AA:BB:CC:DD:EE:FF");
 
     /* 切到 B：FakeTransport 的 connect 不会重置 linkState，先回 idle 模拟真实链路。 */
-    transport.reports = [];
+    transport.layoutReports = [];
     transport.currentDeviceId = "DEV-B";
     transport.emitLink("idle");
     await session.switchTo("DEV-B", "Lumen-B");
 
-    /* 段缓存必须空：它描述的是 A。 */
-    expect(session.segmentsOf(1)).toEqual([]);
-    expect(session.segmentsOf(0)).toEqual([]);
+    /* 布局缓存必须空：它描述的是 A。 */
+    expect(session.layoutOf(1)).toBeNull();
+    expect(session.layoutOf(0)).toBeNull();
     /* 引脚表 / 身份缓存也属于上一台。 */
     expect(session.stripConfigs).toBeNull();
     expect(session.deviceInfo).toBeNull();
   });
 
-  it("switchTo 断开阶段即使 disconnect 抛错也清空段缓存", async () => {
+  it("switchTo 断开阶段即使 disconnect 抛错也清空布局缓存", async () => {
     const transport = new FakeTransport();
     transport.currentDeviceId = "DEV-A";
     const session = new ControlSession({
@@ -349,8 +360,8 @@ describe("#44 设备身份与切换清理", () => {
       storage: memoryStorage(),
     });
     await session.connect("DEV-A", "Lumen-A");
-    await session.queryStrip(0);
-    expect(session.segmentsOf(0)).toHaveLength(1);
+    await session.queryLayout(0);
+    expect(session.layoutOf(0)?.parts.length).toBeGreaterThan(0);
 
     transport.disconnect = async () => {
       throw new Error("close 失败");
@@ -358,7 +369,7 @@ describe("#44 设备身份与切换清理", () => {
     transport.currentDeviceId = "DEV-B";
     await session.switchTo("DEV-B", "Lumen-B");
 
-    expect(session.segmentsOf(0)).toEqual([]);
+    expect(session.layoutOf(0)).toBeNull();
   });
 
   it("最近连过里已有 hardId 时，连接成功就用它记（不等 0x88）", async () => {

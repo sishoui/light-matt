@@ -33,7 +33,7 @@ interface VectorCase {
 }
 
 const vectors = JSON.parse(
-  readFileSync(new URL("../../docs/protocol-testvectors-v4.json", import.meta.url), "utf8"),
+  readFileSync(new URL("../../docs/protocol-testvectors-v5.json", import.meta.url), "utf8"),
 ) as { cases: VectorCase[] };
 
 function vector(name: string): VectorCase {

@@ -11,15 +11,39 @@
 #include "sdkconfig.h"
 
 #include "save_scheduler.h"
-#include "script_blob.h"
 #include "state_blob.h"
 
 static const char *TAG = "lumen_store";
 
 #define LUMEN_NVS_NAMESPACE "lumen"
-#define LUMEN_NVS_KEY "state"
-/* #32：剧本单独一个 key（见 state_store.h 的理由）。 */
-#define LUMEN_NVS_SCRIPT_KEY "scripts"
+/* v5 的五个键（docs/protocol-v5.md §10.5）。 */
+#define LUMEN_NVS_KEY_STATE "state"
+#define LUMEN_NVS_KEY_LAYOUT "layout"
+#define LUMEN_NVS_KEY_SCENE0 "scene0"
+#define LUMEN_NVS_KEY_SCENE1 "scene1"
+#define LUMEN_NVS_KEY_SCENE2 "scene2"
+
+/* 键名表：下标与 lumen_save_key_t 一一对应。 */
+static const char *const k_key_names[LUMEN_SAVE_KEY_COUNT] = {
+    LUMEN_NVS_KEY_STATE, LUMEN_NVS_KEY_LAYOUT, LUMEN_NVS_KEY_SCENE0,
+    LUMEN_NVS_KEY_SCENE1, LUMEN_NVS_KEY_SCENE2,
+};
+
+/* 某个键的 debounce（§10.5）。 */
+static uint32_t key_debounce_ms(lumen_save_key_t key)
+{
+    switch (key) {
+    case LUMEN_SAVE_KEY_LAYOUT:
+        return 0; /* LayoutCommit 立即落盘 */
+    case LUMEN_SAVE_KEY_SCENE0:
+    case LUMEN_SAVE_KEY_SCENE1:
+    case LUMEN_SAVE_KEY_SCENE2:
+        return LUMEN_SAVE_SCENE_DEBOUNCE_MS; /* 2 s（E4） */
+    case LUMEN_SAVE_KEY_STATE:
+    default:
+        return LUMEN_SAVE_DEBOUNCE_MS;
+    }
+}
 
 static SemaphoreHandle_t s_lock;
 static SemaphoreHandle_t s_wake;
@@ -27,25 +51,10 @@ static lumen_save_scheduler_t s_sched;
 static lumen_store_event_cb s_event_cb;
 
 /*
- * 剧本快照（#32）。与状态快照共用同一把锁与同一个 debounce 计时：
- * 改段配置与改剧本几乎总是同一批命令，合并成一次唤醒更省 flash 写。
- *
- * 放在静态区而不是栈上：一套剧本约 1KB，存储任务栈只有 3KB。
+ * State blob 是 32 字节，放在这里而不是栈上只是为了与其它写路径同形；
+ * 布局 / 场景的 blob 由引擎持有（12 KB 不能进 5120 字节的任务栈，§B7）。
  */
-static uint8_t s_script_blob[LUMEN_SCRIPT_BLOB_MAX];
-static size_t s_script_blob_len;
-static bool s_script_pending;
-static uint32_t s_script_deadline_ms;
-
-/* 剧本写入的剩余 debounce 毫秒；UINT32_MAX = 没有待写。 */
-static uint32_t script_next_delay_ms(uint32_t now)
-{
-    if (!s_script_pending) {
-        return UINT32_MAX;
-    }
-    int32_t remaining = (int32_t)(s_script_deadline_ms - now);
-    return remaining > 0 ? (uint32_t)remaining : 0;
-}
+static uint8_t s_state_blob[LUMEN_STATE_BLOB_SIZE];
 
 /*
  * 近似毫秒时钟：esp_timer 是 64 位微秒，右移 10 位 ≈ 除以 1024，即每单位
@@ -59,25 +68,18 @@ static uint32_t now_ms(void)
     return (uint32_t)(esp_timer_get_time() >> 10);
 }
 
-/*
- * 栈注意（v4）：blob 缓冲是 1440 字节（LUMEN_STATE_BLOB_SIZE = 32 + 8×8×22），
- * 而本任务栈是 CONFIG_LUMEN_STORE_TASK_STACK_SIZE = 5120。调用方还持有一份
- * lumen_persist_t（≈1.83 KB），加上这里的 blob 与 NVS 在 cache 关闭期间的工作量，
- * 余量约 1.8 KB。想增大 blob 之前先读 Kconfig.projbuild 的那段账。
- */
-static esp_err_t write_blob(const lumen_persist_t *snapshot)
+/* 把一份 blob 写进某个键。 */
+static esp_err_t write_key(lumen_save_key_t key, const uint8_t *blob, size_t len)
 {
-    uint8_t blob[LUMEN_STATE_BLOB_SIZE];
-    if (lumen_state_blob_encode(snapshot, blob) != LUMEN_STATE_BLOB_SIZE) {
+    if ((unsigned)key >= LUMEN_SAVE_KEY_COUNT || blob == NULL || len == 0) {
         return ESP_ERR_INVALID_ARG;
     }
-
     nvs_handle_t handle;
     esp_err_t err = nvs_open(LUMEN_NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
         return err;
     }
-    err = nvs_set_blob(handle, LUMEN_NVS_KEY, blob, sizeof(blob));
+    err = nvs_set_blob(handle, k_key_names[key], blob, len);
     if (err == ESP_OK) {
         err = nvs_commit(handle);
     }
@@ -86,22 +88,21 @@ static esp_err_t write_blob(const lumen_persist_t *snapshot)
 }
 
 /*
- * 写剧本 blob（#32）。blob 已由引擎编码好并拷进 s_script_blob（静态区，3KB 的
- * 存储任务栈放不下 4KB 缓冲）。
+ * 读一份 blob 进调用方的缓冲。实际长度写进 *len（进入时是容量）。
+ * 没有历史 / 长度超过容量时返回 false。
  */
-static esp_err_t write_script_blob(const uint8_t *blob, size_t len)
+static bool read_key(lumen_save_key_t key, uint8_t *buf, size_t *len)
 {
+    if ((unsigned)key >= LUMEN_SAVE_KEY_COUNT || buf == NULL || len == NULL) {
+        return false;
+    }
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(LUMEN_NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err != ESP_OK) {
-        return err;
+    if (nvs_open(LUMEN_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
+        return false;
     }
-    err = nvs_set_blob(handle, LUMEN_NVS_SCRIPT_KEY, blob, len);
-    if (err == ESP_OK) {
-        err = nvs_commit(handle);
-    }
+    esp_err_t err = nvs_get_blob(handle, k_key_names[key], buf, len);
     nvs_close(handle);
-    return err;
+    return err == ESP_OK;
 }
 
 static void store_task(void *arg)
@@ -113,21 +114,15 @@ static void store_task(void *arg)
         }
 
         /*
-         * debounce（协议 §12）：等满 500ms 且期间没有新请求才写。
+         * debounce（§10.5）：等满各自的时长且期间没有新请求才写。
          *
          * 不能只靠「信号量等待超时」判定到期——超时发生在 tick 边界，可能比
          * 真正的到期时刻早不到 1ms，导致漏写。这里先问调度器还差多少毫秒，
          * 按精确剩余时间等；期间被新请求唤醒就重算，继续推迟。
          */
         for (;;) {
-            uint32_t wait_ms;
             xSemaphoreTake(s_lock, portMAX_DELAY);
-            wait_ms = lumen_save_scheduler_next_delay_ms(&s_sched, now_ms());
-            uint32_t script_wait = script_next_delay_ms(now_ms());
-            /* 两个 debounce 取较早到期者（各自独立计时，共用一次唤醒）。 */
-            if (script_wait < wait_ms) {
-                wait_ms = script_wait;
-            }
+            uint32_t wait_ms = lumen_save_scheduler_earliest_delay_ms(&s_sched, now_ms());
             xSemaphoreGive(s_lock);
 
             if (wait_ms == UINT32_MAX || wait_ms == 0) {
@@ -136,54 +131,42 @@ static void store_task(void *arg)
             (void)xSemaphoreTake(s_wake, pdMS_TO_TICKS(wait_ms));
         }
 
-        lumen_persist_t snapshot;
-        uint8_t command = 0;
-        bool due;
-        bool script_pending;
-        xSemaphoreTake(s_lock, portMAX_DELAY);
-        due = lumen_save_scheduler_take_due(&s_sched, now_ms(), &snapshot, &command);
         /*
-         * 剧本快照与状态快照一起 flush：两者共享同一次唤醒，避免
-         * 「状态写完了但剧本还没写」的中间窗口。剧本自己的 debounce 也必须
-         * 已到期，否则把它放回待写状态继续等。
+         * 逐键取到期项并写。一次唤醒可以 flush 多个键——它们各自独立计时，
+         * 共用同一次唤醒更省 flash 写。
+         *
+         * 取到期项后立即持锁快照指针，出锁再写 NVS：nvs_commit 可能阻塞几百
+         * 毫秒（cache 关闭期间），不能把引擎的请求路径挡在后面。
          */
-        script_pending = s_script_pending && script_next_delay_ms(now_ms()) == 0;
-        size_t script_len = s_script_blob_len;
-        if (script_pending) {
-            s_script_pending = false;
-        }
-        xSemaphoreGive(s_lock);
-        if (!due && !script_pending) {
-            continue;
-        }
+        for (unsigned k = 0; k < LUMEN_SAVE_KEY_COUNT; ++k) {
+            lumen_save_key_t key = (lumen_save_key_t)k;
+            const uint8_t *blob = NULL;
+            uint32_t len = 0;
+            uint8_t command = 0;
 
-        if (due) {
-            esp_err_t err = write_blob(&snapshot);
+            xSemaphoreTake(s_lock, portMAX_DELAY);
+            bool due = lumen_save_scheduler_take_due(&s_sched, key, now_ms(), &blob, &len,
+                                                     &command);
+            xSemaphoreGive(s_lock);
+            if (!due) {
+                continue;
+            }
+
+            /*
+             * State 键的 blob 就是 s_state_blob（在 request_save 里编码好），
+             * 布局 / 场景的 blob 由引擎持有，两者在写入完成前都有效。
+             */
+            esp_err_t err = write_key(key, blob, len);
             if (err != ESP_OK) {
-                /* ACK 早就发过了，失败只能异步上报（§10.3 Event 0x81）。 */
-                ESP_LOGW(TAG, "nvs write failed: %s (cmd=0x%02X)", esp_err_to_name(err),
-                         command);
+                /* ACK 早就发过了，失败只能异步上报（§10.5 Event 0x81）。 */
+                ESP_LOGW(TAG, "nvs write failed: key=%s len=%u err=%s (cmd=0x%02X)",
+                         k_key_names[key], (unsigned)len, esp_err_to_name(err), command);
                 if (s_event_cb != NULL) {
                     s_event_cb(command);
                 }
             } else {
-                ESP_LOGD(TAG,
-                         "state saved (leds=%u power=%u brightness=%u segs=%u cmd=0x%02X)",
-                         snapshot.state.led_count, snapshot.state.power,
-                         snapshot.state.brightness, snapshot.state.seg_count, command);
-            }
-        }
-
-        if (script_pending) {
-            esp_err_t err = write_script_blob(s_script_blob, script_len);
-            if (err != ESP_OK) {
-                ESP_LOGW(TAG, "nvs script write failed: %s", esp_err_to_name(err));
-                if (s_event_cb != NULL) {
-                    /* detail = 触发写入的命令字；剧本写入一律记 ScriptCommit。 */
-                    s_event_cb(LUMEN_CMD_SCRIPT_COMMIT);
-                }
-            } else {
-                ESP_LOGD(TAG, "scripts saved (%u bytes)", (unsigned)script_len);
+                ESP_LOGD(TAG, "saved key=%s (%u bytes, cmd=0x%02X)", k_key_names[key],
+                         (unsigned)len, command);
             }
         }
     }
@@ -214,23 +197,58 @@ bool lumen_state_store_load(lumen_persist_t *out)
     if (out == NULL) {
         return false;
     }
-
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(LUMEN_NVS_NAMESPACE, NVS_READONLY, &handle);
-    if (err != ESP_OK) {
+    size_t size = sizeof(s_state_blob);
+    if (!read_key(LUMEN_SAVE_KEY_STATE, s_state_blob, &size)) {
         return false;
     }
-
-    uint8_t blob[LUMEN_STATE_BLOB_SIZE];
-    size_t size = sizeof(blob);
-    err = nvs_get_blob(handle, LUMEN_NVS_KEY, blob, &size);
-    nvs_close(handle);
-    if (err != ESP_OK) {
-        return false;
-    }
-
     /* 长度 / magic / version / 字段越界的校验都在纯模块里（host 可单测）。 */
-    return lumen_state_blob_decode(blob, size, out);
+    return lumen_state_blob_decode(s_state_blob, size, out);
+}
+
+bool lumen_state_store_load_layout(lumen_layout_store_t *out,
+                                   const uint16_t strip_counts[LUMEN_MAX_STRIPS])
+{
+    if (out == NULL) {
+        return false;
+    }
+    /*
+     * 布局 blob 最坏 2760 字节，放进本任务栈（5120，余量约 1.8 KB）会紧张，
+     * 所以走静态缓冲。本函数只在启动加载时调用，那时不可能有待写内容。
+     */
+    static uint8_t blob[LUMEN_LAYOUT_BLOB_MAX];
+    size_t size = sizeof(blob);
+    if (!read_key(LUMEN_SAVE_KEY_LAYOUT, blob, &size)) {
+        return false;
+    }
+    uint8_t strip_count = 0;
+    if (!lumen_layout_blob_decode(blob, size, &strip_count, out)) {
+        return false;
+    }
+    /*
+     * blob 自带的每链灯珠数是冗余。以 State 的权威值再跑一次整份校验：
+     * 灯珠数被改小之后，旧布局里越界的段应当整份拒绝，而不是让半套越界
+     * 配置进入 RAM（§10.3）。
+     */
+    if (lumen_layout_store_validate(out, strip_count, strip_counts) != LUMEN_RESULT_OK) {
+        ESP_LOGW(TAG, "布局 blob 与当前灯珠数不一致，整份拒绝");
+        return false;
+    }
+    return true;
+}
+
+bool lumen_state_store_load_scene(uint8_t scene_id, lumen_scene_t *out)
+{
+    if (out == NULL || scene_id >= LUMEN_MAX_SCENES) {
+        return false;
+    }
+    /* 场景 blob 最坏 12288 未字节，绝不能放本任务栈（见 §B7 的栈账）。 */
+    static uint8_t blob[LUMEN_SCENE_BLOB_MAX];
+    size_t size = sizeof(blob);
+    lumen_save_key_t key = (lumen_save_key_t)(LUMEN_SAVE_KEY_SCENE0 + scene_id);
+    if (!read_key(key, blob, &size)) {
+        return false;
+    }
+    return lumen_scene_blob_decode(blob, size, out);
 }
 
 void lumen_state_store_set_event_cb(lumen_store_event_cb cb)
@@ -244,77 +262,45 @@ void lumen_state_store_request_save(const lumen_persist_t *snapshot, uint8_t com
     if (snapshot == NULL || s_lock == NULL) {
         return;
     }
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    lumen_save_scheduler_request(&s_sched, snapshot, command, now_ms());
-    xSemaphoreGive(s_lock);
-    xSemaphoreGive(s_wake);
-}
-
-bool lumen_state_store_load_scripts(const uint16_t strip_counts[LUMEN_MAX_STRIPS],
-                                    lumen_script_store_t *store, uint8_t *active_script_id,
-                                    uint8_t *loop)
-{
-    if (store == NULL) {
-        return false;
-    }
-
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(LUMEN_NVS_NAMESPACE, NVS_READONLY, &handle);
-    if (err != ESP_OK) {
-        return false;
-    }
-
-    /*
-     * 复用 s_script_blob 而不是再开一块 16KB 静态缓冲。
-     *
-     * 本函数只在启动加载时调用，那时候不可能有待写的剧本。为防将来有人在
-     * 运行期再调一次，这里持锁并在有待写内容时直接拒绝，而不是悄悄覆盖掉
-     * 一份还没落盘的快照。
-     *
-     * 这样全固件的 16KB 剧本缓冲从 3 块（48KB）降到 2 块（32KB）：
-     * 这里 + led_engine 的编码缓冲。C3 只有 ~400KB SRAM 且要与 NimBLE 共用。
-     */
-    if (s_lock == NULL) {
-        nvs_close(handle);
-        return false;
-    }
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    if (s_script_pending) {
-        xSemaphoreGive(s_lock);
-        nvs_close(handle);
-        ESP_LOGW(TAG, "剧本加载被拒：已有待写的剧本快照（不应在运行期调用）");
-        return false;
-    }
-    size_t size = sizeof(s_script_blob);
-    err = nvs_get_blob(handle, LUMEN_NVS_SCRIPT_KEY, s_script_blob, &size);
-    nvs_close(handle);
-    if (err != ESP_OK) {
-        xSemaphoreGive(s_lock);
-        return false;
-    }
-
-    /*
-     * 整份校验需要「每条灯带自己的灯珠数」。剧本里记录的段区间必须落在
-     * 当前配置的灯珠数内——数量被改小之后旧剧本里的越界段应当整份拒绝，
-     * 由调用方回落到「没有剧本」，而不是让半套越界配置进入 RAM。
-     * strip_counts 由调用方在加载剧本之前填好（它来自状态 blob）。
-     */
-    bool ok = lumen_script_blob_decode(s_script_blob, size, strip_counts, store,
-                                       active_script_id, loop);
-    xSemaphoreGive(s_lock);
-    return ok;
-}
-
-void lumen_state_store_request_script_save(const uint8_t *blob, size_t len)
-{
-    if (blob == NULL || len == 0 || len > sizeof(s_script_blob) || s_lock == NULL) {
+    /* State blob 只有 32 字节：在这里编码进静态缓冲，调度器只存指针。 */
+    if (lumen_state_blob_encode(snapshot, s_state_blob) != LUMEN_STATE_BLOB_SIZE) {
+        ESP_LOGW(TAG, "state blob 编码失败，跳过本次保存");
         return;
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    memcpy(s_script_blob, blob, len);
-    s_script_blob_len = len;
-    s_script_pending = true;
-    s_script_deadline_ms = now_ms() + LUMEN_SAVE_DEBOUNCE_MS;
+    (void)lumen_save_scheduler_request(&s_sched, LUMEN_SAVE_KEY_STATE, s_state_blob,
+                                       LUMEN_STATE_BLOB_SIZE, command, now_ms(),
+                                       key_debounce_ms(LUMEN_SAVE_KEY_STATE));
     xSemaphoreGive(s_lock);
     xSemaphoreGive(s_wake);
+}
+
+bool lumen_state_store_request_layout_save(const uint8_t *blob, size_t len, uint8_t command)
+{
+    if (blob == NULL || len == 0 || len > LUMEN_LAYOUT_BLOB_MAX || s_lock == NULL) {
+        return false;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool ok = lumen_save_scheduler_request(&s_sched, LUMEN_SAVE_KEY_LAYOUT, blob, (uint32_t)len,
+                                           command, now_ms(),
+                                           key_debounce_ms(LUMEN_SAVE_KEY_LAYOUT));
+    xSemaphoreGive(s_lock);
+    xSemaphoreGive(s_wake);
+    return ok;
+}
+
+bool lumen_state_store_request_scene_save(uint8_t scene_id, const uint8_t *blob, size_t len,
+                                          uint8_t command)
+{
+    if (scene_id >= LUMEN_MAX_SCENES || blob == NULL || len == 0 ||
+        len > LUMEN_SCENE_BLOB_MAX || s_lock == NULL) {
+        return false;
+    }
+    lumen_save_key_t key = (lumen_save_key_t)(LUMEN_SAVE_KEY_SCENE0 + scene_id);
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool ok = lumen_save_scheduler_request(&s_sched, key, blob, (uint32_t)len, command, now_ms(),
+                                           key_debounce_ms(key));
+    xSemaphoreGive(s_lock);
+    xSemaphoreGive(s_wake);
+    return ok;
 }

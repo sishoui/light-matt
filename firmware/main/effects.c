@@ -132,6 +132,227 @@ void lumen_layer_encode(const lumen_effect_layer_t *layer, uint8_t out[9])
     out[8] = layer->level;
 }
 
+/* ---------------- 层 / 一步两层的形状校验（§7.1 第 2-8 步） ---------------- */
+
+/*
+ * 熄灭层的 param[0..6] 是否全 0（effects-spec §2.7）。
+ *
+ * 为什么不放进 lumen_segment_validate_params：那个函数只有
+ * `(type, flags, period_ms)` 三个参数，看不到 hue / sat / p5。为一条规则
+ * 扩公共签名会牵动命令层与 blob 解码的所有调用点，而熄灭的「参数全零」
+ * 只依赖层本身——放在形状校验里最省。level 不在约束内：熄灭本来就是黑的，
+ * 亮度对它没有意义。
+ */
+static bool off_params_zero(const lumen_effect_layer_t *layer)
+{
+    for (size_t i = 0; i < sizeof(layer->param); ++i) {
+        if (layer->param[i] != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+uint8_t lumen_segment_validate_params(uint8_t type, uint8_t flags, uint16_t period_ms)
+{
+    if (!lumen_effect_type_implemented(type)) {
+        /* 未知类型 / 未实现类型 / 空层：不静默降级（D7）。 */
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    if (type == LUMEN_EFFECT_STATIC) {
+        /* 静态段没有 flags 字段（effects-spec §2.1）：必须为 0。 */
+        if (flags != 0) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        return LUMEN_RESULT_OK;
+    }
+    if (type == LUMEN_EFFECT_BREATHING) {
+        /*
+         * 呼吸（effects-spec §2.2 / §5）：
+         *   bit1-2 waveform、bit3-7 必须为 0；
+         *   period_ms != 0 时必须 ≥ 334（≈3Hz，光敏性癫痫安全线）。
+         * period_ms = 0 是合法值（静止），不受下限约束。
+         *
+         * p5 是**相对百分比 0-100**（谷底 = level × p5%），> 100 一律非法；
+         * 那条判定在 lumen_segment_validate_shape 里（本函数看不到 p5）。
+         */
+        if ((flags & 0xF8u) != 0) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        if (period_ms != 0 && period_ms < LUMEN_BREATHING_MIN_PERIOD_MS) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        return LUMEN_RESULT_OK;
+    }
+    /*
+     * 彩虹（effects-spec §2.3）：
+     *   bit0 reverse（有实际意义）、**bit1-7 必须为 0**——比呼吸更严，因为
+     *   这里没有 waveform 位可借；period_ms != 0 时必须 ≥ 200（5Hz）。
+     *   彩虹是空间移动不是亮度闪烁，所以下限比呼吸宽松（D5）。
+     */
+    if (type == LUMEN_EFFECT_RAINBOW) {
+        if ((flags & 0xFEu) != 0) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        if (period_ms != 0 && period_ms < LUMEN_RAINBOW_MIN_PERIOD_MS) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        return LUMEN_RESULT_OK;
+    }
+    /*
+     * 流光（effects-spec §2.4 + #98）：
+     *   bit0 reverse、bit1 拖尾不衰减、bit2-3 头数量（0..3 ⇒ 1..4 个）、
+     *   **bit4-7 保留必须为 0**。周期下限与彩虹同一条（≥ 200ms）。
+     */
+    if (type == LUMEN_EFFECT_COMET) {
+        if ((flags & LUMEN_COMET_FLAGS_RESERVED_MASK) != 0) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        if (period_ms != 0 && period_ms < LUMEN_RAINBOW_MIN_PERIOD_MS) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        return LUMEN_RESULT_OK;
+    }
+    if (type == LUMEN_EFFECT_FLICKER) {
+        /*
+         * 随机闪烁（#98）：
+         *   flags **必须为 0**（没有方向 / 波形 / 密度位）；duty 是 p5，0-255 全合法；
+         *   period_ms != 0 时必须 ≥ 334（3Hz，与呼吸同一条光敏性癫痫安全线）。
+         */
+        if (flags != 0) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        if (period_ms != 0 && period_ms < LUMEN_FLICKER_MIN_PERIOD_MS) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        return LUMEN_RESULT_OK;
+    }
+    if (type == LUMEN_EFFECT_STROBE) {
+        /*
+         * 爆闪（effects-spec §2.5）：
+         *   flags **必须为 0**（没有方向 / 波形位可用）；
+         *   period_ms != 0 时必须 ≥ 100（10Hz = 20fps 下能表现的上界）。
+         */
+        if (flags != 0) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        if (period_ms != 0 && period_ms < LUMEN_STROBE_MIN_PERIOD_MS) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        return LUMEN_RESULT_OK;
+    }
+    if (type == LUMEN_EFFECT_HEARTBEAT) {
+        /*
+         * 心跳（effects-spec §2.6）：
+         *   bit0 = 双脉冲开关（默认 1）、**bit1-7 必须为 0**；
+         *   period_ms != 0 时必须落在 500-1500（40-120 BPM）。
+         */
+        if ((flags & 0xFEu) != 0) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        if (period_ms != 0 && (period_ms < LUMEN_HEARTBEAT_MIN_PERIOD_MS ||
+                               period_ms > LUMEN_HEARTBEAT_MAX_PERIOD_MS)) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        return LUMEN_RESULT_OK;
+    }
+    if (type == LUMEN_EFFECT_OFF) {
+        /*
+         * 熄灭（effects-spec §2.7）：flags / period_ms 必须为 0。
+         * hue / sat / p5 也必须是 0，但本函数签名看不到它们，所以那部分
+         * 放在 lumen_segment_validate_shape 里。
+         */
+        if (flags != 0 || period_ms != 0) {
+            return LUMEN_RESULT_INVALID_PARAM;
+        }
+        return LUMEN_RESULT_OK;
+    }
+    /* 类型已由 type_implemented 过滤，走到这里说明类型表与规则表不同步。 */
+    return LUMEN_RESULT_INVALID_PARAM;
+}
+
+uint8_t lumen_segment_validate_shape(const lumen_segment_t *seg)
+{
+    if (seg == NULL) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    /*
+     * 严格按 docs/protocol-v5.md §7.1 的 1-8 步顺序。第 1 步（载荷精确长度）
+     * 在命令层完成——本函数拿到的是已经解析好的结构。
+     *
+     * v5 的一步等价于 v4 的一个段：**同一套层编码与同一套约束**，只是宿主
+     * 从「段」换成了「步」。所以命令层、场景存储、blob 解码共用这一处。
+     */
+    const lumen_effect_layer_t *l0 = &seg->layer[0];
+    const lumen_effect_layer_t *l1 = &seg->layer[1];
+
+    /* 第 2 步：layer0 必须是已知类型且不得为 0xFF。 */
+    if (l0->type == LUMEN_LAYER_EMPTY || !lumen_effect_type_known(l0->type)) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+
+    /* 第 3 步：layer1 必须是已知类型或 0xFF 空层。 */
+    if (l1->type != LUMEN_LAYER_EMPTY && !lumen_effect_type_known(l1->type)) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    if (l1->type == LUMEN_LAYER_EMPTY && !lumen_layer_empty_params_zero(l1)) {
+        /* 空层的 9 字节编码必须全 0（含 level，§7.1 第 3 步）。 */
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+
+    /* 第 4 步：任一层的 level 必须在 0-100 内；空层的 level 已在第 3 步判过。 */
+    if (l0->level > LUMEN_LAYER_LEVEL_MAX || l1->level > LUMEN_LAYER_LEVEL_MAX) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+
+    /* 第 5 步：layer1 为空 ⇒ blend 必须为 0。 */
+    if (l1->type == LUMEN_LAYER_EMPTY && seg->blend != 0) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+
+    /* 第 6 步：blend ≤ LUMEN_BLEND_MAX（v4 的 3 = 按亮度叠加也合法）。 */
+    if (seg->blend > LUMEN_BLEND_MAX) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+
+    /* 第 7 步：静态层的 param[3..6] 必须全 0（对两层都生效）。 */
+    if (l0->type == LUMEN_EFFECT_STATIC && !lumen_layer_static_reserved_zero(l0)) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    if (l1->type == LUMEN_EFFECT_STATIC && !lumen_layer_static_reserved_zero(l1)) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+
+    /* 第 8 步：各层按 type 校验参数（flags 保留位、周期下限、呼吸 p5 百分比）。 */
+    if (lumen_segment_validate_params(l0->type, lumen_layer_flags(l0),
+                                      lumen_layer_period_ms(l0)) != LUMEN_RESULT_OK) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    if (l0->type == LUMEN_EFFECT_BREATHING && lumen_layer_p5(l0) > 100u) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    if (l1->type != LUMEN_LAYER_EMPTY &&
+        lumen_segment_validate_params(l1->type, lumen_layer_flags(l1),
+                                      lumen_layer_period_ms(l1)) != LUMEN_RESULT_OK) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    if (l1->type == LUMEN_EFFECT_BREATHING && lumen_layer_p5(l1) > 100u) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+
+    /*
+     * 熄灭：hue / sat / p5 也必须是 0（flags / period 已在上面的
+     * validate_params 里判过）。这里单独查一次是因为共享函数看不到这些字节。
+     */
+    if (l0->type == LUMEN_EFFECT_OFF && !off_params_zero(l0)) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    if (l1->type == LUMEN_EFFECT_OFF && !off_params_zero(l1)) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    return LUMEN_RESULT_OK;
+}
+
 uint16_t lumen_layer_hue(const lumen_effect_layer_t *layer)
 {
     if (layer == NULL) {

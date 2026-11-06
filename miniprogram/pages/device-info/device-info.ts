@@ -23,27 +23,32 @@ import {
 } from "../../utils/control/device-registry";
 import { getDeviceApi } from "../../utils/control/device-api-singleton";
 import { DeviceSync, syncApiOf } from "../../utils/control/device-sync";
-import { deviceKeyOf } from "../../utils/control/device-history";
-import {
-  affectedZoneCount,
-  clampLedCount,
-  draftZoneRanges,
-  planShrink,
-  shrinkConfirmText,
-  shrinkDraft,
-  sumStripLeds,
-} from "../../utils/control/led-count-plan";
-import { ledCountResultHint } from "../../utils/control/ledCount";
-import { loadPlanDrafts, savePlanDraft } from "../../utils/control/plan-drafts";
 import { deleteDeviceFully } from "../../utils/control/delete-device";
 import { ControlSession } from "../../utils/control/session";
 import { getSession } from "../../utils/control/session-singleton";
 import { pageThemeData } from "../../utils/control/page-theme";
 import { resolveStripMeta } from "../../utils/control/strip-meta";
-import { zonesFromReports } from "../../utils/control/zone-editor";
 import { MAX_LEDS, MIN_LEDS, MAX_STRIPS } from "../../utils/protocol/constants";
-import type { DeviceInfo, DeviceState, SegmentSpec, StripConfig } from "../../utils/protocol/types";
-import type { ScriptDraft } from "../../utils/control/script-view";
+import type {
+  DeviceInfo,
+  DeviceState,
+  LayoutPart,
+  StripConfig,
+} from "../../utils/protocol/types";
+
+/** 把任意滑块值钳成合法的灯珠数（整数、1..MAX_LEDS）。 */
+function clampLedCount(value: number): number {
+  if (!Number.isFinite(value)) {
+    return MIN_LEDS;
+  }
+  const rounded = Math.round(value);
+  return Math.max(MIN_LEDS, Math.min(MAX_LEDS, rounded));
+}
+
+/** 一组灯组的灯珠数之和（摘要区的「共 N 颗」）。 */
+function sumStripLeds(counts: readonly number[]): number {
+  return counts.reduce((total, count) => total + Math.max(0, count), 0);
+}
 
 interface StripInfoRow {
   stripId: number;
@@ -178,7 +183,7 @@ Page({
           : channel.gpio === 0xff
             ? "未分配"
             : `GPIO ${channel.gpio}`;
-      const deviceCount = state?.stripCounts[stripId] ?? 0;
+      const deviceCount = state?.stripLedCounts[stripId] ?? 0;
       /* 拖动中的本地值优先：State 是 20Hz 的，跟着它走会让滑块在手指下跳。
        * 松手提交后 `ledDrafts` 清空，这里自然回到设备权威值。 */
       const draft = this.ledDrafts[stripId];
@@ -222,7 +227,8 @@ Page({
       limitsText:
         info === null
           ? "—"
-          : `灯珠 ${info.maxLeds} · 灯组 ${info.maxStrips} · 分区 ${info.maxSegments} · 步骤 ${info.maxStages} · 方案 ${info.maxScripts}`,
+          : `灯珠 ${info.maxLeds} · 灯组 ${info.maxStrips} · 部位 ${info.maxParts} · ` +
+            `每部位段数 ${info.maxPartSegs} · 步骤 ${info.maxSteps} · 场景 ${info.maxScenes}`,
     });
 
     /* hwId 由会话在 ready 后写入登记表；重读一次让备注字段反映最新记录。 */
@@ -321,32 +327,88 @@ Page({
       return;
     }
 
-    /* 缩小才需要预检；改大永远不动任何已有分区（`planShrink` 对改大 0 命中）。 */
-    let knownZones: SegmentSpec[] = [];
+    /*
+     * 缩小才需要预检；改大永远不动任何已有部位（v5 的几何只在布局里，
+     * 所以「会越界几个部位」只需要读一次布局，§6.1）。
+     */
+    let knownParts: LayoutPart[] = [];
     if (value < current) {
       const precheck = await this.shrinkPlanOf(stripId, value);
-      knownZones = precheck.deviceZones;
+      knownParts = precheck.parts;
       if (precheck.affected > 0) {
         const confirmed = await showConfirm(
-          "缩短灯组会截断分区",
-          shrinkConfirmText(precheck.affected, value),
+          "缩短灯组会截断部位",
+          this.shrinkConfirmTextOf(precheck.affected, value),
           "继续缩短",
         );
         if (!confirmed) {
-          /* 取消：设备与草稿都不动，滑块回到设备值。 */
+          /* 取消：设备与布局都不动，滑块回到设备值。 */
           this.backToDeviceValue(stripId);
           return;
         }
       }
     }
 
-    const applied = await this.applyLedCount(stripId, value, current);
+    const applied = await this.applyLedCountValue(stripId, value, current);
     if (applied !== true || value >= current) {
       return;
     }
-    /* 设备在数量变更时会 prune 掉越界的旧分区（不自动缩短），确认后把截断过
-     * 的那几条重新写回去，灯组仍能正常应用并播放。 */
-    await this.rewriteClampedZones(stripId, knownZones, value);
+    /* 设备在数量变更时会 prune 掉越界的旧段（不自动缩短），确认后把截断过
+     * 的那几个部位重新写回去。 */
+    await this.rewriteClampedParts(stripId, knownParts, value);
+  },
+
+  /**
+   * 下发某条灯组的灯珠数（SetLedCount 0x06），成功才更新本地值。
+   *
+   * 返回值是「是否真的改成了」：
+   *  - `true`  = 设备已按新数量重建并持久化；
+   *  - `false` = 未下发 / 被拒 / 失败（界面已按设备值回位）。
+   *
+   * 设备会 prune 掉越界的段（不自动缩短），所以成功之后调用方要把截断过的
+   * 布局段写回去（`rewriteClampedParts`）。
+   */
+  async applyLedCountValue(
+    stripId: number,
+    value: number,
+    current: number,
+  ): Promise<boolean> {
+    const session = this.session;
+    if (session === null || !this.data.ready) {
+      this.backToDeviceValue(stripId);
+      return false;
+    }
+    if (value === current) {
+      this.backToDeviceValue(stripId);
+      return false;
+    }
+    this.setData({ ledBusyStripId: stripId });
+    this.patchStripRow(stripId, { ledHint: "正在下发…" });
+    try {
+      const result = await session.setLedCount(value, stripId);
+      if (result.kind === "ok") {
+        delete this.ledDrafts[stripId];
+        /* 设备权威值已经变了：整页重读一次（引脚 / 身份 / 逐带灯珠数同一份快照）。 */
+        await this.reload();
+        this.patchStripRow(stripId, { ledHint: "" });
+        return true;
+      }
+      if (result.kind === "ack-error") {
+        this.patchStripRow(stripId, { ledHint: resultText(result.ack.resultCode) });
+        this.backToDeviceValue(stripId);
+        return false;
+      }
+      if (result.kind === "error") {
+        this.patchStripRow(stripId, { ledHint: result.message });
+        this.backToDeviceValue(stripId);
+        return false;
+      }
+      /* stale：旧连接的回执，界面按设备值回位即可。 */
+      this.backToDeviceValue(stripId);
+      return false;
+    } finally {
+      this.setData({ ledBusyStripId: -1 });
+    }
   },
 
   /** 滑块回到设备权威值（取消 / 无效拖动 / 未连接）。 */
@@ -357,7 +419,7 @@ Page({
 
   /** 设备权威的某条灯珠数（未连接 / 没读到按 0）。 */
   deviceLedCount(stripId: number): number {
-    return this.session?.deviceState?.stripCounts[stripId] ?? 0;
+    return this.session?.deviceState?.stripLedCounts[stripId] ?? 0;
   },
 
   /** 一条 stripRow 的局部更新（`stripId` 找不到时什么都不做）。 */
@@ -369,175 +431,109 @@ Page({
   },
 
   /**
-   * 缩小前的本地预检：这条灯组的设备分区 + 落盘草稿里有多少会越界。
+   * 缩小前的本地预检：这条灯组的**布局**里有多少部位会越界。
    *
-   * **一帧都不发**。设备分区读不到时只按草稿算（读失败不该把缩小的路堵死，
-   * 也不该谎报「没有越界」——草稿那一半仍然会数）。
+   * **一帧都不发**（除了读布局本身）。v5 的几何只有布局一处（§6.2：场景不含
+   * 几何），所以「哪几颗灯珠/哪个部位被截掉」只需要看布局——比 v4 的
+   * 「设备段 + 落盘草稿两边都要数」简单一层。
+   *
+   * 读不到布局时按「不影响」处理：读失败不该把缩小的路堵死，也不该谎报
+   * 「没有越界」——`LayoutCommit` 与设备的 prune 会给出权威结果。
    */
   async shrinkPlanOf(
     stripId: number,
     newLedCount: number,
-  ): Promise<{ affected: number; deviceZones: SegmentSpec[] }> {
-    const session = this.session;
-    let deviceZones: SegmentSpec[] = [];
-    if (session !== null) {
-      const result = await session.queryStrip(stripId);
-      if (result.kind === "ok") {
-        deviceZones = zonesFromReports(result.reports.filter((item) => item.stripId === stripId));
-      }
-    }
-    const drafts = this.draftsOfDevice();
-    const affected = affectedZoneCount(deviceZones, draftZoneRanges(drafts, stripId), newLedCount);
-    return { affected, deviceZones };
-  },
-
-  /**
-   * 本机落盘的 4 套草稿（读不到时视为空表）。
-   *
-   * 草稿是设备级的（#75），键为 hardwareId 优先的设备键；空槽位以空数组计入。
-   */
-  draftsOfDevice(): ScriptDraft[] {
-    const storage = createWxStorage();
-    const key = this.draftKeyOfDevice();
-    if (key.length === 0) {
-      return [];
-    }
-    try {
-      const loaded = loadPlanDrafts(storage, key);
-      return loaded === null ? [] : loaded.filter((draft): draft is ScriptDraft => draft !== null);
-    } catch {
-      return [];
-    }
-  },
-
-  /** 草稿落盘用的设备键（hardwareId 优先；身份未知时为空串）。 */
-  draftKeyOfDevice(): string {
-    const deviceId = this.data.deviceId;
-    if (deviceId.length === 0) {
-      return "";
-    }
-    const hardwareId = this.hardwareIdOf(deviceId);
-    return deviceKeyOf({ deviceId, ...(hardwareId === null ? {} : { hardwareId }) });
-  },
-
-  /**
-   * 下发新的灯珠数。
-   *
-   * 成功：把落盘草稿里这条灯组越界的分区按新长度清理并写回，滑块交还设备值。
-   * 失败：**就地显示原因并保留原灯珠数**（草稿一个字节都不动——设备还是旧
-   * 长度，先截断草稿就等于替用户丢编排）。
-   */
-  async applyLedCount(stripId: number, value: number, current: number): Promise<boolean | null> {
+  ): Promise<{ affected: number; parts: LayoutPart[] }> {
     const session = this.session;
     if (session === null) {
-      return null;
+      return { affected: 0, parts: [] };
     }
-    this.setData({ ledBusyStripId: stripId });
-    this.patchStripRow(stripId, { ledHint: "正在应用…" });
-    try {
-      /* stripId 显式传：改的是用户拖的那一条带，不是 strip 0。 */
-      const result = await session.setLedCount(value, stripId);
-      if (result.kind === "ok") {
-        const applied = result.state.stripCounts[stripId] ?? value;
-        delete this.ledDrafts[stripId];
-        this.patchStripRow(stripId, {
-          ledCount: applied,
-          ledHint: `灯组 ${stripId + 1} 已设为 ${applied} 颗`,
-        });
-        /* 只有缩小才可能让草稿里的分区越界；改大一个字节都不动。 */
-        if (applied < current) {
-          await this.persistShrunkDrafts(stripId, applied);
-        }
-        return true;
-      }
-      if (result.kind === "ack-error") {
-        const hint = ledCountResultHint(result.ack.resultCode) || "设置失败";
-        this.revertLedCount(stripId, current, hint);
-        return false;
-      }
-      if (result.kind === "stale") {
-        this.backToDeviceValue(stripId);
-        return null;
-      }
-      this.revertLedCount(stripId, current, `设置失败：${result.message}`);
-      return false;
-    } finally {
-      this.setData({ ledBusyStripId: -1 });
+    const result = await session.queryLayout(stripId);
+    if (result.kind !== "ok") {
+      return { affected: 0, parts: [] };
     }
-  },
-
-  /** 失败：就地显示原因，滑块 **保留原灯珠数**。 */
-  revertLedCount(stripId: number, current: number, hint: string): void {
-    delete this.ledDrafts[stripId];
-    this.patchStripRow(stripId, { ledCount: current, ledHint: hint });
-    wx.showToast({ title: hint, icon: "none" });
+    const parts = result.layout.parts;
+    const affected = parts.filter((part) =>
+      part.segs.some(([, end]) => end >= newLedCount),
+    ).length;
+    return { affected, parts };
   },
 
   /**
-   * 把这条灯组落盘草稿里越界的分区按新长度清理并写回。
+   * 缩短确认框的正文（**一帧都不发**的纯文案）。
    *
-   * 只动这条灯组那一片（`shrinkDraft` 只碰 `stripId`）；其它灯组原样保留。
-   * 落盘失败只影响本机草稿，不回滚已经成功的设备数量。
+   * 「不自动缩短、整段失效」是设备侧的既定语义（§6.1：丢掉而不裁剪），
+   * 所以文案必须提前说清楚「这些部位会整段黑掉」，而不是「会变短」。
    */
-  async persistShrunkDrafts(stripId: number, newLedCount: number): Promise<void> {
-    const storage = createWxStorage();
-    const key = this.draftKeyOfDevice();
-    if (key.length === 0) {
-      return;
-    }
-    try {
-      const loaded = loadPlanDrafts(storage, key);
-      if (loaded === null) {
-        return;
-      }
-      for (let slot = 0; slot < loaded.length; slot += 1) {
-        const draft = loaded[slot];
-        if (draft === null) {
-          continue;
-        }
-        const result = shrinkDraft(draft, stripId, newLedCount);
-        if (result.changed) {
-          savePlanDraft(storage, key, slot, result.draft);
-        }
-      }
-    } catch {
-      /* 存储异常不影响设备侧结果：下一次编辑会再写一遍。 */
-    }
+  shrinkConfirmTextOf(affected: number, newLedCount: number): string {
+    return (
+      `有 ${affected} 个部位的灯珠落在第 ${newLedCount + 1} 颗之后。` +
+      "缩短后这些段会整段失效（不会被自动裁剪），对应的灯珠变成灰缝。"
+    );
   },
 
   /**
-   * 把被截断的分区按新终点重新写回设备。
+   * 本机草稿：**v5 已经没有本地方案草稿**（`lumen.planDrafts.v1` 随「剧本 /
+   * 方案」模型退役，编辑内容存在设备的场景里）。
    *
+   * 保留这个空实现是为了让缩小预检的调用点不改形状——它现在只需要看布局。
+   */
+  draftsOfDevice(): never[] {
+    return [];
+  },
+
+  /** 草稿键（v5 无草稿，恒为空串；保留以便调用点不变）。 */
+  draftKeyOfDevice(): string {
+    return "";
+  },
+
+  /**
+   * 缩短后把被截断的**布局段**按新终点写回设备。
+   *
+   * v5 的几何只在布局里（§6.2：场景不含几何），所以这里只需要重写布局。
    * 设备在数量变更时已经把 `end >= new_count` 的段整段 prune 掉了
-   * （protocol-v4 §7.2：不自动缩短，整段丢弃），所以确认后只需把「截断版」
-   * 写回去——`SetSegment` 按 (灯组, 槽位) 覆盖同一格，不会与保留的段重叠。
+   * （§6.1：不自动缩短，整段丢弃），确认后把「截断版」写回去即可。
+   *
    * 写失败只就地提示，不回滚已经成功的灯珠数。
    */
-  async rewriteClampedZones(
+  async rewriteClampedParts(
     stripId: number,
-    zones: readonly SegmentSpec[],
+    parts: readonly LayoutPart[],
     newLedCount: number,
   ): Promise<void> {
     const session = this.session;
     if (session === null) {
       return;
     }
-    const plan = planShrink(zones, newLedCount);
-    if (plan.clamped.length === 0) {
+    const clamped = parts
+      .map((part) => {
+        const segs = part.segs.filter(([start]) => start < newLedCount);
+        /* 端点越过新上限的段按新上限截断（用户已确认过这一步）。 */
+        const trimmed = segs.map(([start, end]) => [
+          start,
+          Math.min(end, newLedCount - 1),
+        ] as [number, number]);
+        return { ...part, segs: trimmed, segCount: trimmed.length };
+      })
+      .filter((part) => part.segs.length > 0);
+    if (clamped.length === 0) {
       return;
     }
     try {
-      for (const zone of plan.clamped) {
-        const ack = await session.setSegment(zone);
-        if (!ack.ok) {
-          this.patchStripRow(stripId, {
-            ledHint: `灯珠数已改；分区写回失败（${resultText(ack.resultCode)}）`,
-          });
-          return;
-        }
+      const result = await session.writeLayout(stripId, clamped);
+      if (result.kind === "ack-error") {
+        this.patchStripRow(stripId, {
+          ledHint: `灯珠数已改；布局写回失败（${resultText(result.ack.resultCode)}）`,
+        });
+        return;
+      }
+      if (result.kind === "error") {
+        this.patchStripRow(stripId, { ledHint: `灯珠数已改；布局写回失败（${result.message}）` });
       }
     } catch (err) {
-      this.patchStripRow(stripId, { ledHint: `灯珠数已改；分区写回失败（${errorText(err)}）` });
+      this.patchStripRow(stripId, {
+        ledHint: `灯珠数已改；布局写回失败（${errorText(err)}）`,
+      });
     }
   },
 

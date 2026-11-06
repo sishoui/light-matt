@@ -926,52 +926,33 @@ describe("最小块宽与标签阈值", () => {
   });
 });
 
-describe("渲染层：时间轴永不横向滚动（#76）", () => {
+describe("页面只是单元的调用方（#154 判据：规则只有一份）", () => {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const wxml = readFileSync(join(ROOT, "pages/strip/strip.wxml"), "utf8");
-  /* 去掉注释再断言：说明文字里出现同名 token 不该让规则变假 / 变假绿。 */
-  const wxss = readFileSync(join(ROOT, "pages/strip/strip.wxss"), "utf8").replace(
-    /\/\*[\s\S]*?\*\//g,
-    "",
-  );
+  const page = readFileSync(join(ROOT, "pages/part/part.ts"), "utf8");
 
-  /** 取一个选择器的声明块（第一个匹配）。 */
-  function rule(selector: string): string {
-    const index = wxss.indexOf(selector);
-    expect(index, `wxss 里找不到 ${selector}`).toBeGreaterThanOrEqual(0);
-    const open = wxss.indexOf("{", index);
-    const close = wxss.indexOf("}", open);
-    return wxss.slice(open + 1, close);
-  }
-
-  it("时间轴不再套 scroll-view，也没有 scroll-x 绑定", () => {
-    expect(wxml).not.toContain("timeline-scroll");
-    expect(wxml).not.toContain("scroll-x");
+  it("页面不自己调 layoutBlocks / timelineRowWidth / chooseGap", () => {
+    expect(page).not.toContain("layoutBlocks(");
+    expect(page).not.toContain("timelineRowWidth(");
+    expect(page).not.toContain("chooseGap(");
   });
 
-  it("行宽不内联成像素：块宽由 flex 像素决定，行恒为 100%", () => {
-    expect(wxml).not.toContain("timelineRowStyle");
-    expect(wxml).not.toContain("timelineScrollable");
-    expect(wxml).toContain('class="timeline-row {{timelineCompact');
-    expect(rule(".timeline-row")).toMatch(/width:\s*100%/);
+  it("渲染与改时长都经单元（timelineUnitView / applyTimelineDuration）", () => {
+    expect(page).toContain("timelineUnitView(");
+    expect(page).toContain("applyTimelineDuration(");
+    expect(page).toContain("selectTimelineStep(");
+    expect(page).toContain("setTimelineDuration(");
   });
 
-  it("wxss 的间隙与时间轴的 8px / 4px 降级一致", () => {
-    expect(rule(".timeline-row")).toMatch(/gap:\s*8px/);
-    expect(rule(".timeline-row.compact")).toMatch(/gap:\s*4px/);
-    expect(BLOCK_GAP_PX).toBe(8);
-    expect(COMPACT_BLOCK_GAP_PX).toBe(4);
-  });
-
-  it("块本身不写 min-width：宽度以页面算出的像素为唯一真相", () => {
-    expect(rule(".timeline-block")).not.toMatch(/min-width/);
+  it("块的内联样式来自单元算出的 flex，页面不拼像素", () => {
+    expect(page).not.toContain("flex: ");
+    expect(page).not.toContain("widthPx +");
   });
 });
 
-describe("渲染层：拖动有位移样式、松手后顺序真的变（#82）", () => {
+describe("渲染层：时间轴的块来自单元输出（不再自己拼几何）", () => {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  const wxml = readFileSync(join(ROOT, "pages/strip/strip.wxml"), "utf8");
-  const wxss = readFileSync(join(ROOT, "pages/strip/strip.wxss"), "utf8").replace(
+  const wxml = readFileSync(join(ROOT, "pages/part/part.wxml"), "utf8");
+  const wxss = readFileSync(join(ROOT, "pages/part/part.wxss"), "utf8").replace(
     /\/\*[\s\S]*?\*\//g,
     "",
   );
@@ -985,30 +966,25 @@ describe("渲染层：拖动有位移样式、松手后顺序真的变（#82）"
     return wxss.slice(open + 1, close);
   }
 
-  /** 顶格方法体（两空格缩进的方法定义到下一个方法）。 */
-  function handlerBody(src: string, name: string): string {
-    const start = new RegExp(`\\n {2}(?:async\\s+)?${name}\\s*\\(`).exec(src);
-    if (start === null) {
-      return "";
-    }
-    const from = start.index + 1;
-    const next = /\n {2}(?:async\s+)?[A-Za-z_$][\w$]*\s*\(/g;
-    next.lastIndex = from + 1;
-    const match = next.exec(src);
-    return src.slice(from, match === null ? src.length : match.index);
-  }
-
-  const ts = readFileSync(join(ROOT, "pages/strip/strip.ts"), "utf8");
-
-  it("块内联了拖动位移串（item.dragStyle）", () => {
-    expect(wxml).toContain("style=\"{{item.style}}{{item.dragStyle}}\"");
+  it("时间轴没有 scroll-view，也没有 scroll-x 绑定（永不横向滚动）", () => {
+    expect(wxml).not.toContain("scroll-view");
+    expect(wxml).not.toContain("scroll-x");
   });
 
-  it("被拖的块抬高：z-index / 投影 / 同一条 transform 里的放大", () => {
-    const dragging = rule(".timeline-block.dragging");
-    expect(dragging).toMatch(/z-index:\s*[1-9]/);
-    expect(dragging).toMatch(/box-shadow/);
-    /* 放大由页面写进内联 transform（内联会覆盖 CSS 的 transform）。 */
+  it("行宽恒为 100%，块宽全部来自单元给的内联 style", () => {
+    expect(rule(".timeline-row")).toMatch(/width:\s*100%/);
+    expect(wxml).toContain('class="timeline-row"');
+    expect(wxml).toContain('style="{{item.style}}"');
+  });
+
+  it("块间隙与时间轴的 8px 常量一致", () => {
+    expect(rule(".timeline-row")).toMatch(/gap:\s*8px/);
+    expect(BLOCK_GAP_PX).toBe(8);
+  });
+});
+
+describe("拖动位移直接进视图（单元派生，页面不复算）", () => {
+  it("被拖块在同一条内联 transform 里抬起头与跟手位移", () => {
     const views = layoutBlocks([step(1000), step(1000)], {
       widthPx: 2 * 100 + BLOCK_GAP_PX,
       dragIndex: 0,
@@ -1017,76 +993,14 @@ describe("渲染层：拖动有位移样式、松手后顺序真的变（#82）"
     expect(views[0].dragStyle).toContain("scale(1.06)");
   });
 
-  it("让位只走 transform，不改布局属性（小程序里 flex 重排动画不稳）", () => {
-    /* transition 只覆盖 transform / box-shadow：出现 width / flex / margin 就是布局动画。 */
-    const transitioned = rule(".timeline-block").match(/transition:\s*([^;]+);/);
-    expect(transitioned).not.toBeNull();
-    expect(transitioned![1]).toMatch(/transform/);
-    expect(transitioned![1]).not.toMatch(/\b(width|flex|margin|padding|left|top)\b/);
-  });
-
-  it("落点块高亮描边", () => {
-    expect(rule(".timeline-block.drop-target")).toMatch(/box-shadow/);
-    expect(wxml).toContain("item.dropTarget ? 'drop-target'");
-  });
-
-  it("页面不做位移算术：跟手与落点都来自纯函数", () => {
-    const move = handlerBody(ts, "onStepTouchMove");
-    expect(move).toContain("dragFollowOffset(");
-    expect(move).toContain("dragTargetAtRects(");
-    /* 位移不许在页面里自己加减（出现 translateX 拼串就是两套真相）。 */
-    expect(move).not.toContain("translateX");
-    expect(move).not.toContain("clientX -");
-  });
-
-  it("松手提交顺序：moveStepStage + selectionAfterMove", () => {
-    const end = handlerBody(ts, "onStepTouchEnd");
-    expect(end).toContain("moveStepStage(");
-    expect(end).toContain("selectionAfterMove(");
-    expect(end).toContain("this.setDraft(moved)");
-  });
-
-  it("原地 / 拖出时间轴都不改顺序", () => {
-    const end = handlerBody(ts, "onStepTouchEnd");
-    expect(end).toContain("from === to || outside");
-    /* 清状态走 resetDragState（漏字段会让块停在半路）。 */
-    expect(end).toContain("this.resetDragState()");
-    /* 取消分支渲染提示并 return，不落到提交顺序的代码。 */
-    const cancel = end.slice(end.indexOf("from === to || outside"), end.indexOf("moveStepStage("));
-    expect(cancel).toContain("return;");
-  });
-
-  it("拖动结束后抑制紧跟的 tap（handleTap 检查抑制窗口）", () => {
-    const tap = handlerBody(ts, "onStepTap");
-    expect(tap).toContain("tapSuppressedAt(");
-    const end = handlerBody(ts, "onStepTouchEnd");
-    expect(end).toContain("dragTapSuppressUntil(");
-  });
-
-  it("长按阈值 300ms（不再等 380ms）", () => {
-    const start = handlerBody(ts, "onStepTouchStart");
-    expect(start).toContain("LONG_PRESS_MS");
-    expect(LONG_PRESS_MS).toBe(300);
-  });
-
-  it("提交那一帧关过渡，避免「换过内容的块」飞回去", () => {
-    const end = handlerBody(ts, "onStepTouchEnd");
-    expect(end).toContain("timelineSettling: true");
-    expect(end).toContain("timelineSettling: false");
-    expect(wxml).toContain("timelineSettling ? 'settling'");
-    expect(rule(".timeline-row.settling .timeline-block")).toMatch(/transition:\s*none/);
-  });
-
-  it("拖动中只重画块，不重算分区轴与面板（`touchmove` 每秒几十次）", () => {
-    const move = handlerBody(ts, "onStepTouchMove");
-    expect(move).toContain("this.renderDragBlocks()");
-    expect(move).not.toContain("this.renderTimeline(");
-  });
-
-  it("拖动状态在页面隐藏 / 卸载时清掉（回来时不该有块浮在半空）", () => {
-    for (const name of ["onHide", "onUnload"]) {
-      expect(handlerBody(ts, name)).toContain("this.resetDragState()");
-    }
+  it("落点块被标出，被拖块自己不算落点", () => {
+    const views = layoutBlocks([step(1000), step(1000), step(1000)], {
+      widthPx: 3 * 100 + BLOCK_GAP_PX * 2,
+      dragIndex: 0,
+      dropIndex: 2,
+    });
+    expect(views[0].dropTarget).toBe(false);
+    expect(views[2].dropTarget).toBe(true);
   });
 });
 

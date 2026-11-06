@@ -41,8 +41,6 @@ import {
   type TimelineBlockView,
   type TimelineStep,
 } from "./timeline";
-import { setStageDurationMs, stageDurationMs } from "./advanced-draft";
-import type { ScriptDraft } from "./script-view";
 
 /** 一次长按拖动的进行态。 */
 export interface TimelineDragState {
@@ -395,28 +393,30 @@ export function setTimelineDuration(
 }
 
 /**
- * 时长条的值（秒）→ 目标步骤的新草稿。
+ * 时长条的值（秒）→ 目标步骤的新列表。
  *
- * 页面手里的模型是 `ScriptDraft`（时长在草稿里是字符串），所以「秒 → 草稿」
- * 这一步也留在这里，别让页面自己写一遍 `seconds * 1000`。
+ * 页面的时长条给的是**秒**（滑块 0.1–60 秒），模型里存的是**毫秒**，所以
+ * 「秒 → 毫秒」这一步留在这里，别让页面自己写一遍 `seconds * 1000`。
  *
- * 三条规则只在这一份里：非有限值不动、钳到 0.5–30 秒、没变化返回原对象
- * （引用相等 = 什么都不用刷新）。真机滑块可能给出 0.4999 这种值。
+ * 三条规则只在这一份里：非有限值不动、钳到协议区间（100ms–60s）、没变化
+ * 返回原数组（引用相等 = 什么都不用刷新）。真机滑块可能给出 0.4999 这种值。
  */
 export function applyTimelineDuration(
-  draft: ScriptDraft,
+  steps: readonly TimelineStep[],
   stepIndex: number,
   seconds: number,
-): ScriptDraft {
-  const stage = draft.stages[stepIndex];
-  if (stage === undefined || !Number.isFinite(seconds)) {
-    return draft;
+): TimelineStep[] {
+  if (!Number.isFinite(seconds)) {
+    return steps as TimelineStep[];
   }
-  return setStageDurationMs(draft, stepIndex, seconds * 1000);
+  return setTimelineDuration(steps, stepIndex, seconds * 1000);
 }
 
 /** 某一步当前的时长（毫秒，已钳位）；越界下标给默认 1 秒。 */
-export function timelineStepDurationMs(draft: ScriptDraft, stepIndex: number): number {
-  const stage = draft.stages[stepIndex];
-  return stage === undefined ? DEFAULT_STEP_MS : stageDurationMs(stage);
+export function timelineStepDurationMs(
+  steps: readonly TimelineStep[],
+  stepIndex: number,
+): number {
+  const step = steps[stepIndex];
+  return step === undefined ? DEFAULT_STEP_MS : clampDuration(step.durationMs);
 }

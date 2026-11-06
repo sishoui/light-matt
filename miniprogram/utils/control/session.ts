@@ -37,7 +37,7 @@ import {
   type LinkDetail,
   type SendOptions,
 } from "../ble/transport";
-import { AckRejectedError, errorText, resultText, triage } from "../ble/errors";
+import { errorText, resultText, triage } from "../ble/errors";
 import { WxCallError } from "../ble/wx-promise";
 import {
   applyLocalBrightness,
@@ -64,53 +64,36 @@ import {
   type RecentDevice,
 } from "./device-history";
 import { LED_COUNT_ACK_TIMEOUT_MS } from "./ledCount";
-import { MAX_LEDS, MAX_SCRIPTS, MAX_STRIPS, MIN_LEDS, RESULT, type LoopMode } from "../protocol/constants";
+import { MAX_LEDS, MAX_SCENES, MAX_STRIPS, MIN_LEDS, RESULT } from "../protocol/constants";
 import type { UsageLogSink } from "../usage/logger";
 import {
-  breathingSegment,
-  cmdActivateScript,
-  cmdClearScript,
-  cmdClearSegment,
+  buildSceneReport,
+  cmdActivateScene,
+  cmdLayoutCommit,
+  cmdLayoutPart,
+  cmdLayoutSeg,
+  cmdLayoutWrite,
   cmdQueryState,
-  cmdScriptAbort,
+  cmdSceneName,
+  cmdScenePart,
+  cmdSceneStep,
   cmdSelfTest,
   cmdSetBrightness,
   cmdSetLedCount,
-  cmdSetPlayback,
   cmdSetPower,
-  cmdSetSegment,
   cmdSetStripPower,
-  cometSegment,
-  rainbowSegment,
-  type ScriptSummary,
 } from "../protocol/commands";
-import { specFromReport, toFlat } from "../protocol/segment-shapes";
-import { rgbToHsv } from "../color/hsv";
-import {
-  buildAbort,
-  buildScriptPlan,
-  checkScriptCapacity,
-  scriptProgressView,
-  validateScript,
-  type ScriptCapacityCheck,
-  type ScriptConfig,
-  type ScriptPlanOptions,
-  type ScriptProgressView,
-  type ScriptValidation,
-} from "./script-plan";
 import type {
   AckResult,
   CommandRequest,
   DeviceInfo,
   DeviceState,
   DiscoveredDevice,
+  LayoutPart,
+  LayoutReadback,
   LinkState,
-  RGB,
-  SegmentConfig,
-  SegmentListEnd,
-  SegmentReport,
-  SegmentSpec,
-  SegmentTarget,
+  SceneReport,
+  SceneStep,
   StripConfig,
 } from "../protocol/types";
 import {
@@ -130,33 +113,12 @@ export { DEVICE_CACHE_KEY, detectDevMode, detectPlatform };
 export type { CachedDevice, SessionStorage };
 
 /**
- * 连续量通道（20Hz latest-wins）。**亮度与段颜色共用同一个闸门**：
- * 两条各自 20Hz 会叠成 40Hz，BLE 写入串行化会被拖慢（docs/ble-notes.md）。
- * 两帧都是绝对值命令，互相覆盖的语义安全——最后一帧决定最终观感。
- */
-export type ContinuousUpdate =
-  | { kind: "brightness"; value: number }
-  | { kind: "color"; target: SegmentTarget; hue: number; sat: number };
-
-/**
- * 「改色」用的已读回段 spec（#48）。
+ * 连续量通道（20Hz latest-wins）。
  *
- * 为什么需要：段是**两层 + blend** 的线上形状，只改颜色的局部修改必须基于
- * 设备读回的完整 `SegmentSpec`。拿不到就报错，**绝不用扁平默认 spec 覆盖**。
+ * v5 只剩亮度一条连续量：颜色不再逐帧下发（灯效的参数编辑走离散的
+ * SceneStep，一次一步，不需要 20Hz 闸门）。
  */
-type SpecResolve =
-  | { kind: "ok"; spec: SegmentSpec }
-  | { kind: "error"; message: string };
-
-/**
- * 段命令的专用结果。段配置不在 State 里，所以成功时不返回 DeviceState，
- * 而是返回设备权威的段列表（由 QueryStrip 读回）。
- */
-export type SegmentResult =
-  | { kind: "ok"; reports: SegmentReport[]; end: SegmentListEnd }
-  | { kind: "ack-error"; ack: AckResult }
-  | { kind: "stale" }
-  | { kind: "error"; message: string };
+export type ContinuousUpdate = { kind: "brightness"; value: number };
 
 /**
  * 会话当前操作的灯带（App 级状态，#41）。
@@ -206,53 +168,39 @@ export type CommandResult =
 /** #9 起沿用的名字；与 CommandResult 完全等价。 */
 export type PowerResult = CommandResult;
 
-/** SetPlayback 的 action（docs/protocol-v3.md §9.6）。 */
-export type PlaybackAction = 0 | 1 | 2;
-
 /**
- * 剧本命令的结果（#32 / #45）。
+ * 布局读回的结果（QueryLayout 0x24）。
  *
- * 与 CommandResult 的区别：多了 `invalid`（本端预检就没过，一帧都没发）、
- * `too-large`（设备回 ScriptTooLarge；配置未变，文案已含「未保存」），
- * 以及成功时不强求 DeviceState（读回失败也不该让下发看起来失败）。
+ * 失败时仍带上已读到的部分（`parts` 的前缀）：页面可以只灰掉读不到的
+ * 那几个部位，而不是整块清空。
  */
-export type ScriptResult =
-  | { kind: "ok"; plan?: unknown; state?: DeviceState | null }
-  | { kind: "invalid"; message: string }
-  | { kind: "too-large"; message: string }
-  | { kind: "ack-error"; ack: AckResult }
+export type LayoutResult =
+  | { kind: "ok"; layout: LayoutReadback }
   | { kind: "stale" }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string; layout?: LayoutReadback };
 
 /**
- * ClearScript 的结果（#83）。
+ * 场景读回的结果（QueryScene 0x29）。
  *
- * 与 `ScriptResult` 同形但**去掉了 `invalid` / `too-large`**：清空没有「剧本
- * 太大」这回事，非法编号在构造器里就被拦成 `error`。页面因此可以安全地读
- * `ok` 分支的 `state`（清掉的若是激活方案，设备已停播并退回「无激活剧本」）。
+ * 同 `LayoutResult`：失败时把已读到的部位 / 步骤带回来。
  */
-export type ClearScriptResult =
+export type SceneResult =
+  | { kind: "ok"; scene: SceneReport }
+  | { kind: "stale" }
+  | { kind: "error"; message: string; scene?: SceneReport };
+
+/**
+ * 布局 / 场景写命令的结果。
+ *
+ * `storage` 单独一支：设备回 StorageFailed 表示**落盘失败但 RAM 已改**
+ * （layout 例外——commit 失败时 RAM 保留），页面要提示「已生效但未保存」。
+ */
+export type EditResult =
   | { kind: "ok"; state?: DeviceState | null }
+  | { kind: "storage"; message: string }
   | { kind: "ack-error"; ack: AckResult }
   | { kind: "stale" }
   | { kind: "error"; message: string };
-
-/** QueryScript 的结果（ScriptSummary 是设备权威）。 */
-export type ScriptSummaryResult =
-  | { kind: "ok"; summary: ScriptSummary }
-  | { kind: "stale" }
-  | { kind: "error"; message: string };
-
-/**
- * 4 个剧本槽位的摘要读回结果。
- *
- * 失败时仍带上已读到的部分（`summaries` 的前缀）：页面可以只灰掉读不到的
- * 那几张卡片，而不是整块清空。
- */
-export type ScriptSummariesResult =
-  | { kind: "ok"; summaries: ScriptSummary[] }
-  | { kind: "stale" }
-  | { kind: "error"; message: string; summaries: ScriptSummary[] };
 
 /** QueryStripConfig 的结果（0x87 是设备权威，只读）。 */
 export type StripConfigResult =
@@ -271,17 +219,13 @@ const DEFAULT_RETRY_AFTER_GAP_MS = 500;
 /**
  * 改某条灯带的灯珠数（本地镜像）。
  *
- * 同时维护派生字段 `ledCount`（= strip 0 的值），这样 #41 之前的页面继续读
- * `state.ledCount` 时看到的仍是设备真实值。
+ * v5 的 State 里 `stripLedCounts` 就是权威字段（逐条数组），没有派生字段
+ * 要维护——`DeviceState` 不再有 `ledCount` / `segCount`。
  */
 function applyStripLedCount(state: DeviceState, stripId: number, count: number): DeviceState {
-  const stripCounts = state.stripCounts.slice();
-  stripCounts[stripId] = count;
-  return {
-    ...state,
-    stripCounts,
-    ...(stripId === 0 ? { ledCount: count } : {}),
-  };
+  const stripLedCounts = state.stripLedCounts.slice();
+  stripLedCounts[stripId] = count;
+  return { ...state, stripLedCounts };
 }
 
 /**
@@ -294,31 +238,19 @@ function applyStripPower(state: DeviceState, stripId: number, on: boolean): Devi
   return { ...state, stripPowerMask: mask };
 }
 
-/**
- * 改色的纯函数核心（#48）：拿已读回的完整 spec，**只换 layer0 的 hue / sat**。
- *
- * 明确保留：layer0 的 type / periodMs / p5 / flags、layer1 的整个对象、
- * blend 字节。这正是本票要锁住的不变量——把「彩虹 × 呼吸（相乘）」改成任意
- * 颜色后，第二层与混合模式必须字节级不变。
- *
- * 层对象一律返回新副本：spec 会被反复读写，共享引用会引入别名 bug。
- */
-function recolorLayer0(spec: SegmentSpec, hue: number, sat: number): SegmentSpec {
-  return {
-    ...spec,
-    layer0: { ...spec.layer0, hue, sat },
-    layer1: { ...spec.layer1 },
-  };
-}
-
 const defaultTimer: TimerApi = {
   setTimeout: (fn, ms) => setTimeout(fn, ms),
   clearTimeout: (handle) => clearTimeout(handle),
 };
 
-/** 8 个空段列表（逐带缓存初值，与 MAX_STRIPS 对齐）。 */
-function emptyStripCache(): SegmentReport[][] {
-  return Array.from({ length: MAX_STRIPS }, () => []);
+/** 8 个空布局读回（逐带缓存初值，与 MAX_STRIPS 对齐）。 */
+function emptyLayoutCache(): Array<LayoutReadback | null> {
+  return Array.from({ length: MAX_STRIPS }, () => null);
+}
+
+/** 3 个空场景读回（与 MAX_SCENES 对齐）。 */
+function emptySceneCache(): Array<SceneReport | null> {
+  return Array.from({ length: MAX_SCENES }, () => null);
 }
 
 function delayWith(timer: TimerApi, ms: number): Promise<void> {
@@ -333,8 +265,6 @@ export class ControlSession {
   private latestState: DeviceState | null = null;
   /** 亮度 0 时开灯，用最近一次非 0 亮度恢复（#9）。 */
   private lastNonZeroBrightness = 128;
-  /** 颜色控件的当前目标段（页面在选中/新建段时设置）。 */
-  private defaultSegment: SegmentTarget | null = null;
   /** v3：当前操作哪条灯带（#41 的灯带切换器会调 `setActiveStripId`）。 */
   private activeStrip = DEFAULT_ACTIVE_STRIP_ID;
   /** v3：最近一次 QueryStripConfig 的结果（§9.1 第 2 步）。 */
@@ -342,20 +272,15 @@ export class ControlSession {
   /** v3：最近一次 QueryDeviceInfo 的结果（§9.1 第 3 步）。 */
   private deviceInfoCache: DeviceInfo | null = null;
   /**
-   * 最近一次成功下发的方案内容（#123）。
+   * 逐带布局缓存（§9.1 第 3 步，`QueryLayout(i)` 按需）。
    *
-   * 测试用它断言「方案里到底含哪几条灯组」——这是「不补齐其它灯组」唯一
-   * 可观察的地方（设备侧读不回方案内容，只有 4 字节摘要）。也供调试面板展示。
+   * 下标 = stripId。功能上只做「同一条带重复读不必等」的加速——**每次切带
+   * 仍以设备为准**，页面要最新值就调 `queryLayout`。断线必须整体清空：
+   * 它描述的是上一台 / 上一次连接。
    */
-  lastDownloadedScript: ScriptConfig | null = null;
-  /**
-   * v3：逐带段列表缓存（§9.1 第 4 步，`QueryStrip(i)` 按需）。
-   *
-   * 下标 = stripId，元素是该带上一次读回的 SegmentReport。功能上只做「同一
-   * 条带重复读不必等」的加速——**每次切带仍以设备为准**，页面要最新值就调
-   * `queryStrip`。断线必须整体清空：它描述的是上一台 / 上一次连接。
-   */
-  private segmentsByStrip: SegmentReport[][] = emptyStripCache();
+  private layoutsByStrip: Array<LayoutReadback | null> = emptyLayoutCache();
+  /** 逐场景的最近读回（QueryScene 是「三个场景只读当前那个」，§9.1 第 4 步）。 */
+  private scenesById: Array<SceneReport | null> = emptySceneCache();
   /**
    * 「设备增强信息（引脚表 / 设备身份）已读完」的订阅者。
    *
@@ -364,16 +289,6 @@ export class ControlSession {
    * 页面收到后自己读 `stripConfigs` / `deviceInfo`。
    */
   private readonly deviceConfigListeners: Array<() => void> = [];
-  /**
-   * 「改色读回失败」的提示订阅者（#48）。
-   *
-   * 节流通道是 fire-and-forget，没有可 await 的结果，页面只能靠这条通知弹出
-   * 「读不回段配置，未下发」——绝不让一次失败的改色看起来像成功。
-   */
-  private readonly segmentHintListeners: Array<(message: string) => void> = [];
-  /** 上一次已提示的段提示文案（同一句不重复刷屏）。 */
-  private lastSegmentHint: string | null = null;
-
   private readonly retryAfterGapMs: number;
   /** 10008 间隔重试的计时器：与回连退避共用同一个注入实例。 */
   private readonly reconnectTimer: TimerApi;
@@ -472,17 +387,12 @@ export class ControlSession {
      */
     this.throttle = new LatestWinsThrottle<ContinuousUpdate>(
       (update) => {
-        if (update.kind === "brightness") {
-          return this.transport.write(cmdSetBrightness(update.value)).then(
-            () => undefined,
-            (err) => {
-              this.reconnect.handleCommandFailure(err);
-            },
-          );
-        }
-        /* #48：颜色帧也必须走「读回的完整 spec + 只改 layer0 色相/饱和度」，
-         * 否则连续拖动会把两层的段降级成单层。 */
-        return this.writeRecoloredFrame(update.target, update.hue, update.sat);
+        return this.transport.write(cmdSetBrightness(update.value)).then(
+          () => undefined,
+          (err) => {
+            this.reconnect.handleCommandFailure(err);
+          },
+        );
       },
       opts.throttleTimer !== undefined ? { timer: opts.throttleTimer } : {},
     );
@@ -537,24 +447,6 @@ export class ControlSession {
   /** 是否还有未完成的自动回连意图（UI/测试可观察）。 */
   get reconnectPending(): boolean {
     return this.reconnect.pending;
-  }
-
-  /** 颜色控件的当前目标段（未选中 / 没有段时为 null）。 */
-  get activeSegment(): SegmentTarget | null {
-    return this.defaultSegment === null ? null : { ...this.defaultSegment };
-  }
-
-  /**
-   * 设置颜色控件的目标段。页面在「选中某段」或「新建区间」时调用；
-   * 传 null 表示当前没有可写的段（颜色控件应给提示而不是假装成功）。
-   */
-  setActiveSegment(target: SegmentTarget | null): void {
-    this.defaultSegment = target === null ? null : { ...target };
-  }
-
-  /** 目标段的兼容别名（内部使用）。 */
-  private get defaultSegmentTarget(): SegmentTarget | null {
-    return this.defaultSegment === null ? null : { ...this.defaultSegment };
   }
 
   /** 进页面：只打开适配器；有 deviceId 缓存时由 onShow 触发静默回连。 */
@@ -934,13 +826,11 @@ export class ControlSession {
       if (this.latestState !== null) {
         this.latestState = applyStripLedCount(this.latestState, stripId, count);
       }
-      /* 数量变化可能让设备裁掉越界的段（§9.2）：该带缓存作废。 */
-      if (this.segmentsByStrip[stripId] !== undefined) {
-        this.segmentsByStrip[stripId] = [];
-      }
+      /* 数量变化会让设备裁掉越界的段（§6.1）：该带的布局缓存作废。 */
+      this.layoutsByStrip[stripId] = null;
       return {
         kind: "ok",
-        state: this.latestState ?? fallbackState({ r: 0, g: 0, b: 0 }),
+        state: this.latestState ?? fallbackState(),
       };
     } catch (err) {
       return { kind: "error", message: errorText(err) };
@@ -960,286 +850,6 @@ export class ControlSession {
   /** 调试兜底：QueryState（次要路径，主路径是 State read）。 */
   async queryState(): Promise<AckResult> {
     return this.sendCommand(cmdQueryState());
-  }
-
-  /* ---------------- #32 剧本 ---------------- */
-
-  /**
-   * 下发一套剧本并（默认）激活它。
-   *
-   * 帧序由 script-plan 的纯函数决定（Begin → Stage/Segment… → Commit →
-   * Activate）。这里只负责逐帧发送与失败处理：
-   *
-   *  - 容量预检在**发第一帧之前**（§10.4）：预估持久化字节超过 16KB 直接
-   *    返回 `invalid`，一帧都不发——绝不等设备报到 Commit 才回 0x0A；
-   *  - 任何一帧 ACK 非零 → 立即 ScriptAbort 丢弃设备暂存，**旧剧本保持可用**
-   *    （设备侧 commit 才替换，这是协议保证的，也是本函数的前提）；
-   *  - `ScriptTooLarge (0x0A)`（预检漏了的合并超限）折成 `too-large`，
-   *    文案明确「设备配置未改变」，不让用户以为半套生效了；
-   *  - 传输异常 → 同样尝试 Abort（尽力而为，链路已断时它会失败，无所谓：
-   *    设备上没 commit 的暂存不会被激活）。
-   *
-   * `onProgress` 以**每帧 ACK** 为权威（§10.4）；设备侧的 0x86 只是旁证，
-   * 由 transport 的 onScriptProgress 单独广播，不参与这里的计数。
-   */
-  async downloadScript(
-    script: ScriptConfig,
-    opts: ScriptPlanOptions = {},
-    onProgress?: (view: ScriptProgressView) => void,
-  ): Promise<ScriptResult> {
-    if (this.transport.linkState !== "ready") {
-      return { kind: "error", message: "设备未连接" };
-    }
-
-    const validation = this.validateScriptForDevice(script);
-    if (!validation.ok) {
-      return { kind: "invalid", message: validation.message };
-    }
-
-    /* 容量预检：按与固件 encode 相同的公式预估，超限直接拒发（§10.4）。 */
-    const capacity = checkScriptCapacity([script]);
-    if (!capacity.ok) {
-      return { kind: "invalid", message: capacity.message };
-    }
-
-    const plan = buildScriptPlan(script, opts);
-    const requests = plan.steps.map((step) => step.request);
-    const epoch = this.reconnect.epoch;
-    onProgress?.(scriptProgressView(plan, 0));
-
-    try {
-      await this.transport.sendSequence(requests, (done) => {
-        onProgress?.(scriptProgressView(plan, done));
-      });
-    } catch (err) {
-      /* 尽力丢弃暂存：绝不让设备停在半套状态（它本来也不会，但暂存会占着）。 */
-      try {
-        await this.transport.sendAndWaitAck(buildAbort(script.scriptId));
-      } catch {
-        /* 链路已断：暂存不 commit 就不会生效，可以忽略。 */
-      }
-      if (this.reconnect.isStale(epoch)) {
-        return { kind: "stale" };
-      }
-      /*
-       * 设备明确拒绝：0x0A 是「编码后装不下」，必须单独说清楚——预检是按
-       * 单套算的，4 个槽位共享 16KB，合并超限只有设备知道。
-       */
-      if (err instanceof AckRejectedError) {
-        if (err.resultCode === RESULT.SCRIPT_TOO_LARGE) {
-          return { kind: "too-large", message: resultText(err.resultCode) };
-        }
-        return { kind: "error", message: errorText(err) };
-      }
-      return { kind: "error", message: errorText(err) };
-    }
-
-    if (this.reconnect.isStale(epoch)) {
-      return { kind: "stale" };
-    }
-    onProgress?.(scriptProgressView(plan, plan.frameCount));
-    /* #123：记下真正发出去的方案内容，供断言「方案里含哪几条灯组」。 */
-    this.lastDownloadedScript = script;
-    /* 激活成功：把设备权威的 State 读回来（script_id / flags 已经变了）。 */
-    const state = await this.refreshState().catch(() => this.latestState);
-    return { kind: "ok", plan, state: state ?? this.latestState };
-  }
-
-  /** 用设备侧灯珠数校验剧本（本端预检，让用户在发第一帧前就看到原因）。 */
-  validateScriptForDevice(script: ScriptConfig): ScriptValidation {
-    const ledCounts = this.currentLedCounts();
-    return validateScript(script, ledCounts);
-  }
-
-  /**
-   * 本端的剧本容量预检（§10.4）。
-   *
-   * 只看**这一套**：设备上其它槽位的内容读不回来（QueryScript 只给摘要），
-   * 所以「4 套合计超限」只能在 Commit 时由设备发现，走 0x0A 文案。
-   */
-  scriptCapacityForDevice(script: ScriptConfig): ScriptCapacityCheck {
-    return checkScriptCapacity([script]);
-  }
-
-  /**
-   * 各条灯带的灯珠数（设备权威）。
-   *
-   * v3 的 State 逐带给出 `strip_counts[8]`，所以这里直接切前 strip_count 条，
-   * 不再像 v2 那样「其余条沿用 strip 0」。未连接时返回空数组：
-   * validateScript 对 `ledCount === 0` 会跳过上界检查（避免未连接时误拒）。
-   */
-  currentLedCounts(): number[] {
-    const state = this.latestState;
-    if (state === null) {
-      return [];
-    }
-    const strips = Math.max(1, Math.min(state.stripCount, MAX_STRIPS));
-    return state.stripCounts.slice(0, strips);
-  }
-
-  /**
-   * 播放控制（SetPlayback 0x13）。
-   *
-   *  - stop：播放头回 stage 0，画面回静态配置；
-   *  - play：从**当前播放头**继续（暂停后即继续，不从头）；
-   *  - pause：冻结播放头与画面。
-   *
-   * `loop` 三种 action 下都会写入（设备侧持久化，§10.5）。
-   */
-  async setPlayback(action: PlaybackAction, loop: LoopMode): Promise<ScriptResult> {
-    const epoch = this.reconnect.epoch;
-    try {
-      const ack = await this.sendCommand(cmdSetPlayback(action, loop));
-      if (this.reconnect.isStale(epoch)) {
-        return { kind: "stale" };
-      }
-      if (!ack.ok) {
-        return { kind: "ack-error", ack };
-      }
-      /* 播放状态在 State 字节 12，读回来让 UI 以设备为准。 */
-      const state = await this.refreshState().catch(() => this.latestState);
-      return { kind: "ok", state: state ?? this.latestState };
-    } catch (err) {
-      return { kind: "error", message: errorText(err) };
-    }
-  }
-
-  /**
-   * 切换到另一套已提交剧本（ActivateScript 0x19）；不自动播放。
-   *
-   * `loop` 是**三值**（#98）：0 不循环 / 1 全部循环 / 2 最后一步循环。
-   * 布尔只在下层编码器被折算，到这里必须已经是三值（#114）。
-   */
-  async activateScript(scriptId: number, loop: LoopMode): Promise<ScriptResult> {
-    const epoch = this.reconnect.epoch;
-    try {
-      const ack = await this.sendCommand(cmdActivateScript(scriptId, loop));
-      if (this.reconnect.isStale(epoch)) {
-        return { kind: "stale" };
-      }
-      if (!ack.ok) {
-        return { kind: "ack-error", ack };
-      }
-      const state = await this.refreshState().catch(() => this.latestState);
-      return { kind: "ok", state: state ?? this.latestState };
-    } catch (err) {
-      return { kind: "error", message: errorText(err) };
-    }
-  }
-
-  /** 丢弃设备侧的暂存（ScriptAbort 0x18）。 */
-  async abortScript(scriptId: number): Promise<ScriptResult> {
-    return this.sendScriptOnly(cmdScriptAbort(scriptId));
-  }
-
-  /**
-   * 真正从设备上清空一套已提交的方案（ClearScript 0x1E，#73 / #83）。
-   *
-   * 与「本机删草稿」是两件事：本机草稿由页面在**这里返回 ok 之后**才删，
-   * 所以设备拒绝时不会出现「本机没了但设备还在」的静默不一致（#83 的要求）。
-   *
-   * 越界的编号在构造器里就被拒绝（一帧都不发，返回 error）；设备侧的拒绝
-   * 原样带回 `ack-error`，页面的 `resultText` 给出人话原因。成功后读回 State：
-   * 清掉的若是激活方案，设备会退回「无激活剧本」并停播，UI 以设备为准。
-   *
-   * 未提交的编号视为成功（协议幂等），所以重复删除不会报错。
-   */
-  async clearScript(scriptId: number): Promise<ClearScriptResult> {
-    if (this.transport.linkState !== "ready") {
-      return { kind: "error", message: "设备未连接" };
-    }
-    const epoch = this.reconnect.epoch;
-    let request: CommandRequest;
-    try {
-      request = cmdClearScript(scriptId);
-    } catch (err) {
-      /* 非法编号不是设备错误：本地就拒绝，绝不发一帧。 */
-      return { kind: "error", message: errorText(err) };
-    }
-    try {
-      const ack = await this.sendCommand(request);
-      if (this.reconnect.isStale(epoch)) {
-        return { kind: "stale" };
-      }
-      if (!ack.ok) {
-        return { kind: "ack-error", ack };
-      }
-      /* 清掉的可能是激活方案（设备已停播）：读回 State 让 UI 跟着回落。 */
-      const state = await this.refreshState().catch(() => this.latestState);
-      return { kind: "ok", state: state ?? this.latestState };
-    } catch (err) {
-      if (this.reconnect.isStale(epoch)) {
-        return { kind: "stale" };
-      }
-      return { kind: "error", message: errorText(err) };
-    }
-  }
-
-  /**
-   * 查一套剧本的摘要（QueryScript 0x1A → ScriptSummary 0x85）。
-   * 重连重建 UI 的权威路径第 3 步（§10.1）。
-   *
-   * **只回摘要**：v3 没有「读回整份剧本」的命令，所以 stage_count / flags /
-   * active 之外拿不到任何内容（§10.4 的取舍）。页面必须把这个限制说清楚。
-   */
-  async queryScript(scriptId: number): Promise<ScriptSummaryResult> {
-    if (this.transport.linkState !== "ready") {
-      return { kind: "error", message: "设备未连接" };
-    }
-    const epoch = this.reconnect.epoch;
-    try {
-      const summary = await this.transport.queryScript(scriptId);
-      if (this.reconnect.isStale(epoch)) {
-        return { kind: "stale" };
-      }
-      return { kind: "ok", summary };
-    } catch (err) {
-      if (this.reconnect.isStale(epoch)) {
-        return { kind: "stale" };
-      }
-      return { kind: "error", message: errorText(err) };
-    }
-  }
-
-  /**
-   * 依次读回 4 个剧本槽位的摘要（连上 / 回到页面时刷新「设备上有什么」）。
-   *
-   * 一条失败不中断：把失败原因单独返回，页面仍能展示读到的那些槽位——
-   * 「部分读回」比「整块空白」有用，也不会把已确认的信息丢掉。
-   */
-  async queryScriptSummaries(): Promise<ScriptSummariesResult> {
-    if (this.transport.linkState !== "ready") {
-      return { kind: "error", message: "设备未连接", summaries: [] };
-    }
-    const summaries: ScriptSummary[] = [];
-    for (let scriptId = 0; scriptId < MAX_SCRIPTS; scriptId += 1) {
-      const result = await this.queryScript(scriptId);
-      if (result.kind === "ok") {
-        summaries.push(result.summary);
-      } else if (result.kind === "stale") {
-        return { kind: "stale" };
-      } else {
-        return { kind: "error", message: result.message, summaries };
-      }
-    }
-    return { kind: "ok", summaries };
-  }
-
-  /** 只有 ACK 没有后续帧的剧本命令的公共路径。 */
-  private async sendScriptOnly(request: CommandRequest): Promise<ScriptResult> {
-    const epoch = this.reconnect.epoch;
-    try {
-      const ack = await this.sendCommand(request);
-      if (this.reconnect.isStale(epoch)) {
-        return { kind: "stale" };
-      }
-      if (!ack.ok) {
-        return { kind: "ack-error", ack };
-      }
-      return { kind: "ok" };
-    } catch (err) {
-      return { kind: "error", message: errorText(err) };
-    }
   }
 
   /**
@@ -1265,7 +875,7 @@ export class ControlSession {
       }
       return {
         kind: "ok",
-        state: this.latestState ?? fallbackState({ r: 0, g: 0, b: 0 }, 0, 0),
+        state: this.latestState ?? fallbackState(0, 0),
       };
     } catch (err) {
       return { kind: "error", message: errorText(err) };
@@ -1320,465 +930,6 @@ export class ControlSession {
   }
 
   /**
-   * 色环拖动（连续量）——#25 起改为写入**选中段**的静态颜色。
-   *
-   * 为什么不走 20Hz 节流：段配置是离散命令（每帧一条 SetSegment，带完整的
-   * 区间 + 参数），设备侧是 O(1) 内存写；而且它没有「绝对值合并」之外的连续
-   * 语义（同段重复写只会覆盖自己）。但拖动会产生大量帧，所以这里**仍然**
-   * 复用 20Hz latest-wins 闸门，只是 sink 换成 SetSegment。
-   *
-   * rgb 是用户空间颜色（不做 gamma、不折亮度）。hue/sat 由调用方给出
-   * （色环本身就是 HSV，避免往返量化误差）；缺省时由 rgb 反推。
-   */
-  queueColor(rgb: RGB, target?: SegmentTarget): void {
-    this.pushSegmentColor(rgb, target, false);
-  }
-
-  /** 色环松手——同 queueColor，并立即 flush（保证最终颜色落地）。 */
-  commitColor(rgb: RGB, target?: SegmentTarget): void {
-    this.pushSegmentColor(rgb, target, true);
-  }
-
-  /**
-   * 预设点击——写入选中段的静态颜色（#25）。
-   *
-   * v1 的 SetAll 0x04 已退役；现在预设只是「给当前选中的段换个颜色」，
-   * 开关与亮度都不动（亮度是独立字段，见 protocol §7）。
-   */
-  async applyPreset(rgb: RGB, target?: SegmentTarget): Promise<CommandResult> {
-    const seg = target ?? this.defaultSegmentTarget;
-    if (seg === null) {
-      return { kind: "error", message: "请先新建一个灯珠区间" };
-    }
-    try {
-      const result = await this.setSegmentColor(seg, rgb);
-      if (result.kind !== "ok") {
-        return result;
-      }
-      return {
-        kind: "ok",
-        state: this.latestState ?? fallbackState({ r: rgb.r, g: rgb.g, b: rgb.b }),
-      };
-    } catch (err) {
-      return { kind: "error", message: errorText(err) };
-    }
-  }
-
-  /**
-   * 写一个静态段（#25 的主入口）：SetSegment + 等 ACK。
-   *
-   * 成功只代表「设备已接受并写入 RAM」；界面要显示权威段列表请用
-   * queryStrip()。失败区分 ACK（InvalidParam：重叠 / 越界 / 类型不支持）与
-   * 传输异常——前者要给用户明确原因，后者交给统一错误分诊。
-   */
-  async setSegment(
-    segment: SegmentSpec | SegmentConfig,
-    opts: SendOptions = {},
-  ): Promise<AckResult> {
-    const ack = await this.sendCommand(cmdSetSegment(segment), opts);
-    if (ack.ok) {
-      /* 写成功后缓存不再代表设备：清掉该带，逼页面重新 queryStrip。 */
-      const stripId = segment.stripId;
-      if (this.segmentsByStrip[stripId] !== undefined) {
-        this.segmentsByStrip[stripId] = [];
-      }
-    }
-    return ack;
-  }
-
-  /**
-   * 清一个段槽位（ClearSegment 0x11）。
-   *
-   * `stripId` 必填：段属于哪条带只有调用方（页面）知道。给缺省值等于把
-   * 第 3 条带上的删除偷偷写回第 0 条带——这是 #41 要消灭的缺陷。
-   */
-  async clearSegment(stripId: number, segId: number): Promise<AckResult> {
-    const ack = await this.sendCommand(cmdClearSegment(stripId, segId));
-    if (ack.ok) {
-      /* 清掉该带缓存里的这一格：读回值不再代表设备，宁可让页面重新 queryStrip。 */
-      if (this.segmentsByStrip[stripId] !== undefined) {
-        this.segmentsByStrip[stripId] = this.segmentsByStrip[stripId].filter(
-          (report) => report.segId !== segId,
-        );
-      }
-    }
-    return ack;
-  }
-
-  /**
-   * 读回某灯带的段列表（QueryStrip 0x12）：seg_count 条 SegmentReport +
-   * SegmentListEnd，同 seq 多帧。这是重连重建 UI 的权威路径
-   * （protocol-v3 §9.1 第 4 步）。
-   *
-   * `stripId` 必填：读哪条带是页面的决定，不是会话的缺省。
-   */
-  async queryStrip(stripId: number): Promise<SegmentResult> {
-    if (this.transport.linkState !== "ready") {
-      return { kind: "error", message: "设备未连接" };
-    }
-    const epoch = this.reconnect.epoch;
-    try {
-      const result = await this.transport.queryStrip(stripId);
-      if (this.reconnect.isStale(epoch)) {
-        return { kind: "stale" };
-      }
-      this.segmentsByStrip[stripId] = result.reports.map((report) => ({ ...report }));
-      return { kind: "ok", reports: result.reports, end: result.end };
-    } catch (err) {
-      if (this.reconnect.isStale(epoch)) {
-        return { kind: "stale" };
-      }
-      return { kind: "error", message: errorText(err) };
-    }
-  }
-
-  /**
-   * 某条灯带最近一次读回的段列表（设备权威的本地镜像）。
-   *
-   * 只反映「上一次 queryStrip 的结果」，不能当成实时状态：段配置不在 State
-   * 里，设备不会主动上报，页面在写操作后要自己再读。
-   */
-  segmentsOf(stripId: number): SegmentReport[] {
-    const cached = this.segmentsByStrip[stripId];
-    return cached === undefined ? [] : cached.map((report) => ({ ...report }));
-  }
-
-  /**
-   * 把选中段改成 rgb 并等 ACK——页面与预设共用的一条路径。
-   * 返回 ACK 结果（InvalidParam 表示设备拒绝了区间或与其它段重叠）。
-   *
-   * #48：**基于已读回的完整 spec 做局部修改**，只换 layer0 的 hue/sat；
-   * layer1 与 blend 原样保留（见 `recolorLayer0`）。
-   */
-  async setSegmentColor(target: SegmentTarget, rgb: RGB): Promise<SegmentResult> {
-    // 色环给的是 RGB；协议的静态参数是 hue+sat。用 HSV 反推（V 恒为 1）。
-    const [hue, sat] = this.segmentHueSat(rgb);
-    const resolved = await this.resolveSpec(target);
-    if (resolved.kind !== "ok") {
-      return { kind: "error", message: resolved.message };
-    }
-    return this.sendSegmentAwaitingAck(target, recolorLayer0(resolved.spec, hue, sat), {});
-  }
-
-  /**
-   * 把一个段改成呼吸灯效（#30）：SetSegment type=0x01 + 等 ACK。
-   *
-   * 呼吸参数是**绝对值**（不像色环那样节流）：周期 / 最暗亮度 / 波形都是
-   * 用户松手才提交的离散选择，走 sendCommand 等 ACK。设备拒绝时返回
-   * ack-error，页面据此提示原因（周期过短 / 保留位 / 区间冲突）。
-   *
-   * `rgb` 决定 hue+sat（呼吸的基准色）；`periodMs` / `minLevel` / `waveform`
-   * 是呼吸专属参数。periodMs = 0 表示「静止」。
-   */
-  async setSegmentBreathing(
-    target: SegmentTarget,
-    rgb: RGB,
-    periodMs: number,
-    minLevel: number,
-    waveform: number,
-    opts: SendOptions = {},
-  ): Promise<SegmentResult> {
-    const [hue, sat] = this.segmentHueSat(rgb);
-    return this.sendSegmentAwaitingAck(
-      target,
-      breathingSegment(
-        target.stripId,
-        target.segId,
-        target.start,
-        target.end,
-        hue,
-        sat,
-        periodMs,
-        minLevel,
-        waveform,
-      ),
-      opts,
-    );
-  }
-
-  /**
-   * 把一个段改成彩虹灯效（#31）：SetSegment type=0x02 + 等 ACK。
-   *
-   * `span` 是沿灯带的色相跨度（0 = 整条同色、255 = 铺满整圈）；
-   * `reverse` 让色相沿灯带递减。周期下限是 200ms（5Hz），比呼吸宽松。
-   */
-  async setSegmentRainbow(
-    target: SegmentTarget,
-    rgb: RGB,
-    periodMs: number,
-    span: number,
-    reverse = false,
-    opts: SendOptions = {},
-  ): Promise<SegmentResult> {
-    const [hue, sat] = this.segmentHueSat(rgb);
-    return this.sendSegmentAwaitingAck(
-      target,
-      rainbowSegment(
-        target.stripId,
-        target.segId,
-        target.start,
-        target.end,
-        hue,
-        sat,
-        periodMs,
-        span,
-        reverse,
-      ),
-      opts,
-    );
-  }
-
-  /**
-   * 把一个段改成流光灯效（#31）：SetSegment type=0x03 + 等 ACK。
-   *
-   * `tail` 是拖尾长度（0 = 硬边亮点、255 = 整条都是尾）；
-   * `reverse` 让亮点反向移动。
-   */
-  async setSegmentComet(
-    target: SegmentTarget,
-    rgb: RGB,
-    periodMs: number,
-    tail: number,
-    reverse = false,
-    opts: SendOptions = {},
-  ): Promise<SegmentResult> {
-    const [hue, sat] = this.segmentHueSat(rgb);
-    return this.sendSegmentAwaitingAck(
-      target,
-      cometSegment(
-        target.stripId,
-        target.segId,
-        target.start,
-        target.end,
-        hue,
-        sat,
-        periodMs,
-        tail,
-        reverse,
-      ),
-      opts,
-    );
-  }
-
-  /** 用户空间 RGB → 协议的 (hue 0-65535, sat 0-255)（四种灯效共用前缀）。 */
-  private segmentHueSat(rgb: RGB): [number, number] {
-    const hsv = rgbToHsv(rgb);
-    return [
-      Math.round((hsv.h / 360) * 0x10000) & 0xffff,
-      Math.round(hsv.s * 255),
-    ];
-  }
-
-  /**
-   * 动画类段的统一下发路径（#30/#31）：SetSegment + 等 ACK。
-   *
-   * 三类的差异只在装配好的 SegmentConfig，传输与结果分诊完全一致——
-   * 抽出来避免三份几乎相同的 reconnect.isStale / ack-error 分支漂移。
-   */
-  private async sendSegmentAwaitingAck(
-    target: SegmentTarget,
-    segment: SegmentSpec | SegmentConfig,
-    opts: SendOptions,
-  ): Promise<SegmentResult> {
-    if (this.transport.linkState !== "ready") {
-      return { kind: "error", message: "设备未连接" };
-    }
-    const epoch = this.reconnect.epoch;
-    try {
-      const ack = await this.setSegment(segment, opts);
-      if (this.reconnect.isStale(epoch)) {
-        return { kind: "stale" };
-      }
-      if (!ack.ok) {
-        return { kind: "ack-error", ack };
-      }
-      return { kind: "ok", reports: [], end: { stripId: target.stripId, segMask: 0 } };
-    } catch (err) {
-      return { kind: "error", message: errorText(err) };
-    }
-  }
-
-  /**
-   * 色环拖动 / 松手的统一入口（#25）：把用户空间 RGB 写进目标段的静态颜色。
-   *
-   * - 没有目标段：静默忽略（页面在 UI 上禁用颜色控件，这里只是兜底）。
-   * - 连续拖动：20Hz latest-wins；松手 flush 一次确保最终颜色落地。
-   * - 不做本地乐观更新：段配置不在 State 里，界面只显示「已选颜色」，
-   *   设备权威的段列表由 queryStrip 拉取。
-   */
-  private pushSegmentColor(rgb: RGB, target: SegmentTarget | undefined, commit: boolean): void {
-    const seg = target ?? this.defaultSegmentTarget;
-    if (seg === null || this.transport.linkState !== "ready") {
-      return;
-    }
-    const hsv = rgbToHsv(rgb);
-    this.throttle.push({
-      kind: "color",
-      target: seg,
-      hue: Math.round((hsv.h / 360) * 0x10000) & 0xffff,
-      // 饱和度用 0-255：协议 sat 的刻度（effects-spec §2.1）。
-      sat: Math.round(hsv.s * 255),
-    });
-    if (commit) {
-      this.throttle.flush();
-    }
-  }
-
-  /* ---------------- #48 改色的「读-改-写」 ---------------- */
-
-  /**
-   * 订阅「读回失败 / 目标段不存在」的提示（#48）。
-   *
-   * 为什么要有这条通道：节流通道（`queueColor` / `commitColor`）是 fire-and-forget
-   * 的连续量路径，没有 await 的结果可返回。读不回完整 spec 时既不能下发，也不能
-   * 静默吞掉——页面据此弹一次提示，避免用户以为改色生效了。
-   */
-  onSegmentHint(fn: (message: string) => void): () => void {
-    this.segmentHintListeners.push(fn);
-    return () => {
-      const index = this.segmentHintListeners.indexOf(fn);
-      if (index >= 0) {
-        this.segmentHintListeners.splice(index, 1);
-      }
-    };
-  }
-
-  /**
-   * 取目标段**设备权威的完整两层 spec**（#48 的读-改-写前置）。
-   *
-   * 顺序：本地已读回的段列表 → 没有就地 `QueryStrip` 一次。
-   * 读不回来或设备上没有这个槽位都返回 error（调用方**不下发**）——
-   * 这正是本票要消灭的「用默认值覆盖」。
-   */
-  private async resolveSpec(target: SegmentTarget): Promise<SpecResolve> {
-    const cached = this.findCachedReport(target);
-    if (cached !== null) {
-      return { kind: "ok", spec: specFromReport(cached) };
-    }
-    if (this.transport.linkState !== "ready") {
-      return { kind: "error", message: "设备未连接" };
-    }
-    const result = await this.queryStrip(target.stripId);
-    if (result.kind === "stale") {
-      return { kind: "error", message: "连接已变化，请重试" };
-    }
-    if (result.kind !== "ok") {
-      /* ACK 拒绝（设备侧 InvalidParam）与传输异常都归成「读不回来」。 */
-      const message =
-        result.kind === "error"
-          ? result.message
-          : resultText(result.ack.resultCode);
-      return { kind: "error", message: `读取段配置失败：${message}` };
-    }
-    const fresh = this.findCachedReport(target);
-    if (fresh === null) {
-      return {
-        kind: "error",
-        message: `设备上没有段 ${target.segId}（请先刷新段列表）`,
-      };
-    }
-    return { kind: "ok", spec: specFromReport(fresh) };
-  }
-
-  /**
-   * 在本地已读回的段列表里找目标段。
-   *
-   * **要求区间也一致**：同 segId 但区间不同的缓存说明设备上这个槽位早已重配，
-   * 拿它去改色会写回一个用户没选中的区间——宁可当作「没有」再读一次。
-   */
-  private findCachedReport(target: SegmentTarget): SegmentReport | null {
-    const cached = this.segmentsByStrip[target.stripId];
-    if (cached === undefined) {
-      return null;
-    }
-    const found = cached.find((report) => report.segId === target.segId);
-    if (found === undefined) {
-      return null;
-    }
-    if (found.start !== target.start || found.end !== target.end) {
-      return null;
-    }
-    return found;
-  }
-
-  /**
-   * 节流通道的颜色帧（#48）：读回完整 spec → 只换 layer0 色相/饱和度 → 裸写。
-   *
-   * 裸写（`transport.write`）而不是 `setSegment`：连续量不等 ACK，也不清段缓存
-   * （见 `setSegment` 成功后清缓存的行为）；缓存由 `cacheRecolored` 就地更新。
-   *
-   * 已缓存时**同步**取 spec：拖动是 20Hz 连续量，多一层 `await` 会让写时刻
-   * 落后于节流窗口，把稳定的 50ms 间隔抖成 40/60ms。只有首次（需要 QueryStrip）
-   * 才走异步分支。
-   */
-  private async writeRecoloredFrame(
-    target: SegmentTarget,
-    hue: number,
-    sat: number,
-  ): Promise<void> {
-    const cached = this.findCachedReport(target);
-    const spec = cached === null ? null : specFromReport(cached);
-    if (spec !== null) {
-      try {
-        await this.transport.write(cmdSetSegment(recolorLayer0(spec, hue, sat)));
-        this.cacheRecolored(target, hue, sat);
-        /* 成功一次就把「上一句提示」作废，下一次失败仍要说得出来。 */
-        this.lastSegmentHint = null;
-      } catch (err) {
-        this.reconnect.handleCommandFailure(err);
-      }
-      return;
-    }
-    const resolved = await this.resolveSpec(target);
-    if (resolved.kind !== "ok") {
-      this.notifySegmentHint(resolved.message);
-      return;
-    }
-    try {
-      await this.transport.write(cmdSetSegment(recolorLayer0(resolved.spec, hue, sat)));
-      this.cacheRecolored(target, hue, sat);
-      this.lastSegmentHint = null;
-    } catch (err) {
-      this.reconnect.handleCommandFailure(err);
-    }
-  }
-
-  /** 改色成功后同步本地镜像，后续帧不必再读回（它只改了 layer0 的两个字节）。 */
-  private cacheRecolored(target: SegmentTarget, hue: number, sat: number): void {
-    const cached = this.segmentsByStrip[target.stripId];
-    if (cached === undefined) {
-      return;
-    }
-    const index = cached.findIndex((report) => report.segId === target.segId);
-    if (index < 0) {
-      return;
-    }
-    const report = cached[index];
-    const layer0 = { ...report.layer0, hue, sat };
-    cached[index] = {
-      ...report,
-      layer0,
-      /* 扁平投影是 layer0 的镜像，必须一起更新（#41 之前的读法）。 */
-      ...toFlat({ ...report, layer0 }),
-    };
-  }
-
-  /** 提示一次给页面；同一句不重复刷屏（拖动失败会连续重试）。 */
-  private notifySegmentHint(message: string): void {
-    if (this.lastSegmentHint === message) {
-      return;
-    }
-    this.lastSegmentHint = message;
-    for (const fn of this.segmentHintListeners.slice()) {
-      try {
-        fn(message);
-      } catch (err) {
-        console.warn(`[lumen] 段提示监听失败：${errorText(err)}`);
-      }
-    }
-  }
-
-  /**
    * 开关：离散路径，等 ACK。成功时用设备语义更新本地状态。
    */
   async setPower(on: boolean): Promise<PowerResult> {
@@ -1821,7 +972,7 @@ export class ControlSession {
       }
       return {
         kind: "ok",
-        state: this.latestState ?? fallbackState({ r: 0, g: 0, b: 0 }, on ? 1 : 0),
+        state: this.latestState ?? fallbackState(on ? 1 : 0),
       };
     } catch (err) {
       // 同上：异常照常提示，不用 stale 吞掉。
@@ -1859,7 +1010,7 @@ export class ControlSession {
       }
       return {
         kind: "ok",
-        state: this.latestState ?? fallbackState({ r: 0, g: 0, b: 0 }),
+        state: this.latestState ?? fallbackState(),
       };
     } catch (err) {
       return { kind: "error", message: errorText(err) };
@@ -1914,6 +1065,266 @@ export class ControlSession {
     }
   }
 
+  /* ---------------- 布局族 0x20-0x24（§6.1 / §9.1 第 3 步） ---------------- */
+
+  /**
+   * 读一条链的部位划分（QueryLayout 0x24 → 逐条 0x89 + 一条 0x8A）。
+   *
+   * 结果缓存在 `layoutsByStrip`，失败时返回 error 但不清掉上一次的好值——
+   * 「读不到」和「本地没有」是两件事，页面据此决定是灰掉还是显示空态。
+   */
+  async queryLayout(stripId: number): Promise<LayoutResult> {
+    if (this.transport.linkState !== "ready") {
+      return { kind: "error", message: "设备未连接" };
+    }
+    const epoch = this.reconnect.epoch;
+    try {
+      const { reports, end } = await this.transport.queryLayout(stripId);
+      if (this.reconnect.isStale(epoch)) {
+        return { kind: "stale" };
+      }
+      const layout: LayoutReadback = {
+        stripId,
+        parts: reports.map((report) => ({
+          ...report,
+          segs: report.segs.map(([start, end2]) => [start, end2] as [number, number]),
+        })),
+        partMask: end.partMask,
+      };
+      this.layoutsByStrip[stripId] = layout;
+      return { kind: "ok", layout };
+    } catch (err) {
+      return { kind: "error", message: errorText(err), layout: this.layoutsByStrip[stripId] ?? undefined };
+    }
+  }
+
+  /** 某链上一次读回的布局（没有则为 null）。 */
+  layoutOf(stripId: number): LayoutReadback | null {
+    const cached = this.layoutsByStrip[stripId];
+    return cached === undefined || cached === null ? null : cached;
+  }
+
+  /**
+   * 写一条链的布局并提交（LayoutWrite → LayoutPart/LayoutSeg → LayoutCommit）。
+   *
+   * 帧序固定（§6.1）：Begin 声明部位数 → 逐部位名字与段数 → 逐段区间 →
+   * Commit。**一次一帧、串行**（§8：小程序一次只发一帧、等 ACK 再发下一帧）。
+   *
+   * 任何一帧被拒就立刻停：布局的中间态在设备侧只是 RAM，不 Commit 就不落盘
+   * 也不生效（§6.1 第 4 条），所以「半套下发」不会留下持久化后果。
+   */
+  async writeLayout(stripId: number, parts: LayoutPart[]): Promise<EditResult> {
+    if (this.transport.linkState !== "ready") {
+      return { kind: "error", message: "设备未连接" };
+    }
+    const epoch = this.reconnect.epoch;
+    try {
+      const requests: CommandRequest[] = [cmdLayoutWrite(stripId, parts.length)];
+      for (const part of parts) {
+        requests.push(
+          cmdLayoutPart(stripId, part.partId, part.name, part.segs.length),
+        );
+        part.segs.forEach(([start, end], segId) => {
+          requests.push(cmdLayoutSeg(stripId, part.partId, segId, start, end));
+        });
+      }
+      requests.push(cmdLayoutCommit());
+      await this.transport.sendSequence(requests);
+      if (this.reconnect.isStale(epoch)) {
+        return { kind: "stale" };
+      }
+      /* 提交成功：设备侧的段可能被裁过，缓存作废让页面重新读。 */
+      this.layoutsByStrip[stripId] = null;
+      const state = await this.refreshState().catch(() => this.latestState);
+      return { kind: "ok", state: state ?? this.latestState };
+    } catch (err) {
+      return this.editFailure(err, epoch);
+    }
+  }
+
+  /* ---------------- 场景族 0x25-0x29（§6.2 / §9.1 第 4 步） ---------------- */
+
+  /**
+   * 读一个场景（QueryScene 0x29 → 部位头 + 每步 + 收尾）。
+   *
+   * §9.1 第 4 步只读**当前**场景；切换场景后再读目标场景。结果缓存在
+   * `scenesById`。
+   */
+  async queryScene(sceneId: number): Promise<SceneResult> {
+    if (this.transport.linkState !== "ready") {
+      return { kind: "error", message: "设备未连接" };
+    }
+    const epoch = this.reconnect.epoch;
+    try {
+      const report = await this.transport.queryScene(sceneId);
+      if (this.reconnect.isStale(epoch)) {
+        return { kind: "stale" };
+      }
+      const scene = buildSceneReport(
+        sceneId,
+        report.end.name,
+        report.parts.map((part) => ({ ...part })),
+        report.steps.map((step) => ({ ...step })),
+      );
+      this.scenesById[sceneId] = scene;
+      return { kind: "ok", scene };
+    } catch (err) {
+      return {
+        kind: "error",
+        message: errorText(err),
+        scene: this.scenesById[sceneId] ?? undefined,
+      };
+    }
+  }
+
+  /** 某场景上一次读回的内容（没有则为 null）。 */
+  sceneOf(sceneId: number): SceneReport | null {
+    const cached = this.scenesById[sceneId];
+    return cached === undefined || cached === null ? null : cached;
+  }
+
+  /**
+   * 写一个部位的时间轴头（ScenePart 0x25）。
+   *
+   * **只有 step_count 真的变了设备才清空步骤**（§6.2），所以这条命令同时
+   * 用来改开关与循环档——点一下部位开关不会抹掉整个时间轴（T9）。
+   */
+  async setScenePart(
+    sceneId: number,
+    stripId: number,
+    partId: number,
+    stepCount: number,
+    loop: number,
+    on: boolean,
+  ): Promise<EditResult> {
+    const result = await this.sendEditSafe(() =>
+      cmdScenePart(sceneId, stripId, partId, stepCount, loop, on),
+    );
+    this.invalidateScene(sceneId, result);
+    return result;
+  }
+
+  /** 写一步（SceneStep 0x26）：**单步增量**，不重传整场景（E5）。 */
+  async setSceneStep(step: SceneStep): Promise<EditResult> {
+    const result = await this.sendEditSafe(() => cmdSceneStep(step));
+    this.invalidateScene(step.sceneId, result);
+    return result;
+  }
+
+  /** 写场景名（SceneName 0x27）。 */
+  async setSceneName(sceneId: number, name: string): Promise<EditResult> {
+    const result = await this.sendEditSafe(() => cmdSceneName(sceneId, name));
+    this.invalidateScene(sceneId, result);
+    return result;
+  }
+
+  /**
+   * 写成功后作废该场景的读回缓存。
+   *
+   * 为什么必须有：`sceneOf()` 是**页面的第一读取入口**（读到就直接用，读不到
+   * 才发 `QueryScene`）。写入之后不作废的话，页面下一次 `load()` 会拿回**写入
+   * 前**的那一份，表现是「点了下发、提示成功、界面却还是旧的」。`writeLayout`
+   * 早有这一步（`layoutsByStrip[stripId] = null`），场景这三条以前漏了。
+   *
+   * 只在真的可能改了设备时作废：`ok`（RAM 与落盘都成功）与 `storage`
+   * （RAM 已改、只是没落盘，§10.4）都要作废；`stale` / `error` / `ack-error`
+   * 一律不动——它们代表「这次写入没生效」，缓存仍是权威。
+   */
+  private invalidateScene(sceneId: number, result: EditResult): void {
+    if (result.kind !== "ok" && result.kind !== "storage") {
+      return;
+    }
+    if (!Number.isInteger(sceneId) || sceneId < 0 || sceneId >= MAX_SCENES) {
+      return;
+    }
+    this.scenesById[sceneId] = null;
+  }
+
+  /**
+   * 激活场景（ActivateScene 0x28）：硬切 + 全部部位从第 1 步重跳（T3/C4）。
+   *
+   * 成功后读回 State（`activeScene` 变了），并清掉场景缓存——切场景会让
+   * 播放头重置，页面该按新的 activeScene 重新读。
+   */
+  async activateScene(sceneId: number): Promise<EditResult> {
+    const epoch = this.reconnect.epoch;
+    try {
+      const ack = await this.sendCommand(cmdActivateScene(sceneId));
+      if (this.reconnect.isStale(epoch)) {
+        return { kind: "stale" };
+      }
+      if (!ack.ok) {
+        return this.storageOrAck(ack);
+      }
+      const state = await this.refreshState().catch(() => this.latestState);
+      return { kind: "ok", state: state ?? this.latestState };
+    } catch (err) {
+      return this.editFailure(err, epoch);
+    }
+  }
+
+  /**
+   * 先构造请求再发：构造器抛的 `RangeError` 折成 `error` 结果。
+   *
+   * 为什么需要：`cmdScenePart` / `cmdSceneStep` / `cmdSceneName` 是**提前拒绝**
+   * 的唯一机会（越界的 loop / 步数 / 名字字节数），它们抛 `RangeError`。若直接
+   * 把构造结果传给 `sendEdit`，异常会在 `await` 之前就冒到调用方，页面拿到的是
+   * 一个抛出而不是 `{ kind: "error" }` —— 与 `setLedCount` 等其它写入口不一致，
+   * 页面里那句 `if (result.kind === ...)` 根本没机会执行。
+   *
+   * 这里仍然**不发帧**：异常发生在构造阶段，传输层没被碰过。
+   */
+  private async sendEditSafe(build: () => CommandRequest): Promise<EditResult> {
+    let request: CommandRequest;
+    try {
+      request = build();
+    } catch (err) {
+      return { kind: "error", message: errorText(err) };
+    }
+    return this.sendEdit(request);
+  }
+
+  /** 布局 / 场景写命令的公共路径：一帧、等 ACK、StorageFailed 单独一支。 */
+  private async sendEdit(request: CommandRequest): Promise<EditResult> {
+    if (this.transport.linkState !== "ready") {
+      return { kind: "error", message: "设备未连接" };
+    }
+    const epoch = this.reconnect.epoch;
+    try {
+      const ack = await this.sendCommand(request);
+      if (this.reconnect.isStale(epoch)) {
+        return { kind: "stale" };
+      }
+      if (!ack.ok) {
+        return this.storageOrAck(ack);
+      }
+      return { kind: "ok", state: this.latestState };
+    } catch (err) {
+      return this.editFailure(err, epoch);
+    }
+  }
+
+  /**
+   * StorageFailed (0x06) 折叠成 `storage` 一支。
+   *
+   * 它和别的 ACK 错误的区别很重要：设备的 RAM 已经改了，只是没落盘
+   * （场景超过 12 KB / NVS 写失败，§10.4 / §10.5）。页面要提示「已生效但
+   * 未保存」而不是「没生效」。
+   */
+  private storageOrAck(ack: AckResult): EditResult {
+    if (ack.resultCode === RESULT.STORAGE_FAILED) {
+      return { kind: "storage", message: resultText(ack.resultCode) };
+    }
+    return { kind: "ack-error", ack };
+  }
+
+  private editFailure(err: unknown, epoch: number): EditResult {
+    if (this.reconnect.isStale(epoch)) {
+      return { kind: "stale" };
+    }
+    return { kind: "error", message: errorText(err) };
+  }
+
   /** v3：当前操作的灯带（页面切换灯带后所有缺省 stripId 的方法都跟着走）。 */
   get activeStripId(): number {
     return this.activeStrip;
@@ -1955,7 +1366,7 @@ export class ControlSession {
 
   /** 某条灯带的灯珠数（本地镜像；未连接为 0）。 */
   stripLedCount(stripId: number): number {
-    return this.latestState?.stripCounts[stripId] ?? 0;
+    return this.latestState?.stripLedCounts[stripId] ?? 0;
   }
 
   onLink(fn: (state: LinkState, detail?: LinkDetail) => void): () => void {
@@ -2020,13 +1431,12 @@ export class ControlSession {
     this.flushPendingUsage();
     this.latestState = null;
     this.throttle.cancel();
-    /* 断开后没有可写的段：颜色控件应回到禁用态。 */
-    this.defaultSegment = null;
     this.stripConfigCache = null;
     this.deviceInfoCache = null;
-    /* 逐带段缓存同样属于上一台 / 上一次连接，必须一起清：
-     * 留着会让重连后的灯光页显示不存在的段。 */
-    this.segmentsByStrip = emptyStripCache();
+    /* 逐带布局与逐场景读回同样属于上一台 / 上一次连接，必须一起清：
+     * 留着会让重连后的设备页显示不存在的部位。 */
+    this.layoutsByStrip = emptyLayoutCache();
+    this.scenesById = emptySceneCache();
   }
 
   /**
