@@ -285,6 +285,61 @@
     "server/tests/session.test.ts": {
       "layer": "server",
       "covers": "微信 code2session 与会话身份，注入假网络调用"
+    },
+    "miniprogram/tests/timeline.test.ts": {
+      "layer": "mp",
+      "covers": "时间轴与时长纯几何：水位法宽度分配、最小宽度保底与均分兜底、行宽恒等于容器宽（永不横向滚动）、落点命中、重排与选中跟随、缩略色带、长按阈值与拖动位移映射、时长钳位与三刻度；页面只是单元的调用方",
+      "ticket": "#154"
+    },
+    "miniprogram/tests/timeline-unit.test.ts": {
+      "layer": "mp",
+      "covers": "#154 时间轴单元可独立驱动：步骤集 → 渲染（块宽/时长文字/色带）、选中与钳位、长按 300ms → 拖动 → 松手给 from→to、代次作废迟到的长按回调、拖出界回到源下标、改时长与「秒 → 毫秒」入口；并锁住页面不自己调 layoutBlocks / timelineRowWidth / chooseGap",
+      "ticket": "#154"
+    },
+    "miniprogram/tests/panel-unit.test.ts": {
+      "layer": "mp",
+      "covers": "#154 效果面板单元可独立驱动：给一层效果 → 切类型（保留颜色与亮度）、改滑块与选择项、按目标记住未下发的亮度、叠加层独立草稿、装配成两层、爆闪频率与心跳节奏的本地预检；并锁住参数控件定义只在 effect-panel 一份",
+      "ticket": "#154"
+    },
+    "miniprogram/tests/delete-device.test.ts": {
+      "layer": "mp",
+      "covers": "删除设备是一组动作：断开 + 清缓存 + 清最近 + 清登记 + 清灯组元数据（含封面）+ 删封面文件；会话为 null / 连的是别的设备 / 断开抛错都继续清；演示设备额外写「显式删除过」标记；v5 无方案草稿所以 planDraftsCleared 恒为 0",
+      "ticket": "#91"
+    },
+    "miniprogram/tests/effect-types.test.ts": {
+      "layer": "mp",
+      "covers": "灯效类型清单的单一真相：KNOWN_EFFECT_TYPES 覆盖 EFFECT_TYPE 的每种真实灯效、空层不算、未知值 (0x08/0x99) 不算、八项清单与枚举一一对应且名字不带颜色词、协议值 ↔ 面板类型双向稳定",
+      "ticket": "#74"
+    },
+    "miniprogram/tests/loop-mode.test.ts": {
+      "layer": "mp",
+      "covers": "循环三档真的到达设备（v5 宿主 = 部位）：ScenePart 的 loop 字节就是入参、三档互不相同、写完读回就是那一档、改循环不重写步数、关部位不动循环档、越界档位不发帧、写成功作废场景读回缓存而失败保留",
+      "ticket": "#114"
+    },
+    "miniprogram/tests/mock-session.test.ts": {
+      "layer": "mp",
+      "covers": "演示模式会话级连通性：connect 后 ready 与 State、QueryDeviceInfo / QueryStripConfig / QueryLayout / QueryScene 都读回设备权威值、开关与亮度真的生效、自检不改状态、切换设备、断开清空；扫描出三台演示设备；播种写真实存储键；逐组灯珠数与灯组开关掩码；循环三档在会话层生效",
+      "ticket": "#54"
+    },
+    "miniprogram/tests/device-page-actions.test.ts": {
+      "layer": "mp",
+      "covers": "设备页自己的事件处理器真的把命令发到设备：电源键翻 power 位且不动亮度、松手下发 SetBrightness（拖动中 20Hz 节流且不绑值）、亮度按设备 maxBrightness 钳位且不碰开关、灯组开关只翻一位且不影响别的组、部位开关只改 on 一位（步数与循环不变）",
+      "ticket": "#155"
+    },
+    "miniprogram/tests/device-info-page.test.ts": {
+      "layer": "mp",
+      "covers": "设备信息页的逐组灯珠数 / 自检 / 身份：每灯组一条 1–100 滑块（上下界来自协议常量）、拖动只改本地值、松手才发 SetLedCount 且只改目标组、缩小会截断部位时先确认、非法值钳位、未连接不发帧；自检发一帧 0x07 且不改 State；hwId / 固件 / 能力 / 五条上限都来自 QueryDeviceInfo",
+      "ticket": "#79"
+    },
+    "miniprogram/tests/part-page.test.ts": {
+      "layer": "mp",
+      "covers": "部位编辑页真的用上两个单元：时间轴块来自 timelineUnitView、改时长与点刻度经 applyTimelineDuration / setTimelineDuration、切类型与改滑块经 panel-unit（参数区按类型整体替换）、下发把 panelUnitLayers 装配的两层送到设备、部位开关只改 on 位、结构区改名整份重写布局且不抹掉别的部位、名字 24 字节 UTF-8 校验",
+      "ticket": "#155"
+    },
+    "miniprogram/tests/page-harness.test.ts": {
+      "layer": "mp",
+      "covers": "页面测试底座自查：wx 桩的存储与 toast / modal 记录、事件构造器形状、六个页面都能被捕获注册、能注入已连上的演示会话、settle 不卡满超时、收尾真的解绑",
+      "ticket": "#155"
     }
   }
 }
