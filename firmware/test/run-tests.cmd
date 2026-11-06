@@ -38,6 +38,7 @@ gcc -std=c11 -Wall -Wextra -Werror -I"%MAIN%" ^
     "%MAIN%\state_blob.c" ^
     "%MAIN%\layout_store.c" ^
     "%MAIN%\scene_store.c" ^
+    "%MAIN%\scene_compose.c" ^
     -lm -o "%OUT%\lumen_host_tests.exe"
 if errorlevel 1 exit /b 1
 

@@ -80,11 +80,21 @@ uint8_t lumen_scene_set_part(lumen_scene_t *scene, uint8_t strip_id, uint8_t par
         return LUMEN_RESULT_INVALID_PARAM;
     }
     lumen_part_scene_t *part = &scene->part[strip_id][part_id];
+    /*
+     * 只有**步数真的变了**才清空步骤。
+     *
+     * 这条很重要：`ScenePart` 同时携带「步数 / 循环 / 开关」，而界面上的部位
+     * 开关与循环档位都用同一条命令下发（§6.2 只有一个时间轴头命令）。如果每次
+     * 都清空，用户点一下部位开关就会把整个时间轴抹掉——直接违反 T9「父开关关掉
+     * 再打开时原来的编排仍然在」与用户故事 29。
+     */
+    bool steps_change = part->step_count != step_count;
     part->step_count = step_count;
     part->loop = loop;
     part->on = on;
-    /* 写步数即清空旧步骤：新一次编排从空开始。 */
-    memset(part->step, 0, sizeof(part->step));
+    if (steps_change) {
+        memset(part->step, 0, sizeof(part->step));
+    }
     return LUMEN_RESULT_OK;
 }
 
