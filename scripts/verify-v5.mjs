@@ -1,22 +1,33 @@
 #!/usr/bin/env node
 /**
- * 第五轮（#85 / #90–#101）的模拟器验收：**灯组页**。
+ * v5 模拟器验收：**设备页（就地展开）+ 部位编辑器**。
+ *
+ * 历史：这个脚本原来锁的是 v4 的灯组页（`pages/strip`，第五轮 #85/#90–#101）。
+ * v5 把那一页整个删了（#155），脚本会在 `navigateTo("/pages/strip/strip")` 上崩掉
+ * ——所以断言集改写成 v5 的两层：`pages/device` 的就地展开与 `pages/part`。
+ * 环境探测（端口 / automator / SKIP 语义）原样保留：那部分与页面无关。
  *
  * 锁的是「只有渲染层能发现」的问题：
  *  1. 主题全局同步（切深色后任意页面 / 导航栏 / tabBar 同时换色）；
- *  2. 设备页精简后没有状态栏、灯组卡片单列、长按菜单；
- *  3. 灯组页：拨盘 / 固定三套方案 / 一行式灯效 / 无「应用并播放」；
- *  4. 进阶页：时间轴标题 + 步骤气泡 + 循环三档 + 背景层 / 特效层；
- *  5. 分区预览条按分区颜色画出每一颗灯珠；
- *  6. 点击后**设备状态真的变了**（不是只改 data）。
+ *  2. 首页：加号菜单 / 搜索 / 大卡亮度 / 长按弹层；
+ *  3. 设备页：无状态栏、灯组单列、**点行就地展开不跳页**；
+ *  4. 部位编辑器：结构区 + 内容区、时间轴、效果面板、无「应用」按钮；
+ *  5. 点击后**设备状态真的变了**（不是只改 data）——改类型、改名都要读回；
+ *  6. v5 术语：界面里没有「光区」「分区」「应用并播放」。
  *
- * 用法：微信开发者工具打开本项目并开启自动化端口（默认 9501）。
- *   node scripts/verify-v5.mjs
- *   端口不是 9501 时：WS=ws://127.0.0.1:9502 node scripts/verify-v5.mjs
- *   只探测端口：node scripts/verify-v5.mjs --probe
+ * 用法：微信开发者工具打开本项目并开启自动化端口。
+ *
+ *   开启自动化（**9501 是 IDE 的 HTTP 端口，不是自动化 ws**）：
+ *     powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+ *       "& 'C:\Program Files (x86)\Tencent\微信web开发者工具\cli.bat' auto ^
+ *        --project 'C:\Users\13092\Desktop\项目\zcode\lumen\miniprogram'"
+ *
+ *   然后（auto 通常把自动化落在 9502）：
+ *     WS=ws://127.0.0.1:9502 node scripts/verify-v5.mjs
+ *     node scripts/verify-v5.mjs --probe     # 只探端口，不跑断言
  *
  * 为什么住在 scripts/ 而不是 miniprogram/.auto/：`.auto/` 整个在 .gitignore 里，
- * 换台机器 clone 下来这 49 项回归就不存在了——而它是唯一能发现白屏与事件全失效的一层。
+ * 换台机器 clone 下来这层回归就不存在了——而它是唯一能发现白屏与事件全失效的一层。
  * 这里与真机探针、串口工具同类：都是「需要外部环境」的脚本。
  *
  * 退出码（供编排器 `scripts/test-run.mjs` 的 ui 层解析）：
@@ -387,124 +398,172 @@ rec("没有整条「已连接」状态栏", (await mp.currentPage().then((p) => 
 rec("灯组卡片一列排布", (await mp.currentPage().then((p) => p.$$(".strip-list"))).length === 1);
 rec("每张卡片有封面", (await mp.currentPage().then((p) => p.$$(".strip-cover"))).length >= 1);
 
-// ---------------- 4. 灯组页：简单档（#95 / #96 / #97） ----------------
-await mp.navigateTo("/pages/strip/strip?strip=0");
-await sleep(2600);
-const strip = await pageState();
-rec("灯组页打开", strip.route === "pages/strip/strip", strip.route);
+// ---------------- 4. 设备页：灯组行就地展开（#155 / U1） ----------------
+//
+// v5 把「灯组页」删了，编辑压进「设备页 → 部位编辑器」两层。
+// 这一节验的是展开/收起本身：**不再跳页**、空态有 + 入口、展开不自动改设备。
+
+const beforeExpand = await pageState();
+const expanded = await mp.evaluate(async (stripId) => {
+  const p = getCurrentPages().pop();
+  p.onStripCardTap({ currentTarget: { dataset: { stripId } } });
+  await new Promise((resolve) => setTimeout(resolve, 1800));
+  const card = (p.data.stripCards || []).find((c) => c.stripId === stripId);
+  return {
+    route: p.route,
+    expanded: card ? card.expanded === true : null,
+    parts: card && card.parts ? card.parts.length : -1,
+    emptyHint: card ? String(card.emptyHint || "") : "",
+  };
+}, 0);
 rec(
-  "标题右侧是灯珠数胶囊",
-  (await mp.currentPage().then((p) => p.$$(".led-capsule"))).length === 1,
+  "点灯组行就地展开（不跳页）",
+  expanded.route === "pages/device/device" && expanded.expanded === true,
+  `route=${expanded.route} expanded=${expanded.expanded}`,
 );
 rec(
-  "没有独立的灯珠数滑块区块",
-  (await mp.currentPage().then((p) => p.$$(".led-count-slider"))).length === 0,
+  "展开后出现部位列表或空态",
+  expanded.parts >= 0 && (expanded.parts > 0 || expanded.emptyHint.length > 0),
+  `parts=${expanded.parts} emptyHint="${expanded.emptyHint}"`,
 );
 rec(
-  "方案恰好三个圆形按钮",
-  (await mp.currentPage().then((p) => p.$$(".plan-circle"))).length === 3,
-  `${(await mp.currentPage().then((p) => p.$$(".plan-circle"))).length}`,
+  "点展开不会改动设备状态",
+  String(beforeExpand?.data?.stripsOn ?? "") === String((await pageState())?.data?.stripsOn ?? ""),
 );
-rec("没有新增 / 删除方案入口", (await mp.currentPage().then((p) => p.$$(".plan-action"))).length === 0);
-rec("简单档是一行式灯效（没有色块网格）", (await mp.currentPage().then((p) => p.$$(".quick-card"))).length === 0);
+
+// ---------------- 5. 部位编辑器（#155 最小版） ----------------
+//
+// 「整条 / 1 步 / 常亮」是设备页 + 播种出来的默认形态。这里先确保至少有一个部位，
+// 再进编辑器验结构区 + 内容区两半。
+
+const seeded = await mp.evaluate(async () => {
+  const p = getCurrentPages().pop();
+  const cards = p.data.stripCards || [];
+  const target = cards.find((c) => c.expanded) || cards[0];
+  if (!target) return { ok: false, reason: "没有灯组卡片" };
+  p.onSeedPartTap({ currentTarget: { dataset: { stripId: target.stripId } } });
+  await new Promise((resolve) => setTimeout(resolve, 2600));
+  const card = (p.data.stripCards || []).find((c) => c.stripId === target.stripId);
+  return {
+    ok: true,
+    stripId: target.stripId,
+    parts: card && card.parts ? card.parts.length : 0,
+    firstPartId: card && card.parts && card.parts[0] ? card.parts[0].partId : -1,
+  };
+});
+rec("点 + 播种出一个部位", seeded.ok === true && seeded.parts >= 1, JSON.stringify(seeded));
+
+let partPage = null;
+if (seeded.ok && seeded.parts >= 1) {
+  await mp.navigateTo(`/pages/part/part?strip=${seeded.stripId}&part=${seeded.firstPartId}`);
+  await sleep(2600);
+  partPage = await pageState();
+}
 rec(
-  "简单档有一个「灯效」行",
-  (await mp.currentPage().then((p) => p.$$(".effect-row"))).length === 1,
+  "部位编辑器打开",
+  partPage !== null && partPage.route === "pages/part/part",
+  partPage ? partPage.route : "未打开",
 );
-const stripText = await textOf();
-rec("页面上没有「应用并播放」按钮", !stripText.replace(/<!--[\s\S]*?-->/g, "").includes("应用并播放"));
 
-// 拨盘
-const dial = await mp.evaluate(() => {
+if (partPage !== null && partPage.route === "pages/part/part") {
+  const partText = (await textOf()).replace(/<!--[\s\S]*?-->/g, "");
+  rec("有结构区", partText.includes("结构"));
+  rec("有内容区", partText.includes("内容"));
+  rec("结构区有部位名输入", (await mp.currentPage().then((p) => p.$$(".field-input"))).length >= 1);
+  rec("结构区显示覆盖灯珠", partText.includes("覆盖灯珠"));
+  const timelineBlocks = (await mp.currentPage().then((p) => p.$$(".timeline-block"))).length;
+  rec("内容区有时间轴", timelineBlocks >= 1, `${timelineBlocks} 块`);
+  const typeCells = (await mp.currentPage().then((p) => p.$$(".type-cell"))).length;
+  rec("效果面板有类型格", typeCells >= 6, `${typeCells}`);
+  rec("页面里没有「应用并播放」（编辑即下发）", !partText.includes("应用并播放"));
+  rec("页面里没有「光区」（v5 术语是部位 / 灯珠段）", !partText.includes("光区"));
+  rec("页面里没有「分区」", !partText.includes("分区"));
+
+  // 改类型 → 设备真的收到（不是只改 data）
+  const typeChange = await mp.evaluate(async () => {
+    const p = getCurrentPages().pop();
+    const before = p.data.panelSummary;
+    const cells = p.data.panelTypes || [];
+    const target = cells.find((c) => c.type === 0x01) || cells[1];
+    if (!target) return { ok: false, reason: "没有可选类型" };
+    p.onPanelTypeTap({ currentTarget: { dataset: { type: target.type } } });
+    await new Promise((resolve) => setTimeout(resolve, 2600));
+    return {
+      ok: true,
+      before,
+      after: p.data.panelSummary,
+      selectedType: target.type,
+      applyError: String(p.data.applyError || ""),
+    };
+  });
+  await sleep(600);
+  rec(
+    "切灯效类型后面板摘要变了",
+    typeChange.ok === true && String(typeChange.after) !== String(typeChange.before),
+    JSON.stringify(typeChange),
+  );
+  rec(
+    "切类型没有留下错误提示",
+    typeChange.ok === true && typeChange.applyError === "",
+    typeChange.ok ? typeChange.applyError : "未执行",
+  );
+
+  // 写名字 → 落库并读回
+  const nameSaved = await mp.evaluate(async () => {
+    const p = getCurrentPages().pop();
+    p.onNameInput({ detail: { value: "眼灯" } });
+    await p.onSaveName();
+    await new Promise((resolve) => setTimeout(resolve, 2600));
+    return {
+      input: p.data.nameInput,
+      rangeText: p.data.rangeText,
+      applyError: String(p.data.applyError || ""),
+    };
+  });
+  rec(
+    "改名后保存成功（无错误）",
+    nameSaved.input === "眼灯" && nameSaved.applyError === "",
+    JSON.stringify(nameSaved),
+  );
+}
+
+// 回设备页，验改名读回
+await mp.navigateBack({ delta: 1 }).catch(() => {});
+await sleep(1800);
+if ((await pageState())?.route === "pages/device/device") {
+  const renamed = await mp.evaluate(async () => {
+    const p = getCurrentPages().pop();
+    const cards = p.data.stripCards || [];
+    const target = cards.find((c) => c.expanded) || cards[0];
+    if (!target) return { ok: false };
+    /* 收起再展开：强制重新拉布局，验的是「设备上的名字」而不是页面缓存。 */
+    p.onStripCardTap({ currentTarget: { dataset: { stripId: target.stripId } } });
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    p.onStripCardTap({ currentTarget: { dataset: { stripId: target.stripId } } });
+    await new Promise((resolve) => setTimeout(resolve, 1800));
+    const card = (p.data.stripCards || []).find((c) => c.stripId === target.stripId);
+    const first = card && card.parts && card.parts[0];
+    return { ok: true, label: first ? String(first.label) : "" };
+  });
+  rec(
+    "回设备页后部位名读回是「眼灯」",
+    renamed.ok === true && renamed.label === "眼灯",
+    JSON.stringify(renamed),
+  );
+}
+
+// ---------------- 6. 开关层级（#155 的挂点，#160 才完整） ----------------
+const switches = await mp.evaluate(() => {
   const p = getCurrentPages().pop();
-  p.onLedCapsuleLongPress();
-  return { open: p.data.dialOpen, ticks: (p.data.dialTicks || []).length, value: p.data.dialValue };
+  return {
+    partSwitches: (p.data.stripCards || []).reduce((n, c) => n + (c.parts || []).length, 0),
+    strips: (p.data.stripCards || []).length,
+  };
 });
-await sleep(500);
-rec("长按胶囊弹出圆盘", dial.open === true);
-rec("圆盘刻度 1–100", dial.ticks === 100, `${dial.ticks}`);
-await mp.evaluate(() => {
-  getCurrentPages().pop().onDialClose();
-});
-await sleep(300);
+rec("展开区里每个部位各有一个开关", switches.partSwitches >= 1, `部位 ${switches.partSwitches} 个`);
+rec("界面上没有播放 / 暂停按钮", !(await textOf()).includes("暂停"));
 
-// 一行式：滚轮选灯效 → 立即生效
-const picked = await mp.evaluate(async () => {
-  const p = getCurrentPages().pop();
-  p.onEffectRowTap();
-  const open = p.data.effectWheelOpen;
-  const count = (p.data.effectOptions || []).length;
-  p.onEffectPick({ currentTarget: { dataset: { id: "heartbeat" } } });
-  const selected = p.effectId;
-  await new Promise((resolve) => setTimeout(resolve, 3200));
-  return { open, count, selected, hint: p.data.quickHint, type: p.segmentReports[0] && p.segmentReports[0].layer0.type };
-});
-rec("点灯效行弹出滚轮", picked.open === true);
-rec("滚轮有八个灯效", picked.count === 8, `${picked.count}`);
-rec("选中立刻生效", picked.selected === "heartbeat", picked.selected);
-rec("设备真的收到心跳（0x05）", picked.type === 0x05, `0x${(picked.type || 0).toString(16)}`);
-
-// ---------------- 5. 进阶档（#99 / #100 / #97） ----------------
-await mp.evaluate(() => {
-  const p = getCurrentPages().pop();
-  p.onModeTap({ currentTarget: { dataset: { mode: "advanced" } } });
-});
-await sleep(1600);
-const adv = await pageState();
-rec("切到进阶档", adv.data.mode === "advanced", adv.data.mode);
-rec("时间轴标题放大（有 subtitle 元素）", (await mp.currentPage().then((p) => p.$$(".timeline-sub"))).length === 1);
-rec("没有「删步骤」按钮", !(await textOf()).replace(/<!--[\s\S]*?-->/g, "").includes("删步骤"));
-rec("循环三档存在", (await mp.currentPage().then((p) => p.$$(".loop-option"))).length === 3);
-rec("时间轴不在卡片里", (await mp.currentPage().then((p) => p.$$(".section.timeline-section"))).length === 0);
-rec("有步骤气泡", (await mp.currentPage().then((p) => p.$$(".step-bubble"))).length === 1);
-rec("气泡有指向选中块的箭头", (await mp.currentPage().then((p) => p.$$(".bubble-arrow"))).length === 1);
-
-// 选中一个分区 → 背景层 / 特效层 / 预览
-const layers = await mp.evaluate(() => {
-  const p = getCurrentPages().pop();
-  const zones = p.currentZones();
-  if (zones[0]) {
-    p.onBubbleZoneTap({ currentTarget: { dataset: { segId: zones[0].segId } } });
-  }
-  return { zones: zones.length };
-});
-await sleep(900);
-const advText = (await textOf()).replace(/<!--[\s\S]*?-->/g, "");
-rec("有「背景层」", advText.includes("背景层"));
-rec("有「特效层」", advText.includes("特效层"));
-rec("没有「叠加效果」区块", !advText.includes("叠加效果"));
-rec("没有「相乘」", !advText.includes("相乘"));
-rec("界面里没有「熄灭」", !advText.includes("熄灭"));
-rec("界面里没有「光区」", !advText.includes("光区"));
-rec("界面里有「分区」", advText.includes("分区"));
-
-// 预览条
-const preview = await mp.evaluate(() => {
-  const p = getCurrentPages().pop();
-  p.onPreviewToggle();
-  return { open: p.data.previewOpen, leds: (p.data.previewLeds || []).length, ledCount: p.currentLedCount() };
-});
-await sleep(500);
-rec("预览条打开", preview.open === true && preview.leds > 0, JSON.stringify(preview));
-rec("预览条逐颗画灯珠", preview.leds === preview.ledCount, `${preview.leds}/${preview.ledCount}`);
-rec("预览条节点已渲染", (await mp.currentPage().then((p) => p.$$(".preview-strip"))).length === 1);
-await mp.evaluate(() => {
-  getCurrentPages().pop().onPreviewToggle();
-});
-
-// 循环切换 → 草稿真的变
-const loop = await mp.evaluate(async () => {
-  const p = getCurrentPages().pop();
-  p.onLoopTap({ currentTarget: { dataset: { value: 2 } } });
-  await new Promise((resolve) => setTimeout(resolve, 1200));
-  const after = p.currentDraft().loop;
-  p.onLoopTap({ currentTarget: { dataset: { value: 0 } } });
-  return { after };
-});
-rec("循环切到最后一步循环（草稿真的改）", loop.after === 2, `loop=${loop.after}`);
-await sleep(1200);
-
-// ---------------- 6. 深色主题下灯组页仍正常（#90） ----------------
+// ---------------- 7. 深色主题下这两个页面仍正常（#90） ----------------
 await mp.switchTab("/pages/me/me");
 await sleep(900);
 await mp.evaluate(() => {
@@ -521,6 +580,18 @@ rec(
   String((await pageState())?.data?.themeClass ?? "") === "theme-dark",
   (await pageState())?.data?.themeClass ?? "",
 );
+if (seeded.ok && seeded.parts >= 1) {
+  await mp.navigateTo(`/pages/part/part?strip=${seeded.stripId}&part=${seeded.firstPartId}`);
+  await sleep(2000);
+  rec(
+    "深色下部位编辑器也是 theme-dark",
+    String((await pageState())?.data?.themeClass ?? "") === "theme-dark",
+    (await pageState())?.data?.themeClass ?? "",
+  );
+  await mp.navigateBack({ delta: 1 }).catch(() => {});
+  await sleep(900);
+}
+
 // 复位浅色 + 回到首页
 await mp.switchTab("/pages/me/me");
 await sleep(700);
