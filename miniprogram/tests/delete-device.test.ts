@@ -8,9 +8,9 @@
  *
  *  - **方案草稿那一处随模型消失**：`lumen.planDrafts.v1` 是 v4「剧本 / 方案」
  *    的本地草稿，v5 的编辑内容直接存在设备的场景里（`SceneStep`），本机不再
- *    有草稿。`delete-device.ts` 保留 `planDraftsCleared = 0` 只是为了让清理
- *    清单的形状不变，所以断言从「> 0」改成「=== 0」（而不是删掉整条断言：
- *    「这里确实没有草稿可清」本身是要守住的事实）。
+ *    有草稿。这个键的**常规清理在启动时**（`migrations.ts`，#161），所以正常
+ *    情况下删设备时它已经是 null、计数为 0；但若它还在（回退安装过旧版），
+ *    删除设备会顺手清掉并如实计数——见下面「退役键」那一组用例。
  *  - **灯组名与封面必须仍然真的被清掉**：v5 里它们是「换手机、刷机都还在」的
  *    （存在 `lumen.stripMeta.v1`，键 = hardwareId#stripId），但**用户显式删除
  *    设备**时就是要清 —— 规格用户故事 51 的另一半。`stripMetaCleared` 必须
@@ -133,8 +133,8 @@ describe("删除设备：各处全部清干净", () => {
     /* 4. 登记表。 */
     expect(loadRegistry(storage).devices).toEqual([]);
     /*
-     * 5. 方案草稿：v5 已无本地草稿（内容在设备的场景里），所以这一项恒为 0。
-     *    断言保留而不是删掉——「这里确实没有草稿可清」是要守住的事实。
+     * 5. 方案草稿：v5 已无本地草稿（内容在设备的场景里）。这个键由启动时的
+     *    `migrations.ts` 负责，所以这里本来就是 null → 计数 0。
      */
     expect(result.planDraftsCleared).toBe(0);
     /* 6. 灯组元数据：两条都要真的被清掉（按 hardwareId 前缀）。 */
@@ -280,5 +280,36 @@ describe("存储键保持稳定（避免读到旧结构）", () => {
     const storage = memoryStorage();
     await deleteDeviceFully({ storage, deviceId: DEVICE_ID, hardwareId: HW_ID, session: null });
     expect(storage.get("lumen.planDrafts.v1")).toBeNull();
+  });
+
+  it("残留的 v4 草稿会被顺手清掉并如实计数（#161）", async () => {
+    /*
+     * 常规路径是启动时的 `migrations.ts` 清它，所以这里本来该是 null。
+     * 但「回退安装过旧版又写了草稿」是真会发生的，所以删除设备这条路也要
+     * 兜住——而且**不能**在报告里假装清了 0 条。
+     */
+    const storage = memoryStorage();
+    storage.set("lumen.planDrafts.v1", JSON.stringify({ "AA:BB#0#0": { steps: [] } }));
+
+    const result = await deleteDeviceFully({
+      storage,
+      deviceId: DEVICE_ID,
+      hardwareId: HW_ID,
+      session: null,
+    });
+
+    expect(result.planDraftsCleared).toBe(1);
+    expect(storage.get("lumen.planDrafts.v1")).toBeNull();
+  });
+
+  it("没有草稿时计数是 0（不把「不存在」算成「删掉了」）", async () => {
+    const storage = memoryStorage();
+    const result = await deleteDeviceFully({
+      storage,
+      deviceId: DEVICE_ID,
+      hardwareId: HW_ID,
+      session: null,
+    });
+    expect(result.planDraftsCleared).toBe(0);
   });
 });
