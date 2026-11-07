@@ -9,7 +9,8 @@
 
 ## 0. 当前（2026-11-07，v5 · 部位与场景）
 
-**九张票 #154–#162 全部关闭，PR [#163](https://github.com/sishoui/light-matt/pull/163) 已 ready。
+**九张票 #154–#162 全部关闭，PR [#163](https://github.com/sishoui/light-matt/pull/163)
+已合入 `master`（merge commit `70cc47d`），规格父票 #145 已关闭。
 五层测试全绿、没有未验证的层。** 详见 [`handoff.md`](./handoff.md) §0 与
 [`evidence/v5-integration-2026-11-07.md`](./evidence/v5-integration-2026-11-07.md)。
 
@@ -19,7 +20,6 @@
 |---|---|---|
 | 8 部位规模的实拍 | **不做**（2026-11-07 决定） | 用户明确说「只是一个举例，暂时不用实拍」。机制已由 30 分钟漂移测试 + 800 颗帧率实测覆盖 |
 | 真机色域压缩 / 压降 / 8 链共 5V 电流阶跃 | 未解决 | 物理问题，见 §0.0 与 §5（下半部分）。仍影响「串带检测」与多带同时大幅变色的观感 |
-| `pages/part` 的 `pushSteps()` 无 busy 重入保护 | 已知限制 | 其它写入路径（`commitLayout` / `onSaveContent`）都有 `if (this.data.busy) return`，只有它没有；且循环里每轮读 `this.timelineSteps` 而不是快照。理论上「写到一半时用户加/删步」会让设备处于「stepCount 已变、步骤只写了一部分」的中间态。mock 上两次尝试没复现（await 太快），真机 BLE 往返 30ms 窗口更大。修法：加 busy 守卫 + 循环用局部快照 |
 
 ### 已补齐（本轮）
 
@@ -27,6 +27,8 @@
 |---|---|
 | 800 颗 / 64 播放头帧率基线 | **实测 5.53 ms / 轮**（预算 50 ms） |
 | NVS 最坏形态压测 | 三场景各 10472 B（合计 31416 B）写入成功、无存储失败事件；反复擦写见 `scripts/probe-v5-nvs-stress.py` |
+| **`pages/part` 的 `pushSteps()` 并发缺陷** | **已修**（`50c6730`）。票面只写了「缺 busy 守卫」，实际是三个缺陷叠加：不查 `data.busy` 会插队把别人的写静默作废；循环里现读数组造成混合态；`onSaveContent` 在第一个 await 之后才读选中步，会把灯效写到没声明步数的下标上。修法 = 互斥 + 补跑 + 快照，见 `tests/part-push-race.test.ts`（4 条，变异验证过） |
+| **相位漂移真机数字** | **已测**（`dab2744`）。串口调试日志 + **闭式解残差**判据（不是「步号变了没有」）。工具：`scripts/probe-v5-drift.py` / `scripts/analyze-playhead-log.py`（5 项自检）。见 [`handoff.md`](./handoff.md) §0 与证据文档 |
 
 > **帧率这一项曾经被标成「未测」，理由写错了**：说「只接了 1 条 30 颗」。实际
 > `SetLedCount(100)` 会让 RMT 按 100 颗的位时间真的发，CPU 成本与接没接灯无关。
