@@ -406,5 +406,16 @@ export function emptyPanelLayer(): EffectLayer {
   return emptyLayer();
 }
 
+/**
+ * 新步骤的两层：**常亮 + 空叠加层**（#157）。
+ *
+ * 为什么放在这里而不是页面：`panelLayer` 是「一层效果 → 线上字节」的唯一装配
+ * 入口，页面直接调它就等于把颜色 / 亮度 / 周期这些默认值抄了第二份。新建的步
+ * 与「切到常亮」必须是同一份编码，否则用户会看到两个不一样的白。
+ */
+export function newStepLayers(): { layer0: EffectLayer; layer1: EffectLayer } {
+  return { layer0: panelLayer("static", defaultParams("static")), layer1: emptyLayer() };
+}
+
 /** 代理导出：页面只需要从这一层认一个入口。 */
 export type { EffectLayer, PanelChoiceKey };

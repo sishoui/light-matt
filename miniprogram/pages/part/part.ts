@@ -40,6 +40,7 @@ import {
   applyPanelChoiceValue,
   applyPanelSliderValue,
   createPanelUnit,
+  newStepLayers,
   panelUnitCheck,
   panelUnitLayers,
   panelUnitView,
@@ -67,7 +68,11 @@ import {
 } from "../../utils/control/timeline-unit";
 import {
   MAX_STEPS as TIMELINE_MAX_STEPS,
+  addStep,
   durationTicks,
+  moveBlock,
+  removeStep,
+  selectionAfterMove,
   type TimelineStep,
 } from "../../utils/control/timeline";
 import {
@@ -179,6 +184,8 @@ Page({
     timelineBlocks: [] as ReturnType<typeof timelineUnitView>["blocks"],
     timelineTotalMs: 0,
     timelineCanAdd: false,
+    /** 还能不能删（至少留一步）。 */
+    timelineCanRemove: false,
     timelineMax: TIMELINE_MAX_STEPS,
     /** 时长条的三个刻度（0.5 / 15 / 30 秒）：标签与位置都由纯函数算好。 */
     durationTicks: durationTicks(),
@@ -232,6 +239,8 @@ Page({
   layoutParts: [] as LayoutPart[],
   /** 当前场景里该部位的时间轴头（步数 / 循环 / 开关）。 */
   scenePart: null as ScenePartReport | null,
+  /** 当前场景里该部位的全部步骤（按步号升序，#157）。 */
+  sceneSteps: [] as SceneStepReport[],
   /** 当前步骤的两层（只读快照，改一层时另一层原样带回）。 */
   stepSnapshot: null as SceneStepReport | null,
   /** 时间轴单元的交互状态（选中 / 容器宽 / 拖动）。 */
@@ -261,6 +270,7 @@ Page({
     this.themeMode = "system";
     this.layoutParts = [];
     this.scenePart = null;
+    this.sceneSteps = [];
     this.stepSnapshot = null;
     this.timeline = createTimelineUnit();
     this.panel = createPanelUnit();
@@ -389,27 +399,34 @@ Page({
         : (scene.parts.find((item) => item.stripId === stripId && item.partId === partId) ??
           null);
     this.scenePart = scenePart;
-    const step =
-      scene === null || scenePart === null
-        ? null
-        : (scene.steps.find(
-            (item) =>
-              item.stripId === stripId && item.partId === partId && item.stepIndex === 0,
-          ) ?? null);
-    this.stepSnapshot = step;
+    this.sceneSteps =
+      scene === null
+        ? []
+        : scene.steps
+            .filter((item) => item.stripId === stripId && item.partId === partId)
+            .sort((a, b) => a.stepIndex - b.stepIndex);
 
-    /* 3) 时间轴模型：本票只有「设备上那一步」（0 步时给一个默认步）。 */
+    /*
+     * 3) 时间轴模型：**整条时间轴**（#157 起每个部位 0–8 步）。
+     *
+     * 设备上 0 步时给一个默认步——否则用户面对的是空时间轴，连时长条都没得调。
+     * 这只是本地草稿，要点「下发」才会真的建出那一步。
+     */
     const steps: TimelineStep[] =
-      step === null ? [{ durationMs: 3000, zones: [] }] : [{ durationMs: step.durationMs, zones: [] }];
+      this.sceneSteps.length === 0
+        ? [{ durationMs: 3000, zones: [] }]
+        : this.sceneSteps.map((item) => ({ durationMs: item.durationMs, zones: [] }));
     this.timelineSteps = steps;
     this.timeline = setTimelineLedCount(this.timeline, stripLedCount);
     this.timeline = clampTimelineSelection(this.timeline, steps.length);
     const timeline = timelineUnitView(steps, this.timeline);
 
-    /* 4) 效果面板：一次读回两层（`panel-unit` 负责主效果与叠加层）。 */
-    const target: PanelTarget = { sceneId, stripId, partId, stepIndex: 0, layer: 0 };
-    this.panel = selectPanelStep(this.panel, target, step);
-    const panel = panelUnitView(this.panel, { hasLayer: step !== null });
+    /* 4) 效果面板绑到**当前选中的那一步**（选别的块就换一组参数）。 */
+    const stepIndex = timeline.selected;
+    this.stepSnapshot = this.stepAt(stepIndex);
+    const target: PanelTarget = { sceneId, stripId, partId, stepIndex, layer: 0 };
+    this.panel = selectPanelStep(this.panel, target, this.stepSnapshot);
+    const panel = panelUnitView(this.panel, { hasLayer: this.stepSnapshot !== null });
 
     const name = part.name;
     const blocks = lineBlocks(parts, stripLedCount, partId);
@@ -453,7 +470,75 @@ Page({
       return;
     }
     this.timeline = next;
+    /* 选中别的步 → 效果面板换那一组的参数（每步两层各一份）。 */
+    this.stepSnapshot = this.stepAt(next.selected);
+    this.panel = selectPanelStep(
+      this.panel,
+      {
+        sceneId: this.data.sceneId,
+        stripId: this.data.stripId,
+        partId: this.data.partId,
+        stepIndex: next.selected,
+        layer: 0,
+      },
+      this.stepSnapshot,
+    );
     this.applyTimelineToData();
+    this.applyPanelToData();
+  },
+
+  /**
+   * 加一步（≤8）。
+   *
+   * 新步默认 1 秒、常亮——「点一下就有东西」而不是面对一个空块。加完立刻选中它，
+   * 用户接着调的就是这一步。
+   */
+  onAddStep() {
+    const result = addStep(this.timelineSteps);
+    if (result === null) {
+      this.setData({ applyError: `一个部位最多 ${MAX_STEPS} 步` });
+      return;
+    }
+    this.timelineSteps = result.steps;
+    this.timeline = selectTimelineStep(this.timeline, result.selected, result.steps.length);
+    this.stepSnapshot = null;
+    this.applyTimelineToData();
+    void this.pushSteps();
+  },
+
+  /** 删掉选中的那一步（0 步 = 本场景不演，由「循环/开关」之外的另一条路）。 */
+  onRemoveStep() {
+    if (this.timelineSteps.length <= 1) {
+      this.setData({ applyError: "至少留一步（要停演就把循环关掉或关掉这个部位）" });
+      return;
+    }
+    const result = removeStep(this.timelineSteps, this.timeline.selected, this.timeline.selected);
+    this.timelineSteps = result.steps;
+    this.timeline = clampTimelineSelection(this.timeline, result.steps.length);
+    this.stepSnapshot = this.stepAt(this.timeline.selected);
+    this.applyTimelineToData();
+    void this.pushSteps();
+  },
+
+  /** 长按拖动结束后重排（`moveBlock` + `selectionAfterMove`）。 */
+  onStepReorder(e: { detail?: { from?: number; to?: number } }) {
+    const from = Number(e.detail?.from ?? -1);
+    const to = Number(e.detail?.to ?? -1);
+    if (from < 0 || to < 0 || from === to) {
+      return;
+    }
+    const reordered = moveBlock([...this.timelineSteps], from, to);
+    if (reordered === this.timelineSteps) {
+      return;
+    }
+    this.timelineSteps = reordered;
+    this.timeline = {
+      ...this.timeline,
+      selected: selectionAfterMove(this.timeline.selected, from, to),
+    };
+    this.stepSnapshot = this.stepAt(this.timeline.selected);
+    this.applyTimelineToData();
+    void this.pushSteps();
   },
 
   /** 时长滑块（秒）：落进模型并刷新块宽。 */
@@ -486,8 +571,86 @@ Page({
       timelineBlocks: view.blocks,
       timelineTotalMs: view.totalMs,
       timelineCanAdd: view.canAdd,
+      timelineCanRemove: view.stepCount > 1,
+      stepCount: view.stepCount,
       durationMs: timelineStepDurationMs(this.timelineSteps, view.selected),
     });
+  },
+
+  /** 设备上某一步的两层（0 步 / 越界给 null）。 */
+  stepAt(stepIndex: number): SceneStepReport | null {
+    return this.sceneSteps.find((item) => item.stepIndex === stepIndex) ?? null;
+  },
+
+  /**
+   * 把整条时间轴写回设备（#157：加 / 删 / 重排步骤之后）。
+   *
+   * 顺序是协议规定的：先 `ScenePart` 声明步数（**步数真变了才清空步骤**，
+   * §6.2），再逐步 `SceneStep`。所以这里必须先把步数写够，否则后面的
+   * `SceneStep` 会因为 `step_index >= step_count` 被拒。
+   *
+   * 与 #125 同一条口径：失败原因显示在页面顶部；成功刷新读回缓存。
+   * 下发期间**不阻塞**用户继续编辑——代次号让旧一轮在 await 之后静默退出。
+   */
+  async pushSteps(): Promise<void> {
+    const session = this.session;
+    if (session === null) {
+      return;
+    }
+    const sceneId = this.data.sceneId;
+    const stripId = this.data.stripId;
+    const partId = this.data.partId;
+    const stepCount = this.timelineSteps.length;
+    this.applyEpoch += 1;
+    const epoch = this.applyEpoch;
+    this.setData({ busy: true, applyError: "" });
+    try {
+      const head = await session.setScenePart(
+        sceneId,
+        stripId,
+        partId,
+        stepCount,
+        LOOP_OPTIONS[this.data.loopIndex]?.value ?? LOOP.NONE,
+        this.data.on,
+      );
+      if (epoch !== this.applyEpoch) {
+        return;
+      }
+      if (head.kind === "ack-error" || head.kind === "error") {
+        this.setData({ applyError: describeFailure(head) });
+        return;
+      }
+      for (let index = 0; index < stepCount; index += 1) {
+        const existing = this.stepAt(index);
+        const layers = existing === null ? newStepLayers() : {
+          layer0: existing.layer0,
+          layer1: existing.layer1,
+        };
+        const written = await session.setSceneStep({
+          sceneId,
+          stripId,
+          partId,
+          stepIndex: index,
+          durationMs: timelineStepDurationMs(this.timelineSteps, index),
+          layer0: layers.layer0,
+          layer1: layers.layer1,
+        });
+        if (epoch !== this.applyEpoch) {
+          return;
+        }
+        if (written.kind === "ack-error" || written.kind === "error") {
+          this.setData({ applyError: describeFailure(written) });
+          return;
+        }
+      }
+      await this.load();
+    } catch (err) {
+      this.setData({ applyError: errorText(err) });
+    } finally {
+      if (epoch === this.applyEpoch) {
+        this.setData({ busy: false });
+      }
+    }
   },
 
   /* ---------------- 效果面板（`panel-unit`） ---------------- */

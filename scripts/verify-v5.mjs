@@ -477,6 +477,34 @@ if (partPage !== null && partPage.route === "pages/part/part") {
   rec("结构区显示覆盖灯珠", /颗已划分/.test(partText) && /\d+–\d+/.test(partText));
   const timelineBlocks = (await mp.currentPage().then((p) => p.$$(".timeline-block"))).length;
   rec("内容区有时间轴", timelineBlocks >= 1, `${timelineBlocks} 块`);
+  /* #157：加一步之后时间轴该真的多一块（这是「每部位独立时间轴」在界面上
+     最直接的样子——以前只有一个块）。 */
+  const stepAdded = await mp.evaluate(async () => {
+    const p = getCurrentPages().pop();
+    const before = (p.data.timelineBlocks || []).length;
+    p.onAddStep();
+    await new Promise((resolve) => setTimeout(resolve, 2600));
+    return {
+      before,
+      after: (p.data.timelineBlocks || []).length,
+      applyError: String(p.data.applyError || ""),
+    };
+  });
+  await sleep(600);
+  rec(
+    "加一步后时间轴真的多一块",
+    stepAdded.after === stepAdded.before + 1 && stepAdded.applyError === "",
+    JSON.stringify(stepAdded),
+  );
+  const afterAddBlocks = (await mp.currentPage().then((p) => p.$$(".timeline-block"))).length;
+  rec("新块渲染出来了（不是只改 data）", afterAddBlocks === stepAdded.after, `${afterAddBlocks}`);
+  /* 收尾：删掉刚加的那一步，后面的用例（改名 / 读回）走的是同一页。 */
+  await mp.evaluate(async () => {
+    const p = getCurrentPages().pop();
+    p.onRemoveStep();
+    await new Promise((resolve) => setTimeout(resolve, 2600));
+  });
+  await sleep(400);
   const typeCells = (await mp.currentPage().then((p) => p.$$(".type-cell"))).length;
   rec("效果面板有类型格", typeCells >= 6, `${typeCells}`);
   rec("页面里没有「应用并播放」（编辑即下发）", !partText.includes("应用并播放"));

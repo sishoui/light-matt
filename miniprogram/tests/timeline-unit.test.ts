@@ -223,12 +223,14 @@ describe("改时长", () => {
     expect(timelineUnitView(steps, createTimelineUnit()).blocks[0].durationText).toBe("2 秒");
   });
 
-  it("两端钳位：低于 0.5 秒 → 500，高于 30 秒 → 30000", () => {
-    expect(setTimelineDuration([step(1000)], 0, 100)[0].durationMs).toBe(500);
-    expect(setTimelineDuration([step(1000)], 0, 99_000)[0].durationMs).toBe(30_000);
-    /* 真机滑块可能给出 0.4999 这种值：钳位后再落进模型。 */
-    expect(setTimelineDuration([step(1000)], 0, 499.9)[0].durationMs).toBe(500);
+  it("两端钳位：低于 100ms → 100，高于 60s → 60000（v5 §1.1）", () => {
+    expect(setTimelineDuration([step(1000)], 0, 40)[0].durationMs).toBe(100);
+    expect(setTimelineDuration([step(1000)], 0, 99_000)[0].durationMs).toBe(60_000);
+    /* 真机滑块可能给出 0.0999 秒这种值：钳位后再落进模型。 */
+    expect(setTimelineDuration([step(1000)], 0, 99.9)[0].durationMs).toBe(100);
     expect(setTimelineDuration([step(1000)], 0, 1400)[0].durationMs).toBe(1500);
+    /* 「闪一下」必须真的能设成 100ms。 */
+    expect(setTimelineDuration([step(1000)], 0, 120)[0].durationMs).toBe(100);
   });
 
   it("下标越界 / 非有限值原样返回（引用相等 = 什么都没变）", () => {
@@ -262,7 +264,7 @@ describe("时长条的秒 → 模型（页面不再自己写 seconds * 1000）",
   });
 
   it("越界下标读时长给默认 1 秒，已钳位", () => {
-    expect(timelineStepDurationMs([step(99_000)], 0)).toBe(30_000);
+    expect(timelineStepDurationMs([step(99_000)], 0)).toBe(60_000);
     expect(timelineStepDurationMs([], 3)).toBe(1000);
   });
 });

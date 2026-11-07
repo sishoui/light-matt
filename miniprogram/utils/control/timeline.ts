@@ -41,12 +41,27 @@
  * 「块数 × 最小宽 + 间隙」）。间隙由 `chooseGap` 在 8px / 4px 之间降级。
  */
 
-/** 时长下限：0.5 秒。 */
-export const MIN_DURATION_MS = 500;
-/** 时长上限：30 秒。 */
-export const MAX_DURATION_MS = 30000;
-/** 时长的最小单位：0.5 秒。 */
-export const DURATION_STEP_MS = 500;
+/**
+ * 时长下限：100 毫秒（v5 §1.1 / T6）。
+ *
+ * v4 是 0.5 秒——那让「闪一下」被强制成慢闪。v5 每个部位一条时间轴，最短
+ * 的步就是「眼灯闪一下」，所以下限降到 100ms。
+ */
+export const MIN_DURATION_MS = 100;
+/** 时长上限：60 秒（T6）：够表达「慢慢亮起来」这种长过渡。 */
+export const MAX_DURATION_MS = 60000;
+/**
+ * 时长台阶的分界：这一段以下按 100 毫秒走，以上按 500 毫秒走（T6）。
+ *
+ * 单一台阶做不到两头都合用——全场 100ms 台阶会让 60 秒处有 600 档，滑块
+ * 每像素跨几十档；全场 500ms 台阶又让 100–500ms 这一段只剩四档，
+ * 「闪三下」调不出来。所以按「1 秒以内 / 以上」分段。
+ */
+export const DURATION_FINE_MS = 1000;
+/** 1 秒以内的台阶（毫秒）。 */
+export const DURATION_FINE_STEP_MS = 100;
+/** 1 秒以上的台阶（毫秒）。 */
+export const DURATION_COARSE_STEP_MS = 500;
 /** 新步骤的默认时长：1 秒。 */
 export const DEFAULT_STEP_MS = 1000;
 /** 刚进进阶档时有几个步骤。分区轴按「当前步骤」取，默认给两个才看得出步骤间差异。 */
@@ -72,28 +87,41 @@ export const DRAG_LIFT_SCALE = 1.06;
 export const DRAG_TAP_SUPPRESS_MS = 300;
 /** 块窄到这个宽度以下就不画时长文字（会溢出到邻块上）。 */
 export const LABEL_MIN_PX = 48;
-/** 时长条的三个刻度（下方文字用）。 */
-export const DURATION_TICKS_MS = [MIN_DURATION_MS, 15000, MAX_DURATION_MS] as const;
+/** 时长条的三个刻度（下方文字用）：两端 + 正中的 30 秒。 */
+export const DURATION_TICKS_MS = [MIN_DURATION_MS, 30000, MAX_DURATION_MS] as const;
 
 /* ---------------- 时长 ---------------- */
 
+/** 给定时长该按哪个台阶取整（≤1 秒走 100ms，>1 秒走 500ms）。 */
+export function durationStepFor(ms: number): number {
+  return ms <= DURATION_FINE_MS ? DURATION_FINE_STEP_MS : DURATION_COARSE_STEP_MS;
+}
+
 /**
- * 时长钳位：0.5–30 秒、四舍五入到最近的 0.5 秒。
+ * 时长钳位：100 毫秒–60 秒，按 T6 的两段台阶取整（≤1s 走 100ms，>1s 走 500ms）。
  *
  * 非有限值（NaN / Infinity）当成「没说」→ 返回默认 1 秒，页面不会因为一次
  * 半个滑块事件把时长清成 0。
+ *
+ * 边界注意：取整之后可能跨过分界（例如 960ms → 1000ms、1040ms → 1000ms），
+ * 所以取整结果要再钳一次区间——否则 60 秒会被取整成 60.0 秒以外的值。
  */
 export function clampDuration(ms: number): number {
   if (!Number.isFinite(ms)) {
     return DEFAULT_STEP_MS;
   }
-  const stepped = Math.round(ms / DURATION_STEP_MS) * DURATION_STEP_MS;
+  const bounded = Math.max(MIN_DURATION_MS, Math.min(MAX_DURATION_MS, ms));
+  const step = durationStepFor(bounded);
+  const stepped = Math.round(bounded / step) * step;
   return Math.max(MIN_DURATION_MS, Math.min(MAX_DURATION_MS, stepped));
 }
 
-/** 一共多少个可选时长（0.5 / 1 / … / 30 秒，含两端）。 */
+/** 一共多少个可选时长（按两段台阶逐档数出来，含两端）。 */
 export function durationSteps(): number {
-  return Math.round((MAX_DURATION_MS - MIN_DURATION_MS) / DURATION_STEP_MS) + 1;
+  const fine = (DURATION_FINE_MS - MIN_DURATION_MS) / DURATION_FINE_STEP_MS;
+  const coarse = (MAX_DURATION_MS - DURATION_FINE_MS) / DURATION_COARSE_STEP_MS;
+  /* 分界点本身两边各算了一次，所以 +1 之后还要减 1。 */
+  return fine + coarse + 1;
 }
 
 /** 时长条的滑块值（秒）。 */
@@ -101,23 +129,28 @@ export function durationSeconds(ms: number): number {
   return clampDuration(ms) / 1000;
 }
 
-/** 「0.5 秒」/「15 秒」/「30 秒」。界面只用秒，不出现毫秒。 */
+/**
+ * 「0.1 秒」/「0.5 秒」/「15 秒」/「60 秒」——界面只用秒，不出现毫秒。
+ *
+ * 1 秒以下保留一位小数（否则 0.1 / 0.2 / 0.3 会全变成「0 秒」）。
+ */
 export function durationText(ms: number): string {
-  return `${clampDuration(ms) / 1000} 秒`;
+  const seconds = clampDuration(ms) / 1000;
+  return Number.isInteger(seconds) ? `${seconds} 秒` : `${seconds.toFixed(1)} 秒`;
 }
 
 /**
  * 时长条上滑块的位置（0-100）。
  *
- * 线性映射：0.5 秒在左端、30 秒在右端，中间刻度 15 秒落在 49.2% 而不是正中
- * ——区间不是以 15 对称的（0.5–15 与 15–30 分别是 14.5 / 15 秒）。
+ * 线性映射：100 毫秒在左端、60 秒在右端。区间不是以 30 秒对称（0.1–30 与
+ * 30–60 分别是 29.9 / 30 秒），所以中间的 30 秒落在 49.9% 而不是正中。
  */
 export function durationPercent(ms: number): number {
   const clamped = clampDuration(ms);
   return ((clamped - MIN_DURATION_MS) / (MAX_DURATION_MS - MIN_DURATION_MS)) * 100;
 }
 
-/** 时长条上的位置（0-1）→ 时长（已钳位到 0.5–30 秒、0.5 秒为单位）。 */
+/** 时长条上的位置（0-1）→ 时长（已钳位到 100ms–60s 并按台阶取整）。 */
 export function durationFromRatio(ratio: number): number {
   const value = Number.isFinite(ratio) ? Math.max(0, Math.min(1, ratio)) : 0;
   return clampDuration(MIN_DURATION_MS + value * (MAX_DURATION_MS - MIN_DURATION_MS));

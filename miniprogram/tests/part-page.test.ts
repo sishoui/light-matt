@@ -63,13 +63,13 @@ describe("部位页：时间轴单元（渲染 / 选中 / 改时长）", () => {
     }
   });
 
-  it("时长被钳到协议区间（低于 0.5 秒抬到 500，高于 30 秒压到 30000）", async () => {
+  it("时长被钳到协议区间（低于 100ms 抬到 100，高于 60s 压到 60000）", async () => {
     const harness = await openPart();
     try {
-      harness.page.onDurationChange(slide(0.1));
-      expect(harness.page.data.durationMs).toBe(500);
+      harness.page.onDurationChange(slide(0.01));
+      expect(harness.page.data.durationMs).toBe(100);
       harness.page.onDurationChange(slide(999));
-      expect(harness.page.data.durationMs).toBe(30000);
+      expect(harness.page.data.durationMs).toBe(60000);
     } finally {
       await harness.dispose();
     }

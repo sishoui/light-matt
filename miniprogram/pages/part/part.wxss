@@ -426,3 +426,28 @@
 .grid-confirm.disabled {
   opacity: 0.5;
 }
+
+/* ---------------- 时间轴的加 / 删（#157） ---------------- */
+
+.step-actions {
+  display: flex;
+  gap: var(--sp-3);
+}
+
+.step-action {
+  flex: 1;
+  padding: var(--sp-3) 0;
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  color: var(--text-2);
+  font-size: var(--fs-caption);
+  text-align: center;
+}
+
+.step-action.danger {
+  color: var(--danger);
+}
+
+.step-action.disabled {
+  opacity: 0.4;
+}

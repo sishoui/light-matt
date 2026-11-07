@@ -23,6 +23,7 @@ import {
   applyPanelChoiceValue,
   applyPanelSliderValue,
   createPanelUnit,
+  newStepLayers,
   panelUnitCheck,
   panelUnitKey,
   panelUnitLayers,
@@ -370,6 +371,17 @@ describe("参数控件定义只有一份", () => {
     expect(source).toContain("buildEffectPanel(");
     expect(source).toContain("applySlider(");
     expect(source).toContain("applyChoice(");
+  });
+
+  it("新步骤的两层与「切到常亮」是同一份编码（#157）", () => {
+    const layers = newStepLayers();
+    expect(layers.layer0.type).toBe(EFFECT_TYPE.STATIC);
+    /* 叠加层必须是空层：空层 → 设备按「覆盖」合成（§6.2）。 */
+    expect(layers.layer1.type).toBe(NO_EFFECT);
+    expect(layers.layer1.level).toBe(0);
+    /* 与切换类型到常亮得到的编码逐字节一致。 */
+    const switched = panelUnitLayers(switchPanelMode(createPanelUnit(), "static"));
+    expect(layers.layer0).toEqual(switched.layer0);
   });
 
   it("页面调的是单元，不是 effect-panel 的细节", () => {

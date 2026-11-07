@@ -79,12 +79,13 @@
 
       <view class="card">
         <!--
-          时间轴（`timeline-unit` 的 timelineUnitView 输出）：本票只有一步，
-          所以只有一块；多步骤与长按重排随 #156 / #157。
+          时间轴（`timeline-unit` 的 timelineUnitView 输出）：每个部位 0–8 步，
+          各走各的时钟（#157）。加 / 删步骤后**立刻下发**（E1 编辑即下发）；
+          其它部位的画面不受影响（E3）。
         -->
         <view class="field">
           <text class="field-label">时间轴</text>
-          <text class="field-value">{{timelineBlocks.length}} 步 · {{durationMs}} ms</text>
+          <text class="field-value">{{timelineBlocks.length}} 步 · {{timelineTotalMs}} ms</text>
         </view>
         <view class="timeline-row">
           <view
@@ -99,6 +100,19 @@
             <text class="timeline-order">{{item.index + 1}}</text>
           </view>
         </view>
+        <view class="step-actions">
+          <view
+            class="step-action {{timelineCanAdd ? '' : 'disabled'}}"
+            bindtap="onAddStep"
+          >+ 加一步</view>
+          <view
+            class="step-action {{timelineCanRemove ? 'danger' : 'disabled'}}"
+            bindtap="onRemoveStep"
+          >删掉第 {{stepIndex + 1}} 步</view>
+        </view>
+        <text class="field-hint">
+          最多 {{timelineMax}} 步；加删步骤只重写这个部位，别的部位照常演
+        </text>
 
         <slider
           min="{{durationMin}}"

@@ -35,7 +35,6 @@ import {
   durationSteps,
   durationText,
   durationTicks,
-  DURATION_STEP_MS,
   LABEL_MIN_PX,
   layoutBlocks,
   LONG_PRESS_MS,
@@ -63,22 +62,30 @@ function near(actual: number, expected: number, epsilon = 1e-6): boolean {
 }
 
 describe("时长钳位", () => {
-  it("下限 0.5 秒：0.4 / 0 / 负数都抬到 0.5", () => {
-    expect(clampDuration(400)).toBe(MIN_DURATION_MS);
+  it("下限 100 毫秒：更小的值都抬到 0.1 秒（T6）", () => {
+    expect(clampDuration(40)).toBe(MIN_DURATION_MS);
     expect(clampDuration(0)).toBe(MIN_DURATION_MS);
     expect(clampDuration(-900)).toBe(MIN_DURATION_MS);
-    expect(MIN_DURATION_MS).toBe(500);
+    expect(MIN_DURATION_MS).toBe(100);
   });
 
-  it("上限 30 秒：30.1 / 31 秒都压到 30", () => {
-    expect(clampDuration(30100)).toBe(MAX_DURATION_MS);
-    expect(clampDuration(31000)).toBe(MAX_DURATION_MS);
+  it("上限 60 秒：更大的值都压到 60（T6）", () => {
+    expect(clampDuration(60100)).toBe(MAX_DURATION_MS);
+    expect(clampDuration(61000)).toBe(MAX_DURATION_MS);
     expect(clampDuration(MAX_DURATION_MS)).toBe(MAX_DURATION_MS);
+    expect(MAX_DURATION_MS).toBe(60000);
   });
 
-  it("以 0.5 秒为单位四舍五入到最近一档", () => {
-    expect(clampDuration(700)).toBe(500);
-    expect(clampDuration(1000)).toBe(1000);
+  it("1 秒以内按 100 毫秒取整（「闪一下」调得出来）", () => {
+    expect(clampDuration(140)).toBe(100);
+    expect(clampDuration(160)).toBe(200);
+    expect(clampDuration(333)).toBe(300);
+    expect(clampDuration(500)).toBe(500);
+    expect(clampDuration(960)).toBe(1000);
+  });
+
+  it("1 秒以上按 500 毫秒取整（长过渡不需要 100ms 精度）", () => {
+    expect(clampDuration(1040)).toBe(1000);
     expect(clampDuration(1200)).toBe(1000);
     expect(clampDuration(1249)).toBe(1000);
     expect(clampDuration(1250)).toBe(1500);
@@ -93,30 +100,33 @@ describe("时长钳位", () => {
     expect(DEFAULT_STEP_MS).toBe(1000);
   });
 
-  it("可选档位数：0.5 到 30 秒共 60 档", () => {
-    expect(durationSteps()).toBe(60);
-    expect((MAX_DURATION_MS - MIN_DURATION_MS) / DURATION_STEP_MS + 1).toBe(durationSteps());
+  it("可选档位数：0.1–1 秒 10 档 + 1–60 秒 118 档（含共享的 1 秒）= 128", () => {
+    /* 100..1000 步长 100 → 10 档；1000..60000 步长 500 → 119 档；1 秒重合。 */
+    expect(durationSteps()).toBe(10 + 119 - 1);
+    expect(durationSteps()).toBe(128);
   });
 
-  it("文案用秒，且只有一位以内小数", () => {
+  it("文案用秒：1 秒以下保留一位小数", () => {
+    expect(durationText(100)).toBe("0.1 秒");
+    expect(durationText(300)).toBe("0.3 秒");
     expect(durationText(500)).toBe("0.5 秒");
     expect(durationText(1500)).toBe("1.5 秒");
     expect(durationText(15000)).toBe("15 秒");
-    expect(durationText(30000)).toBe("30 秒");
-    expect(durationText(99999)).toBe("30 秒");
+    expect(durationText(60000)).toBe("60 秒");
+    expect(durationText(999999)).toBe("60 秒");
     expect(durationSeconds(2500)).toBe(2.5);
   });
 
-  it("时长条位置 0-100：两端是 0.5 / 30，中间 15 秒不在正中", () => {
+  it("时长条位置 0-100：两端是 0.1 / 60，中间 30 秒不在正中", () => {
     expect(durationPercent(MIN_DURATION_MS)).toBe(0);
     expect(durationPercent(MAX_DURATION_MS)).toBe(100);
-    const mid = durationPercent(15000);
+    const mid = durationPercent(30000);
     expect(mid).toBeGreaterThan(49);
     expect(mid).toBeLessThan(50);
   });
 
   it("时长条位置回到时长是稳定的（不会漂移半格）", () => {
-    for (const ms of [500, 1000, 2500, 15000, 29500, 30000]) {
+    for (const ms of [100, 500, 1000, 2500, 15000, 59500, 60000]) {
       expect(durationFromRatio(durationPercent(ms) / 100)).toBe(ms);
     }
     expect(durationFromRatio(-1)).toBe(MIN_DURATION_MS);
@@ -1005,10 +1015,10 @@ describe("拖动位移直接进视图（单元派生，页面不复算）", () =
 });
 
 describe("时长刻度", () => {
-  it("三个刻度：0.5 / 15 / 30 秒，两端贴边", () => {
+  it("三个刻度：0.1 / 30 / 60 秒，两端贴边（v5 区间）", () => {
     const ticks = durationTicks();
-    expect(ticks.map((tick) => tick.label)).toEqual(["0.5 秒", "15 秒", "30 秒"]);
-    expect(ticks.map((tick) => tick.durationMs)).toEqual([500, 15000, 30000]);
+    expect(ticks.map((tick) => tick.label)).toEqual(["0.1 秒", "30 秒", "60 秒"]);
+    expect(ticks.map((tick) => tick.durationMs)).toEqual([100, 30000, 60000]);
     expect(ticks.map((tick) => tick.align)).toEqual(["first", "mid", "last"]);
     expect(ticks[0].percent).toBe(0);
     expect(ticks[2].percent).toBe(100);
