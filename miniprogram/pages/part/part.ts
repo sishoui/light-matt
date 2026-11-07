@@ -37,6 +37,9 @@ import { queryInt } from "../../utils/control/routes";
 import { ControlSession } from "../../utils/control/session";
 import { getSession, isMockSession } from "../../utils/control/session-singleton";
 import {
+  applyOverlayChoiceParam,
+  applyOverlayChoiceValue,
+  applyOverlaySliderValue,
   applyPanelChoiceValue,
   applyPanelSliderValue,
   createPanelUnit,
@@ -78,6 +81,7 @@ import {
 import {
   LOOP,
   MAX_PARTS,
+  PHASE,
   MAX_PART_SEGS,
   MAX_STEPS,
   NAME_BYTES,
@@ -151,6 +155,10 @@ Page({
     /** 一个部位的段数 / 上限。 */
     segCount: 0,
     segLimit: MAX_PART_SEGS,
+    /** 相位模式（S6，每部位一份）：0 连续 / 1 各自起点。 */
+    phase: 0,
+    phaseOptions: ["连续（多段连成一条）", "各自起点（每段独立）"],
+    phaseIndex: 0,
     /** 部位数 / 上限（这条链还塞不塞得下新部位）。 */
     partCount: 0,
     partLimit: MAX_PARTS,
@@ -444,6 +452,8 @@ Page({
       coveredCount: coveredPixels(blocks),
       segCount: part.segs.length,
       segLimit: MAX_PART_SEGS,
+      phase: part.phase,
+      phaseIndex: part.phase === PHASE.PER_SEGMENT ? 1 : 0,
       partCount: parts.length,
       partLimit: MAX_PARTS,
       sceneId,
@@ -685,6 +695,56 @@ Page({
     const key = String(e.currentTarget.dataset.key ?? "");
     const value = Number(e.currentTarget.dataset.value ?? Number.NaN);
     const next = applyPanelChoiceValue(this.panel, key, value);
+    if (next === this.panel) {
+      return;
+    }
+    this.panel = next;
+    this.applyPanelToData();
+  },
+
+  /**
+   * 叠加开关（E6：界面上只有「开 / 关」，没有混合方式选项）。
+   *
+   * 关掉 = 空叠加层 → 设备按「覆盖」合成；打开 = 有一个叠加层 → 按亮度叠加。
+   * 混合方式**由系统按有无叠加层选**，所以这里改的是一个开关而不是四种模式。
+   */
+  onOverlayToggle(e: WechatMiniprogram.SwitchChange) {
+    const on = Boolean(e.detail.value);
+    const next = applyOverlayChoiceValue(this.panel, on ? "static" : "none");
+    if (next === this.panel) {
+      return;
+    }
+    this.panel = next;
+    this.applyPanelToData();
+  },
+
+  /** 叠加层换类型（只在「已打开」时可用）。 */
+  onOverlayTypeTap(e: WechatMiniprogram.TouchEvent) {
+    const type = String(e.currentTarget.dataset.type ?? "");
+    const next = applyOverlayChoiceValue(this.panel, type as never);
+    if (next === this.panel) {
+      return;
+    }
+    this.panel = next;
+    this.applyPanelToData();
+  },
+
+  /** 叠加层的滑块。 */
+  onOverlaySliderChange(e: WechatMiniprogram.SliderChange) {
+    const key = String(e.currentTarget.dataset.key ?? "");
+    const next = applyOverlaySliderValue(this.panel, key, Number(e.detail.value));
+    if (next === this.panel) {
+      return;
+    }
+    this.panel = next;
+    this.applyPanelToData();
+  },
+
+  /** 叠加层的选择项。 */
+  onOverlayChoiceTap(e: WechatMiniprogram.TouchEvent) {
+    const key = String(e.currentTarget.dataset.key ?? "");
+    const value = Number(e.currentTarget.dataset.value ?? Number.NaN);
+    const next = applyOverlayChoiceParam(this.panel, key, value);
     if (next === this.panel) {
       return;
     }
@@ -1042,6 +1102,32 @@ Page({
     } finally {
       this.setData({ busy: false });
     }
+  },
+
+  /**
+   * 改相位模式（**布局族**，`LayoutPart` 的最后一字节）。
+   *
+   * 相位是布局属性（S6），所以它跟名字一样要整份重写布局。为什么不用一条
+   * 单独的命令：`LayoutPart` 同时携带 `seg_count`，而写 `seg_count` 会清空段
+   * ——多开一条命令只会让「改相位」变成第二个会丢划分的入口。
+   *
+   * 改完立即下发（E1）。这一条**会重置该链的播放头**（U10：改结构是唯一
+   * 允许打断时钟的操作），界面上要说明。
+   */
+  async onPhasePick(e: WechatMiniprogram.PickerChange) {
+    const index = Number(e.detail.value);
+    if (!Number.isInteger(index) || index < 0 || index > 1) {
+      return;
+    }
+    const next: number = index === 1 ? PHASE.PER_SEGMENT : PHASE.CONTINUOUS;
+    if (next === this.data.phase) {
+      return;
+    }
+    const parts = this.layoutParts.map((part) =>
+      part.partId === this.data.partId ? { ...part, phase: next } : { ...part },
+    );
+    this.setData({ phase: next, phaseIndex: index });
+    await this.commitLayout(parts, "相位已保存");
   },
 
   /**

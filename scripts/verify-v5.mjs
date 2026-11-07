@@ -589,6 +589,50 @@ if (partPage !== null && partPage.route === "pages/part/part") {
     gridDrag.start === "3" && gridDrag.end === "5",
     `${gridDrag.start}–${gridDrag.end}`,
   );
+
+  /* #158：叠加开关与相位模式。验的是「控件画出来了」+「点了真的到设备」——
+     尤其相位，它是这一轮唯一改协议才做到的事，界面必须真的能改它。 */
+  const layersAndPhase = await mp.evaluate(async () => {
+    const p = getCurrentPages().pop();
+    /* 叠加开关：打开后 overlayEnabled 变真。 */
+    p.onOverlayToggle({ detail: { value: true } });
+    const overlayOn = p.data.overlayEnabled === true;
+    p.onOverlayToggle({ detail: { value: false } });
+
+    /* 相位：选「各自起点」→ 设备上的 phase 必须是 1。 */
+    const before = p.data.phase;
+    await p.onPhasePick({ detail: { value: 1 } });
+    await new Promise((resolve) => setTimeout(resolve, 2600));
+    const afterPhase = p.data.phase;
+    const sceneId = p.data.sceneId;
+    await p.session.queryLayout(p.data.stripId);
+    const layout = p.session.layoutOf(p.data.stripId);
+    const part = layout && layout.parts.find((item) => item.partId === p.data.partId);
+    return {
+      overlayOn,
+      phaseBefore: before,
+      phaseAfter: afterPhase,
+      devicePhase: part ? part.phase : -1,
+      segsKept: part ? part.segs.length : -1,
+      applyError: String(p.data.applyError || ""),
+    };
+  });
+  await sleep(500);
+  rec(
+    "叠加开关能打开（只有一个开关，无混合方式）",
+    layersAndPhase.overlayOn === true,
+    JSON.stringify({ overlayOn: layersAndPhase.overlayOn }),
+  );
+  rec(
+    "相位能选「各自起点」并落到设备",
+    layersAndPhase.phaseAfter === 1 && layersAndPhase.devicePhase === 1,
+    JSON.stringify(layersAndPhase),
+  );
+  rec(
+    "改相位没丢灯珠段",
+    layersAndPhase.segsKept >= 1,
+    `segs=${layersAndPhase.segsKept}`,
+  );
 }
 
 // 回设备页，验改名读回

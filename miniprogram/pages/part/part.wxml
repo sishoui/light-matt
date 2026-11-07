@@ -55,6 +55,19 @@
           <text class="field-value">{{segCount}} / {{segLimit}} 段 · {{pixelCount}} 颗</text>
         </view>
 
+        <!-- 相位模式（S6，每部位一份）：多段之间怎么取波形。
+             它是布局属性，随 LayoutPart 下发并落盘，断电重启后仍在。 -->
+        <view class="field">
+          <text class="field-label">相位</text>
+          <picker mode="selector" range="{{phaseOptions}}" value="{{phaseIndex}}" bindchange="onPhasePick">
+            <view class="picker-value">{{phaseOptions[phaseIndex]}}</view>
+          </picker>
+        </view>
+        <text class="field-hint">
+          连续：多段按灯珠顺序连成一条，波从第一段跑到最后一段；
+          各自起点：每段都从自己的第一颗起波
+        </text>
+
         <button
           class="primary-btn"
           disabled="{{busy || segCount >= segLimit}}"
@@ -184,12 +197,71 @@
           </view>
         </view>
 
-        <!-- 叠加层（第二层）：本票只读展示，编辑随 #158。 -->
-        <view wx:if="{{overlayEnabled}}" class="field">
-          <text class="field-label">特效层</text>
-          <text class="field-value">{{overlaySummary}}</text>
+        <!--
+          叠加层（第二层，#158）：界面上只有「开 / 关」这一个开关。
+          关闭 = 覆盖；打开 = 按亮度叠加——由系统按有无叠加层自己选（E6），
+          用户不需要理解四种混合之间的区别。
+        -->
+        <view class="field">
+          <text class="field-label">叠加层</text>
+          <switch
+            checked="{{overlayEnabled}}"
+            color="{{accentColor}}"
+            disabled="{{busy || !panelHasLayer}}"
+            bindchange="onOverlayToggle"
+          />
         </view>
-        <text wx:elif="{{panelHasLayer}}" class="field-hint">特效层：空</text>
+        <text wx:if="{{!panelHasLayer}}" class="field-hint">
+          这一步还没有内容，先选一个灯效再加叠加
+        </text>
+
+        <block wx:if="{{overlayEnabled}}">
+          <view class="field">
+            <text class="field-label">叠加效果</text>
+            <text class="field-value">{{overlaySummary}}</text>
+          </view>
+          <view class="type-row">
+            <view
+              wx:for="{{overlayChoices}}"
+              wx:key="value"
+              class="type-cell {{item.value === overlayChoice ? 'selected' : ''}}"
+              data-type="{{item.value}}"
+              bindtap="onOverlayTypeTap"
+            >{{item.label}}</view>
+          </view>
+          <text wx:if="{{panelNotice}}" class="field-hint">{{panelNotice}}</text>
+
+          <view class="slider-row" wx:for="{{overlaySliders}}" wx:key="key">
+            <view class="field">
+              <text class="field-label">{{item.label}}</text>
+              <text class="field-value">{{item.display}}</text>
+            </view>
+            <slider
+              min="{{item.min}}"
+              max="{{item.max}}"
+              step="{{item.step}}"
+              value="{{item.value}}"
+              activeColor="{{accentColor}}"
+              data-key="{{item.key}}"
+              bindchange="onOverlaySliderChange"
+            />
+          </view>
+
+          <view class="choice-row" wx:for="{{overlayChoices2}}" wx:key="key">
+            <text class="field-label">{{item.label}}</text>
+            <view class="choice-cells">
+              <view
+                wx:for="{{item.options}}"
+                wx:for-item="option"
+                wx:key="value"
+                class="choice-cell {{option.value === item.value ? 'selected' : ''}}"
+                data-key="{{item.key}}"
+                data-value="{{option.value}}"
+                bindtap="onOverlayChoiceTap"
+              >{{option.label}}</view>
+            </view>
+          </view>
+        </block>
 
         <view class="field">
           <text class="field-label">循环</text>
