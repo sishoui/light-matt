@@ -336,6 +336,16 @@
       "covers": "部位编辑页真的用上两个单元：时间轴块来自 timelineUnitView、改时长与点刻度经 applyTimelineDuration / setTimelineDuration、切类型与改滑块经 panel-unit（参数区按类型整体替换）、下发把 panelUnitLayers 装配的两层送到设备、部位开关只改 on 位、结构区改名整份重写布局且不抹掉别的部位、名字 24 字节 UTF-8 校验",
       "ticket": "#155"
     },
+    "miniprogram/tests/part-layout.test.ts": {
+      "layer": "mp",
+      "covers": "部位布局的固件规则镜像：区间合法性与闭区间相接、跨部位与同部位内互斥（编辑忽略自己那一段）、连续 / 各自起点两种相位的逻辑下标（段序乱写也正确）+ 反函数、归属表与灰缝、方格表折列（对齐十年段只能向下、窄屏保底、灯珠不足不硬凑）与最近一格命中、线视图色块比例与颜色稳定、整份校验的判定顺序（越界先于冲突）、段表增删改与读回补全",
+      "ticket": "#156"
+    },
+    "miniprogram/tests/part-structure.test.ts": {
+      "layer": "mp",
+      "covers": "部位页结构区（走真实页面处理器）：线视图与该部位占的灯珠一致、方格拖选成段落库（含反向拖动）、多段不连续、数字滚轮微调到单颗、压到别的部位时整段被拒且设备一帧未收到、被占格子画斜纹、点已有段弹编辑 / 删除且删除后变灰缝、点编辑只改这一段且不动别的部位、越界与超段数的本地拒绝",
+      "ticket": "#156"
+    },
     "miniprogram/tests/page-harness.test.ts": {
       "layer": "mp",
       "covers": "页面测试底座自查：wx 桩的存储与 toast / modal 记录、事件构造器形状、六个页面都能被捕获注册、能注入已连上的演示会话、settle 不卡满超时、收尾真的解绑",

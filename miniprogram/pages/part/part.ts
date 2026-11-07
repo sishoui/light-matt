@@ -72,11 +72,33 @@ import {
 } from "../../utils/control/timeline";
 import {
   LOOP,
+  MAX_PARTS,
+  MAX_PART_SEGS,
   MAX_STEPS,
   NAME_BYTES,
   STEP_MAX_MS,
   STEP_MIN_MS,
 } from "../../utils/protocol/constants";
+import {
+  gridColumns,
+  gridIndexAtPoint,
+  gridRowsView,
+  lineBlocks,
+  findConflict,
+  mergeDeclaredParts,
+  normalizeRange,
+  partPixelCount,
+  rangeTextOf as segsRangeTextOf,
+  replaceSeg,
+  addSeg,
+  validateLayout,
+  withSegs,
+  type CellRect,
+  type GridRowView,
+  type LineBlock,
+  type PartSeg,
+  type SegConflict,
+} from "../../utils/control/part-layout";
 import type {
   LayoutPart,
   ScenePartReport,
@@ -112,11 +134,39 @@ Page({
     /** 名字字节数 / 上限（UTF-8，中文 3 字节）。 */
     nameBytes: 0,
     nameLimit: NAME_BYTES,
-    /** 覆盖的灯珠描述（只读；改区间是后续票）。 */
+    /** 覆盖的灯珠描述（由 `part-layout` 派生）。 */
     rangeText: "—",
     pixelCount: 0,
     /** 这条链的灯珠数（布局改动的上下文）。 */
     stripLedCount: 0,
+    /** 线视图：各部位占的灯珠段（空闲灯珠不产生块 → 灰缝）。 */
+    lineBlocks: [] as LineBlock[],
+    /** 已覆盖的灯珠数 / 本链总颗数（线视图下方的一行说明）。 */
+    coveredCount: 0,
+    /** 一个部位的段数 / 上限。 */
+    segCount: 0,
+    segLimit: MAX_PART_SEGS,
+    /** 部位数 / 上限（这条链还塞不塞得下新部位）。 */
+    partCount: 0,
+    partLimit: MAX_PARTS,
+
+    /* ---- 方格弹窗（U5 / U7） ---- */
+    gridOpen: false,
+    /** 方格表折成的行（`gridRowsView` 的输出，页面不自己拼状态）。 */
+    gridRows: [] as GridRowView[],
+    gridColumns: 10,
+    /** 本次拖选按住的区间（松手前为草稿）。 */
+    draftStartText: "—",
+    draftEndText: "—",
+    /** 草稿压到别的部位时的提示（S4：整体拒绝）。 */
+    draftConflict: "",
+    /** 起止数字滚轮的候选（显示用的 1 起颗号；`picker` 的 value 是它的下标）。 */
+    pixelOptions: [] as string[],
+    /** 滚轮当前值：**0 起下标**（= 物理灯珠序号），显示时 +1。 */
+    startIndex: 0,
+    endIndex: 0,
+    /** 编辑的是哪一段（-1 = 新增）。 */
+    editingSegIndex: -1,
 
     /* ---- 内容区（场景，0x25 / 0x26） ---- */
     /** 当前场景号（State 报的是权威值）。 */
@@ -194,6 +244,14 @@ Page({
   applyEpoch: 0,
   /** 订阅解绑。 */
   unsubscribers: [] as Array<() => void>,
+  /** 方格表：本次拖选的锚点（-1 = 没有在拖）。 */
+  gridAnchor: -1,
+  /** 方格表：本次拖选当前的落点（-1 = 没有选区）。 */
+  gridCursor: -1,
+  /** 方格表每一格的屏幕矩形（拖选开始时量一次，之后全按它命中）。 */
+  gridRects: [] as CellRect[],
+  /** 方格表的可用宽度（px）；0 = 还没量到。 */
+  gridWidth: 0,
 
   onLoad(options: Record<string, string | undefined>) {
     /* 私有字段显式兜底：Page() 不保证对象字面量字段会被复制到实例上
@@ -209,6 +267,10 @@ Page({
     this.timelineSteps = [];
     this.applyEpoch = 0;
     this.unsubscribers = [];
+    this.gridAnchor = -1;
+    this.gridCursor = -1;
+    this.gridRects = [];
+    this.gridWidth = 0;
 
     const storage = createWxStorage();
     this.storage = storage;
@@ -295,7 +357,16 @@ Page({
       });
       return;
     }
-    const parts = layout.layout.parts;
+    /*
+     * §7.2：读回**只报有段的部位**。删掉某个部位的最后一段后它会消失，
+     * 但设备上仍在（`State.partCounts` 里有）——按声明数补回，否则这个部位
+     * 再也回不来（用户会看到「部位已不存在」）。
+     */
+    const parts = mergeDeclaredParts(
+      layout.layout.parts,
+      state?.partCounts[stripId] ?? 0,
+      stripId,
+    );
     const part = parts.find((item) => item.partId === partId) ?? null;
     this.layoutParts = parts;
     if (part === null) {
@@ -341,6 +412,7 @@ Page({
     const panel = panelUnitView(this.panel, { hasLayer: step !== null });
 
     const name = part.name;
+    const blocks = lineBlocks(parts, stripLedCount, partId);
     this.setData({
       ready: true,
       hint: "",
@@ -348,9 +420,15 @@ Page({
       title: name.length > 0 ? name : `部位 ${partId + 1}`,
       nameInput: name,
       nameBytes: nameBytesOf(name),
-      rangeText: rangeTextOf(part, stripLedCount),
+      rangeText: segsRangeTextOf(part.segs, stripLedCount),
       pixelCount: partPixelCount(part),
       stripLedCount,
+      lineBlocks: blocks,
+      coveredCount: coveredPixels(blocks),
+      segCount: part.segs.length,
+      segLimit: MAX_PART_SEGS,
+      partCount: parts.length,
+      partLimit: MAX_PARTS,
       sceneId,
       sceneLabel: sceneId === 0 ? "场景 1" : `场景 ${sceneId + 1}`,
       stepCount: scenePart?.stepCount ?? 0,
@@ -466,6 +544,344 @@ Page({
   },
 
   /**
+   * 点线视图上的一段 → 弹「编辑 / 删除」（U6）。
+   *
+   * 只对**本部位**的段弹菜单：别的部位的段点不动——要改它们得先进那个部位，
+   * 这是「编辑只改这一段」的边界。
+   */
+  onLineBlockTap(e: WechatMiniprogram.TouchEvent) {
+    const dataset = e.currentTarget.dataset as { partId?: number | string; segIndex?: number | string };
+    const partId = Number(dataset.partId ?? -1);
+    const segIndex = Number(dataset.segIndex ?? -1);
+    if (partId !== this.data.partId || segIndex < 0) {
+      return;
+    }
+    const seg = this.currentPart()?.segs[segIndex];
+    if (seg === undefined) {
+      return;
+    }
+    wx.showActionSheet({
+      itemList: ["编辑这一段", "删除这一段"],
+      success: (res) => {
+        if (res.tapIndex === 0) {
+          this.openGrid(segIndex);
+        } else if (res.tapIndex === 1) {
+          void this.removeSeg(segIndex);
+        }
+      },
+      fail: () => undefined,
+    });
+  },
+
+  /** 打开方格弹窗（-1 = 新增一段）。 */
+  onOpenGridAdd() {
+    if (this.data.segCount >= this.data.segLimit) {
+      this.setData({ applyError: `一个部位最多 ${this.data.segLimit} 段` });
+      return;
+    }
+    this.openGrid(-1);
+  },
+
+  /** 打开方格弹窗（-1 = 新增一段）。 */
+  openGrid(segIndex: number) {    const ledCount = this.data.stripLedCount;
+    if (ledCount < 1) {
+      this.setData({ applyError: "这条灯组没有灯珠" });
+      return;
+    }
+    const seg = segIndex >= 0 ? this.currentPart()?.segs[segIndex] : undefined;
+    this.gridAnchor = -1;
+    this.gridCursor = -1;
+    this.gridRects = [];
+    this.setData({
+      gridOpen: true,
+      editingSegIndex: segIndex,
+      /* 候选是显示文本（1 起）；picker 的 value 是它的下标 = 物理序号。 */
+      pixelOptions: Array.from({ length: ledCount }, (_, index) => String(index + 1)),
+      startIndex: seg?.[0] ?? 0,
+      endIndex: seg?.[1] ?? 0,
+      draftStartText: seg === undefined ? "—" : String(seg[0] + 1),
+      draftEndText: seg === undefined ? "—" : String(seg[1] + 1),
+      draftConflict: "",
+    });
+    this.refreshGrid(null);
+    /* 折列要按真实宽度算：等弹窗渲染出来再量一次。 */
+    this.measureGrid();
+  },
+
+  /** 关掉方格弹窗（拖动中的草稿一并丢弃）。 */
+  onGridClose() {
+    this.gridAnchor = -1;
+    this.gridCursor = -1;
+    this.gridRects = [];
+    this.setData({ gridOpen: false, draftConflict: "" });
+  },
+
+  /**
+   * 量方格表的宽度与每一格的矩形。
+   *
+   * 为什么现在就在 Node 里也能跑通：`createSelectorQuery` 缺失（单测 / 老基础库）
+   * 时只跳过几何，列数按未测量兜底，拖选仍能靠 `dataset.index` 工作。
+   */
+  measureGrid() {
+    const query = wx.createSelectorQuery?.();
+    if (query === undefined) {
+      return;
+    }
+    query
+      .select(".grid-wrap")
+      .boundingClientRect()
+      .selectAll(".grid-cell")
+      .boundingClientRect()
+      .exec((results: Array<any>) => {
+        if (!this.data.gridOpen) {
+          return;
+        }
+        const wrap = results?.[0];
+        const cells = results?.[1];
+        if (Array.isArray(cells)) {
+          this.gridRects = cells.map((rect: any, position: number) => ({
+            index: Number(rect.id ?? position),
+            left: Number(rect.left),
+            top: Number(rect.top),
+            right: Number(rect.right),
+            bottom: Number(rect.bottom),
+          }));
+        }
+        if (wrap !== undefined && Number(wrap.width) > 0) {
+          this.gridWidth = Number(wrap.width);
+          const columns = gridColumns(this.data.stripLedCount, this.gridWidth);
+          if (columns !== this.data.gridColumns) {
+            this.setData({ gridColumns: columns });
+            /* 折行变了，矩形要重量。 */
+            if (Array.isArray(cells) && cells.length > 0) {
+              this.measureGrid();
+            }
+          }
+        }
+        this.refreshGrid(this.draftSeg());
+      });
+  },
+
+  /** 方格表按下：记锚点。 */
+  onGridTouchStart(e: WechatMiniprogram.TouchEvent) {
+    const index = this.gridIndexFromEvent(e);
+    if (index < 0) {
+      return;
+    }
+    this.gridAnchor = index;
+    this.gridCursor = index;
+    this.applyDraft([index, index]);
+  },
+
+  /** 方格表拖动：更新落点（手指在两行之间时取最近一格）。 */
+  onGridTouchMove(e: WechatMiniprogram.TouchEvent) {
+    if (this.gridAnchor < 0) {
+      return;
+    }
+    /*
+     * 有矩形就按屏幕坐标命中（最准）；没有矩形（还没量到 / 量测被跳过）时
+     * 退回 `dataset.index` —— 那是每格自己带的序号，不依赖几何。
+     * 真机上 `touches[0]` 一定在；这里不因它缺失就直接返回，否则量测一旦
+     * 失败整个拖选就完全没反应。
+     */
+    const index = this.gridIndexFromEvent(e);
+    if (index < 0) {
+      return;
+    }
+    const range = normalizeRange(this.gridAnchor, index);
+    if (range === null) {
+      return;
+    }
+    if (this.gridCursor === index) {
+      return;
+    }
+    this.gridCursor = index;
+    this.applyDraft(range);
+  },
+
+  /** 方格表松手：草稿留着供「确认新增 / 保存」，锚点清掉。 */
+  onGridTouchEnd() {
+    if (this.gridAnchor < 0) {
+      return;
+    }
+    this.gridAnchor = -1;
+  },
+
+  /** 滚轮微调：起点 / 终点各一个（U7）。`detail.value` 就是物理灯珠序号（0 起）。 */
+  onStartPick(e: WechatMiniprogram.PickerChange) {
+    this.applyDraft(normalizeRange(Number(e.detail.value), this.data.endIndex));
+  },
+
+  onEndPick(e: WechatMiniprogram.PickerChange) {
+    this.applyDraft(normalizeRange(this.data.startIndex, Number(e.detail.value)));
+  },
+
+  /**
+   * 确认这一段（新增或保存编辑）。
+   *
+   * 冲突已经在草稿阶段显示出来了（`draftConflict`），但**这里还要再判一次**：
+   * 从画斜纹到用户按确认之间，用户可能切到别处又回来，缓存里的布局可能已经
+   * 变了（例如设备页那边加了部位）。所以「能不能提交」以这一刻的布局为准。
+   */
+  async onGridConfirm() {
+    const seg = this.draftSeg();
+    if (seg === null) {
+      this.setData({ draftConflict: "先拖选或滚动选择一段灯珠" });
+      return;
+    }
+    const parts = this.layoutParts;
+    const ledCount = this.data.stripLedCount;
+    const editing = this.data.editingSegIndex;
+    const result =
+      editing >= 0
+        ? replaceSeg(parts, this.data.partId, editing, seg, ledCount)
+        : addSeg(parts, this.data.partId, seg, ledCount);
+    if ("error" in result) {
+      /* 两处都写：弹窗里就地提示，顶部的 `applyError` 关掉弹窗后还看得见。 */
+      this.setData({ draftConflict: result.error, applyError: result.error });
+      return;
+    }
+    const ok = await this.commitLayout(withSegs(parts, this.data.partId, result.segs), "区间已保存");
+    if (ok) {
+      this.onGridClose();
+    }
+  },
+
+  /** 删除一段（点线视图上的段 → 删除）：那几颗灯变黑。 */
+  async removeSeg(segIndex: number) {
+    const parts = this.layoutParts;
+    const result = replaceSeg(parts, this.data.partId, segIndex, null, this.data.stripLedCount);
+    if ("error" in result) {
+      this.setData({ applyError: result.error });
+      return;
+    }
+    await this.commitLayout(withSegs(parts, this.data.partId, result.segs), "已删除这一段");
+  },
+
+  /** 当前编辑的部位（缓存里的布局）。 */
+  currentPart(): LayoutPart | null {
+    return this.layoutParts.find((item) => item.partId === this.data.partId) ?? null;
+  },
+
+  /** 草稿区间对应的 `[start, end]`（0 起）；两轮值相等时仍给单颗段。 */
+  draftSeg(): PartSeg | null {
+    const start = this.data.draftStartText;
+    const end = this.data.draftEndText;
+    if (start === "—" || end === "—") {
+      return null;
+    }
+    return normalizeRange(Number(start) - 1, Number(end) - 1);
+  },
+
+  /** 把草稿区间落进界面并刷新方格 + 冲突提示。 */
+  applyDraft(range: PartSeg | null) {
+    if (range === null) {
+      return;
+    }
+    const parts = this.layoutParts;
+    const editing = this.data.editingSegIndex;
+    const conflict = findConflict(
+      parts,
+      range,
+      editing >= 0 ? { partId: this.data.partId, segIndex: editing } : null,
+    );
+    this.setData({
+      draftStartText: String(range[0] + 1),
+      draftEndText: String(range[1] + 1),
+      startIndex: range[0],
+      endIndex: range[1],
+      draftConflict: conflict === null ? "" : segConflictText(conflict),
+    });
+    this.refreshGrid(range);
+  },
+
+  /** 重画方格表的行（`gridRowsView` 的唯一调用点）。 */
+  refreshGrid(draft: PartSeg | null) {
+    const parts = this.layoutParts;
+    const editing = this.data.editingSegIndex;
+    const conflict =
+      draft === null
+        ? null
+        : findConflict(
+            parts,
+            draft,
+            editing >= 0 ? { partId: this.data.partId, segIndex: editing } : null,
+          );
+    this.setData({
+      gridRows: gridRowsView(
+        this.data.stripLedCount,
+        this.data.gridColumns,
+        parts,
+        this.data.partId,
+        draft,
+        conflict,
+      ),
+    });
+  },
+
+  /** 触摸事件 → 格子序号（没有矩形时的退路：靠 `dataset.index`）。 */
+  gridIndexFromEvent(e: WechatMiniprogram.TouchEvent): number {
+    const touch = e.touches?.[0] ?? e.changedTouches?.[0];
+    if (touch !== undefined && this.gridRects.length > 0) {
+      const hit = gridIndexAtPoint(
+        this.gridRects,
+        Number(touch.clientX),
+        Number(touch.clientY),
+      );
+      if (hit >= 0) {
+        return hit;
+      }
+    }
+    const dataset = (e.currentTarget.dataset ?? {}) as { index?: number | string };
+    const index = Number(dataset.index ?? -1);
+    return Number.isInteger(index) && index >= 0 ? index : -1;
+  },
+
+  /**
+   * 提交一份布局（整份重写 + 立即落盘）。
+   *
+   * 本地先跑一遍与固件同一份的校验：能在这里拦下的（越界 / 重叠 / 超段数）
+   * 就不发帧——设备回 `InvalidParam` 时用户只看到一句错误码，看不出是哪一段。
+   * 返回是否成功（弹窗据此决定要不要关）。
+   */
+  async commitLayout(parts: LayoutPart[], okText: string): Promise<boolean> {
+    const session = this.session;
+    if (session === null || this.data.busy) {
+      return false;
+    }
+    const issue = validateLayout(parts, this.data.stripLedCount);
+    if (issue !== null) {
+      this.setData({ applyError: issue.message, draftConflict: issue.message });
+      return false;
+    }
+    this.applyEpoch += 1;
+    const epoch = this.applyEpoch;
+    this.setData({ busy: true, applyError: "" });
+    try {
+      const result = await session.writeLayout(this.data.stripId, parts);
+      if (epoch !== this.applyEpoch) {
+        return false;
+      }
+      if (result.kind === "ok" || result.kind === "storage") {
+        if (result.kind === "storage") {
+          this.setData({ applyError: "已生效但未保存到设备（存储失败）" });
+        } else {
+          wx.showToast({ title: okText, icon: "none" });
+        }
+        await this.load();
+        return true;
+      }
+      this.setData({ applyError: describeFailure(result) });
+      return false;
+    } catch (err) {
+      this.setData({ applyError: errorText(err) });
+      return false;
+    } finally {
+      this.setData({ busy: false });
+    }
+  },
+
+  /**
    * 保存名字（**布局族**：整份重写 + 立即落盘）。
    *
    * 为什么整份重写：`LayoutWrite` 会清空该链的全部部位（§6.1 第 1 条），
@@ -486,25 +902,7 @@ Page({
         ? { ...part, name, nameLen: nameBytesOf(name) }
         : { ...part },
     );
-    this.applyEpoch += 1;
-    const epoch = this.applyEpoch;
-    this.setData({ busy: true, applyError: "" });
-    try {
-      const result = await session.writeLayout(this.data.stripId, parts);
-      if (epoch !== this.applyEpoch) {
-        return;
-      }
-      if (result.kind === "ok") {
-        wx.showToast({ title: "名字已保存", icon: "none" });
-        await this.load();
-        return;
-      }
-      this.setData({ applyError: describeFailure(result) });
-    } catch (err) {
-      this.setData({ applyError: errorText(err) });
-    } finally {
-      this.setData({ busy: false });
-    }
+    await this.commitLayout(parts, "名字已保存");
   },
 
   /* ---------------- 内容区（场景） ---------------- */
@@ -625,30 +1023,18 @@ function nameBytesOf(text: string): number {
   return bytes;
 }
 
-/** 部位覆盖的灯珠描述（区间按用户视角从 1 编号）。 */
-function rangeTextOf(part: LayoutPart, ledCount: number): string {
-  if (part.segs.length === 0) {
-    return "未划灯珠";
-  }
-  const pieces = part.segs.map(([start, end]) => `${start + 1}–${end + 1}`);
-  if (
-    part.segs.length === 1 &&
-    part.segs[0][0] === 0 &&
-    part.segs[0][1] >= Math.max(0, ledCount - 1)
-  ) {
-    return `${pieces[0]}（整条）`;
-  }
-  return pieces.join("、");
-}
-
-function partPixelCount(part: LayoutPart): number {
+/** 线视图所有块盖住的灯珠数（空闲灯珠不计）。 */
+function coveredPixels(blocks: readonly LineBlock[]): number {
   let total = 0;
-  for (const [start, end] of part.segs) {
-    if (end >= start) {
-      total += end - start + 1;
-    }
+  for (const block of blocks) {
+    total += block.end - block.start + 1;
   }
   return total;
+}
+
+/** 草稿压到别的部位时的提示（说清被占的是哪几颗、属于谁）。 */
+function segConflictText(conflict: SegConflict): string {
+  return `第 ${conflict.overlap[0] + 1}–${conflict.overlap[1] + 1} 颗已被部位 ${conflict.partId + 1} 占用`;
 }
 
 function loopIndexOf(loop: number): number {

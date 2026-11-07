@@ -16,7 +16,7 @@
       <!-- ---------------- 结构区（布局，0x21 / 0x23） ---------------- -->
       <view class="section-head">
         <text class="section-title">结构</text>
-        <text class="section-note">名字 · 区间</text>
+        <text class="section-note">{{partCount}} / {{partLimit}} 部位</text>
       </view>
 
       <view class="card">
@@ -32,11 +32,34 @@
         </view>
         <text class="field-hint">{{nameBytes}} / {{nameLimit}} 字节（中文按 3 字节算）</text>
 
-        <view class="field">
-          <text class="field-label">覆盖灯珠</text>
-          <text class="field-value">{{rangeText}}</text>
+        <!-- 线视图（U5）：一条线表示整条链，各部位占的灯珠用不同色块标出。
+             空闲灯珠不产生块，露出的底色就是灰缝——漏掉哪几颗一眼看得见。 -->
+        <view class="line-track">
+          <view
+            wx:for="{{lineBlocks}}"
+            wx:key="key"
+            class="line-block {{item.current ? 'current' : ''}}"
+            style="left: {{item.leftPercent}}%; width: {{item.widthPercent}}%; background: {{item.color}};"
+            data-part-id="{{item.partId}}"
+            data-seg-index="{{item.segIndex}}"
+            bindtap="onLineBlockTap"
+          ></view>
         </view>
-        <text class="field-hint">{{pixelCount}} 颗 / 本组共 {{stripLedCount}} 颗</text>
+        <view class="line-legend">
+          <text class="field-hint">{{coveredCount}} / {{stripLedCount}} 颗已划分</text>
+          <text class="field-hint">{{rangeText}}</text>
+        </view>
+
+        <view class="field">
+          <text class="field-label">灯珠段</text>
+          <text class="field-value">{{segCount}} / {{segLimit}} 段 · {{pixelCount}} 颗</text>
+        </view>
+
+        <button
+          class="primary-btn"
+          disabled="{{busy || segCount >= segLimit}}"
+          bindtap="onOpenGridAdd"
+        >+ 选区（方格拖选）</button>
 
         <button
           class="primary-btn"
@@ -44,7 +67,7 @@
           bindtap="onSaveName"
         >保存名字</button>
         <text class="field-hint">
-          保存会重写整条灯组的布局，并把这条链的播放头重置到此刻
+          改结构会重写整条灯组的布局，并把这条链的播放头重置到此刻
         </text>
       </view>
 
@@ -170,5 +193,62 @@
         <text class="field-hint">下发只写这一步，不会重置播放头</text>
       </view>
     </block>
+  </view>
+
+  <!-- ============ 方格表弹窗（U5 / U7 / S4） ============ -->
+  <view wx:if="{{gridOpen}}" class="grid-mask" bindtap="onGridClose"></view>
+  <view wx:if="{{gridOpen}}" class="grid-sheet">
+    <view class="grid-head">
+      <text class="grid-title">{{editingSegIndex >= 0 ? '编辑这一段' : '选一段灯珠'}}</text>
+      <text class="grid-sub">{{stripLedCount}} 颗 · 按住拖动选取</text>
+    </view>
+
+    <!-- 按住拖动：松手成段。格子状态（空闲 / 自己 / 别的部位 / 选区 /
+         斜纹）全部由 `gridRowsView` 派生，页面不拼条件。 -->
+    <view class="grid-wrap">
+      <view wx:for="{{gridRows}}" wx:key="key" class="grid-row">
+        <view
+          wx:for="{{item.cells}}"
+          wx:for-item="cell"
+          wx:key="index"
+          class="grid-cell cell-{{cell.state}} {{cell.decadeStart ? 'decade-start' : ''}}"
+          style="{{cell.color ? 'background:' + cell.color + ';' : ''}}"
+          data-index="{{cell.index}}"
+          catchtouchstart="onGridTouchStart"
+          catchtouchmove="onGridTouchMove"
+          catchtouchend="onGridTouchEnd"
+        >{{cell.label}}</view>
+      </view>
+    </view>
+
+    <view class="grid-draft">
+      <text class="field-label">选中</text>
+      <text class="field-value">{{draftStartText}} – {{draftEndText}}</text>
+    </view>
+    <text wx:if="{{draftConflict}}" class="grid-conflict">{{draftConflict}}</text>
+
+    <!-- 起止数字滚轮（U7）：拖完再微调，手指粗也能落到单颗。 -->
+    <view class="grid-pickers">
+      <picker mode="selector" range="{{pixelOptions}}" value="{{startIndex}}" bindchange="onStartPick">
+        <view class="picker-box">
+          <text class="picker-label">起点</text>
+          <text class="picker-value">{{startIndex + 1}}</text>
+        </view>
+      </picker>
+      <picker mode="selector" range="{{pixelOptions}}" value="{{endIndex}}" bindchange="onEndPick">
+        <view class="picker-box">
+          <text class="picker-label">终点</text>
+          <text class="picker-value">{{endIndex + 1}}</text>
+        </view>
+      </picker>
+    </view>
+
+    <view class="grid-actions">
+      <view class="grid-cancel" bindtap="onGridClose">取消</view>
+      <view
+        class="grid-confirm {{draftConflict ? 'disabled' : ''}}"
+        bindtap="onGridConfirm"
+      >确认</view>
+    </view>
   </view>
 </view>

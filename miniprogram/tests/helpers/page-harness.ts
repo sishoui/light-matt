@@ -30,8 +30,12 @@ export interface PageHarness {
   session: ControlSession;
   transport: MockTransport;
   storage: MemoryStorage;
-  /** `wx` 桩（toast / modal 的记录在 `createWxStub` 的返回值里）。 */
+  /** `wx` 桩（toast / modal / actionSheet 的记录在 `createWxStub` 的返回值里）。 */
   wx: any;
+  /** `wx.showActionSheet` 弹出过的选项组（#156）。 */
+  sheets: string[][];
+  /** 下一次 `showActionSheet` 要点哪一项（-1 = 取消）。 */
+  sheetAnswer: { tapIndex: number };
   /** 解绑并丢弃会话（每个用例收尾调用，避免泄漏监听）。 */
   dispose(): Promise<void>;
 }
@@ -41,10 +45,16 @@ export function createWxStub(): {
   wx: any;
   toasts: string[];
   modals: Array<{ title: string; content: string; confirmText?: string }>;
+  /** `showActionSheet` 弹出过的选项组（#156 的「编辑 / 删除」菜单）。 */
+  sheets: string[][];
+  /** 下一次 `showActionSheet` 要点哪一项（-1 = 取消）。 */
+  sheetAnswer: { tapIndex: number };
 } {
   const store = new Map<string, any>();
   const toasts: string[] = [];
   const modals: Array<{ title: string; content: string; confirmText?: string }> = [];
+  const sheets: string[][] = [];
+  const sheetAnswer = { tapIndex: 0 };
   const wx: any = {
     getStorageSync: (key: string) => store.get(key),
     setStorageSync: (key: string, value: any) => void store.set(key, value),
@@ -55,6 +65,15 @@ export function createWxStub(): {
       modals.push({ title: opts.title, content: opts.content, confirmText: opts.confirmText });
       opts.success?.({ confirm: true, cancel: false });
     },
+    showActionSheet: (opts: any) => {
+      sheets.push([...(opts.itemList ?? [])]);
+      const tapIndex = sheetAnswer.tapIndex;
+      if (tapIndex < 0) {
+        opts.fail?.({ errMsg: "showActionSheet:fail cancel" });
+        return;
+      }
+      opts.success?.({ tapIndex });
+    },
     vibrateShort: () => undefined,
     navigateBack: () => undefined,
     navigateTo: () => undefined,
@@ -62,7 +81,7 @@ export function createWxStub(): {
     getSystemInfoSync: () => ({ statusBarHeight: 24 }),
     getDeviceInfo: () => ({ platform: "devtools" }),
   };
-  return { wx, toasts, modals };
+  return { wx, toasts, modals, sheets, sheetAnswer };
 }
 
 /**
@@ -94,12 +113,14 @@ export async function openPage(
   page.onLoad(options);
   page.onShow?.();
   await settle(page);
-  return {
+ return {
     page,
     session,
     transport,
     storage,
     wx: stub.wx,
+    sheets: stub.sheets,
+    sheetAnswer: stub.sheetAnswer,
     dispose: async () => {
       try {
         page.onUnload?.();

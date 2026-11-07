@@ -666,6 +666,7 @@ export class MockTransport {
       case 0x22: {
         const stripId = payload[0];
         const partId = payload[1];
+        const segId = payload[2];
         const start = payload[3];
         const end = payload[4];
         const strip = runtime.strips[stripId];
@@ -676,28 +677,46 @@ export class MockTransport {
         if (start > end || end >= strip.ledCount) {
           return 0x01;
         }
-        /* 一颗灯珠只属一个部位（S3）：与同链其它部位的所有段互斥。 */
+        /*
+         * 一颗灯珠只属一个部位（S3）：与同链**所有**段互斥，同部位的其它段也在内
+         * ——与固件 `seg_conflicts` 同一份规则（它只跳过 `skip_part/skip_seg` 这
+         * 一个位置）。替换自己时因此必须跳过自己那一条。
+         */
         for (const other of strip.parts) {
-          for (const [ostart, oend] of other.segs) {
-            if (other.partId === partId) {
+          for (let index = 0; index < other.segs.length; index += 1) {
+            if (other.partId === partId && index === segId) {
               continue;
             }
+            const [ostart, oend] = other.segs[index];
             if (!(end < ostart || oend < start)) {
               return 0x01;
             }
           }
         }
-        part.segs = part.segs.filter((_, index) => index !== payload[2]);
+        part.segs = part.segs.filter((_, index) => index !== segId);
         part.segs.push([start, end]);
         return 0x00;
       }
       case 0x23: {
-        /* LayoutCommit：整份校验（段已写齐 + 段互斥已在 LayoutSeg 判过）。 */
-        const broken = runtime.strips.some((strip) =>
-          strip.parts.some((part) => part.segs.length === 0 && part.name !== ""),
-        );
-        if (broken) {
-          return 0x01;
+        /*
+         * LayoutCommit：整份校验，与固件 `lumen_layout_store_validate` 同口径。
+         *
+         * **0 段的部位是合法的**（它只是整条黑，§6.1 允许「有部位但没划灯珠」），
+         * 所以只校验段本身：区间合法 + 同链互斥。
+         */
+        for (const strip of runtime.strips) {
+          const seen: Array<[number, number]> = [];
+          for (const part of strip.parts) {
+            for (const [start, end] of part.segs) {
+              if (start > end || end >= strip.ledCount) {
+                return 0x01;
+              }
+              if (seen.some(([a, b]) => !(end < a || b < start))) {
+                return 0x01;
+              }
+              seen.push([start, end]);
+            }
+          }
         }
         runtime.layoutValid = runtime.strips.some((strip) => strip.parts.length > 0);
         runtime.layoutStaging = false;

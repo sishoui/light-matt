@@ -470,7 +470,11 @@ if (partPage !== null && partPage.route === "pages/part/part") {
   rec("有结构区", partText.includes("结构"));
   rec("有内容区", partText.includes("内容"));
   rec("结构区有部位名输入", (await mp.currentPage().then((p) => p.$$(".field-input"))).length >= 1);
-  rec("结构区显示覆盖灯珠", partText.includes("覆盖灯珠"));
+  /* #156：结构区改成「线视图 + 段数」，区间文字在线视图下方。
+     断言验的是**用户看得见的东西**：色块画出来没有、区间从 1 起、颗数对得上。 */
+  const lineBlocks = (await mp.currentPage().then((p) => p.$$(".line-block"))).length;
+  rec("结构区有线视图色块", lineBlocks >= 1, `${lineBlocks} 块`);
+  rec("结构区显示覆盖灯珠", /颗已划分/.test(partText) && /\d+–\d+/.test(partText));
   const timelineBlocks = (await mp.currentPage().then((p) => p.$$(".timeline-block"))).length;
   rec("内容区有时间轴", timelineBlocks >= 1, `${timelineBlocks} 块`);
   const typeCells = (await mp.currentPage().then((p) => p.$$(".type-cell"))).length;
@@ -524,6 +528,38 @@ if (partPage !== null && partPage.route === "pages/part/part") {
     "改名后保存成功（无错误）",
     nameSaved.input === "眼灯" && nameSaved.applyError === "",
     JSON.stringify(nameSaved),
+  );
+
+  /* #156 头牌：方格拖选。这里验的是「弹窗真的画出来、格子点得动、拖完选区
+     落在 data 里」，以及「压到别的部位时被拒」——纯逻辑层已经由单测覆盖，
+     这一层只回答「用户在模拟器上点得到吗」。 */
+  const gridDrag = await mp.evaluate(async () => {
+    const p = getCurrentPages().pop();
+    p.onOpenGridAdd();
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const opened = p.data.gridOpen === true;
+    const cells = p.data.gridRows || [];
+    const cellCount = cells.reduce((sum, row) => sum + (row.cells ? row.cells.length : 0), 0);
+    /* 先确认弹窗里确实有格子，再按 dataset 拖一段（模拟器里量不到屏幕矩形，
+       走 `dataset.index` 的退路——那是产品代码本来就有的一条路径）。 */
+    p.onGridTouchStart({ currentTarget: { dataset: { index: 2 } }, touches: [], detail: {} });
+    p.onGridTouchMove({ currentTarget: { dataset: { index: 4 } }, touches: [], detail: {} });
+    p.onGridTouchEnd({ currentTarget: { dataset: {} }, touches: [], detail: {} });
+    const start = String(p.data.draftStartText);
+    const end = String(p.data.draftEndText);
+    p.onGridClose();
+    return { opened, cellCount, start, end };
+  });
+  await sleep(400);
+  rec(
+    "方格弹窗能打开并画出格子",
+    gridDrag.opened === true && gridDrag.cellCount >= 10,
+    JSON.stringify(gridDrag),
+  );
+  rec(
+    "方格拖选落成一段（选区从 1 起编号）",
+    gridDrag.start === "3" && gridDrag.end === "5",
+    `${gridDrag.start}–${gridDrag.end}`,
   );
 }
 

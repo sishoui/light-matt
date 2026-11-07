@@ -225,3 +225,204 @@
   background: var(--accent-soft);
   color: var(--accent);
 }
+
+/* ---------------- 线视图（#156，`lineBlocks` 的输出） ---------------- */
+
+/* 一条线表示整条链：块按比例定位，露出的底色就是灰缝。 */
+.line-track {
+  position: relative;
+  height: 28rpx;
+  border-radius: var(--radius-sm);
+  background: var(--card-2);
+  overflow: hidden;
+}
+
+.line-block {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  opacity: 0.55;
+}
+
+/* 当前编辑的部位更亮；别的部位压暗，一眼能分出「我在改哪一块」。 */
+.line-block.current {
+  opacity: 1;
+}
+
+.line-legend {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+/* ---------------- 方格表弹窗（#156） ---------------- */
+
+.grid-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 100;
+}
+
+.grid-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 101;
+  padding: var(--sp-5) var(--sp-4) calc(var(--sp-5) + env(safe-area-inset-bottom));
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-overlay);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.grid-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.grid-title {
+  font-size: var(--fs-h3);
+  color: var(--text);
+}
+
+.grid-sub {
+  font-size: var(--fs-caption);
+  color: var(--text-3);
+}
+
+.grid-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.grid-row {
+  display: flex;
+  gap: 4rpx;
+}
+
+/* 每格一颗灯；`flex: 1` 让一行均分容器宽（列数由 `gridColumns` 决定）。 */
+.grid-cell {
+  flex: 1;
+  min-width: 0;
+  height: 44rpx;
+  border-radius: var(--radius-xs);
+  background: var(--card-2);
+  color: var(--text-3);
+  font-size: var(--fs-micro);
+  line-height: 44rpx;
+  text-align: center;
+  overflow: hidden;
+}
+
+/* 每十颗一段：左侧加粗分隔（U7）。 */
+.grid-cell.decade-start {
+  border-left: 2rpx solid var(--border-strong);
+}
+
+/* 空闲 / 自己 / 别的部位：靠色块区分（颜色由 `partColor` 从数据里带进来）。 */
+.grid-cell.cell-free {
+  background: var(--card-2);
+  color: var(--text-3);
+}
+
+.grid-cell.cell-own,
+.grid-cell.cell-other {
+  color: var(--accent-ink);
+}
+
+.grid-cell.cell-other {
+  opacity: 0.45;
+}
+
+/* 本次选区：高亮成主色。 */
+.grid-cell.cell-candidate {
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+/* 压到别的部位：斜纹 + 危险色（S4：整体拒绝，但选区其余部分仍可见）。 */
+.grid-cell.cell-blocked {
+  color: var(--danger);
+  font-weight: 600;
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--danger-soft) 0,
+    var(--danger-soft) 6rpx,
+    transparent 6rpx,
+    transparent 12rpx
+  );
+}
+
+.grid-draft {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.grid-conflict {
+  font-size: var(--fs-caption);
+  color: var(--danger);
+  line-height: 1.5;
+}
+
+.grid-pickers {
+  display: flex;
+  gap: var(--sp-3);
+}
+
+.grid-pickers picker {
+  flex: 1;
+}
+
+.picker-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+}
+
+.picker-label {
+  font-size: var(--fs-caption);
+  color: var(--text-3);
+}
+
+.grid-actions {
+  display: flex;
+  gap: var(--sp-3);
+  padding-top: var(--sp-2);
+}
+
+.grid-cancel,
+.grid-confirm {
+  flex: 1;
+  padding: var(--sp-4);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-body);
+  text-align: center;
+}
+
+.grid-cancel {
+  background: var(--card-2);
+  color: var(--text-2);
+}
+
+.grid-confirm {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.grid-confirm.disabled {
+  opacity: 0.5;
+}
