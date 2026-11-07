@@ -230,8 +230,20 @@ v5 已合入 master，规格父票 #145 已关闭。剩下的事：
 
 1. ~~review + 合 PR #163~~ **已完成**（merge commit `70cc47d`）。
 2. ~~定「相位漂移」怎么算~~ **已完成**：串口调试日志 + 闭式解残差，见 §0。
-3. **合 `integration/test-flow`**（第八轮遗留，一直没合），并更新
-   `docs/agents/issue-tracker.md` 的「当前 effort」。
+3. ~~合 `integration/test-flow`~~ **早就合了，是文档写错**（2026-11-07 核实）。
+
+> **`integration/test-flow` 根本不需要合。** `git merge-base --is-ancestor
+> origin/integration/test-flow origin/master` → **YES**，它领先 master **0** 个提交。
+> 实际是 `d00cd19`（第九轮，`#120` 规格 + `#121`–`#126` 实现票）那次合并把它带进去的。
+>
+> 这句「一直没合」在 `handoff.md` / `AGENTS.md` / `issue-tracker.md` 里传了好几轮，
+> **没人验证过**。教训：写「某分支未合」之前先跑
+> `git rev-list --count origin/master..origin/<branch>`——0 就是已合。
+>
+> 2026-11-07 那次全仓核查：**所有远端分支都已在 master 里**（无一领先），
+> 三个领先的本地分支（`feat/31-rainbow-comet` / `feat/sep-fw` / `feat/sep-ui`）
+> 都是历史残留——`feat/31` 相对 master 只剩注释措辞差异（实质代码相同），
+> 另外两个的补丁 `git cherry` 判为已等价存在。**没有待合并的代码。**
 
 接缝笔记仍在**仓库外**：`C:\Users\13092\Desktop\项目\zcode\lumen-notes\v5\seams.md`
 （命令分发链 / 持久化 / 渲染分层 / 向量机制，全带 `file:line`）。
@@ -348,7 +360,8 @@ v5 已合入 master，规格父票 #145 已关闭。剩下的事：
 
 ### 遗留
 
-1. **`integration/test-flow` 仍未合入 `master`**（上轮遗留，与本轮无关）。
+1. ~~**`integration/test-flow` 仍未合入 `master`**~~ —— **这条是错的**，2026-11-07
+   核实它早已合入（领先 master 0 个提交，由 `d00cd19` 带入）。见 §0.6 的说明。
 2. `scripts/calibrate-scope-boxes.py` 产出的 `.scope-boxes.json` 绑定机位与
    分辨率，是本地产物（已 gitignore）；换机位必须重跑标定。
 3. 单步方案下 `loop=1` 与 `loop=2` 行为雷同（#120 的 Q4，已知，不在本轮范围）。

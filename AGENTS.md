@@ -32,7 +32,8 @@
 > **量产固件绝对不要打开这个开关**（每 10 秒阻塞渲染任务约 6ms）。
 >
 > **仍未闭环（下个会话先读 [`docs/handoff.md`](docs/handoff.md) §0）**：
-> ① `integration/test-flow`（第八轮遗留）仍未合入 `master`；
+> ① ~~`integration/test-flow` 未合~~ **早就合了，是文档写错**：它领先 master **0**
+> 个提交（`d00cd19` 那次合并带进去的）。2026-11-07 全仓核查过，**没有待合并的代码**；
 > ② 真机色域压缩 / 压降 / 8 链共 5V 电流阶跃是物理问题，未解决。
 >
 > 上一轮（第十轮）的修复在 `fix/no-segment-black-and-layer-blend`，已随本分支带上。

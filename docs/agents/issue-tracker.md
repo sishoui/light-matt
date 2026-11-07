@@ -51,7 +51,9 @@ Issue 与 spec 住在 GitHub Issues。所有操作走 `gh` CLI；在仓库目录
 - `dab2744` + `269b24c` —— 相位漂移真机测量（串口 `ph:` 日志 + 闭式解残差，
   30 分钟 / 180 采样 / 最大 0 ms）
 
-**下一个 effort 待定。** `integration/test-flow`（第八轮遗留）仍未合入 master。
+**下一个 effort 待定。** ~~`integration/test-flow`（第八轮遗留）仍未合入 master~~
+——2026-11-07 核实：它**早已合入**（领先 master 0 个提交，由 `d00cd19` 那次合并带入）。
+全仓远端分支无一领先 master，**没有待合并的代码**。
 
 ---
 
