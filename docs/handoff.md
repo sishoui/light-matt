@@ -89,18 +89,28 @@ v5 是**断崖**：协议、持久化、渲染模型全换。一条链切成多�
 > 的位时间真的发，CPU 成本是真实的。判据必须 `lit=8` 且 `pushed` 持续增长，
 > 否则测到的是「去重跳过」的空场景。
 
-### 为什么 `ui` 层现在必须跑
+### `ui` 层：已跑通（48/48），但依赖一个**必须手动开**的服务
 
-它此前从第八轮起一直 SKIP（`verify-v5.mjs` 锁的是已删的 `pages/strip`）。#156 的头牌是
-**方格拖选**——最吃交互的一张票。若 `ui` 继续 SKIP，#156–#162 七张票都会带着
-「ui 未跑」合入，第一次视觉验证发生在最后一张票。**改 `pages/device` / `pages/part` 必须跑它。**
+`verify-v5.mjs` 的断言集已经改写成 v5 页面，本轮实测 **48/48 通过**（含方格拖选、
+场景条、相位落盘、叠加开关）。**改 `pages/device` / `pages/part` 必须跑它**——它验的是
+「点得动 + 设备真的收到」，单测（直接 `new ControlSession`）覆盖不到那一层。
+
+> ⚠️ **它会随开发者工具自动化进程退出而变回 SKIP**（`ECONNREFUSED ws://127.0.0.1:9502`）。
+> 这是**环境状态**，不是代码坏了。下个会话若看到 `ui` SKIP，先跑下面的命令重开，
+> 再判这一层。**别把 SKIP 当成通过，也别当成失败。**
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'C:\Program Files (x86)\Tencent\微信web开发者工具\cli.bat' auto --project 'C:\Users\13092\Desktop\项目\zcode\lumen\miniprogram'"
+# 加 --auto-port 9502 让端口可预测（不加时它会自己挑，下面那行就连不上）
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'C:\Program Files (x86)\Tencent\微信web开发者工具\cli.bat' auto --project 'C:\Users\13092\Desktop\项目\zcode\lumen\miniprogram' --auto-port 9502"
 ```
 ```bash
 WS=ws://127.0.0.1:9502 node scripts/test-run.mjs ui
 ```
+
+> **`9501` 是 IDE 的 HTTP 端口，不是自动化 ws**。探 9501 通 ≠ 自动化可用（本轮踩过：
+> 9501 在听、9502 已关，`ui` 照样 SKIP）。
+> 若报 `IDE server has started on 9501 and must be restarted on 9420`，**不要加 `--port`**，
+> 不带端口重跑即可。
 
 ### 0.1 更早一次真机验收推翻了两票的「已完成」（三个固件缺陷）
 

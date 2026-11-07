@@ -130,6 +130,13 @@ mock 上两次尝试没复现（await 太快），真机 BLE 往返 30ms 窗口�
   `managed_components` + `dependencies.lock` 到 `%TEMP%\lumen-firmware`，并且
   **必须 `set IDF_PYTHON_ENV_PATH=C:\Espressif\python_env\idf6.1_py3.11_env`**
   （`export.bat` 默认找 3.12，本机没有）
+- **`ui` 层现在是 SKIP，因为自动化进程已退出**（`ECONNREFUSED ws://127.0.0.1:9502`）。
+  这是环境状态，不是代码坏了。要跑它先执行：
+  ```powershell
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'C:\Program Files (x86)\Tencent\微信web开发者工具\cli.bat' auto --project 'C:\Users\13092\Desktop\项目\zcode\lumen\miniprogram' --auto-port 9502"
+  ```
+  然后 `WS=ws://127.0.0.1:9502 node scripts/test-run.mjs ui`。
+  **`9501` 是 IDE 的 HTTP 端口，探通它不代表自动化可用。**
 - **`ui` 层报「方法不存在」先重开 `cli auto`**：开发者工具会缓存旧编译产物（本轮踩过一次）
 - **DTR/RTS 复位后等 3~5 秒再扫描**，否则设备还在下载模式
 - 设备 `Lumen-5662` / `CC:8D:A2:C2:56:62` / COM6 / 8 链 × 30 颗
