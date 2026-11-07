@@ -519,3 +519,77 @@
   font-size: var(--fs-caption);
   color: var(--accent);
 }
+
+/* ---------------- 场景条（#159） ---------------- */
+
+.scene-bar {
+  display: flex;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-4) var(--sp-3);
+}
+
+.scene-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2rpx;
+  padding: var(--sp-3) var(--sp-2);
+  border-radius: var(--radius-md);
+  background: var(--card);
+  border: 2rpx solid transparent;
+}
+
+/* 当前场景：主色描边 + 淡底，一眼能看出「现在演的是这套」。 */
+.scene-tab.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.scene-tab-hover {
+  background: var(--card-press);
+}
+
+.scene-tab.busy {
+  opacity: 0.5;
+}
+
+.scene-tab-label {
+  font-size: var(--fs-sm);
+  color: var(--text);
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.scene-tab.active .scene-tab-label {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.scene-tab-hint {
+  font-size: var(--fs-micro);
+  color: var(--text-3);
+}
+
+.scene-tab.active .scene-tab-hint {
+  color: var(--accent);
+}
+
+.scene-empty-hint {
+  display: block;
+  padding: 0 var(--sp-4) var(--sp-3);
+  font-size: var(--fs-caption);
+  color: var(--text-3);
+  line-height: 1.5;
+}
+
+.scene-name-input {
+  margin: 0 var(--sp-4);
+  padding: var(--sp-4);
+  border-radius: var(--radius-md);
+  background: var(--card-2);
+  font-size: var(--fs-body);
+  color: var(--text);
+}

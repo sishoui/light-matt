@@ -63,7 +63,20 @@ import {
   brightnessViewPatch,
   powerLabelText,
 } from "../../utils/control/view-model";
-import { EFFECT_TYPE_NAMES, MAX_STRIPS, NO_EFFECT, PHASE } from "../../utils/protocol/constants";
+import {
+  EFFECT_TYPE_NAMES,
+  MAX_SCENES,
+  MAX_STRIPS,
+  NAME_BYTES,
+  NO_EFFECT,
+  PHASE,
+} from "../../utils/protocol/constants";
+import {
+  activateSceneIndex,
+  nameBytesOf as sceneNameBytesOf,
+  sceneBarView,
+  sceneNameIssue,
+} from "../../utils/control/scene-bar";
 import type {
   DeviceState,
   LayoutPart,
@@ -177,6 +190,21 @@ Page({
     maxBrightness: 255,
     brightnessHintText: "连接后可调节",
 
+    /* ---- 场景条（#159）：三个场景，点一下就切 ---- */
+    sceneTabs: [] as ReturnType<typeof sceneBarView>["tabs"],
+    sceneActive: 0,
+    /** 三个场景都还没编排过时的引导（只在全部读回后才显示）。 */
+    sceneAllEmpty: false,
+    /** 改名弹窗。 */
+    sceneNameOpen: false,
+    sceneNameInput: "",
+    sceneNameBytes: 0,
+    sceneNameLimit: NAME_BYTES,
+    /** 正在改 / 正在切的场景号（防重复点击）。 */
+    sceneBusyId: -1,
+    /** 场景读回代次：连点时旧一轮静默退出。 */
+    sceneEpoch: 0,
+
     /* ---- 灯组卡片 ---- */
     stripCards: [] as StripCardView[],
 
@@ -224,6 +252,8 @@ Page({
   partBusyKeys: new Set<string>(),
   /** 正在下发组开关命令的灯组号（防重复点击）。 */
   stripBusyIds: new Set<number>(),
+  /** 场景读回代次（连点场景条时旧一轮静默退出）。 */
+  sceneLoadEpoch: 0,
 
   onLoad(options: Record<string, string | undefined>) {
     /* 页面私有状态（不进 data）。Page() 不保证对象字面量字段会被复制到
@@ -244,6 +274,7 @@ Page({
     this.partsBusy = new Set<number>();
     this.partBusyKeys = new Set<string>();
     this.stripBusyIds = new Set<number>();
+    this.sceneLoadEpoch = 0;
 
     const storage = createWxStorage();
     this.storage = storage;
@@ -481,7 +512,13 @@ Page({
     /*
      * 刚连上：布局与场景都是**按需读**（§9.1 第 3/4 步）——卡片上的摘要
      * 只要有部位数就够了，明细在展开时读一次。
+     *
+     * 场景条例外：它要显示三个场景的名字，所以连上就把三个都读一遍
+     * （一次一帧、串行；已缓存的不重读）。
      */
+    if (this.data.ready) {
+      void this.loadScenes();
+    }
   },
 
   /** 设备权威的 State → 总开关 / 全局亮度 / 灯组卡片 / 只读摘要。 */
@@ -1306,6 +1343,163 @@ Page({
       return;
     }
     pushTo(PAGE_ROUTES.deviceInfo);
+  },
+
+  /* ---------------- 场景条（#159） ---------------- */
+
+  /**
+   * 读取三个场景（§9.1 第 4 步的推广：那一节只要求读**当前**场景，但场景条
+   * 要显示三个名字，所以三个都读）。
+   *
+   * 一次一帧、串行（§8），并用代次号让旧一轮在 await 之后静默退出。
+   * 已缓存的不重读——`queryScene` 的缓存在写入时会被作废，所以缓存是可信的。
+   */
+  async loadScenes(): Promise<void> {
+    const session = this.session;
+    if (session === null || !this.data.ready) {
+      return;
+    }
+    this.sceneLoadEpoch += 1;
+    const epoch = this.sceneLoadEpoch;
+    for (let sceneId = 0; sceneId < MAX_SCENES; sceneId += 1) {
+      if (session.sceneOf(sceneId) !== null) {
+        continue;
+      }
+      const read = await session.queryScene(sceneId);
+      if (epoch !== this.sceneLoadEpoch) {
+        return;
+      }
+      if (read.kind === "stale") {
+        return;
+      }
+    }
+    this.renderSceneBar();
+  },
+
+  /** 场景条的派生（`sceneBarView` 的唯一调用点）。 */
+  renderSceneBar(): void {
+    const session = this.session;
+    const activeScene = session?.deviceState?.activeScene ?? 0;
+    const scenes = Array.from({ length: MAX_SCENES }, (_, sceneId) =>
+      session?.sceneOf(sceneId) ?? null,
+    );
+    const view = sceneBarView(scenes, activeScene);
+    this.setData({
+      sceneTabs: view.tabs,
+      sceneActive: view.activeIndex,
+      sceneAllEmpty: view.allEmpty,
+    });
+  },
+
+  /**
+   * 点一个场景 → 切过去（C4：硬切 + 全部部位从第 1 步重跳）。
+   *
+   * 播放头重跳是**设备做的**，页面只丢掉自己的陈旧派生：所有展开中的部位行
+   * 的步号都作废，重读一次布局与场景。
+   */
+  async onSceneTap(e: WechatMiniprogram.TouchEvent) {
+    const dataset = e.currentTarget.dataset as { sceneId?: number | string };
+    const sceneId = Number(dataset.sceneId ?? -1);
+    const session = this.session;
+    if (session === null || !this.data.ready) {
+      wx.showToast({ title: "先连接设备", icon: "none" });
+      return;
+    }
+    const next = activateSceneIndex(this.data.sceneActive, sceneId);
+    if (next === this.data.sceneActive) {
+      return;
+    }
+    if (this.data.sceneBusyId >= 0) {
+      return;
+    }
+    this.setData({ sceneBusyId: sceneId });
+    try {
+      const result = await session.activateScene(sceneId);
+      if (result.kind === "ack-error") {
+        wx.showToast({ title: resultText(result.ack.resultCode), icon: "none" });
+        return;
+      }
+      if (result.kind === "error") {
+        wx.showToast({ title: result.message, icon: "none" });
+        return;
+      }
+      /* 设备已经把播放头重跳，页面上任何「演到第几步」都要重算。 */
+      this.renderSceneBar();
+      await this.loadScenes();
+      if (this.expandedStripId !== null) {
+        const stripId = this.expandedStripId;
+        this.partsLoadEpoch += 1;
+        const epoch = this.partsLoadEpoch;
+        await session.queryLayout(stripId);
+        if (epoch === this.partsLoadEpoch) {
+          this.renderStripCards();
+        }
+      }
+    } finally {
+      this.setData({ sceneBusyId: -1 });
+    }
+  },
+
+  /** 长按场景 → 改名（C2）。 */
+  onSceneLongPress(e: WechatMiniprogram.TouchEvent) {
+    const dataset = e.currentTarget.dataset as { sceneId?: number | string };
+    const sceneId = Number(dataset.sceneId ?? -1);
+    if (!Number.isInteger(sceneId) || sceneId < 0 || sceneId >= MAX_SCENES) {
+      return;
+    }
+    if (!this.data.ready) {
+      wx.showToast({ title: "先连接设备", icon: "none" });
+      return;
+    }
+    const current = this.data.sceneTabs.find((tab) => tab.sceneId === sceneId);
+    const name = current !== undefined && current.named ? current.label : "";
+    this.setData({
+      sceneNameOpen: true,
+      sceneBusyId: sceneId,
+      sceneNameInput: name,
+      sceneNameBytes: sceneNameBytesOf(name),
+    });
+  },
+
+  onSceneNameInput(e: WechatMiniprogram.Input) {
+    const text = String(e.detail.value ?? "").slice(0, 24);
+    this.setData({ sceneNameInput: text, sceneNameBytes: sceneNameBytesOf(text) });
+  },
+
+  onSceneNameClose() {
+    this.setData({ sceneNameOpen: false, sceneBusyId: -1 });
+  },
+
+  /** 提交场景名（SceneName 0x27，设备权威 C3）。 */
+  async onSceneNameSave() {
+    const session = this.session;
+    if (session === null || !this.data.ready) {
+      return;
+    }
+    const sceneId = this.data.sceneBusyId;
+    if (sceneId < 0) {
+      return;
+    }
+    const issue = sceneNameIssue(this.data.sceneNameInput);
+    if (issue !== null) {
+      wx.showToast({ title: issue, icon: "none" });
+      return;
+    }
+    const name = this.data.sceneNameInput.trim();
+    const result = await session.setSceneName(sceneId, name);
+    if (result.kind === "ack-error") {
+      wx.showToast({ title: resultText(result.ack.resultCode), icon: "none" });
+      return;
+    }
+    if (result.kind === "error") {
+      wx.showToast({ title: result.message, icon: "none" });
+      return;
+    }
+    /* 写成功后缓存已作废，重读以设备为准（C3）。 */
+    await session.queryScene(sceneId);
+    this.setData({ sceneNameOpen: false, sceneBusyId: -1 });
+    this.renderSceneBar();
+    wx.showToast({ title: "名字已保存", icon: "none" });
   },
 });
 

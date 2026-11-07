@@ -52,7 +52,7 @@ import type {
   StripConfig,
 } from "../protocol/types";
 
-/** 一个部位在 mock 里的可变状态（布局 + 它在本场景的时间轴）。 */
+/** 一个部位在 mock 里的**布局**状态（不含时间轴——那是场景的属性）。 */
 interface MockPart {
   partId: number;
   name: string;
@@ -60,6 +60,16 @@ interface MockPart {
   segs: Array<[number, number]>;
   /** 相位模式（0 连续 / 1 各自起点，§9.2）：每部位一份，断电重启后仍在。 */
   phase: number;
+}
+
+/** 每条链：部位列表。时间轴在 `MockRuntime.scenes` 里（按场景分开）。 */
+interface MockStrip {
+  ledCount: number;
+  parts: MockPart[];
+}
+
+/** 一个部位在**某个场景**里的时间轴（§6.2）。 */
+interface MockScenePart {
   stepCount: number;
   loop: number;
   on: boolean;
@@ -70,10 +80,11 @@ interface MockPart {
   }>;
 }
 
-/** 每条链：部位列表（布局） + 本场景里各部位的时间轴。 */
-interface MockStrip {
-  ledCount: number;
-  parts: MockPart[];
+/** 一个场景：8 链 × 8 部位的时间轴 + 名字。 */
+interface MockScene {
+  name: string;
+  /** `part[stripId][partId]`；`undefined` = 这个部位在本场景没有条目。 */
+  part: Array<Array<MockScenePart | undefined>>;
 }
 
 /**
@@ -86,12 +97,19 @@ interface MockStrip {
  */
 interface MockRuntime {
   strips: MockStrip[];
+  /**
+   * 三个场景各存一份时间轴（§6.2）。
+   *
+   * 以前 mock 只保留「激活的那一个」——那样切场景测不出「三个场景互相独立」
+   * 与「开关状态属于场景」（#159 的核心验收）。演示设备与真机同构，所以这里
+   * 也按场景分开存。
+   */
+  scenes: MockScene[];
   power: 0 | 1;
   brightness: number;
   stripPowerMask: number;
   activeScene: number;
   layoutValid: boolean;
-  sceneName: string;
   /** 布局暂存（LayoutWrite 之后、LayoutCommit 之前）。 */
   layoutStaging: boolean;
 }
@@ -135,23 +153,48 @@ function seedRuntime(spec: MockDeviceSpec): MockRuntime {
         name: part.name,
         segs: part.segs.map(([start, end]) => [start, end] as [number, number]),
         phase: PHASE.CONTINUOUS,
-        /* 出厂状态：每部位 1 步常亮，与「点 + 播种整条/1 步/常亮」一致。 */
-        stepCount: 1,
-        loop: 0,
-        on: true,
-        steps: [{ durationMs: 3000, layer0: staticLayer(part.hue, part.sat), layer1: emptyLayer() }],
       })),
   }));
+  /* 出厂：三个场景都有同样的「每部位 1 步常亮」，名字是「场景 N」。 */
+  const scenes: MockScene[] = Array.from({ length: MAX_SCENES }, (_, sceneId) => ({
+    name: `场景 ${sceneId + 1}`,
+    part: emptyScenePartTable(),
+  }));
+  const seedHue = (stripId: number, partId: number): [number, number] => {
+    const spec_part = spec.parts.find(
+      (item) => item.stripId === stripId && item.partId === partId,
+    );
+    return [spec_part?.hue ?? 0, spec_part?.sat ?? 255];
+  };
+  scenes.forEach((scene) => {
+    strips.forEach((strip, stripId) => {
+      for (const part of strip.parts) {
+        const [hue, sat] = seedHue(stripId, part.partId);
+        scene.part[stripId][part.partId] = {
+          /* 出厂状态：每部位 1 步常亮，与「点 + 播种整条/1 步/常亮」一致。 */
+          stepCount: 1,
+          loop: 0,
+          on: true,
+          steps: [{ durationMs: 3000, layer0: staticLayer(hue, sat), layer1: emptyLayer() }],
+        };
+      }
+    });
+  });
   return {
     strips,
+    scenes,
     power: spec.power,
     brightness: spec.brightness,
     stripPowerMask: spec.stripPowerMask,
     activeScene: 0,
     layoutValid: strips.some((strip) => strip.parts.length > 0),
-    sceneName: "场景 1",
     layoutStaging: false,
   };
+}
+
+/** 8 × 8 的空场景表。 */
+function emptyScenePartTable(): Array<Array<MockScenePart | undefined>> {
+  return Array.from({ length: 8 }, () => Array.from({ length: 8 }, () => undefined));
 }
 
 function fillStrips(counts: readonly number[]): number[] {
@@ -479,22 +522,27 @@ export class MockTransport {
   }> {
     this.ensureWritable();
     const runtime = this.runtimeOrThrow();
+    if (!Number.isInteger(sceneId) || sceneId < 0 || sceneId >= MAX_SCENES) {
+      throw new Error(`没有场景 ${sceneId}`);
+    }
+    const scene = runtime.scenes[sceneId];
     const parts: ScenePartReport[] = [];
     const steps: SceneStepReport[] = [];
     runtime.strips.forEach((strip, stripId) => {
       for (const part of strip.parts) {
-        if (part.stepCount === 0) {
+        const scenePart = scene.part[stripId][part.partId];
+        if (scenePart === undefined || scenePart.stepCount === 0) {
           continue;
         }
         parts.push({
           sceneId,
           stripId,
           partId: part.partId,
-          stepCount: part.stepCount,
-          loop: part.loop,
-          on: part.on,
+          stepCount: scenePart.stepCount,
+          loop: scenePart.loop,
+          on: scenePart.on,
         });
-        part.steps.slice(0, part.stepCount).forEach((step, stepIndex) => {
+        scenePart.steps.slice(0, scenePart.stepCount).forEach((step, stepIndex) => {
           steps.push({
             sceneId,
             stripId,
@@ -507,12 +555,12 @@ export class MockTransport {
         });
       }
     });
-    const nameLen = encodeUtf8Length(runtime.sceneName);
+    const nameLen = encodeUtf8Length(scene.name);
     return {
       sceneId,
       parts,
       steps,
-      end: { sceneId, nameLen, name: runtime.sceneName },
+      end: { sceneId, nameLen, name: scene.name },
     };
   }
 
@@ -643,10 +691,6 @@ export class MockTransport {
           name: "",
           segs: [],
           phase: PHASE.CONTINUOUS,
-          stepCount: 0,
-          loop: 0,
-          on: true,
-          steps: [],
         }));
         runtime.layoutStaging = true;
         return 0x00;
@@ -672,7 +716,6 @@ export class MockTransport {
         part.phase = phase;
         /* 声明段数时清空旧段（分帧下发的中间态由 LayoutCommit 兜底）。 */
         part.segs = [];
-        part.stepCount = part.stepCount;
         return 0x00;
       }
       case 0x22: {
@@ -753,20 +796,26 @@ export class MockTransport {
         if (stepCount > 8 || loop > 2 || on > 1) {
           return 0x01;
         }
+        const scene = runtime.scenes[sceneId];
+        let scenePart = scene.part[stripId][partId];
+        if (scenePart === undefined) {
+          scenePart = { stepCount: 0, loop: 0, on: true, steps: [] };
+          scene.part[stripId][partId] = scenePart;
+        }
         /* 只有步数真的变了才清空步骤（§6.2：点一下开关不该抹掉时间轴）。 */
-        if (part.stepCount !== stepCount) {
-          part.steps = part.steps.slice(0, stepCount);
-          while (part.steps.length < stepCount) {
-            part.steps.push({
+        if (scenePart.stepCount !== stepCount) {
+          scenePart.steps = scenePart.steps.slice(0, stepCount);
+          while (scenePart.steps.length < stepCount) {
+            scenePart.steps.push({
               durationMs: 1000,
               layer0: staticLayer(0, 255),
               layer1: emptyLayer(),
             });
           }
         }
-        part.stepCount = stepCount;
-        part.loop = loop;
-        part.on = on !== 0;
+        scenePart.stepCount = stepCount;
+        scenePart.loop = loop;
+        scenePart.on = on !== 0;
         return 0x00;
       }
       case 0x26: {
@@ -777,17 +826,19 @@ export class MockTransport {
         const partId = payload[2];
         const stepIndex = payload[3];
         const durationMs = payload[4] | (payload[5] << 8);
+        const sceneId = payload[0];
         const part = runtime.strips[stripId]?.parts[partId];
-        if (part === undefined) {
+        if (part === undefined || sceneId >= MAX_SCENES) {
           return 0x01;
         }
-        if (stepIndex >= part.stepCount) {
+        const scenePart26 = runtime.scenes[sceneId].part[stripId][partId];
+        if (scenePart26 === undefined || stepIndex >= scenePart26.stepCount) {
           return 0x01;
         }
         if (durationMs < STEP_MIN_MS || durationMs > STEP_MAX_MS) {
           return 0x01;
         }
-        part.steps[stepIndex] = {
+        scenePart26.steps[stepIndex] = {
           durationMs,
           layer0: readLayer(payload, 6),
           layer1: readLayer(payload, 15),
@@ -799,7 +850,7 @@ export class MockTransport {
         if (payload[0] >= MAX_SCENES || nameLen > NAME_BYTES) {
           return 0x01;
         }
-        runtime.sceneName = decodeUtf8(payload, 2, nameLen);
+        runtime.scenes[payload[0]].name = decodeUtf8(payload, 2, nameLen);
         return 0x00;
       }
       case 0x28: {

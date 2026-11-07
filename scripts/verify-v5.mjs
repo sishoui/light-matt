@@ -395,6 +395,31 @@ if (dev.route !== "pages/device/device") {
 }
 rec("设备页打开", (await pageState()).route === "pages/device/device", (await pageState()).route);
 rec("没有整条「已连接」状态栏", (await mp.currentPage().then((p) => p.$$(".statusbar"))).length === 0);
+
+/* #159：设备页顶部三个场景。这一排是「不用翻二级页就能切」的全部实现。 */
+const sceneTabs = (await mp.currentPage().then((p) => p.$$(".scene-tab"))).length;
+rec("设备页顶部有三个场景", sceneTabs === 3, `${sceneTabs} 个`);
+const sceneSwitch = await mp.evaluate(async () => {
+  const p = getCurrentPages().pop();
+  const before = p.data.sceneActive;
+  p.onSceneTap({ currentTarget: { dataset: { sceneId: 1 } } });
+  await new Promise((resolve) => setTimeout(resolve, 2600));
+  return { before, after: p.data.sceneActive };
+});
+await sleep(400);
+rec(
+  "点第二个场景真的切过去",
+  sceneSwitch.after === 1,
+  JSON.stringify(sceneSwitch),
+);
+/* 切回第 1 个，后面的用例从原来的场景继续。 */
+await mp.evaluate(async () => {
+  const p = getCurrentPages().pop();
+  p.onSceneTap({ currentTarget: { dataset: { sceneId: 0 } } });
+  await new Promise((resolve) => setTimeout(resolve, 2600));
+});
+await sleep(400);
+
 rec("灯组卡片一列排布", (await mp.currentPage().then((p) => p.$$(".strip-list"))).length === 1);
 rec("每张卡片有封面", (await mp.currentPage().then((p) => p.$$(".strip-cover"))).length >= 1);
 

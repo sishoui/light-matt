@@ -48,6 +48,26 @@
     <text class="retry-action">重连</text>
   </view>
 
+  <!-- ============ 场景条（#159）：点一下就切，长按改名 ============ -->
+  <view wx:if="{{ready}}" class="scene-bar">
+    <view
+      wx:for="{{sceneTabs}}"
+      wx:key="sceneId"
+      class="scene-tab {{item.active ? 'active' : ''}} {{sceneBusyId === item.sceneId ? 'busy' : ''}}"
+      data-scene-id="{{item.sceneId}}"
+      bindtap="onSceneTap"
+      bindlongpress="onSceneLongPress"
+      hover-class="scene-tab-hover"
+    >
+      <text class="scene-tab-label">{{item.label}}</text>
+      <text wx:if="{{item.active && item.hasContent}}" class="scene-tab-hint">正在演</text>
+      <text wx:elif="{{!item.hasContent}}" class="scene-tab-hint">空</text>
+    </view>
+  </view>
+  <text wx:if="{{ready && sceneAllEmpty}}" class="scene-empty-hint">
+    三个场景都还没有编排。点灯组展开部位，再从部位编辑器里排时间轴。
+  </text>
+
   <!-- ---------------- 设备级：总开关 + 整台设备的亮度 ---------------- -->
   <view class="control-card {{ready ? '' : 'disabled'}}">
     <view class="power-card">
@@ -238,5 +258,28 @@
       <text class="sheet-item-sub">{{stripMenuPhotoIsCustom ? '恢复默认占位图' : '当前是默认封面'}}</text>
     </view>
     <view class="sheet-cancel" bindtap="onStripMenuClose">取消</view>
+  </view>
+
+  <!-- ============ 场景改名（#159） ============ -->
+  <view wx:if="{{sceneNameOpen}}" class="sheet-mask" bindtap="onSceneNameClose"></view>
+  <view wx:if="{{sceneNameOpen}}" class="sheet">
+    <view class="sheet-grabber"></view>
+    <view class="sheet-head">
+      <text class="sheet-title">场景名称</text>
+      <text class="sheet-sub">{{sceneNameBytes}} / {{sceneNameLimit}} 字节</text>
+    </view>
+    <input
+      class="scene-name-input"
+      value="{{sceneNameInput}}"
+      placeholder="例如：待机 / 战斗 / 演出"
+      maxlength="24"
+      focus="{{sceneNameOpen}}"
+      bindinput="onSceneNameInput"
+    />
+    <view class="sheet-item" bindtap="onSceneNameSave" hover-class="sheet-item-hover">
+      <text class="sheet-item-label">保存名字</text>
+      <text class="sheet-item-sub">存进设备，换手机也在</text>
+    </view>
+    <view class="sheet-cancel" bindtap="onSceneNameClose">取消</view>
   </view>
 </view>
