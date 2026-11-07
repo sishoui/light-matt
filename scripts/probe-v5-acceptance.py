@@ -578,6 +578,135 @@ async def drift_check(probe, chk, minutes, device_name="Lumen-5662"):
     return client, probe
 
 
+# ======================= 4. 帧率基线（800 颗 / 64 播放头） =======================
+
+async def framerate_check(probe, chk, strip_count, leds_per_strip, seconds, port):
+    """在**真实满载**下读 TDM 轮周期。
+
+    关键在「真实满载」：8 条链全部 `SetLedCount(leds_per_strip)`，每链一个整条部位，
+    每部位一步**彩虹**（持续变化，逐条去重不会跳过）。否则读到的是「什么都没有」——
+    第一版就是这么错的：没有动画 → 画面不变 → 去重跳过绝大多数帧 → round 只有 1.9ms，
+    而 240 颗的物理位时间约 7.2ms，那个数字在物理上不成立。
+
+    判据必须同时成立才可信：
+      - `lit == strip_count`（8 条都在推，不是只有一条）；
+      - `pushed` 在观察窗口内持续增长（真的每轮都在推帧）；
+      - `round` 低于 20fps 预算（50ms）。
+    """
+    total = strip_count * leds_per_strip
+    print(f"--- §4 帧率基线：{strip_count} 链 × {leds_per_strip} 颗 = {total} 颗 ---")
+
+    # 1) 每条链都设成满载颗数。
+    for strip in range(strip_count):
+        result, _ = await probe.send("SET_LED_COUNT", bytes([strip, leds_per_strip & 0xFF, leds_per_strip >> 8]),
+                                     wait=0.5)
+        chk.check(f"· strip{strip} SetLedCount({leds_per_strip})", result == OK, _hex(result))
+    state = await probe.read_state()
+    chk.check(
+        f"· 8 条链都报 {leds_per_strip} 颗",
+        all(state["led_counts"][i] == leds_per_strip for i in range(strip_count)),
+        str(state["led_counts"][:strip_count]),
+    )
+
+    # 2) 每链一个整条部位。
+    #
+    # 注意 `LayoutWrite(strip, part_count)` 的第二个参数是**该链的部位数**，
+    # 不是链数——第一版写成 `bytes([0, MAX_STRIPS])`，于是每链被要求写 8 个部位，
+    # 实际只写了 1 个，`LayoutCommit` 因「声明了却没写」回 0x01。
+    for strip in range(MAX_STRIPS):
+        await probe.send("LAYOUT_WRITE", bytes([strip, 1]))
+        await probe.send("LAYOUT_PART", bytes([0, strip, 0]) + bytes(24) + bytes([1, 0]))
+        # 只有已配置的链有真实颗数，其余按 100 报（够让 RMT 满载）。
+        await probe.send("LAYOUT_SEG", bytes([0, strip, 0, 0, leds_per_strip - 1]))
+    result, _ = await probe.send("LAYOUT_COMMIT")
+    chk.check("· 8 链整条部位提交", result == OK, _hex(result))
+
+    # 3) 每部位一步彩虹：持续变化，去重不会跳过。
+    for strip in range(MAX_STRIPS):
+        await probe.send("SCENE_PART", bytes([0, strip, 0, 1, 1, 1]))
+        payload = bytes([0, strip, 0, 0]) + struct.pack("<H", 1000)
+        payload += layer_bytes(0x02, 0, 255, 300, 255, 0, 100) + empty_layer()
+        await probe.send("SCENE_STEP", payload)
+    await probe.send("ACTIVATE_SCENE", bytes([0]))
+    await probe.send("SET_POWER", bytes([1]))
+    await probe.send("SET_STRIP_POWER", bytes([0, 1]))
+    # 打开所有链的掩码位（重启后可能只有第 0 位是开的）。
+    state = await probe.read_state()
+    for strip in range(strip_count):
+        if not (state["strip_power_mask"] & (1 << strip)):
+            await probe.send("SET_STRIP_POWER", bytes([strip, 1]))
+
+    # 4) 抓串口看 tdm 行。BLE 这边空转，只负责等。
+    print(f"  抓串口 {seconds}s（每 60 轮打一行）……")
+    lines = capture_tdm_lines(port, seconds)
+    if not lines:
+        chk.check("· 串口抓到 tdm 统计行", False, "没有输出（设备没在推帧？）")
+        return
+
+    last = lines[-1]
+    chk.check("· lit = 8（8 条链都在推帧）", last["lit"] == MAX_STRIPS, f"lit={last['lit']}")
+    chk.check(
+        "· pushed 持续增长（真的每轮都在推）",
+        len(lines) >= 2 and lines[-1]["pushed"] > lines[0]["pushed"],
+        f"{lines[0]['pushed']} → {lines[-1]['pushed']}",
+    )
+    # 取最后 3 行的 round 中位数（避开启动尖峰）。
+    rounds = sorted(item["round"] for item in lines[-3:])
+    median_us = rounds[len(rounds) // 2]
+    budget_us = 50_000  # 20fps
+    chk.check(
+        f"· 轮周期 < 50ms（20fps 预算）",
+        median_us < budget_us,
+        f"{median_us / 1000:.2f}ms / {budget_us / 1000:.0f}ms（{total} 颗）",
+    )
+    print(f"  实测：round≈{median_us / 1000:.2f}ms，avg={last['avg'] / 1000:.2f}ms，"
+          f"max={last['max'] / 1000:.1f}ms，pushed={last['pushed']}")
+
+
+def capture_tdm_lines(port, seconds):
+    """抓串口并解析 `tdm:` 行。返回按时间排列的字典列表。"""
+    try:
+        import re
+        import serial
+    except ImportError:
+        return []
+    import time as _time
+
+    pattern = re.compile(
+        r"tdm: strips=(\d+) active=(\d+) lit=(\d+) round=(\d+)us avg=(\d+)us max=(\d+)us pushed=(\d+)"
+    )
+    NEWLINE = b"\n"
+    out = []
+    try:
+        ser = serial.Serial(port, 115200, timeout=0.3)
+    except Exception:  # noqa: BLE001 - 串口被占 / 不存在
+        return out
+    deadline = _time.time() + seconds
+    buf = b""
+    try:
+        while _time.time() < deadline:
+            buf += ser.read(4096)
+            while NEWLINE in buf:
+                line, buf = buf.split(NEWLINE, 1)
+                text = line.decode("utf-8", "replace")
+                match = pattern.search(text)
+                if match:
+                    out.append(
+                        {
+                            "strips": int(match.group(1)),
+                            "active": int(match.group(2)),
+                            "lit": int(match.group(3)),
+                            "round": int(match.group(4)),
+                            "avg": int(match.group(5)),
+                            "max": int(match.group(6)),
+                            "pushed": int(match.group(7)),
+                        }
+                    )
+    finally:
+        ser.close()
+    return out
+
+
 # ======================= 收尾 =======================
 
 
@@ -615,6 +744,9 @@ async def main():
     parser.add_argument("--skip-volume", action="store_true", help="跳过 §1 体积实测")
     parser.add_argument("--skip-storage", action="store_true",
                         help="跳过 §2 存储压测（只想跑时间漂移时用）")
+    parser.add_argument("--framerate", action="store_true",
+                        help="跑 §4 帧率基线（8 链 × 100 颗 = 800 颗）")
+    parser.add_argument("--framerate-seconds", type=float, default=25, help="帧率观察时长")
     args = parser.parse_args()
 
     client, probe = await connect(args.name)
@@ -632,6 +764,9 @@ async def main():
             client, probe = await storage_stress(
                 probe, chk, strip_count, args.power_cycle, args.name, args.port
             )
+        if args.framerate:
+            await framerate_check(probe, chk, strip_count, 100,
+                                  args.framerate_seconds, args.port)
         if args.drift_minutes > 0:
             client, probe = await drift_check(probe, chk, args.drift_minutes, args.name)
         await restore(probe, chk, led_count)
