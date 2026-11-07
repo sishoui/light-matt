@@ -427,9 +427,26 @@ async def main():
 
 
 async def restore(probe, chk, led_count):
-    print("\n--- 收尾（恢复成 8 链 30 颗 / 每链 1 部位 / 常亮）---")
+    """恢复成「8 链 × led_count 颗 / 每链 1 部位 / 常亮」。
+
+    **顺序很关键**：先把灯珠数缩回 led_count，再写布局。反过来（先写布局再缩
+    灯珠数）会让布局里 `end = 99` 的段在灯珠数变成 30 之后越界——`LayoutCommit`
+    当时能过（用的是 100），但下一次上电校验会整份拒绝。
+
+    **场景要清到 part 7**，不能只清 part 0：`ScenePart` 是按部位写的时间轴头，
+    布局缩到 1 个部位**不会**动场景表里 part 1..7 的旧条目。不清它们，
+    `QueryScene` 仍会报出 64 个部位头（真机实测踩过，导致 probe-v5.py 读回超时）。
+    """
+    print(f"\n--- 收尾（恢复成 8 链 {led_count} 颗 / 每链 1 部位 / 常亮）---")
+    # 1) 先把灯珠数缩回去（布局校验要用它）。
     for strip in range(MAX_STRIPS):
         await probe.send("SET_LED_COUNT", bytes([strip, led_count & 0xFF, led_count >> 8]))
+    # 2) 再把所有场景的每个部位都收成 0 步——**包括布局里已不存在的 part 1..7**。
+    for scene in range(MAX_SCENES):
+        for strip in range(MAX_STRIPS):
+            for part in range(MAX_PARTS):
+                await probe.send("SCENE_PART", bytes([scene, strip, part, 0, 0, 1]))
+    # 3) 布局缩成每链 1 个整条部位。
     for strip in range(MAX_STRIPS):
         await probe.send("LAYOUT_WRITE", bytes([strip, 1]))
         await probe.send("LAYOUT_PART", bytes([0, strip, 0]) + bytes(24) + bytes([1, 0]))
@@ -437,6 +454,7 @@ async def restore(probe, chk, led_count):
     commit = await probe.send("LAYOUT_COMMIT")
     chk.check("收尾布局提交", commit == OK, hexs(commit))
 
+    # 4) 三个场景各给「每链 1 步常亮」。
     for scene in range(MAX_SCENES):
         for strip in range(MAX_STRIPS):
             await probe.send("SCENE_PART", bytes([scene, strip, 0, 1, 0, 1]))

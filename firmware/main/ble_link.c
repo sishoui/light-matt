@@ -85,6 +85,18 @@ static uint8_t s_chunk_frame[LUMEN_REASM_CAPACITY];
 
 static uint8_t s_own_addr_type;
 static volatile uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+/*
+ * 连接代次：每次连上 / 断开都自增。
+ *
+ * 多帧报告一次最坏要发 30 秒（577 条）。这中间对端可能断开、又立刻重连，
+ * 而报告任务正卡在发送循环里——`drop_pending_reports` 只能清队列里**还没开始**
+ * 的请求，清不掉正在跑的这一批。没有代次检查的话，剩下几百条会带着旧 seq
+ * 发到**新连接**上（App 的 ackWaiters 只按 seq 匹配，可能把别的请求当成
+ * 自己的应答）。
+ *
+ * 所以发送循环每轮核对代次：变了就立刻停，剩下的丢弃。
+ */
+static volatile uint32_t s_conn_epoch;
 static uint16_t s_tx_val_handle;
 static char s_device_name[16] = "Lumen-0000";
 /* 当前连接的 ATT MTU。0 = 未知（按 23 处理，docs/protocol-v4.md §2.1）。 */
@@ -334,7 +346,12 @@ static void send_layout_reports(uint8_t seq, uint8_t strip_id)
     if (parts > LUMEN_MAX_PARTS) {
         parts = LUMEN_MAX_PARTS;
     }
+    const uint32_t epoch = s_conn_epoch;
     for (uint8_t p = 0; p < parts; ++p) {
+        if (s_conn_epoch != epoch) {
+            /* 连接已换：剩下的报告属于上一个连接，不能发到新连接上。 */
+            return;
+        }
         const lumen_part_layout_t *part = &layout.part[strip_id][p];
         if (part->segs.seg_count == 0) {
             continue; /* 没有划出灯珠的部位不报（报告条数 = part_mask 位数） */
@@ -375,9 +392,14 @@ static void send_scene_reports(uint8_t seq, uint8_t scene_id)
     uint8_t part_reports = 0;
     uint8_t step_reports = 0;
     uint16_t sent = 0;
+    const uint32_t epoch = s_conn_epoch;
 
     for (uint8_t strip = 0; strip < LUMEN_MAX_STRIPS; ++strip) {
         for (uint8_t part = 0; part < LUMEN_MAX_PARTS; ++part) {
+            if (s_conn_epoch != epoch) {
+                ESP_LOGW(TAG, "QueryScene 中断：连接已换（已发 %u 条）", (unsigned)sent);
+                return;
+            }
             const lumen_part_scene_t *ps = &scene.part[strip][part];
             if (ps->step_count == 0) {
                 continue;
@@ -994,6 +1016,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         }
 
         s_conn_handle = event->connect.conn_handle;
+        ++s_conn_epoch;
         /* 新连接：上一连接的半截重组缓冲必须丢掉，否则会把新连接的分片接在旧数据后面。 */
         taskENTER_CRITICAL(&s_reasm_mux);
         (void)lumen_reasm_reset(&s_reasm);
@@ -1018,6 +1041,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         /* 只清理当前连接句柄；旧连接的延迟 DISCONNECT 不能误伤新连接。 */
         if (s_conn_handle == event->disconnect.conn.conn_handle) {
             s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+            ++s_conn_epoch; /* 正在发的报告流据此立刻收手 */
             s_mtu = 0; /* 回到「未知」，下一个连接重新协商 */
             /* 半截报告流不能留给下一个连接（见 drop_pending_reports）。 */
             drop_pending_reports();

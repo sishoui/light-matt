@@ -177,6 +177,13 @@ class Probe:
             self.reports.append((command, seq, payload))
 
     async def send(self, name, payload=b"", version=VERSION_V5, wait=0.35):
+        """发一帧，等 ACK，再等 `wait` 秒收后续报告。
+
+        **多帧查询（0x24 / 0x29）要传更长的 `wait`**：报告流跑在固件的独立任务里
+        （`report_task`），不再是 RX 回调里同步连发，所以「ACK 到了」不代表
+        「报告发完了」。一次 QueryScene 最坏 577 条，按 20 字节分片要几十秒。
+        调用方按预期条数估 `wait`。
+        """
         command = CMD[name] if isinstance(name, str) else name
         seq = self.next_seq()
         self.reports.clear()
@@ -367,7 +374,7 @@ async def run(probe, chk, args):
     result, _ = await probe.send("LAYOUT_COMMIT")
     chk.check("LayoutCommit OK", result == OK, f"0x{result:02X}" if result is not None else "无 ACK")
 
-    result, reports = await probe.send("QUERY_LAYOUT", bytes([0]))
+    result, reports = await probe.send("QUERY_LAYOUT", bytes([0]), wait=2.0)
     layout = [parse_layout_report(p) for c, _s, p in reports if c == 0x89]
     layout = [x for x in layout if x]
     end = [p for c, _s, p in reports if c == 0x8A]
@@ -388,7 +395,7 @@ async def run(probe, chk, args):
     chk.check("压到别的部位 → InvalidParam", result == INVALID_PARAM,
               f"0x{result:02X}" if result is not None else "无 ACK")
 
-    result, reports = await probe.send("QUERY_LAYOUT", bytes([0]))
+    result, reports = await probe.send("QUERY_LAYOUT", bytes([0]), wait=2.0)
     layout_after = [parse_layout_report(p) for c, _s, p in reports if c == 0x89]
     layout_after = [x for x in layout_after if x]
     unchanged = (
@@ -447,11 +454,17 @@ async def run(probe, chk, args):
     result, _ = await probe.send("ACTIVATE_SCENE", bytes([0]))
     chk.check("ActivateScene(0) OK", result == OK, f"0x{result:02X}" if result is not None else "无 ACK")
 
-    result, reports = await probe.send("QUERY_SCENE", bytes([0]))
+    result, reports = await probe.send("QUERY_SCENE", bytes([0]), wait=6.0)
     parts = [parse_scene_part(p) for c, _s, p in reports if c == 0x8B]
     parts = [x for x in parts if x]
     steps = [p for c, _s, p in reports if c == 0x8C]
     ends = [p for c, _s, p in reports if c == 0x8D]
+    # 只统计布局里存在的部位。场景与布局是两张表（§6.2 末段）：用户可以
+    # 先编排时间轴再划灯珠，所以设备上可能留着布局里已不存在的 part 2..7
+    # 的旧条目——那是合法状态，不该让本探针失败（真机压测之后踩过）。
+    declared = 2  # 本段前面 LayoutWrite 声明了 2 个部位
+    parts = [p for p in parts if p["part_id"] < declared]
+    steps = [x for x in steps if x[2] < declared]
     chk.check("QueryScene 报回 2 个部位头", len(parts) == 2, f"{len(parts)} 个")
     chk.check("QueryScene 报回 3 步", len(steps) == 3, f"{len(steps)} 条")
     chk.check("SceneListEnd 收到", len(ends) == 1)
@@ -576,7 +589,7 @@ async def main():
 
 
 async def readback_after_reset(probe, chk):
-    result, reports = await probe.send("QUERY_LAYOUT", bytes([0]))
+    result, reports = await probe.send("QUERY_LAYOUT", bytes([0]), wait=2.0)
     layout = [parse_layout_report(p) for c, _s, p in reports if c == 0x89]
     layout = [x for x in layout if x]
     chk.check("复位后布局仍在（2 个部位）", len(layout) == 2, f"{len(layout)} 个")
@@ -585,7 +598,7 @@ async def readback_after_reset(probe, chk):
         chk.check("复位后部位 1 段仍是 2-14", layout[1]["segs"][0] == (2, 14),
                   str(layout[1]["segs"][0]))
 
-    result, reports = await probe.send("QUERY_SCENE", bytes([0]))
+    result, reports = await probe.send("QUERY_SCENE", bytes([0]), wait=6.0)
     parts = [parse_scene_part(p) for c, _s, p in reports if c == 0x8B]
     parts = [x for x in parts if x]
     steps = [p for c, _s, p in reports if c == 0x8C]
