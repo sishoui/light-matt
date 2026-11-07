@@ -234,6 +234,25 @@ const pageState = () =>
     return p ? { route: p.route, data: p.data } : null;
   });
 
+/**
+ * 等页面栈顶变成指定路由。
+ *
+ * `switchTab` / `navigateTo` 都是异步的：`await` 它们只保证「请求已受理」，
+ * 栈顶可能还是上一页。抢在前面 `getCurrentPages().pop()` 就会拿到错的页面，
+ * 表现为「方法不存在」（实际上方法在目标页上）。
+ */
+const waitForRoute = async (route, timeoutMs = 8000) => {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const state = await pageState();
+    if (state !== null && state.route === route) {
+      return true;
+    }
+    await sleep(120);
+  }
+  return false;
+};
+
 const textOf = async () => {
   const pages = await mp.currentPage().then((p) => p.$$(".page"));
   if (pages.length === 0) {
@@ -286,6 +305,9 @@ rec("小程序启动、页面已注册", boot !== null && boot.error === undefin
 // ---------------- 1. 主题：切深色后三处同时换色（#90） ----------------
 await mp.switchTab("/pages/me/me");
 await sleep(1200);
+/* 等「我的」页真的成为栈顶再点：切 tab 是异步的，抢在它前面 pop() 会拿到
+ * 上一个页面（表现为 `p.onThemeTap is not a function`——方法在 me 页上）。 */
+await waitForRoute("pages/me/me");
 await mp.evaluate(() => {
   const p = getCurrentPages().pop();
   p.onThemeTap({ currentTarget: { dataset: { value: "dark" } } });
@@ -331,6 +353,7 @@ rec(
 // 复位浅色
 await mp.switchTab("/pages/me/me");
 await sleep(800);
+await waitForRoute("pages/me/me");
 await mp.evaluate(() => {
   const p = getCurrentPages().pop();
   p.onThemeTap({ currentTarget: { dataset: { value: "light" } } });
