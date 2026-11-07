@@ -282,6 +282,25 @@ static void report_task(void *arg)
     }
 }
 
+/*
+ * 丢弃所有还没发的报告请求（断开时调）。
+ *
+ * 为什么必须清：报告任务是异步的，一次 QueryScene 可能要发 30 秒。若这中间
+ * 对端断开、又立刻重连，队列里那些「给旧连接准备的」请求会在新连接上被执行
+ * ——用**新**句柄发出去、却带着**旧** seq，App 侧就会收到对不上号的报告
+ * （`ackWaiters` 只按 seq 匹配，最坏情况是它把别的请求当成自己的应答）。
+ *
+ * 清队列而不是清句柄：句柄已经是 NONE，`notify` 会自己拒掉；这里要避免的是
+ * 「请求还在队列里、等新连接来了才被执行」。
+ */
+static void drop_pending_reports(void)
+{
+    if (s_report_queue == NULL) {
+        return;
+    }
+    xQueueReset(s_report_queue);
+}
+
 /* 投递一个报告请求（RX 回调里调，**不**在这里发帧）。队列满时直接丢弃并记日志。 */
 static void request_reports(uint8_t op, uint8_t seq, uint8_t id)
 {
@@ -1000,6 +1019,8 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         if (s_conn_handle == event->disconnect.conn.conn_handle) {
             s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
             s_mtu = 0; /* 回到「未知」，下一个连接重新协商 */
+            /* 半截报告流不能留给下一个连接（见 drop_pending_reports）。 */
+            drop_pending_reports();
             taskENTER_CRITICAL(&s_reasm_mux);
             (void)lumen_reasm_reset(&s_reasm);
             taskEXIT_CRITICAL(&s_reasm_mux);

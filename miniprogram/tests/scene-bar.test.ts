@@ -10,12 +10,10 @@ import { MAX_SCENES, NAME_BYTES } from "../utils/protocol/constants";
 import {
   activateSceneIndex,
   defaultSceneLabel,
-  mergeSceneName,
   nameBytesOf,
   sceneBarView,
   sceneLabelOf,
   sceneNameIssue,
-  shouldShowEmptyHint,
 } from "../utils/control/scene-bar";
 import type { SceneReport } from "../utils/protocol/types";
 
@@ -126,37 +124,5 @@ describe("切场景", () => {
     expect(activateSceneIndex(0, -1)).toBe(0);
     expect(activateSceneIndex(0, 1.5)).toBe(0);
     expect(activateSceneIndex(0, Number.NaN)).toBe(0);
-  });
-});
-
-describe("名字以设备为准（C3）", () => {
-  it("读到了就用设备的，包括空名", () => {
-    expect(mergeSceneName("旧名", "新名")).toBe("新名");
-    expect(mergeSceneName("旧名", "")).toBe("");
-  });
-
-  it("读不到（null）时保留本地值", () => {
-    expect(mergeSceneName("本地", null)).toBe("本地");
-    expect(mergeSceneName("本地", undefined)).toBe("本地");
-    expect(mergeSceneName(null, null)).toBe("");
-  });
-});
-
-describe("空态提示", () => {
-  it("三个都读到且都空才提示", () => {
-    expect(
-      shouldShowEmptyHint([scene(0, "A", [0]), scene(1, "B", [0]), scene(2, "C", [0])]),
-    ).toBe(true);
-  });
-
-  it("还没读全就不提示（否则刚连上会看到假空态）", () => {
-    expect(shouldShowEmptyHint([null, scene(1, "B", [0]), scene(2, "C", [0])])).toBe(false);
-    expect(shouldShowEmptyHint([scene(0, "A", [0]), null, null])).toBe(false);
-  });
-
-  it("有一个场景有内容就不提示", () => {
-    expect(
-      shouldShowEmptyHint([scene(0, "A", [1]), scene(1, "B", [0]), scene(2, "C", [0])]),
-    ).toBe(false);
   });
 });

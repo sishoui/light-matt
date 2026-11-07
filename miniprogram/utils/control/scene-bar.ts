@@ -132,37 +132,3 @@ export function activateSceneIndex(current: number, next: number): number {
   }
   return next === current ? current : next;
 }
-
-/**
- * 读回的场景名要覆盖本地缓存吗（C3：设备权威）。
- *
- * 规则只有一条：**读到了就用设备的**，包括空名（用户在设备端清空过名字）。
- * 读不到（`null`）时保留本地值——那不是「设备上没名字」，是「还没读到」。
- */
-export function mergeSceneName(
-  cached: string | null | undefined,
-  readback: string | null | undefined,
-): string {
-  if (readback === null || readback === undefined) {
-    return cached ?? "";
-  }
-  return readback;
-}
-
-/**
- * 场景条是否该提示「还没有任何编排」。
- *
- * 只有**三个场景全都读到了、且都空**才提示。否则用户刚连上设备（都还没
- * 读回）就会看到一条假的空态。
- */
-export function shouldShowEmptyHint(
-  scenes: ReadonlyArray<SceneReport | null | undefined>,
-): boolean {
-  const allRead = scenes.slice(0, MAX_SCENES).every((scene) => scene !== null && scene !== undefined);
-  if (!allRead) {
-    return false;
-  }
-  return scenes
-    .slice(0, MAX_SCENES)
-    .every((scene) => (scene as SceneReport).parts.every((part) => part.stepCount === 0));
-}

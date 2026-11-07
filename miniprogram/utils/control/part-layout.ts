@@ -195,34 +195,6 @@ export function logicalIndexOf(
   return inside ? offset : 0;
 }
 
-/**
- * 逻辑下标 → 物理灯珠序号（`logicalIndexOf` 的反函数）。
- *
- * 渲染用不着它（固件按物理位置散回），但「部位内的波从哪一颗起」在界面上要
- * 能指出来；预览条也按它逐颗上色。越界返回 -1。
- */
-export function pixelAtLogical(
-  part: Pick<LayoutPart, "segs">,
-  logical: number,
-  phase: PhaseMode = PHASE.CONTINUOUS,
-): number {
-  if (!Number.isInteger(logical) || logical < 0) {
-    return -1;
-  }
-  const total = partPixelCount(part);
-  if (logical >= total) {
-    return -1;
-  }
-  /* 灯珠总数 ≤ 100，直接逐颗问比维护一张反查表更省事，也没有排序假设。 */
-  for (let index = 0; index < 100; index += 1) {
-    const inside = part.segs.some((seg) => index >= seg[0] && index <= seg[1]);
-    if (inside && logicalIndexOf(part, index, phase) === logical) {
-      return index;
-    }
-  }
-  return -1;
-}
-
 /* ---------------- 方格表几何（U5 / U7） ---------------- */
 
 /** 十年段（每 10 颗一个加粗分隔并标序号）。 */

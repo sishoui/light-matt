@@ -23,7 +23,6 @@ import {
   ownershipOf,
   partColor,
   partPixelCount,
-  pixelAtLogical,
   rangeTextOf,
   replaceSeg,
   segLength,
@@ -129,14 +128,7 @@ describe("逻辑下标（与 lumen_layout_logical_index 同口径）", () => {
     expect(logicalIndexOf(twoSegs, 10, PHASE.PER_SEGMENT)).toBe(0);
   });
 
-  it("反函数能把逻辑下标换回物理序号", () => {
-    for (let logical = 0; logical < partPixelCount(twoSegs); logical += 1) {
-      const pixel = pixelAtLogical(twoSegs, logical, PHASE.CONTINUOUS);
-      expect(pixel).toBeGreaterThanOrEqual(0);
-      expect(logicalIndexOf(twoSegs, pixel, PHASE.CONTINUOUS)).toBe(logical);
-    }
-    expect(pixelAtLogical(twoSegs, 99)).toBe(-1);
-  });
+
 });
 
 describe("归属表", () => {
