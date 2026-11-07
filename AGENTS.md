@@ -169,9 +169,9 @@ WS=ws://127.0.0.1:9502 node scripts/verify-v5.mjs
   报「找不到 cli.bat」。
 - `cli auto` 若报 `IDE server has started on 9501 and must be restarted on 9420`，
   **不要加 `--port`**，直接不带端口重跑。
-- **`scripts/verify-v5.mjs` 仍是 v4 的断言集**（它会 `navigateTo('/pages/strip/strip')`，
-  那页在 v5 已删）——跑到设备页之后必然崩。要跑完整 `ui` 层，得先把它改写成 v5
-  页面（`pages/device` 就地展开 + `pages/part`）。
+- `scripts/verify-v5.mjs` 的断言集已改写成 **v5 页面**（设备页就地展开 + 部位编辑器），
+  实测 **38/38**。改这两个页面时它必须跟着改——它验的是「点得动 + 设备真的收到」，
+  这是单测（直接 `new ControlSession`）覆盖不到的那一层。
 
 ## Agent skills
 
