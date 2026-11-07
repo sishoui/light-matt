@@ -8,11 +8,18 @@
 什么上。不要凭本文件的简短描述推断进度——项目已经过了三个大版本。
 
 > **当前状态：第十一轮（v5 · 部位与场景）在 `integration/lumen-v5`（draft PR #163），
-> 2/9 票已合入。** 规格 [#145](https://github.com/sishoui/light-matt/issues/145)，
-> 实现票 `#154`–`#162`，frontier 是 **#156**。
+> 九张票全部落地，**实现完成、待合入**。** 规格 [#145](https://github.com/sishoui/light-matt/issues/145)，
+> 实现票 `#154`–`#162`。详见 [`docs/handoff.md`](docs/handoff.md) §0 与
+> [`docs/evidence/v5-integration-2026-11-07.md`](docs/evidence/v5-integration-2026-11-07.md)。
 > v5 是**断崖**：协议 v5、灯组 → **部位**（多段灯珠、各有独立时间轴）、三套**场景**；
 > 「灯组详情页」与「简单档」已删，压成「设备页 → 部位编辑器」两层。
-> **`ui` 层已经能跑**（`scripts/verify-v5.mjs` 38/38），改 `pages/device` / `pages/part` 必须跑它。
+> **`ui` 层必须跑**（`scripts/verify-v5.mjs` 48/48），改 `pages/device` / `pages/part` 时它验的是
+> 「点得动 + 设备真的收到」——单测（直接 `new ControlSession`）覆盖不到那一层。
+> **改过页面之后若 `ui` 报「方法不存在」，先重开 `cli auto`**：开发者工具会缓存旧编译产物。
+>
+> **v5 唯一未测项**：800 颗灯 / 64 播放头的帧率基线（本机 8 条链只接了 1 条 30 颗）。
+> **不得当成通过。**
+>
 > 上一轮（第十轮）的修复在 `fix/no-segment-black-and-layer-blend`，已随本分支带上。
 
 **第五轮**（规格 [#85](https://github.com/sishoui/light-matt/issues/85)，实现票 #90–#101）：
