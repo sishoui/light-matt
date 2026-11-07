@@ -56,6 +56,7 @@ import {
   MAX_STEPS,
   MAX_STRIPS,
   NO_EFFECT,
+  PHASE,
   SCENE_NAME_BYTES,
   SCENE_STEP_BYTES,
   STATE_BYTES,
@@ -177,16 +178,21 @@ describe("布局族 0x20-0x24", () => {
     expect(() => cmdLayoutWrite(MAX_STRIPS, 1)).toThrow(RangeError);
   });
 
-  it("LayoutPart 是 28 字节：strip, part, name_len, name[24], seg_count", () => {
-    const req = cmdLayoutPart(1, 2, "眼灯", 3);
+  it("LayoutPart 是 29 字节：strip, part, name_len, name[24], seg_count, phase", () => {
+    const req = cmdLayoutPart(1, 2, "眼灯", 3, PHASE.PER_SEGMENT);
     expect(req.command).toBe(0x21);
     expect(req.payload.length).toBe(LAYOUT_PART_BYTES);
+    expect(LAYOUT_PART_BYTES).toBe(29);
     expect(req.payload[0]).toBe(1);
     expect(req.payload[1]).toBe(2);
     expect(req.payload[2]).toBe(6);
     expect(req.payload[27]).toBe(3);
-    expect(() => cmdLayoutPart(0, MAX_PARTS, "", 1)).toThrow(RangeError);
-    expect(() => cmdLayoutPart(0, 0, "", MAX_PART_SEGS + 1)).toThrow(RangeError);
+    /* 相位是最后一字节（§9.2，每部位一份）。 */
+    expect(req.payload[28]).toBe(PHASE.PER_SEGMENT);
+    expect(() => cmdLayoutPart(0, MAX_PARTS, "", 1, PHASE.CONTINUOUS)).toThrow(RangeError);
+    expect(() => cmdLayoutPart(0, 0, "", MAX_PART_SEGS + 1, PHASE.CONTINUOUS)).toThrow(RangeError);
+    /* 相位越界一帧都不发。 */
+    expect(() => cmdLayoutPart(0, 0, "", 1, PHASE.PER_SEGMENT + 1)).toThrow(RangeError);
   });
 
   it("LayoutSeg 是 5 字节；start ≤ end，下标在范围内", () => {
@@ -205,26 +211,29 @@ describe("布局族 0x20-0x24", () => {
     expect(() => cmdQueryLayout(MAX_STRIPS)).toThrow(RangeError);
   });
 
-  it("parseLayoutReport 解出名字与段列表（44 字节）", () => {
-    const payload = new Uint8Array(44);
+  it("parseLayoutReport 解出名字、相位与段列表（45 字节）", () => {
+    const payload = new Uint8Array(45);
     payload[0] = 0;
     payload[1] = 2;
     payload[2] = 6;
     payload.set([0xe6, 0x95, 0xa3, 0xe7, 0x83, 0xad], 3); /* 「散热」 */
     payload[27] = 2;
-    payload[28] = 11;
-    payload[29] = 29;
-    payload[30] = 40;
-    payload[31] = 49;
+    payload[28] = PHASE.PER_SEGMENT;
+    payload[29] = 11;
+    payload[30] = 29;
+    payload[31] = 40;
+    payload[32] = 49;
     const report = parseLayoutReport(payload);
     expect(report.stripId).toBe(0);
     expect(report.partId).toBe(2);
     expect(report.name).toBe("散热");
+    expect(report.phase).toBe(PHASE.PER_SEGMENT);
     expect(report.segs).toEqual([
       [11, 29],
       [40, 49],
     ]);
-    expect(() => parseLayoutReport(new Uint8Array(43))).toThrow(RangeError);
+    /* 旧的 44 字节报告必须拒（宽度是契约）。 */
+    expect(() => parseLayoutReport(new Uint8Array(44))).toThrow(RangeError);
   });
 
   it("parseLayoutListEnd 是 2 字节 [strip, mask]", () => {

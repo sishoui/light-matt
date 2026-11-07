@@ -70,12 +70,12 @@ const ENVELOPE_FAILURES: Record<number, string> = {
 };
 
 describe("协议测试向量（v5）", () => {
-  it("向量文件本身是 v5 且包含 111 个用例（含 14 条退役命令）", () => {
+  it("向量文件本身是 v5 且包含 113 个用例（含 14 条退役命令）", () => {
     expect(vectors.protocol_version).toBe(5);
     expect(vectors.magic).toBe("0xA6");
     /* State 从 37 字节改为 32 字节（§7.3）。 */
     expect(vectors.state_bytes).toBe(32);
-    expect(vectors.cases.length).toBe(111);
+    expect(vectors.cases.length).toBe(113);
   });
 
   it("app_to_device 有效帧：encode 逐字节复现 frame_hex", () => {

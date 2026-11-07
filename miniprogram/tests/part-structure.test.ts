@@ -9,6 +9,7 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { PHASE } from "../utils/protocol/constants";
 import { openPage } from "./helpers/page-harness";
 
 /** 以「演示设备 0 的 strip 0 / 部位 0」打开部位页。 */
@@ -118,7 +119,15 @@ describe("方格表：拖选成段", () => {
     try {
       /* 把第一段改成 1–5，再加一段 20–24（部位 1 出厂占 15–30，先缩掉）。 */
       await harness.session.writeLayout(0, [
-        { stripId: 0, partId: 0, nameLen: 0, name: "", segCount: 1, segs: [[0, 13]] },
+        {
+          stripId: 0,
+          partId: 0,
+          nameLen: 0,
+          name: "",
+          segCount: 1,
+          phase: PHASE.CONTINUOUS,
+          segs: [[0, 13]],
+        },
       ]);
       await harness.page.load();
 
@@ -227,6 +236,7 @@ describe("方格表：压到别的部位 → 整体拒绝（S4）", () => {
           nameLen: 0,
           name: "",
           segCount: 1,
+          phase: PHASE.CONTINUOUS,
           segs: [[0, 9]],
         },
       ]);

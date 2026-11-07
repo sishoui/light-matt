@@ -468,7 +468,7 @@ static void handle_frame(const uint8_t *data, size_t len)
         case LUMEN_CMD_LAYOUT_PART:
             outcome.result_code = lumen_led_engine_layout_part(
                 outcome.layout_strip, outcome.layout_part, outcome.layout_name_len,
-                outcome.layout_name, outcome.layout_seg_count);
+                outcome.layout_name, outcome.layout_seg_count, outcome.layout_phase);
             break;
         case LUMEN_CMD_LAYOUT_SEG:
             outcome.result_code = lumen_led_engine_layout_seg(

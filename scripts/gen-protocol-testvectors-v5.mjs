@@ -30,7 +30,10 @@ const MAGIC = 0xa6;
 const VER = 5;
 /* 契约常量（docs/protocol-v5.md §1.1）。 */
 const LAYER_BYTES = 9;
-const LAYOUT_PART_PAYLOAD = 28;
+/* LayoutPart 0x21：strip|part|name_len|name[24]|seg_count|phase = 29。 */
+const LAYOUT_PART_PAYLOAD = 29;
+/* LayoutReport 0x89：strip|part|name_len|name[24]|seg_count|phase|8×(start,end) = 45。 */
+const LAYOUT_REPORT_BYTES = 45;
 const SCENE_STEP_PAYLOAD = 24;
 const SCENE_NAME_PAYLOAD = 26;
 const STATE_BYTES = 32;
@@ -136,9 +139,9 @@ function nameField(text) {
 /* 布局族载荷（§6 / §7.2）。 */
 const layoutWrite = (strip, partCount) => [strip, partCount];
 
-function layoutPart(strip, part, name, segCount) {
+function layoutPart(strip, part, name, segCount, phase = 0) {
   const [nameBytes, nameLen] = nameField(name);
-  const payload = [strip, part, nameLen, ...nameBytes, segCount];
+  const payload = [strip, part, nameLen, ...nameBytes, segCount, phase];
   if (payload.length !== LAYOUT_PART_PAYLOAD) {
     throw new Error(`LayoutPart must be ${LAYOUT_PART_PAYLOAD} bytes, got ${payload.length}`);
   }
@@ -255,10 +258,12 @@ addApp({ name: 'layout_write_bad_part_count_9', command: 0x20, commandName: 'Lay
 
 addApp({ name: 'layout_part_eye_1_seg', command: 0x21, commandName: 'LayoutPart', seq: 25, payload: layoutPart(0, 0, '眼灯', 1), note: '部位名 6 字节 UTF-8，NUL 补到 24，1 个灯珠段' });
 addApp({ name: 'layout_part_zero_name', command: 0x21, commandName: 'LayoutPart', seq: 26, payload: layoutPart(0, 1, '', 2), note: '空名合法：name_len = 0，24 字节全 0' });
-addApp({ name: 'layout_part_bad_name_len_25', command: 0x21, commandName: 'LayoutPart', seq: 27, payload: [0, 0, 25, ...new Array(24).fill(0x41), 1], result: 0x01, note: 'name_len 25 超过 NAME_BYTES 24' });
+addApp({ name: 'layout_part_bad_name_len_25', command: 0x21, commandName: 'LayoutPart', seq: 27, payload: [0, 0, 25, ...new Array(24).fill(0x41), 1, 0], result: 0x01, note: 'name_len 25 超过 NAME_BYTES 24' });
 addApp({ name: 'layout_part_bad_strip8', command: 0x21, commandName: 'LayoutPart', seq: 28, payload: layoutPart(8, 0, 'x', 1), result: 0x01, note: 'strip_id 越界' });
 addApp({ name: 'layout_part_bad_part8', command: 0x21, commandName: 'LayoutPart', seq: 29, payload: layoutPart(0, 8, 'x', 1), result: 0x01, note: 'part_id 越界' });
 addApp({ name: 'layout_part_bad_seg_count_9', command: 0x21, commandName: 'LayoutPart', seq: 30, payload: layoutPart(0, 0, 'x', 9), result: 0x01, note: 'seg_count 超过 MAX_PART_SEGS' });
+addApp({ name: 'layout_part_phase_per_segment', command: 0x21, commandName: 'LayoutPart', seq: 31, payload: layoutPart(0, 2, '散热', 2, 1), note: '相位模式每部位一份（S6）：最后一字节 1 = 各自起点' });
+addApp({ name: 'layout_part_bad_phase_2', command: 0x21, commandName: 'LayoutPart', seq: 32, payload: layoutPart(0, 0, 'x', 1, 2), result: 0x01, note: '相位只有 0 / 1，2 越界' });
 
 addApp({ name: 'layout_seg_head_0_9', command: 0x22, commandName: 'LayoutSeg', seq: 31, payload: layoutSeg(0, 0, 0, 0, 9), note: '闭区间 0-9' });
 addApp({ name: 'layout_seg_monitor_single', command: 0x22, commandName: 'LayoutSeg', seq: 32, payload: layoutSeg(0, 1, 0, 10, 10), note: '单颗灯珠段' });
@@ -426,14 +431,16 @@ addDevice({
 }
 
 /* LayoutReport 44 字节（§7.2）。 */
-function buildLayoutReport(strip, part, name, segs) {
+function buildLayoutReport(strip, part, name, segs, phase = 0) {
   const [nameBytes, nameLen] = nameField(name);
-  const payload = [strip, part, nameLen, ...nameBytes, segs.length];
+  const payload = [strip, part, nameLen, ...nameBytes, segs.length, phase];
   for (let i = 0; i < 8; i++) {
     const seg = segs[i];
     payload.push(seg ? seg[0] : 0, seg ? seg[1] : 0);
   }
-  if (payload.length !== 44) throw new Error(`LayoutReport must be 44 bytes, got ${payload.length}`);
+  if (payload.length !== LAYOUT_REPORT_BYTES) {
+    throw new Error(`LayoutReport must be ${LAYOUT_REPORT_BYTES} bytes, got ${payload.length}`);
+  }
   return payload;
 }
 
@@ -444,8 +451,8 @@ addDevice({
 });
 addDevice({
   name: 'layout_report_radiator_2_segs', command: 0x89, commandName: 'LayoutReport', seq: 104,
-  payload: buildLayoutReport(0, 2, '散热', [[11, 29], [40, 49]]),
-  note: '一个部位占两个不连续段（多段共享全部参数）',
+  payload: buildLayoutReport(0, 2, '散热', [[11, 29], [40, 49]], 1),
+  note: '一个部位占两个不连续段（多段共享全部参数），相位 = 各自起点',
 });
 addDevice({
   name: 'layout_list_end', command: 0x8a, commandName: 'LayoutListEnd', seq: 104,

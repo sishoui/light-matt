@@ -87,6 +87,12 @@ export interface LayoutPart {
   name: string;
   /** 灯珠段数 0-8。 */
   segCount: number;
+  /**
+   * 相位模式 0-1（S6）：0 连续 / 1 各自起点。
+   *
+   * 每部位一份，随 LayoutPart 下发并写进布局 blob，所以断电重启后仍在。
+   */
+  phase: number;
   /** 8 对闭区间 [start, end]；只有前 segCount 个有效。 */
   segs: Array<[number, number]>;
 }

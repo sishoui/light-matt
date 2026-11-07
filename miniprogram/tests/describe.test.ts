@@ -54,7 +54,8 @@ describe("describeCommand", () => {
 
   it("布局族：写部位 / 写段 / 提交 / 查询", () => {
     expect(describeCommand(0x20, Uint8Array.from([0, 3]))).toBe("LayoutWrite strip=0 parts=3");
-    const partPayload = new Uint8Array(28);
+    /* 29 字节（#158 起最后一字节是相位模式）。 */
+    const partPayload = new Uint8Array(29);
     partPayload[0] = 1;
     partPayload[1] = 2;
     partPayload[2] = 6;

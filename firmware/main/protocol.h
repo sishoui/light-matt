@@ -38,10 +38,14 @@
 #define LUMEN_STEP_MIN_MS 100
 #define LUMEN_STEP_MAX_MS 60000
 #define LUMEN_STATE_BYTES 32
-#define LUMEN_LAYOUT_PART_BYTES 28 /* LayoutPart 载荷 */
+#define LUMEN_LAYOUT_PART_BYTES 29 /* LayoutPart 载荷（含相位模式，§9.2） */
+#define LUMEN_LAYOUT_REPORT_BYTES 45 /* LayoutReport 载荷（§7.2，与 LayoutPart 同构） */
 #define LUMEN_SCENE_STEP_BYTES 24  /* SceneStep / SceneStepReport 载荷 */
 #define LUMEN_SCENE_NAME_BYTES 26  /* SceneName / SceneListEnd 载荷 */
 #define LUMEN_NO_EFFECT 0xFF       /* 层类型 0xFF 表示「空层」 */
+/* 部位相位模式的取值上限（0 连续 / 1 各自起点，§9.2）。LayoutPart 与
+ * LayoutReport 都带这一字节，所以界在这里而不是布局存储里。 */
+#define LUMEN_PHASE_MAX 1
 
 /* 分片容量（docs/protocol-v5.md §3.2）：chunk_capacity = min(mtu-3, 180)，
  * 单次写的数据上限再减 1 字节分片头。 */
@@ -206,12 +210,12 @@ size_t lumen_protocol_encode_device_info_report(uint8_t seq, uint16_t firmware_v
                                                 uint8_t *out, size_t out_cap);
 
 /*
- * LayoutReport 0x89（44 字节）：strip_id, part_id, name_len, name[24],
- * seg_count, 8 × (start, end)。未用的段写 0/0（docs/protocol-v5.md §7.2）。
+ * LayoutReport 0x89（45 字节）：strip_id, part_id, name_len, name[24],
+ * seg_count, phase, 8 × (start, end)。未用的段写 0/0（docs/protocol-v5.md §7.2）。
  */
 size_t lumen_protocol_encode_layout_report(uint8_t seq, uint8_t strip_id, uint8_t part_id,
                                            uint8_t name_len, const uint8_t name[LUMEN_NAME_BYTES],
-                                           uint8_t seg_count, const uint8_t seg[][2],
+                                           uint8_t seg_count, uint8_t phase, const uint8_t seg[][2],
                                            uint8_t *out, size_t out_cap);
 
 /* LayoutListEnd 0x8A（2 字节）：strip_id, part_mask（bit i = 部位 i 有段）。 */

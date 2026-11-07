@@ -34,8 +34,8 @@ const MAX_PAYLOAD = 232;
 /* 契约 §1.1 的常量。 */
 const STATE_BYTES = 32;
 const LAYER_BYTES = 9;
-const LAYOUT_PART_PAYLOAD = 28;
-const LAYOUT_REPORT_BYTES = 44;
+const LAYOUT_PART_PAYLOAD = 29; /* 末尾新增相位模式（§9.2） */
+const LAYOUT_REPORT_BYTES = 45; /* 末尾新增相位模式（§7.2） */
 const SCENE_STEP_PAYLOAD = 24;
 const SCENE_NAME_PAYLOAD = 26;
 const NAME_BYTES = 24;
@@ -464,25 +464,47 @@ expectCase('scene_part_zero_steps', (c) => {
 });
 
 /* 报告宽度与内容。 */
+/* 段起点是 29：strip|part|name_len|name[24]|seg_count(27)|phase(28)。 */
+const LAYOUT_SEGS_OFFSET = 29;
+
 expectCase('layout_report_eye_1_seg', (c) => {
   const p = payloadBytes(c);
-  check(p.length === LAYOUT_REPORT_BYTES, 'LayoutReport must be 44B');
+  check(p.length === LAYOUT_REPORT_BYTES, `LayoutReport must be ${LAYOUT_REPORT_BYTES}B, got ${p.length}`);
   check(p[0] === 0 && p[1] === 0, 'layout_report_eye: strip0 part0');
   check(p[2] === 6, `layout_report_eye: name_len must be 6 (眼灯), got ${p[2]}`);
   check(p[27] === 1, 'layout_report_eye: seg_count must be 1');
-  check(p[28] === 0 && p[29] === 1, 'layout_report_eye: first seg must be 0-1');
+  check(p[28] === 0, `layout_report_eye: phase must be 0 (连续), got ${p[28]}`);
+  check(p[LAYOUT_SEGS_OFFSET] === 0 && p[LAYOUT_SEGS_OFFSET + 1] === 1,
+    'layout_report_eye: first seg must be 0-1');
   /* 未用的 7 个段必须是 0/0。 */
   for (let i = 1; i < 8; i++) {
-    check(p[28 + i * 2] === 0 && p[29 + i * 2] === 0,
+    const o = LAYOUT_SEGS_OFFSET + i * 2;
+    check(p[o] === 0 && p[o + 1] === 0,
       `layout_report_eye: unused seg ${i} must be 0/0`);
   }
 });
 expectCase('layout_report_radiator_2_segs', (c) => {
   const p = payloadBytes(c);
   check(p[27] === 2, 'radiator report: seg_count must be 2');
-  check(p[28] === 11 && p[29] === 29, 'radiator report: first seg must be 11-29');
-  check(p[30] === 40 && p[31] === 49, 'radiator report: second seg must be 40-49');
+  check(p[28] === 1, `radiator report: phase must be 1 (各自起点), got ${p[28]}`);
+  const o = LAYOUT_SEGS_OFFSET;
+  check(p[o] === 11 && p[o + 1] === 29, 'radiator report: first seg must be 11-29');
+  check(p[o + 2] === 40 && p[o + 3] === 49, 'radiator report: second seg must be 40-49');
 });
+/* 相位模式（S6）：每部位一份，是 LayoutPart 的最后一字节。 */
+expectCase('layout_part_phase_per_segment', (c) => {
+  const p = payloadBytes(c);
+  check(p.length === LAYOUT_PART_PAYLOAD, `LayoutPart must be ${LAYOUT_PART_PAYLOAD}B`);
+  check(p[27] === 2, 'phase vector: seg_count must be 2');
+  check(p[28] === 1, `phase vector: phase must be 1 (各自起点), got ${p[28]}`);
+  check(c.frame_valid, 'phase = 1 is legal');
+});
+expectCase('layout_part_bad_phase_2', (c) => {
+  const p = payloadBytes(c);
+  check(p[28] === 2, 'bad phase vector: phase byte must be 2');
+  check(!c.frame_valid, 'phase > 1 must be rejected (InvalidParam)');
+});
+
 expectCase('layout_list_end', (c) => {
   const p = payloadBytes(c);
   check(p.length === 2, 'LayoutListEnd must be 2B');

@@ -30,6 +30,8 @@ import {
   LAYER_BYTES,
   LAYER_LEVEL_MAX,
   LAYOUT_PART_BYTES,
+  LAYOUT_REPORT_BYTES,
+  PHASE,
   LOOP_MAX,
   MAX_LEDS,
   MAX_PARTS,
@@ -402,10 +404,13 @@ export function cmdLayoutPart(
   partId: number,
   name: string,
   segCount: number,
+  phase: number,
 ): CommandRequest {
   assertStripId(stripId);
   assertPartId(partId);
   assertRange(segCount, 0, MAX_PART_SEGS, "segCount");
+  /* 相位只有两个合法值（§9.2）：越界一帧都不发，设备会回 InvalidParam。 */
+  assertRange(phase, PHASE.CONTINUOUS, PHASE.PER_SEGMENT, "phase");
   const { bytes, len } = encodeName(name, "partName");
   const payload = new Uint8Array(LAYOUT_PART_BYTES);
   payload[0] = stripId;
@@ -413,6 +418,7 @@ export function cmdLayoutPart(
   payload[2] = len;
   payload.set(bytes, 3);
   payload[27] = segCount;
+  payload[28] = phase;
   return { command: 0x21, payload };
 }
 
@@ -514,14 +520,14 @@ export function cmdQueryScene(sceneId: number): CommandRequest {
 
 /** LayoutReport 0x89（44 字节，§7.2）。 */
 export function parseLayoutReport(payload: Uint8Array): LayoutReport {
-  if (payload.length !== 44) {
-    throw new RangeError(`LayoutReport 需要 44 字节，收到 ${payload.length}`);
+  if (payload.length !== LAYOUT_REPORT_BYTES) {
+    throw new RangeError(`LayoutReport 需要 ${LAYOUT_REPORT_BYTES} 字节，收到 ${payload.length}`);
   }
   const nameLen = payload[2];
   const segCount = payload[27];
   const segs: Array<[number, number]> = [];
   for (let i = 0; i < segCount && i < MAX_PART_SEGS; i++) {
-    segs.push([payload[28 + i * 2], payload[29 + i * 2]]);
+    segs.push([payload[29 + i * 2], payload[30 + i * 2]]);
   }
   return {
     stripId: payload[0],
@@ -529,6 +535,7 @@ export function parseLayoutReport(payload: Uint8Array): LayoutReport {
     nameLen,
     name: decodeName(payload, 3, nameLen),
     segCount,
+    phase: payload[28],
     segs,
   };
 }

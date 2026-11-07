@@ -194,18 +194,19 @@ size_t lumen_protocol_encode_device_info_report(uint8_t seq, uint16_t firmware_v
 
 size_t lumen_protocol_encode_layout_report(uint8_t seq, uint8_t strip_id, uint8_t part_id,
                                            uint8_t name_len, const uint8_t name[LUMEN_NAME_BYTES],
-                                           uint8_t seg_count, const uint8_t seg[][2],
+                                           uint8_t seg_count, uint8_t phase, const uint8_t seg[][2],
                                            uint8_t *out, size_t out_cap)
 {
-    if (name_len > LUMEN_NAME_BYTES || seg_count > LUMEN_MAX_PART_SEGS) {
+    if (name_len > LUMEN_NAME_BYTES || seg_count > LUMEN_MAX_PART_SEGS ||
+        phase > LUMEN_PHASE_MAX) {
         return 0;
     }
     /*
-     * 固定 44 字节（docs/protocol-v5.md §7.2）：
-     *   strip | part | name_len | name[24] | seg_count | 8 × (start, end)
+     * 固定 45 字节（docs/protocol-v5.md §7.2）：
+     *   strip | part | name_len | name[24] | seg_count | phase | 8 × (start, end)
      * 未用的段写 0/0。
      */
-    uint8_t payload[44];
+    uint8_t payload[LUMEN_LAYOUT_REPORT_BYTES];
     memset(payload, 0, sizeof(payload));
     payload[0] = strip_id;
     payload[1] = part_id;
@@ -214,11 +215,12 @@ size_t lumen_protocol_encode_layout_report(uint8_t seq, uint8_t strip_id, uint8_
         memcpy(&payload[3], name, name_len);
     }
     payload[27] = seg_count;
+    payload[28] = phase;
     for (uint8_t i = 0; i < seg_count; ++i) {
         /* seg 为 NULL 时保持 0/0（调用方只能在 seg_count 为 0 时省略它）。 */
         if (seg != NULL) {
-            payload[28 + i * 2] = seg[i][0];
-            payload[28 + i * 2 + 1] = seg[i][1];
+            payload[29 + i * 2] = seg[i][0];
+            payload[29 + i * 2 + 1] = seg[i][1];
         }
     }
     return lumen_protocol_encode(LUMEN_CMD_LAYOUT_REPORT, seq, payload, sizeof(payload), out,

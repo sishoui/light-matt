@@ -114,7 +114,7 @@ static uint16_t compose_frame(const lumen_state_t *snapshot, const lumen_layout_
         }
     } else {
         /* ① 合成内部先 memset：未覆盖的灯珠必须是真黑（§9.3 第 1 步）。 */
-        (void)lumen_scene_compose(layout, scene, clocks, now_ms, strip_id, LUMEN_PHASE_CONTINUOUS,
+        (void)lumen_scene_compose(layout, scene, clocks, now_ms, strip_id,
                                   frame, count);
     }
 

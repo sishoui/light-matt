@@ -17,26 +17,14 @@
  * 纯函数、不碰 wx / BLE / 页面。
  */
 
-import { MAX_PARTS, MAX_PART_SEGS, NAME_BYTES, PART_NONE } from "../protocol/constants";
+import { MAX_PARTS, MAX_PART_SEGS, NAME_BYTES, PART_NONE, PHASE, type PhaseMode } from "../protocol/constants";
 import type { LayoutPart } from "../protocol/types";
 
 /** 一个闭区间灯珠段 `[start, end]`，与 `LayoutPart.segs` 的元素同形。 */
 export type PartSeg = [number, number];
 
-/**
- * 相位模式（S6）：多段之间怎么取波形。
- *
- * 与固件 `lumen_phase_mode_t` 同值。v5.0 的线上还没有命令能改它（布局 blob 的
- * 保留字节必须为 0），所以界面只能展示不能持久化——见 `layout_store.h` 的说明。
- */
-export const PHASE = {
-  /** 多段视为一条逻辑灯带，按升序名次取样（1–5 与 20–25 连成 0..10）。 */
-  CONTINUOUS: 0,
-  /** 每段从自己的起点起波（第二段的第一颗也是逻辑 0）。 */
-  PER_SEGMENT: 1,
-} as const;
-
-export type PhaseMode = (typeof PHASE)[keyof typeof PHASE];
+/* 相位模式的常量住在协议层（它随 LayoutPart 上线、也进 blob），这里只转发。 */
+export { PHASE, type PhaseMode } from "../protocol/constants";
 
 /* ---------------- 单段与区间 ---------------- */
 
@@ -688,6 +676,8 @@ export function mergeDeclaredParts(
         nameLen: 0,
         name: "",
         segCount: 0,
+        /* 声明了但没划灯珠的部位：相位取默认的「连续」。 */
+        phase: PHASE.CONTINUOUS,
         segs: [],
       });
     }

@@ -31,6 +31,7 @@ import {
   MAX_SCENES,
   NAME_BYTES,
   NO_EFFECT,
+  PHASE,
   SCENE_STEP_BYTES,
   STEP_MAX_MS,
   STEP_MIN_MS,
@@ -57,6 +58,8 @@ interface MockPart {
   name: string;
   /** 闭区间灯珠段，最多 8 条。 */
   segs: Array<[number, number]>;
+  /** 相位模式（0 连续 / 1 各自起点，§9.2）：每部位一份，断电重启后仍在。 */
+  phase: number;
   stepCount: number;
   loop: number;
   on: boolean;
@@ -131,6 +134,7 @@ function seedRuntime(spec: MockDeviceSpec): MockRuntime {
         partId: part.partId,
         name: part.name,
         segs: part.segs.map(([start, end]) => [start, end] as [number, number]),
+        phase: PHASE.CONTINUOUS,
         /* 出厂状态：每部位 1 步常亮，与「点 + 播种整条/1 步/常亮」一致。 */
         stepCount: 1,
         loop: 0,
@@ -457,6 +461,7 @@ export class MockTransport {
         nameLen: encodeUtf8Length(part.name),
         name: part.name,
         segCount: part.segs.length,
+        phase: part.phase ?? PHASE.CONTINUOUS,
         segs: part.segs.map(([start, end]) => [start, end] as [number, number]),
       }));
     const partMask = reports.reduce((mask, report) => mask | (1 << report.partId), 0);
@@ -637,6 +642,7 @@ export class MockTransport {
           partId,
           name: "",
           segs: [],
+          phase: PHASE.CONTINUOUS,
           stepCount: 0,
           loop: 0,
           on: true,
@@ -653,11 +659,17 @@ export class MockTransport {
         const partId = payload[1];
         const nameLen = payload[2];
         const segCount = payload[27];
+        const phase = payload[28];
         const part = runtime.strips[stripId]?.parts[partId];
         if (part === undefined || nameLen > NAME_BYTES || segCount > 8) {
           return 0x01;
         }
+        /* 相位只有两个合法值（§9.2）。 */
+        if (phase !== PHASE.CONTINUOUS && phase !== PHASE.PER_SEGMENT) {
+          return 0x01;
+        }
         part.name = decodeUtf8(payload, 3, nameLen);
+        part.phase = phase;
         /* 声明段数时清空旧段（分帧下发的中间态由 LayoutCommit 兜底）。 */
         part.segs = [];
         part.stepCount = part.stepCount;

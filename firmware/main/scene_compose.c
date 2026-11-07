@@ -221,8 +221,7 @@ bool lumen_scene_strip_needs_frames(const lumen_layout_store_t *layout,
 
 uint16_t lumen_scene_compose(const lumen_layout_store_t *layout, const lumen_scene_t *scene,
                              const lumen_part_clocks_t *clocks, uint32_t now_ms,
-                             uint8_t strip_id, lumen_phase_mode_t phase, uint8_t *buf,
-                             uint16_t led_count)
+                             uint8_t strip_id, uint8_t *buf, uint16_t led_count)
 {
     if (layout == NULL || scene == NULL || clocks == NULL || buf == NULL) {
         return 0;
@@ -264,7 +263,8 @@ uint16_t lumen_scene_compose(const lumen_layout_store_t *layout, const lumen_sce
 
         /*
          * 逐段散回物理位置：连续相位下逻辑下标是「覆盖集合的升序名次」，
-         * 各自起点下是「段内偏移」——两者都由 lumen_layout_logical_index 给。
+         * 各自起点下是「段内偏移」——两者都由 lumen_layout_logical_index 给，
+         * 相位取自**这个部位自己的** `phase` 字段（§9.2：每部位一份）。
          */
         for (uint8_t s = 0; s < part->segs.seg_count && s < LUMEN_MAX_PART_SEGS; ++s) {
             uint8_t start = part->segs.seg[s][0];
@@ -276,7 +276,7 @@ uint16_t lumen_scene_compose(const lumen_layout_store_t *layout, const lumen_sce
                 continue; /* blob 校验已拒，这里只是防御 */
             }
             for (uint16_t i = start; i <= end; ++i) {
-                uint16_t logical = lumen_layout_logical_index(part, i, phase);
+                uint16_t logical = lumen_layout_logical_index(part, i);
                 if (logical >= logical_n) {
                     logical = (uint16_t)(logical_n - 1);
                 }

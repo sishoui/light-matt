@@ -60,7 +60,8 @@
 | `MAX_CHUNK_DATA` | 179 | 单次 BLE 写的数据上限（§3.2） |
 | `LAYER_BYTES` | **9** | 层编码定宽（type + 7 字节参数 + level） |
 | `STATE_BYTES` | **32** | v5 State（§7.3） |
-| `LAYOUT_PART_BYTES` | **28** | `LayoutPart` 载荷 |
+| `LAYOUT_PART_BYTES` | **29** | `LayoutPart` 载荷（名字 + 段数 + **相位模式**） |
+| `LAYOUT_REPORT_BYTES` | **45** | `LayoutReport`（§7.2，与 `LayoutPart` 同构） |
 | `SCENE_STEP_BYTES` | **24** | `SceneStep` / `SceneStepReport` 载荷（§7.4） |
 
 `strip_id` / `part_id` / `seg_id` / `step_index` / `scene_id` 均从 **0** 起。
@@ -171,7 +172,7 @@ CRC16 覆盖 `A6 05 01 01 01 00 01`。
 | `0x1C` | `QueryStripConfig` | 0 | ACK 后补 `StripConfigReport` |
 | `0x1D` | `QueryDeviceInfo` | 0 | ACK 后补 `DeviceInfoReport` |
 | `0x20` | `LayoutWrite` | 2 | `strip_id, part_count`：声明该链的部位数并清空其部位 |
-| `0x21` | `LayoutPart` | 28 | `strip_id, part_id, name_len, name[24], seg_count` |
+| `0x21` | `LayoutPart` | 29 | `strip_id, part_id, name_len, name[24], seg_count, phase` |
 | `0x22` | `LayoutSeg` | 5 | `strip_id, part_id, seg_id, start, end` |
 | `0x23` | `LayoutCommit` | 0 | 校验整份布局并**立即落盘** |
 | `0x24` | `QueryLayout` | 1 | `strip_id`：ACK 后逐部位 `LayoutReport` + 一条 `LayoutListEnd` |
@@ -192,8 +193,11 @@ CRC16 覆盖 `A6 05 01 01 01 00 01`。
 
 1. `LayoutWrite(strip, n)`：把该链的部位数设为 `n`（0–8），并清空该链所有部位的
    名字与段。`n = 0` 表示这条链没有部位（未覆盖的灯珠恒黑）。
-2. `LayoutPart(strip, part, name_len, name, seg_count)`：写名字与段数。
+2. `LayoutPart(strip, part, name_len, name, seg_count, phase)`：写名字、段数与
+   **相位模式**（§9.2）。
    `name_len ≤ 24`；`name` 不足 24 字节的部分**必须补 0**（解码端只信任 `name_len`）。
+   `phase ∈ {0 连续, 1 各自起点}`，其余值 `InvalidParam`。相位是**每部位**一份
+   （S6），所以它与名字、段数同一条命令下发——三者都是「这个部位的静态属性」。
 3. `LayoutSeg(strip, part, seg, start, end)`：写一段闭区间。设备校验
    `start ≤ end`、`end < led_count`、`seg < seg_count`、且**与同链其它所有部位
    的所有段互斥**（S3：一颗灯珠只属一个部位）。压到别的部位 → 整个命令
@@ -236,7 +240,7 @@ CRC16 覆盖 `A6 05 01 01 01 00 01`。
 
 校验规则与 v4 同一份（周期下限、flags 保留位、静态层保留字节、呼吸 p5 ≤ 100）。
 
-### 7.2 布局（`LayoutReport` 0x89，44 字节）
+### 7.2 布局（`LayoutReport` 0x89，45 字节）
 
 ```
 0      strip_id
@@ -244,8 +248,12 @@ CRC16 覆盖 `A6 05 01 01 01 00 01`。
 2      name_len（0-24）
 3..26  name[24]（NUL 填充）
 27     seg_count（0-8）
-28..43 8 × (start, end)，未用的段为 0/0
+28     phase（0 连续 / 1 各自起点，§9.2）
+29..44 8 × (start, end)，未用的段为 0/0
 ```
+
+与 `LayoutPart` 0x21 **同构**（同样 29 字节语义，只是方向相反、外加 `strip_id`
+与 `part_id` 在头部的差别）——读回能原样喂回写入路径，不需要两套布局规则。
 
 `LayoutListEnd` 0x8A（2 字节）：`strip_id, part_mask`（bit i = 部位 i 有段）。
 
@@ -345,12 +353,11 @@ Event 0x81 的 `event_code`：`0x01` 存储失败（`detail` = 触发写入的�
 - 一颗灯珠**只属一个部位**（S3）；未被任何部位覆盖的灯珠**恒黑**。
 - 部位之间不重叠是**设备侧**权威校验（`LayoutSeg` 回 `InvalidParam`），
   App 侧预检只是提前提示。
-- 相位模式（S6）是**布局**属性：`连续` = 多段按升序拼成一条逻辑灯带取样；
-  `各自起点` = 每段从自己的 0 开始。`lumen_layout_logical_index` 实现两种映射，
-  `lumen_scene_compose` 接收相位模式作为参数。
-  **v5.0 固定为「连续」**：线上没有任何命令能改它，§10.3 的每链记录也只有
-  `led_count | part_count | reserved(6)` 六个保留字节，而保留字节按契约必须为 0
-  ——不能借来存相位。等有线上位的票再把其中一个保留字节升格并改 blob 版本。
+- 相位模式（S6）是**每部位**的布局属性：`连续` = 多段按升序拼成一条逻辑灯带取样；
+  `各自起点` = 每段从自己的 0 开始。`lumen_layout_logical_index` 实现两种映射。
+  它随 `LayoutPart` 下发（该载荷的最后一字节），并写进布局 blob 的部位记录
+  （§10.3），所以**断电重启后仍在**。
+  取值只有 `0` 与 `1`；其它值 `InvalidParam`。
 
 ### 9.3 合成顺序（`lumen_scene_compose`）
 
@@ -358,7 +365,8 @@ Event 0x81 的 `event_code`：`0x01` 存储失败（`detail` = 触发写入的�
 
 1. 该链的像素缓冲先整块清零 → **灰缝恒黑**。
 2. 逐部位：取「当前步的两层」构造临时段（`start = 0, end = n-1`，
-   `t0_ms = now - 步内已用时间`），按相位模式求逻辑下标，调 `lumen_effect_pixel`。
+   `t0_ms = now - 步内已用时间`），按**该部位自己的**相位模式求逻辑下标
+   （`part->phase`，§10.3），调 `lumen_effect_pixel`。
 3. 把逻辑像素按段的物理区间**散回**物理位置。
 4. 全局亮度与 gamma **不在**这个函数里做——渲染层对整帧做**一次**
    （与 v4 §9.3 同一条顺序：先乘亮度、再 gamma）。
@@ -419,20 +427,25 @@ nvs,      data, nvs,     0x9000,   0x10000,
 `brightness` 任意、`strip_count ∈ [1,8]`、`active_scene ∈ [0,2]`、
 已配置链的 `led_count ∈ [1,100]`。任一失败**整份拒绝**，调用方保留默认值。
 
-### 10.3 Layout blob `LML1`（2760 字节，硬上限 4096）
+### 10.3 Layout blob `LML1`（2824 字节，硬上限 4096）
 
 ```
 0..3   'L' 'M' 'L' '1'
-4      version = 1
+4      version = 2
 5      strip_count
 6..7   reserved 0
 8..71  每链 8 字节：led_count(1) | part_count(1) | reserved(6)
-72..   每个部位 42 字节（8 链 × 8 部位，固定顺序）：
-         name_len(1) | name[24] | seg_count(1) | segs[8] × (start(1) | end(1))
+72..   每个部位 43 字节（8 链 × 8 部位，固定顺序）：
+         name_len(1) | name[24] | seg_count(1) | phase(1) | segs[8] × (start(1) | end(1))
 ```
 
-总长 `8 + 64 + 64 × 42 = 2760`。解码校验每段的 `start ≤ end`、
-`end < 该链 led_count`、段互斥；坏 blob 整份拒绝。
+总长 `8 + 64 + 64 × 43 = 2824`。解码校验每段的 `start ≤ end`、
+`end < 该链 led_count`、段互斥、`phase ∈ {0,1}`；坏 blob 整份拒绝。
+
+> **版本 1 → 2（#158）**：部位记录从 42 字节涨到 43，多出来的那一字节是**相位
+> 模式**（S6：每部位一份）。v5.0 把它硬编码成「连续」且保留字节必须为 0，
+> 因此 v1 的 blob 与 v2 **数值上不兼容**：整份拒绝、设备回默认值。同一版固件
+> 内部一致，不涉及迁移——v5 本来就是断崖。
 
 > **分帧下发时的「未写」段**：`LayoutPart` 先声明 `seg_count`，`LayoutSeg`
 > 随后逐条到达。声明了但还没写的槽位**不能**当成 0-0（那会与合法的 1-2 冲突），

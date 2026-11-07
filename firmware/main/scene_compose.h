@@ -87,7 +87,8 @@ lumen_part_position_t lumen_part_clock_advance(const lumen_part_scene_t *part,
  * 合成一条链的像素（docs/protocol-v5.md §9.3）：
  *
  *   1. 整块清零 → 灰缝恒黑（未覆盖的灯珠是真黑，不是上一帧残留）；
- *   2. 逐部位取「当前步的两层」，按相位模式求逻辑下标，调 lumen_effect_pixel；
+ *   2. 逐部位取「当前步的两层」，按**该部位自己的**相位模式求逻辑下标（§9.2：
+ *      相位是每部位一份，所以没有 chain 级参数），调 lumen_effect_pixel；
  *   3. 把逻辑像素按段的物理区间散回物理位置；
  *   4. 全局亮度与 gamma **不在这里做**。
  *
@@ -100,8 +101,7 @@ lumen_part_position_t lumen_part_clock_advance(const lumen_part_scene_t *part,
  */
 uint16_t lumen_scene_compose(const lumen_layout_store_t *layout, const lumen_scene_t *scene,
                              const lumen_part_clocks_t *clocks, uint32_t now_ms,
-                             uint8_t strip_id, lumen_phase_mode_t phase, uint8_t *buf,
-                             uint16_t led_count);
+                             uint8_t strip_id, uint8_t *buf, uint16_t led_count);
 
 /*
  * 该链是否需要帧循环（动画判据）。

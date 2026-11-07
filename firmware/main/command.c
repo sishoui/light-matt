@@ -248,10 +248,11 @@ static void dispatch_layout_write(const lumen_frame_t *frame, const lumen_state_
 }
 
 /*
- * LayoutPart 0x21：strip_id, part_id, name_len, name[24], seg_count（§6.1 第 2 条）。
+ * LayoutPart 0x21：strip_id, part_id, name_len, name[24], seg_count, phase
+ * （§6.1 第 2 条，载荷 29 字节）。
  *
  * name_len ≤ 24；name 不足 24 字节的部分由调用方保证补 0（解码端只信任 name_len）。
- * seg_count ≤ 8。part_id 必须已被 LayoutWrite 声明过。
+ * seg_count ≤ 8。phase ∈ {0, 1}（S6：每部位一份）。part_id 必须已被 LayoutWrite 声明过。
  */
 static void dispatch_layout_part(const lumen_frame_t *frame, const lumen_state_t *current,
                                  const lumen_layout_store_t *layout,
@@ -261,6 +262,7 @@ static void dispatch_layout_part(const lumen_frame_t *frame, const lumen_state_t
     uint8_t part_id = frame->payload[1];
     uint8_t name_len = frame->payload[2];
     uint8_t seg_count = frame->payload[27];
+    uint8_t phase = frame->payload[28];
 
     if (strip_id >= current->strip_count) {
         outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
@@ -274,6 +276,10 @@ static void dispatch_layout_part(const lumen_frame_t *frame, const lumen_state_t
         outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
         return;
     }
+    if (phase > LUMEN_PHASE_MAX) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
     outcome->result_code = LUMEN_RESULT_OK;
     outcome->layout_op = true;
     outcome->layout_opcode = LUMEN_CMD_LAYOUT_PART;
@@ -281,6 +287,7 @@ static void dispatch_layout_part(const lumen_frame_t *frame, const lumen_state_t
     outcome->layout_part = part_id;
     outcome->layout_name_len = name_len;
     outcome->layout_seg_count = seg_count;
+    outcome->layout_phase = phase;
     memset(outcome->layout_name, 0, sizeof(outcome->layout_name));
     if (name_len > 0) {
         memcpy(outcome->layout_name, &frame->payload[3], name_len);

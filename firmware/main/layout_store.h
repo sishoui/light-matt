@@ -30,15 +30,11 @@
 #define LUMEN_PART_NONE 0xFF
 
 /*
- * 相位模式（S6）。
+ * 相位模式（S6）：多段之间怎么取波形。
  *
- * 规格把它定为「布局属性」，但 v5.0 的线上**没有任何命令能改它**，§10.3 的
- * 每链记录也只有 `led_count | part_count | reserved(6)` 六个保留字节。
- * 因此本票（#155 walking skeleton）只实现 `连续`，不做每链持久化：
- * 保留字节按契约必须为 0，不能借来存相位。
- *
- * 两个值仍然作为 `lumen_scene_compose` / `lumen_layout_logical_index` 的参数
- * 存在，等到有线上位的票再加持久化——那时把保留字节之一升格、并改 blob 版本。
+ * **每部位一份**，随 `LayoutPart` 0x21 的最后一字节下发（§6.1 第 2 条），
+ * 并写进布局 blob 的部位记录（§10.3，记录 42 → 43 字节、blob 版本 1 → 2）。
+ * 所以它断电重启后仍在，三个场景共用同一份（相位是布局属性，不是场景属性）。
  */
 typedef enum {
     LUMEN_PHASE_CONTINUOUS = 0,
@@ -61,17 +57,18 @@ typedef struct {
     uint8_t seg[LUMEN_MAX_PART_SEGS][2]; /* [i][0] = start, [i][1] = end */
 } lumen_part_segs_t;
 
-/* 一个部位：名字 + 灯珠段。一个部位的多段**完全共享**全部参数（S5）。 */
+/* 一个部位：名字 + 相位模式 + 灯珠段。一个部位的多段**完全共享**全部参数（S5）。 */
 typedef struct {
     uint8_t name_len;               /* 0-24，单位为字节 */
     uint8_t name[LUMEN_NAME_BYTES]; /* NUL 补齐；解码端只信任 name_len */
     lumen_part_segs_t segs;
+    uint8_t phase; /* lumen_phase_mode_t：0 连续 / 1 各自起点（S6） */
 } lumen_part_layout_t;
 
 /*
  * 布局存储：8 条链 × 8 个部位。
  *
- * RAM 尺寸 = 8（每链部位数）+ 64 × 42 = **2696 字节**，由下面的
+ * RAM 尺寸 = 8（每链部位数）+ 64 × 43 = **2760 字节**，由下面的
  * _Static_assert 钉住。
  */
 typedef struct {
@@ -79,13 +76,13 @@ typedef struct {
     lumen_part_layout_t part[LUMEN_MAX_STRIPS][LUMEN_MAX_PARTS];
 } lumen_layout_store_t;
 
-_Static_assert(sizeof(lumen_part_layout_t) == 42, "lumen_part_layout_t must be 42 bytes");
-_Static_assert(sizeof(lumen_layout_store_t) == 2696,
-               "lumen_layout_store_t must be 2696 bytes (docs/protocol-v5.md §11)");
+_Static_assert(sizeof(lumen_part_layout_t) == 43, "lumen_part_layout_t must be 43 bytes");
+_Static_assert(sizeof(lumen_layout_store_t) == 2760,
+               "lumen_layout_store_t must be 2760 bytes (docs/protocol-v5.md §11)");
 
-/* blob：magic 'LML1' + 版本 + 链数 + 2 保留 + 每链 8 字节 + 64 × 42 字节 = 2760。 */
-#define LUMEN_LAYOUT_BLOB_VERSION 1
-#define LUMEN_LAYOUT_BLOB_SIZE 2760
+/* blob：magic 'LML1' + 版本 + 链数 + 2 保留 + 每链 8 字节 + 64 × 43 字节 = 2824。 */
+#define LUMEN_LAYOUT_BLOB_VERSION 2
+#define LUMEN_LAYOUT_BLOB_SIZE 2824
 /* NVS 写上限（§10.3）。编码后超过它一律 StorageFailed。 */
 #define LUMEN_LAYOUT_BLOB_MAX 4096
 
@@ -108,18 +105,19 @@ uint8_t lumen_layout_store_write(lumen_layout_store_t *layout, uint8_t strip_id,
                                  uint8_t part_count, uint8_t strip_count);
 
 /*
- * LayoutPart 0x21 的语义：写名字与段数。
+ * LayoutPart 0x21 的语义：写名字、段数与**相位模式**。
  *
  * name_len ≤ 24；name 不足 24 字节的部分补 0（解码端只信任 name_len）。
- * seg_count ≤ 8。写 seg_count 时**清空**该部位原有的段（新一次划分从空
- * 开始，避免旧段悄悄留下来）。
+ * seg_count ≤ 8。phase ∈ {0, 1}（S6：每部位一份）。
+ * 写 seg_count 时**清空**该部位原有的段（新一次划分从空开始，避免旧段悄悄
+ * 留下来）。
  *
  * 返回 LUMEN_RESULT_OK / INVALID_PARAM（下标越界、part_id ≥ 该链部位数、
- * name_len > 24、seg_count > 8）。失败时不修改任何字节。
+ * name_len > 24、seg_count > 8、phase 越界）。失败时不修改任何字节。
  */
 uint8_t lumen_layout_store_set_part(lumen_layout_store_t *layout, uint8_t strip_id,
                                     uint8_t part_id, uint8_t name_len, const uint8_t *name,
-                                    uint8_t seg_count, uint8_t strip_count);
+                                    uint8_t seg_count, uint8_t phase, uint8_t strip_count);
 
 /*
  * LayoutSeg 0x22 的语义：写一个部位的第 seg_id 个灯珠段。
@@ -174,10 +172,12 @@ uint16_t lumen_layout_part_pixel_count(const lumen_part_layout_t *part);
  * 序列是 1,2,3,4,5,20,…,25，对应逻辑下标 0..10。
  * 各自起点相位下 = 段内偏移（第二段的 20 也是 0）。
  *
+ * 相位**从部位自己的 `phase` 字段读**（每部位一份，S6）——没有第二份参数，
+ * 所以调用方不可能拿错某个部位的相位。
+ *
  * index 不在该部位覆盖范围内时返回 0（调用方不该问）。
  */
-uint16_t lumen_layout_logical_index(const lumen_part_layout_t *part, uint16_t index,
-                                    lumen_phase_mode_t phase);
+uint16_t lumen_layout_logical_index(const lumen_part_layout_t *part, uint16_t index);
 
 /*
  * 编码 / 解码布局 blob（§10.3）。

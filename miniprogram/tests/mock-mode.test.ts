@@ -32,7 +32,7 @@ import {
   cmdSetBrightness,
   cmdSetPower,
 } from "../utils/protocol/commands";
-import { MAX_STRIPS } from "../utils/protocol/constants";
+import { MAX_STRIPS, PHASE } from "../utils/protocol/constants";
 
 const FIRST = MOCK_DEVICES[0].deviceId;
 
@@ -127,7 +127,7 @@ describe("MockTransport：与真机同形", () => {
   it("LayoutWrite + LayoutPart + LayoutSeg 之后再读回新布局", async () => {
     const transport = await connected();
     expect((await transport.sendAndWaitAck(cmdLayoutWrite(1, 1))).ok).toBe(true);
-    expect((await transport.sendAndWaitAck(cmdLayoutPart(1, 0, "整条", 1))).ok).toBe(true);
+    expect((await transport.sendAndWaitAck(cmdLayoutPart(1, 0, "整条", 1, PHASE.CONTINUOUS))).ok).toBe(true);
     expect((await transport.sendAndWaitAck(cmdLayoutSeg(1, 0, 0, 0, 17))).ok).toBe(true);
     expect((await transport.sendAndWaitAck(cmdLayoutCommit())).ok).toBe(true);
     const result = await transport.queryLayout(1);
@@ -140,7 +140,7 @@ describe("MockTransport：与真机同形", () => {
     const transport = await connected();
     /* 书桌的 strip 1 只有 18 颗灯：end=20 越界。 */
     expect((await transport.sendAndWaitAck(cmdLayoutWrite(1, 1))).ok).toBe(true);
-    expect((await transport.sendAndWaitAck(cmdLayoutPart(1, 0, "", 1))).ok).toBe(true);
+    expect((await transport.sendAndWaitAck(cmdLayoutPart(1, 0, "", 1, PHASE.CONTINUOUS))).ok).toBe(true);
     const ack = await transport.sendAndWaitAck(cmdLayoutSeg(1, 0, 0, 0, 20));
     expect(ack.ok).toBe(false);
     expect(ack.resultCode).toBe(0x01);

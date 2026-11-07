@@ -78,6 +78,7 @@ typedef struct {
     uint8_t layout_end;
     uint8_t layout_part_count; /* 0x20 的目标部位数 */
     uint8_t layout_seg_count;  /* 0x21 的目标段数 */
+    uint8_t layout_phase;      /* 0x21 的相位模式（0 连续 / 1 各自起点，§9.2） */
     uint8_t layout_name_len;   /* 0x21 的部位名长度 */
     uint8_t layout_name[LUMEN_NAME_BYTES];
 

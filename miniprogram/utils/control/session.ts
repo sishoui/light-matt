@@ -1122,7 +1122,7 @@ export class ControlSession {
       const requests: CommandRequest[] = [cmdLayoutWrite(stripId, parts.length)];
       for (const part of parts) {
         requests.push(
-          cmdLayoutPart(stripId, part.partId, part.name, part.segs.length),
+          cmdLayoutPart(stripId, part.partId, part.name, part.segs.length, part.phase),
         );
         part.segs.forEach(([start, end], segId) => {
           requests.push(cmdLayoutSeg(stripId, part.partId, segId, start, end));

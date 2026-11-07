@@ -640,7 +640,7 @@ static void vector_baseline(lumen_state_t *state, lumen_layout_store_t *layout)
      */
     (void)lumen_layout_store_write(layout, 0, 3, state->strip_count);
     for (uint8_t p = 0; p < 3; ++p) {
-        (void)lumen_layout_store_set_part(layout, 0, p, 0, NULL, 1, state->strip_count);
+        (void)lumen_layout_store_set_part(layout, 0, p, 0, NULL, 1, LUMEN_PHASE_CONTINUOUS, state->strip_count);
     }
     state->part_count[0] = 3;
 }
@@ -933,19 +933,22 @@ static void run_device_case(const vector_case_t *c)
         break;
     }
     case LUMEN_CMD_LAYOUT_REPORT: {
-        /* 44 字节（§7.2）：strip | part | name_len | name[24] | seg_count | 8 × (start,end)。 */
-        CHECK(frame.payload_len == 44);
+        /* 45 字节（§7.2）：strip | part | name_len | name[24] | seg_count | phase
+         * | 8 × (start,end)。 */
+        CHECK(frame.payload_len == LUMEN_LAYOUT_REPORT_BYTES);
         CHECK(frame.payload[27] <= LUMEN_MAX_PART_SEGS);
+        CHECK(frame.payload[28] <= LUMEN_PHASE_MAX);
         const uint8_t (*segs)[2] = NULL;
         uint8_t seg_buf[LUMEN_MAX_PART_SEGS][2];
         for (uint8_t i = 0; i < LUMEN_MAX_PART_SEGS; ++i) {
-            seg_buf[i][0] = frame.payload[28 + i * 2];
-            seg_buf[i][1] = frame.payload[28 + i * 2 + 1];
+            seg_buf[i][0] = frame.payload[29 + i * 2];
+            seg_buf[i][1] = frame.payload[29 + i * 2 + 1];
         }
         segs = (const uint8_t(*)[2])seg_buf;
         len = lumen_protocol_encode_layout_report(frame.seq, frame.payload[0], frame.payload[1],
                                                   frame.payload[2], &frame.payload[3],
-                                                  frame.payload[27], segs, out, sizeof(out));
+                                                  frame.payload[27], frame.payload[28], segs, out,
+                                                  sizeof(out));
         break;
     }
     case LUMEN_CMD_LAYOUT_LIST_END:
@@ -4287,11 +4290,11 @@ static void test_planar_parse_list(void)
 
     /* 空串 / 纯分隔符 → 0 项。 */
     CHECK(lumen_planar_parse_list("", out, LUMEN_MAX_STRIPS) == 0);
-    CHECK(lumen_planar_parse_list(" , , ", out, LUMEN_MAX_STRIPS) == 0);
+    CHECK(lumen_planar_parse_list(" , ", out, LUMEN_MAX_STRIPS) == 0);
 
     /* 非法：整串作废，不静默截断或跳过。 */
     CHECK(lumen_planar_parse_list("3,x,5", out, LUMEN_MAX_STRIPS) == 0);
-    CHECK(lumen_planar_parse_list("3,,", out, LUMEN_MAX_STRIPS) != 0); /* 尾随分隔符可接受 */
+    CHECK(lumen_planar_parse_list("3,", out, LUMEN_MAX_STRIPS) != 0); /* 尾随分隔符可接受 */
     CHECK(lumen_planar_parse_list("1,2,3", out, 2) == 0);             /* 超容量 */
     CHECK(lumen_planar_parse_list(NULL, out, LUMEN_MAX_STRIPS) == 0);
     CHECK(lumen_planar_parse_list("3", NULL, LUMEN_MAX_STRIPS) == 0);
@@ -4613,7 +4616,7 @@ static void test_per_strip_led_counts_30_60_10(void)
         lumen_layout_store_init(&layout);
         CHECK(lumen_layout_store_write(&layout, cases[i].strip, 1, state.strip_count) ==
               LUMEN_RESULT_OK);
-        CHECK(lumen_layout_store_set_part(&layout, cases[i].strip, 0, 0, NULL, 1,
+        CHECK(lumen_layout_store_set_part(&layout, cases[i].strip, 0, 0, NULL, 1, LUMEN_PHASE_CONTINUOUS,
                                           state.strip_count) == LUMEN_RESULT_OK);
 
         lumen_frame_t f = {0};
@@ -4660,10 +4663,10 @@ static void test_per_strip_led_counts_100_24(void)
     CHECK(lumen_layout_store_write(&layout, 1, 1, state.strip_count) == LUMEN_RESULT_OK);
     /* strip 0 两个部位（各 1 段），strip 1 一个部位。 */
     for (uint8_t p = 0; p < 2; ++p) {
-        CHECK(lumen_layout_store_set_part(&layout, 0, p, 0, NULL, 1, state.strip_count) ==
+        CHECK(lumen_layout_store_set_part(&layout, 0, p, 0, NULL, 1, LUMEN_PHASE_CONTINUOUS, state.strip_count) ==
               LUMEN_RESULT_OK);
     }
-    CHECK(lumen_layout_store_set_part(&layout, 1, 0, 0, NULL, 1, state.strip_count) ==
+    CHECK(lumen_layout_store_set_part(&layout, 1, 0, 0, NULL, 1, LUMEN_PHASE_CONTINUOUS, state.strip_count) ==
           LUMEN_RESULT_OK);
 
     struct {
@@ -5974,10 +5977,10 @@ static void build_three_parts(lumen_layout_store_t *layout)
 {
     lumen_layout_store_init(layout);
     CHECK(lumen_layout_store_write(layout, 0, 3, 1) == LUMEN_RESULT_OK);
-    CHECK(lumen_layout_store_set_part(layout, 0, 0, 6, (const uint8_t *)"眼灯", 1, 1) ==
+    CHECK(lumen_layout_store_set_part(layout, 0, 0, 6, (const uint8_t *)"眼灯", 1, LUMEN_PHASE_CONTINUOUS, 1) ==
           LUMEN_RESULT_OK);
-    CHECK(lumen_layout_store_set_part(layout, 0, 1, 0, NULL, 1, 1) == LUMEN_RESULT_OK);
-    CHECK(lumen_layout_store_set_part(layout, 0, 2, 0, NULL, 1, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_part(layout, 0, 1, 0, NULL, 1, LUMEN_PHASE_CONTINUOUS, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_part(layout, 0, 2, 0, NULL, 1, LUMEN_PHASE_CONTINUOUS, 1) == LUMEN_RESULT_OK);
     CHECK(lumen_layout_store_set_seg(layout, 0, 0, 0, 0, 1, 30, 1) == LUMEN_RESULT_OK);
     CHECK(lumen_layout_store_set_seg(layout, 0, 1, 0, 2, 2, 30, 1) == LUMEN_RESULT_OK);
     CHECK(lumen_layout_store_set_seg(layout, 0, 2, 0, 3, 9, 30, 1) == LUMEN_RESULT_OK);
@@ -5986,12 +5989,12 @@ static void build_three_parts(lumen_layout_store_t *layout)
 static void test_layout_sizes(void)
 {
     /* 编译期断言之外再在运行时钉一次：这两块 RAM 的预算进验收报告。 */
-    CHECK(sizeof(lumen_part_layout_t) == 42);
-    CHECK(sizeof(lumen_layout_store_t) == 2696);
-    CHECK(LUMEN_LAYOUT_BLOB_SIZE == 2760);
+    CHECK(sizeof(lumen_part_layout_t) == 43);
+    CHECK(sizeof(lumen_layout_store_t) == 2760);
+    CHECK(LUMEN_LAYOUT_BLOB_SIZE == 2824);
     CHECK(LUMEN_LAYOUT_BLOB_SIZE <= LUMEN_LAYOUT_BLOB_MAX);
-    /* 每部位记录的内部分量必须装得下 8 段 × 2 字节。 */
-    CHECK(LUMEN_MAX_PART_SEGS * 2 + 1 + LUMEN_NAME_BYTES + 1 == 42);
+    /* 每部位记录的内部分量：名字 + 段数 + 相位 + 8 段 × 2 字节。 */
+    CHECK(LUMEN_MAX_PART_SEGS * 2 + 1 + LUMEN_NAME_BYTES + 1 + 1 == 43);
 }
 
 static void test_layout_part_of_pixel(void)
@@ -6048,7 +6051,7 @@ static void test_layout_part_name_padding(void)
     lumen_layout_store_t layout;
     lumen_layout_store_init(&layout);
     CHECK(lumen_layout_store_write(&layout, 0, 1, 1) == LUMEN_RESULT_OK);
-    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 6, (const uint8_t *)"眼灯", 0, 1) ==
+    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 6, (const uint8_t *)"眼灯", 0, LUMEN_PHASE_CONTINUOUS, 1) ==
           LUMEN_RESULT_OK);
 
     const lumen_part_layout_t *p = lumen_layout_store_part(&layout, 0, 0);
@@ -6060,22 +6063,22 @@ static void test_layout_part_name_padding(void)
     }
 
     /* 空名合法（name_len = 0）。 */
-    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 0, NULL, 0, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 0, NULL, 0, LUMEN_PHASE_CONTINUOUS, 1) == LUMEN_RESULT_OK);
     CHECK(p->name_len == 0);
 
     /* 25 字节超上限。 */
     uint8_t too_long[32];
     memset(too_long, 'A', sizeof(too_long));
-    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 25, too_long, 0, 1) ==
+    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 25, too_long, 0, LUMEN_PHASE_CONTINUOUS, 1) ==
           LUMEN_RESULT_INVALID_PARAM);
     /* 恰好 24 字节合法。 */
-    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 24, too_long, 0, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 24, too_long, 0, LUMEN_PHASE_CONTINUOUS, 1) == LUMEN_RESULT_OK);
     CHECK(p->name_len == 24);
     /* part_id 超过已声明数量。 */
-    CHECK(lumen_layout_store_set_part(&layout, 0, 1, 0, NULL, 0, 1) ==
+    CHECK(lumen_layout_store_set_part(&layout, 0, 1, 0, NULL, 0, LUMEN_PHASE_CONTINUOUS, 1) ==
           LUMEN_RESULT_INVALID_PARAM);
     /* seg_count 超上限。 */
-    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 0, NULL, 9, 1) ==
+    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 0, NULL, 9, LUMEN_PHASE_CONTINUOUS, 1) ==
           LUMEN_RESULT_INVALID_PARAM);
 }
 
@@ -6098,7 +6101,7 @@ static void test_layout_seg_rejects_overlap(void)
     CHECK(lumen_layout_part_of_pixel(&layout, 0, 0) == 0);
 
     /* 半开区间不算冲突（3-9 与 10-12 相邻合法）。先把散热的段数放宽到 2。 */
-    CHECK(lumen_layout_store_set_part(&layout, 0, 2, 0, NULL, 2, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_part(&layout, 0, 2, 0, NULL, 2, LUMEN_PHASE_CONTINUOUS, 1) == LUMEN_RESULT_OK);
     CHECK(lumen_layout_store_set_seg(&layout, 0, 2, 0, 3, 9, 30, 1) == LUMEN_RESULT_OK);
     CHECK(lumen_layout_store_set_seg(&layout, 0, 2, 1, 10, 12, 30, 1) == LUMEN_RESULT_OK);
     CHECK(lumen_layout_part_of_pixel(&layout, 0, 11) == 2);
@@ -6126,7 +6129,7 @@ static void test_layout_partial_write(void)
     lumen_layout_store_t layout;
     lumen_layout_store_init(&layout);
     CHECK(lumen_layout_store_write(&layout, 0, 1, 1) == LUMEN_RESULT_OK);
-    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 0, NULL, 2, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 0, NULL, 2, LUMEN_PHASE_CONTINUOUS, 1) == LUMEN_RESULT_OK);
 
     /* 只写了段 1，段 0 还没到：段 1 不该被「段 0 的 0-0」顶掉。 */
     CHECK(lumen_layout_store_set_seg(&layout, 0, 0, 1, 1, 2, 30, 1) == LUMEN_RESULT_OK);
@@ -6150,7 +6153,7 @@ static void test_layout_seg_range(void)
     lumen_layout_store_t layout;
     lumen_layout_store_init(&layout);
     CHECK(lumen_layout_store_write(&layout, 0, 1, 1) == LUMEN_RESULT_OK);
-    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 0, NULL, 2, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 0, NULL, 2, LUMEN_PHASE_CONTINUOUS, 1) == LUMEN_RESULT_OK);
 
     /* start > end → 拒。 */
     CHECK(lumen_layout_store_set_seg(&layout, 0, 0, 0, 10, 9, 30, 1) ==
@@ -6183,15 +6186,18 @@ static void test_layout_multi_segment_logical_index(void)
     CHECK(lumen_layout_part_pixel_count(&part) == 5 + 6);
 
     /* 连续相位：逻辑下标是升序名次 → 1..5 是 0..4，20..25 是 5..10。 */
-    CHECK(lumen_layout_logical_index(&part, 1, LUMEN_PHASE_CONTINUOUS) == 0);
-    CHECK(lumen_layout_logical_index(&part, 5, LUMEN_PHASE_CONTINUOUS) == 4);
-    CHECK(lumen_layout_logical_index(&part, 20, LUMEN_PHASE_CONTINUOUS) == 5);
-    CHECK(lumen_layout_logical_index(&part, 25, LUMEN_PHASE_CONTINUOUS) == 10);
+    part.phase = LUMEN_PHASE_CONTINUOUS;
+    CHECK(lumen_layout_logical_index(&part, 1) == 0);
+    CHECK(lumen_layout_logical_index(&part, 5) == 4);
+    CHECK(lumen_layout_logical_index(&part, 20) == 5);
+    CHECK(lumen_layout_logical_index(&part, 25) == 10);
 
-    /* 各自起点相位：第二段从自己的 0 开始。 */
-    CHECK(lumen_layout_logical_index(&part, 20, LUMEN_PHASE_PER_SEGMENT) == 0);
-    CHECK(lumen_layout_logical_index(&part, 25, LUMEN_PHASE_PER_SEGMENT) == 5);
-    CHECK(lumen_layout_logical_index(&part, 3, LUMEN_PHASE_PER_SEGMENT) == 2);
+    /* 各自起点相位：第二段从自己的 0 开始。相位取自部位自己的字段（S6）。 */
+    part.phase = LUMEN_PHASE_PER_SEGMENT;
+    CHECK(lumen_layout_logical_index(&part, 20) == 0);
+    CHECK(lumen_layout_logical_index(&part, 25) == 5);
+    CHECK(lumen_layout_logical_index(&part, 3) == 2);
+    part.phase = LUMEN_PHASE_CONTINUOUS;
 
     /* 段顺序颠倒不影响结果（LayoutSeg 逐条写，写入顺序不该影响相位）。 */
     lumen_part_layout_t swapped = part;
@@ -6201,11 +6207,11 @@ static void test_layout_multi_segment_logical_index(void)
     swapped.segs.seg[1][1] = 5;
     for (uint8_t i = 1; i <= 5; ++i) {
         uint16_t want = (uint16_t)(i - 1);
-        CHECK(lumen_layout_logical_index(&swapped, i, LUMEN_PHASE_CONTINUOUS) == want);
+        CHECK(lumen_layout_logical_index(&swapped, i) == want);
     }
     for (uint8_t i = 20; i <= 25; ++i) {
         uint16_t want = (uint16_t)(i - 20 + 5);
-        CHECK(lumen_layout_logical_index(&swapped, i, LUMEN_PHASE_CONTINUOUS) == want);
+        CHECK(lumen_layout_logical_index(&swapped, i) == want);
     }
 }
 
@@ -6237,7 +6243,7 @@ static void test_layout_blob_roundtrip(void)
     lumen_layout_store_t layout;
     build_three_parts(&layout);
     /* 散热的段数先放宽到 2，再写第二个不连续段。 */
-    CHECK(lumen_layout_store_set_part(&layout, 0, 2, 0, NULL, 2, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_part(&layout, 0, 2, 0, NULL, 2, LUMEN_PHASE_CONTINUOUS, 1) == LUMEN_RESULT_OK);
     CHECK(lumen_layout_store_set_seg(&layout, 0, 2, 0, 3, 9, 30, 1) == LUMEN_RESULT_OK);
     CHECK(lumen_layout_store_set_seg(&layout, 0, 2, 1, 20, 25, 30, 1) == LUMEN_RESULT_OK);
 
@@ -6304,13 +6310,23 @@ static void test_layout_blob_rejects_bad(void)
         uint8_t value;
     } mutations[] = {
         {0, 'X'},   /* magic */
-        {4, 2},     /* version */
+        {4, LUMEN_LAYOUT_BLOB_VERSION + 1}, /* version 必须精确等于 2（#158 升版） */
         {5, 0},     /* strip_count 0 */
         {5, 9},     /* strip_count 9 */
         {9, 9},     /* part_count 9 */
         {10, 1},    /* 保留字节必须为 0 */
         {8, 200},   /* led_count > 100 */
+        {72 + 26, 2}, /* 部位 0 的记录内偏移 26 = phase，只有 0/1 */
     };
+    /*
+     * 自检：确认上面每个偏移真的落在它声称的字段上。变异测试最容易犯的错
+     * 是偏移写歪了——那时「整份拒绝」仍然成立（碰巧撞坏了别的字节），
+     * 断言假绿。
+     */
+    CHECK(blob[72 + 0] == 6);  /* 部位 0 的 name_len = 6（眼灯） */
+    CHECK(blob[72 + 25] == 1); /* 部位 0 的 seg_count = 1 */
+    CHECK(blob[72 + 26] == 0); /* 部位 0 的 phase = 连续 */
+    CHECK(blob[72 + 27] == 0 && blob[72 + 28] == 1); /* 段 0 = 0-1 */
     for (size_t i = 0; i < sizeof(mutations) / sizeof(mutations[0]); ++i) {
         uint8_t bad[LUMEN_LAYOUT_BLOB_MAX];
         memcpy(bad, blob, n);
@@ -6323,21 +6339,22 @@ static void test_layout_blob_rejects_bad(void)
     }
 
     /*
-     * 部位记录从偏移 72 开始，每 42 字节。部位 0 的段 0 从记录内偏移 26 起。
+     * 部位记录从偏移 72 开始，每 43 字节。部位 0 的段 0 从记录内偏移 27 起
+     * （名字 1+24、段数 1、相位 1）。
      * 把眼灯的第一个段改成 5-5（与散热的 3-9 重叠）。
      */
     size_t part0 = 72;
     uint8_t overlapping[LUMEN_LAYOUT_BLOB_MAX];
     memcpy(overlapping, blob, n);
-    overlapping[part0 + 26] = 5;
     overlapping[part0 + 27] = 5;
+    overlapping[part0 + 28] = 5;
     CHECK(!lumen_layout_blob_decode(overlapping, n, &strips, &out));
 
     /* start > end。 */
     uint8_t inverted[LUMEN_LAYOUT_BLOB_MAX];
     memcpy(inverted, blob, n);
-    inverted[part0 + 26] = 9;
-    inverted[part0 + 27] = 0;
+    inverted[part0 + 27] = 9;
+    inverted[part0 + 28] = 0;
     CHECK(!lumen_layout_blob_decode(inverted, n, &strips, &out));
 
     /* 名字 name_len 之后有非 0 字节。 */
@@ -6349,7 +6366,7 @@ static void test_layout_blob_rejects_bad(void)
     /* 未使用的部位槽位非 0（半套写入）。 */
     uint8_t ghost[LUMEN_LAYOUT_BLOB_MAX];
     memcpy(ghost, blob, n);
-    size_t part5 = 72 + 5 * 42;
+    size_t part5 = 72 + 5 * 43;
     ghost[part5 + 25] = 1; /* seg_count = 1，但 part_count[0] = 3 */
     CHECK(!lumen_layout_blob_decode(ghost, n, &strips, &out));
 
@@ -7011,7 +7028,7 @@ static void build_whole_strip_pair(lumen_layout_store_t *layout, lumen_scene_t *
 {
     lumen_layout_store_init(layout);
     CHECK(lumen_layout_store_write(layout, 0, 1, 1) == LUMEN_RESULT_OK);
-    CHECK(lumen_layout_store_set_part(layout, 0, 0, 0, NULL, 1, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_part(layout, 0, 0, 0, NULL, 1, LUMEN_PHASE_CONTINUOUS, 1) == LUMEN_RESULT_OK);
     CHECK(lumen_layout_store_set_seg(layout, 0, 0, 0, 0, (uint8_t)(led_count - 1), led_count, 1) ==
           LUMEN_RESULT_OK);
 
@@ -7036,7 +7053,7 @@ static void test_compose_uncovered_is_black(void)
     lumen_layout_store_init(&layout);
     /* 链 0：只有「整条 0-9」的一部分被覆盖（0-2）。 */
     CHECK(lumen_layout_store_write(&layout, 0, 1, 2) == LUMEN_RESULT_OK);
-    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 0, NULL, 1, 2) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 0, NULL, 1, LUMEN_PHASE_CONTINUOUS, 2) == LUMEN_RESULT_OK);
     CHECK(lumen_layout_store_set_seg(&layout, 0, 0, 0, 0, 2, 30, 2) == LUMEN_RESULT_OK);
     /* 链 1：故意一个部位都不建。 */
     CHECK(lumen_layout_store_write(&layout, 1, 0, 2) == LUMEN_RESULT_OK);
@@ -7052,7 +7069,7 @@ static void test_compose_uncovered_is_black(void)
     uint8_t buf[30 * 3];
     /* 先用脏值填满，证明 compose 真的清零（不是碰巧）。 */
     memset(buf, 0xAA, sizeof(buf));
-    uint16_t n = lumen_scene_compose(&layout, &scene, &clocks, 600, 0, LUMEN_PHASE_CONTINUOUS, buf,
+    uint16_t n = lumen_scene_compose(&layout, &scene, &clocks, 600, 0, buf,
                                      30);
     CHECK(n == 30);
 
@@ -7070,7 +7087,7 @@ static void test_compose_uncovered_is_black(void)
 
     /* 一条没有部位的链：整条黑。 */
     memset(buf, 0xAA, sizeof(buf));
-    n = lumen_scene_compose(&layout, &scene, &clocks, 600, 1, LUMEN_PHASE_CONTINUOUS, buf, 30);
+    n = lumen_scene_compose(&layout, &scene, &clocks, 600, 1, buf, 30);
     CHECK(n == 30);
     for (uint16_t i = 0; i < 30; ++i) {
         CHECK(buf[i * 3] == 0 && buf[i * 3 + 1] == 0 && buf[i * 3 + 2] == 0);
@@ -7097,21 +7114,21 @@ static void test_compose_part_switch(void)
     lumen_part_clocks_reset_strip(&clocks, 0, 1, 0);
     uint8_t buf[10 * 3];
     /* t=100：第 1 步（红）。 */
-    lumen_scene_compose(&layout, &scene, &clocks, 100, 0, LUMEN_PHASE_CONTINUOUS, buf, 10);
+    lumen_scene_compose(&layout, &scene, &clocks, 100, 0, buf, 10);
     CHECK(buf[0] > 0);
     CHECK(buf[2] == 0);
     uint8_t red_sample = buf[0];
 
     /* 关掉部位：全黑。 */
     CHECK(lumen_scene_set_part(&scene, 0, 0, 2, LUMEN_LOOP_ALL_V5, 0, 1, 1) == LUMEN_RESULT_OK);
-    lumen_scene_compose(&layout, &scene, &clocks, 100, 0, LUMEN_PHASE_CONTINUOUS, buf, 10);
+    lumen_scene_compose(&layout, &scene, &clocks, 100, 0, buf, 10);
     CHECK(buf[0] == 0 && buf[1] == 0 && buf[2] == 0);
 
     /*
      * 关着的时候时间照走：t=1100 仍在黑（关就是不亮），但时钟已经推进到第 2 步。
      * 「时钟没停」的证据必须从播放头本身读，不能从像素读——像素在关掉时恒黑。
      */
-    lumen_scene_compose(&layout, &scene, &clocks, 1100, 0, LUMEN_PHASE_CONTINUOUS, buf, 10);
+    lumen_scene_compose(&layout, &scene, &clocks, 1100, 0, buf, 10);
     CHECK(buf[0] == 0 && buf[1] == 0 && buf[2] == 0);
     lumen_part_position_t pos = lumen_part_clock_advance(&scene.part[0][0], &clocks.clock[0][0],
                                                          1100);
@@ -7123,10 +7140,10 @@ static void test_compose_part_switch(void)
     /* 开关切换不能清掉时间轴（T9：重新打开时原来的编排仍在）。 */
     CHECK(scene.part[0][0].step_count == 2);
     CHECK(scene.part[0][0].step[1].layer[0].param[0] == (uint8_t)(43690 & 0xFF));
-    lumen_scene_compose(&layout, &scene, &clocks, 1100, 0, LUMEN_PHASE_CONTINUOUS, buf, 10);
+    lumen_scene_compose(&layout, &scene, &clocks, 1100, 0, buf, 10);
     CHECK(buf[2] > 0); /* 仍是蓝，不是红的第 1 步 */
     /* t=2100 → 折回第 1 步。 */
-    lumen_scene_compose(&layout, &scene, &clocks, 2100, 0, LUMEN_PHASE_CONTINUOUS, buf, 10);
+    lumen_scene_compose(&layout, &scene, &clocks, 2100, 0, buf, 10);
     CHECK(buf[0] == red_sample);
 }
 
@@ -7144,7 +7161,7 @@ static void test_compose_multi_segment_shared_phase(void)
 
     lumen_layout_store_init(&layout);
     CHECK(lumen_layout_store_write(&layout, 0, 1, 1) == LUMEN_RESULT_OK);
-    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 0, NULL, 2, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 0, NULL, 2, LUMEN_PHASE_CONTINUOUS, 1) == LUMEN_RESULT_OK);
     CHECK(lumen_layout_store_set_seg(&layout, 0, 0, 0, 0, 4, 20, 1) == LUMEN_RESULT_OK);
     CHECK(lumen_layout_store_set_seg(&layout, 0, 0, 1, 10, 14, 20, 1) == LUMEN_RESULT_OK);
 
@@ -7157,7 +7174,7 @@ static void test_compose_multi_segment_shared_phase(void)
     lumen_part_clocks_reset_strip(&clocks, 0, 1, 0);
 
     uint8_t buf[20 * 3];
-    lumen_scene_compose(&layout, &scene, &clocks, 0, 0, LUMEN_PHASE_CONTINUOUS, buf, 20);
+    lumen_scene_compose(&layout, &scene, &clocks, 0, 0, buf, 20);
 
     /* 两段都出光。 */
     for (uint8_t i = 0; i <= 4; ++i) {
@@ -7184,14 +7201,26 @@ static void test_compose_multi_segment_shared_phase(void)
     /*
      * 各自起点相位：两段各自从 0 起波，所以物理 0 与物理 10 的逻辑下标都是 0
      * → 颜色完全相同。
+     *
+     * 相位是**部位的属性**（S6，存进 blob），所以这里改的是 `part->phase`
+     * 而不是给 compose 传参——正是这一票要证明的：改一个部位的模式不该
+     * 影响任何别的部位，也不该需要重传布局。
      */
+    layout.part[0][0].phase = LUMEN_PHASE_PER_SEGMENT;
     uint8_t buf2[20 * 3];
-    lumen_scene_compose(&layout, &scene, &clocks, 0, 0, LUMEN_PHASE_PER_SEGMENT, buf2, 20);
+    lumen_scene_compose(&layout, &scene, &clocks, 0, 0, buf2, 20);
     CHECK(memcmp(&buf2[0], &buf2[10 * 3], 3) == 0);
     /* 段内仍按位置推进。 */
     CHECK(memcmp(&buf2[0], &buf2[4 * 3], 3) != 0);
     /* 连续相位下同一对不相同（证明两种模式真的不同）。 */
     CHECK(memcmp(&buf[0], &buf[10 * 3], 3) != 0);
+
+    /* 改回连续，画面必须回到连续的样子（相位真的在驱动取样）。 */
+    layout.part[0][0].phase = LUMEN_PHASE_CONTINUOUS;
+    uint8_t buf3[20 * 3];
+    lumen_scene_compose(&layout, &scene, &clocks, 0, 0, buf3, 20);
+    CHECK(memcmp(&buf3[0], &buf3[10 * 3], 3) != 0);
+    CHECK(memcmp(buf3, buf, sizeof(buf)) == 0);
 }
 
 static void test_compose_two_layers(void)
@@ -7210,7 +7239,7 @@ static void test_compose_two_layers(void)
     lumen_part_clocks_reset_strip(&clocks, 0, 1, 0);
 
     uint8_t buf[16 * 3];
-    uint16_t n = lumen_scene_compose(&layout, &scene, &clocks, 0, 0, LUMEN_PHASE_CONTINUOUS, buf,
+    uint16_t n = lumen_scene_compose(&layout, &scene, &clocks, 0, 0, buf,
                                      16);
     CHECK(n == 16);
 
@@ -7225,7 +7254,7 @@ static void test_compose_two_layers(void)
 
     /* 叠加层让画面随时间变化（动画在跑）。 */
     uint8_t later[16 * 3];
-    lumen_scene_compose(&layout, &scene, &clocks, 400, 0, LUMEN_PHASE_CONTINUOUS, later, 16);
+    lumen_scene_compose(&layout, &scene, &clocks, 400, 0, later, 16);
     CHECK(memcmp(buf, later, sizeof(buf)) != 0);
 }
 
@@ -7250,7 +7279,7 @@ static void test_compose_phase_not_reset_by_edit(void)
     lumen_part_clocks_reset_strip(&clocks, 0, 1, 0);
 
     uint8_t before[8 * 3];
-    lumen_scene_compose(&layout, &scene, &clocks, 500, 0, LUMEN_PHASE_CONTINUOUS, before, 8);
+    lumen_scene_compose(&layout, &scene, &clocks, 500, 0, before, 8);
 
     /* 改层亮度（典型的「改效果参数」编辑），时钟不动。 */
     CHECK(lumen_scene_set_step(&scene, 0, 0, 0, 1000,
@@ -7258,7 +7287,7 @@ static void test_compose_phase_not_reset_by_edit(void)
                                make_empty_layer(), 1, 1) == LUMEN_RESULT_OK);
 
     uint8_t after[8 * 3];
-    lumen_scene_compose(&layout, &scene, &clocks, 500, 0, LUMEN_PHASE_CONTINUOUS, after, 8);
+    lumen_scene_compose(&layout, &scene, &clocks, 500, 0, after, 8);
 
     /*
      * 色相的**相对分布**必须不变：亮度 100 → 50 是把每个通道整体减半，
@@ -7269,7 +7298,7 @@ static void test_compose_phase_not_reset_by_edit(void)
     CHECK(after[4 * 3] <= before[4 * 3]);
     /* 相位没重置的关键证据：t=500 的画面与 t=0 的画面不同。 */
     uint8_t at_zero[8 * 3];
-    lumen_scene_compose(&layout, &scene, &clocks, 0, 0, LUMEN_PHASE_CONTINUOUS, at_zero, 8);
+    lumen_scene_compose(&layout, &scene, &clocks, 0, 0, at_zero, 8);
     CHECK(memcmp(after, at_zero, sizeof(after)) != 0);
 }
 
@@ -7329,8 +7358,8 @@ static void test_compose_isolated_parts(void)
     lumen_layout_store_init(&layout);
     CHECK(lumen_layout_store_write(&layout, 0, 2, 1) == LUMEN_RESULT_OK);
     /* 部位 0：0-4（眼睛），部位 1：5-9（散热）。 */
-    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 0, NULL, 1, 1) == LUMEN_RESULT_OK);
-    CHECK(lumen_layout_store_set_part(&layout, 0, 1, 0, NULL, 1, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_part(&layout, 0, 0, 0, NULL, 1, LUMEN_PHASE_CONTINUOUS, 1) == LUMEN_RESULT_OK);
+    CHECK(lumen_layout_store_set_part(&layout, 0, 1, 0, NULL, 1, LUMEN_PHASE_CONTINUOUS, 1) == LUMEN_RESULT_OK);
     CHECK(lumen_layout_store_set_seg(&layout, 0, 0, 0, 0, 4, 10, 1) == LUMEN_RESULT_OK);
     CHECK(lumen_layout_store_set_seg(&layout, 0, 1, 0, 5, 9, 10, 1) == LUMEN_RESULT_OK);
 
@@ -7350,13 +7379,13 @@ static void test_compose_isolated_parts(void)
 
     /* t=600：眼睛已到第 2 步（蓝），散热还在第 1 步（绿）。 */
     uint8_t buf[10 * 3];
-    lumen_scene_compose(&layout, &scene, &clocks, 600, 0, LUMEN_PHASE_CONTINUOUS, buf, 10);
+    lumen_scene_compose(&layout, &scene, &clocks, 600, 0, buf, 10);
     CHECK(buf[0] == 0 && buf[2] > 0);          /* 眼睛：蓝 */
     CHECK(buf[5 * 3] == 0 && buf[5 * 3 + 1] > 0); /* 散热：绿 */
     CHECK(buf[5 * 3 + 2] == 0);
 
     /* t=1100：眼睛回到第 1 步（红），散热仍是第 1 步（绿）。 */
-    lumen_scene_compose(&layout, &scene, &clocks, 1100, 0, LUMEN_PHASE_CONTINUOUS, buf, 10);
+    lumen_scene_compose(&layout, &scene, &clocks, 1100, 0, buf, 10);
     CHECK(buf[0] > 0 && buf[2] == 0);
     CHECK(buf[5 * 3 + 1] > 0);
 
@@ -7377,14 +7406,14 @@ static void test_compose_null_safety(void)
     uint8_t buf[12];
     memset(buf, 0x77, sizeof(buf));
     /* 无效参数一律返回 0 且不写 buf。 */
-    CHECK(lumen_scene_compose(NULL, &scene, &clocks, 0, 0, LUMEN_PHASE_CONTINUOUS, buf, 4) == 0);
-    CHECK(lumen_scene_compose(&layout, NULL, &clocks, 0, 0, LUMEN_PHASE_CONTINUOUS, buf, 4) == 0);
-    CHECK(lumen_scene_compose(&layout, &scene, NULL, 0, 0, LUMEN_PHASE_CONTINUOUS, buf, 4) == 0);
-    CHECK(lumen_scene_compose(&layout, &scene, &clocks, 0, 0, LUMEN_PHASE_CONTINUOUS, NULL, 4) ==
+    CHECK(lumen_scene_compose(NULL, &scene, &clocks, 0, 0, buf, 4) == 0);
+    CHECK(lumen_scene_compose(&layout, NULL, &clocks, 0, 0, buf, 4) == 0);
+    CHECK(lumen_scene_compose(&layout, &scene, NULL, 0, 0, buf, 4) == 0);
+    CHECK(lumen_scene_compose(&layout, &scene, &clocks, 0, 0, NULL, 4) ==
           0);
-    CHECK(lumen_scene_compose(&layout, &scene, &clocks, 0, 8, LUMEN_PHASE_CONTINUOUS, buf, 4) ==
+    CHECK(lumen_scene_compose(&layout, &scene, &clocks, 0, 8, buf, 4) ==
           0);
-    CHECK(lumen_scene_compose(&layout, &scene, &clocks, 0, 0, LUMEN_PHASE_CONTINUOUS, buf, 0) ==
+    CHECK(lumen_scene_compose(&layout, &scene, &clocks, 0, 0, buf, 0) ==
           0);
     CHECK(buf[0] == 0x77);
 
@@ -7498,7 +7527,7 @@ static void test_layout_commands(void)
     CHECK(out.layout_seg_count == 1);
     CHECK(out.layout_name[0] == 0xE7); /* 「眼」的首字节，原样透传 */
     CHECK(lumen_layout_store_set_part(&layout, 0, 0, out.layout_name_len, out.layout_name,
-                                       out.layout_seg_count,
+                                       out.layout_seg_count, LUMEN_PHASE_CONTINUOUS,
                                        state.strip_count) == LUMEN_RESULT_OK);
 
     /* part_id 必须已声明（LayoutWrite 说 3 个部位 → 0/1/2 合法，3 非法）。 */
@@ -7542,7 +7571,7 @@ static void test_layout_commands(void)
     CHECK(out.result_code == LUMEN_RESULT_INVALID_PARAM);
 
     /* 压到别的部位（S3）→ 0x01，且**旧布局的段保持不变**（S4）。 */
-    CHECK(lumen_layout_store_set_part(&layout, 0, 1, 0, NULL, 1, state.strip_count) ==
+    CHECK(lumen_layout_store_set_part(&layout, 0, 1, 0, NULL, 1, LUMEN_PHASE_CONTINUOUS, state.strip_count) ==
           LUMEN_RESULT_OK);
     f.payload[1] = 1;
     f.payload[3] = 5;
@@ -7826,25 +7855,29 @@ static void test_encode_v5_reports(void)
     memset(segs, 0, sizeof(segs));
     segs[0][0] = 0;
     segs[0][1] = 1;
-    size_t len = lumen_protocol_encode_layout_report(0x4C, 0, 0, 6, name, 1, segs, out,
+    size_t len = lumen_protocol_encode_layout_report(0x4C, 0, 0, 6, name, 1,
+                                                     LUMEN_PHASE_PER_SEGMENT, segs, out,
                                                      sizeof(out));
-    CHECK(len == 44 + LUMEN_FRAME_OVERHEAD);
-    CHECK_BYTES(out,
-                "A605894C2C00000006E79CBCE781AF000000000000000000000000000000000000010001"
-                "00000000000000000000000000008242",
-                len);
+    CHECK(len == LUMEN_LAYOUT_REPORT_BYTES + LUMEN_FRAME_OVERHEAD);
     CHECK(out[6] == 0 && out[7] == 0 && out[8] == 6);
     CHECK(out[6 + 27] == 1);
-    CHECK(out[6 + 28] == 0 && out[6 + 29] == 1);
+    /* 相位紧跟在 seg_count 之后（§7.2）。 */
+    CHECK(out[6 + 28] == LUMEN_PHASE_PER_SEGMENT);
+    CHECK(out[6 + 29] == 0 && out[6 + 30] == 1);
     /* 未用的段写 0/0。 */
     for (uint8_t i = 1; i < LUMEN_MAX_PART_SEGS; ++i) {
-        CHECK(out[6 + 28 + i * 2] == 0 && out[6 + 28 + i * 2 + 1] == 0);
+        CHECK(out[6 + 29 + i * 2] == 0 && out[6 + 29 + i * 2 + 1] == 0);
     }
     /* 参数越界拒绝。 */
-    CHECK(lumen_protocol_encode_layout_report(0x01, 0, 0, LUMEN_NAME_BYTES + 1, name, 1, segs,
-                                              out, sizeof(out)) == 0);
+    CHECK(lumen_protocol_encode_layout_report(0x01, 0, 0, LUMEN_NAME_BYTES + 1, name, 1,
+                                              LUMEN_PHASE_CONTINUOUS, segs, out,
+                                              sizeof(out)) == 0);
     CHECK(lumen_protocol_encode_layout_report(0x01, 0, 0, 6, name, LUMEN_MAX_PART_SEGS + 1,
-                                              segs, out, sizeof(out)) == 0);
+                                              LUMEN_PHASE_CONTINUOUS, segs, out,
+                                              sizeof(out)) == 0);
+    /* 相位越界也拒（只有 0 / 1）。 */
+    CHECK(lumen_protocol_encode_layout_report(0x01, 0, 0, 6, name, 1, LUMEN_PHASE_MAX + 1, segs,
+                                              out, sizeof(out)) == 0);
 
     /* LayoutListEnd 0x8A：2 字节 [strip_id, part_mask]。 */
     len = lumen_protocol_encode_layout_list_end(0x4C, 0, 0x05, out, sizeof(out));

@@ -1072,20 +1072,20 @@ uint8_t lumen_led_engine_layout_write(uint8_t strip_id, uint8_t part_count)
 }
 
 uint8_t lumen_led_engine_layout_part(uint8_t strip_id, uint8_t part_id, uint8_t name_len,
-                                     const uint8_t *name, uint8_t seg_count)
+                                     const uint8_t *name, uint8_t seg_count, uint8_t phase)
 {
     uint8_t result;
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
     result = lumen_layout_store_set_part(&s_layout, strip_id, part_id, name_len, name, seg_count,
-                                         s_state.strip_count);
+                                         phase, s_state.strip_count);
     xSemaphoreGive(s_state_lock);
     if (result != LUMEN_RESULT_OK) {
-        ESP_LOGW(TAG, "LayoutPart 被拒 strip=%u part=%u name_len=%u segs=%u", strip_id, part_id,
-                 name_len, seg_count);
+        ESP_LOGW(TAG, "LayoutPart 被拒 strip=%u part=%u name_len=%u segs=%u phase=%u", strip_id,
+                 part_id, name_len, seg_count, phase);
         return result;
     }
-    ESP_LOGI(TAG, "LayoutPart strip=%u part=%u name_len=%u segs=%u", strip_id, part_id, name_len,
-             seg_count);
+    ESP_LOGI(TAG, "LayoutPart strip=%u part=%u name_len=%u segs=%u phase=%u", strip_id, part_id,
+             name_len, seg_count, phase);
     return LUMEN_RESULT_OK;
 }
 

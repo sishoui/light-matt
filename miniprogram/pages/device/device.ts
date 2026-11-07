@@ -63,7 +63,7 @@ import {
   brightnessViewPatch,
   powerLabelText,
 } from "../../utils/control/view-model";
-import { EFFECT_TYPE_NAMES, MAX_STRIPS, NO_EFFECT } from "../../utils/protocol/constants";
+import { EFFECT_TYPE_NAMES, MAX_STRIPS, NO_EFFECT, PHASE } from "../../utils/protocol/constants";
 import type {
   DeviceState,
   LayoutPart,
@@ -863,6 +863,8 @@ Page({
         nameLen: 0,
         name: "",
         segCount: 1,
+        /* 播种出来的部位用「连续」相位（S6 的默认）。 */
+        phase: PHASE.CONTINUOUS,
         segs: [[0, ledCount - 1]],
       });
       const result = await session.writeLayout(stripId, parts);

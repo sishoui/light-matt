@@ -73,9 +73,9 @@ void lumen_led_engine_set_store_event_cb(lumen_store_event_cb cb);
  */
 uint8_t lumen_led_engine_layout_write(uint8_t strip_id, uint8_t part_count);
 
-/* 写一个部位的名字与段数（LayoutPart 0x21）。 */
+/* 写一个部位的名字、段数与相位模式（LayoutPart 0x21，相位是每部位一份 S6）。 */
 uint8_t lumen_led_engine_layout_part(uint8_t strip_id, uint8_t part_id, uint8_t name_len,
-                                     const uint8_t *name, uint8_t seg_count);
+                                     const uint8_t *name, uint8_t seg_count, uint8_t phase);
 
 /*
  * 写一个部位的一段（LayoutSeg 0x22）。跨部位的互斥由引擎在持有布局表时判。

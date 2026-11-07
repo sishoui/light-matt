@@ -58,14 +58,29 @@ export const NO_EFFECT = 0xff;
 /** 每段最多两层（§1.1）。 */
 export const MAX_LAYERS = 2;
 
+/**
+ * 部位相位模式（§9.2 / S6）：多段之间怎么取波形。
+ *
+ * 与固件 `lumen_phase_mode_t` 同值。它是**每部位**一份、随 `LayoutPart` 下发
+ * 并写进布局 blob 的属性，所以常量放在协议层而不是界面层。
+ */
+export const PHASE = {
+  /** 多段视为一条逻辑灯带，按升序名次取样（1–5 与 20–25 连成 0..10）。 */
+  CONTINUOUS: 0,
+  /** 每段从自己的起点起波（第二段的第一颗也是逻辑 0）。 */
+  PER_SEGMENT: 1,
+} as const;
+
+export type PhaseMode = (typeof PHASE)[keyof typeof PHASE];
+
 /** 一颗灯珠不属于任何部位时的哨兵值（只在本地派生里用）。 */
 export const PART_NONE = 0xff;
 /** State 固定 32 字节（State read 与 StateReport 0x82 共用，§7.3）。 */
 export const STATE_BYTES = 32;
-/** LayoutPart 0x21 载荷（28 字节，§1.1）。 */
-export const LAYOUT_PART_BYTES = 28;
+/** LayoutPart 0x21 载荷（29 字节，§1.1：名字 + 段数 + 相位模式）。 */
+export const LAYOUT_PART_BYTES = 29;
 /** LayoutReport 0x89 载荷（44 字节，§7.2）。 */
-export const LAYOUT_REPORT_BYTES = 44;
+export const LAYOUT_REPORT_BYTES = 45;
 /** SceneStep 0x26 / SceneStepReport 0x8C 载荷（24 字节，§1.1）。 */
 export const SCENE_STEP_BYTES = 24;
 /** SceneName 0x27 / SceneListEnd 0x8D 载荷（26 字节）。 */

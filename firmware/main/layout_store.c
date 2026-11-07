@@ -9,21 +9,28 @@ static const uint8_t s_layout_magic[4] = {'L', 'M', 'L', '1'};
 #define BLOB_OFF_VERSION 4
 #define BLOB_OFF_STRIP_COUNT 5
 #define BLOB_OFF_STRIPS 8
-/* 每链记录 8 字节：led_count(1) | part_count(1) | phase(1) | reserved(5)。 */
+/*
+ * 每链记录 8 字节：led_count(1) | part_count(1) | reserved(6)。
+ *
+ * 相位**不在这里**：它是每部位一份（S6），存在部位记录里（`PART_OFF_PHASE`）。
+ * 本记录的保留字节按契约仍必须为 0。
+ */
 #define BLOB_OFF_PARTS (BLOB_OFF_STRIPS + LUMEN_MAX_STRIPS * LUMEN_LAYOUT_STRIP_RECORD_BYTES)
 
 /*
- * 每部位记录 42 字节：
+ * 每部位记录 43 字节：
  *   0        name_len
  *   1..24    name[24]
  *   25       seg_count
- *   26..41   segs[8] × (start, end)
+ *   26       phase（0 连续 / 1 各自起点，§9.2 / §10.3）
+ *   27..42   segs[8] × (start, end)
  */
 #define PART_OFF_NAME_LEN 0
 #define PART_OFF_NAME 1
 #define PART_OFF_SEG_COUNT (PART_OFF_NAME + LUMEN_NAME_BYTES)
-#define PART_OFF_SEGS (PART_OFF_SEG_COUNT + 1)
-#define PART_RECORD_BYTES 42
+#define PART_OFF_PHASE (PART_OFF_SEG_COUNT + 1)
+#define PART_OFF_SEGS (PART_OFF_PHASE + 1)
+#define PART_RECORD_BYTES 43
 
 _Static_assert(PART_OFF_SEGS + LUMEN_MAX_PART_SEGS * 2 == PART_RECORD_BYTES,
                "layout part record arithmetic must match the contract");
@@ -115,12 +122,16 @@ uint16_t lumen_layout_part_pixel_count(const lumen_part_layout_t *part)
     return n;
 }
 
-uint16_t lumen_layout_logical_index(const lumen_part_layout_t *part, uint16_t index,
-                                    lumen_phase_mode_t phase)
+uint16_t lumen_layout_logical_index(const lumen_part_layout_t *part, uint16_t index)
 {
     if (part == NULL) {
         return 0;
     }
+    /*
+     * 相位**从部位自己的字段读**（S6：每部位一份），不接受外部参数——否则
+     * 合成时把某一条链的相位当成整条链的，多部位就会全部用错。
+     */
+    lumen_phase_mode_t phase = (lumen_phase_mode_t)part->phase;
     /*
      * 段在写入时不一定按升序排列（LayoutSeg 逐条写），但「连续」相位要求
      * 逻辑顺序是**升序名次**。这里不排序（会改 RAM 且每次调用都排），而是
@@ -185,7 +196,7 @@ uint8_t lumen_layout_store_write(lumen_layout_store_t *layout, uint8_t strip_id,
 
 uint8_t lumen_layout_store_set_part(lumen_layout_store_t *layout, uint8_t strip_id,
                                     uint8_t part_id, uint8_t name_len, const uint8_t *name,
-                                    uint8_t seg_count, uint8_t strip_count)
+                                    uint8_t seg_count, uint8_t phase, uint8_t strip_count)
 {
     if (layout == NULL) {
         return LUMEN_RESULT_INVALID_PARAM;
@@ -202,6 +213,9 @@ uint8_t lumen_layout_store_set_part(lumen_layout_store_t *layout, uint8_t strip_
     if (seg_count > LUMEN_MAX_PART_SEGS) {
         return LUMEN_RESULT_INVALID_PARAM;
     }
+    if (phase > LUMEN_PHASE_MAX) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
     if (name_len > 0 && name == NULL) {
         return LUMEN_RESULT_INVALID_PARAM;
     }
@@ -212,6 +226,7 @@ uint8_t lumen_layout_store_set_part(lumen_layout_store_t *layout, uint8_t strip_
         memcpy(part->name, name, name_len);
     }
     part->name_len = name_len;
+    part->phase = phase;
     /*
      * 写段数即清空旧段：新一次划分从空开始，避免旧段悄悄留下来。槽位标成
      * 「未写」而不是 0/0——分帧下发时后面的 LayoutSeg 还没到。
@@ -310,6 +325,10 @@ uint8_t lumen_layout_store_validate(const lumen_layout_store_t *layout, uint8_t 
             if (part->name_len > LUMEN_NAME_BYTES) {
                 return LUMEN_RESULT_INVALID_PARAM;
             }
+            /* 相位只有两个合法值（§9.2）；坏值整份拒绝，别让它悄悄按连续渲染。 */
+            if (part->phase > LUMEN_PHASE_MAX) {
+                return LUMEN_RESULT_INVALID_PARAM;
+            }
             uint8_t segs = part->segs.seg_count;
             if (segs > LUMEN_MAX_PART_SEGS) {
                 return LUMEN_RESULT_INVALID_PARAM;
@@ -377,6 +396,8 @@ size_t lumen_layout_blob_encode(const lumen_layout_store_t *layout, uint8_t stri
             if (live) {
                 memcpy(&p[PART_OFF_NAME], src->name, LUMEN_NAME_BYTES);
                 p[PART_OFF_SEG_COUNT] = src->segs.seg_count;
+                /* 相位是每部位一份（S6），断电重启后要原样回来。 */
+                p[PART_OFF_PHASE] = src->phase;
                 for (uint8_t s = 0; s < src->segs.seg_count && s < LUMEN_MAX_PART_SEGS; ++s) {
                     /* 未写的段按 0/0 落盘（0/0 是合法段，见 §10.3）。 */
                     uint8_t start = seg_written(&src->segs, s) ? src->segs.seg[s][0] : 0;
@@ -454,12 +475,16 @@ bool lumen_layout_blob_decode(const uint8_t *blob, size_t len, uint8_t *out_stri
         for (uint8_t part = 0; part < LUMEN_MAX_PARTS; ++part) {
             uint8_t name_len = p[PART_OFF_NAME_LEN];
             uint8_t seg_count = p[PART_OFF_SEG_COUNT];
+            uint8_t phase = p[PART_OFF_PHASE];
             if (name_len > LUMEN_NAME_BYTES || seg_count > LUMEN_MAX_PART_SEGS) {
+                return false;
+            }
+            if (phase > LUMEN_PHASE_MAX) {
                 return false;
             }
             /* 未使用的部位槽位必须全 0，否则是坏 blob（半套写入）。 */
             if (part >= decoded.part_count[strip]) {
-                if (name_len != 0 || seg_count != 0) {
+                if (name_len != 0 || seg_count != 0 || phase != 0) {
                     return false;
                 }
             } else {
@@ -473,6 +498,7 @@ bool lumen_layout_blob_decode(const uint8_t *blob, size_t len, uint8_t *out_stri
                     }
                 }
                 dst->segs.seg_count = seg_count;
+                dst->phase = phase;
                 for (uint8_t s = 0; s < seg_count; ++s) {
                     dst->segs.seg[s][0] = p[PART_OFF_SEGS + s * 2];
                     dst->segs.seg[s][1] = p[PART_OFF_SEGS + s * 2 + 1];
