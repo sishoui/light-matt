@@ -3,14 +3,15 @@
  *
  * ## 本页的职责边界（#63）
  *
- * 设备页只回答三个问题：
+ * 设备页回答三个问题：
  *  1. 这台设备开着没有？整台亮度多少？（总开关 + 全局亮度）
- *  2. 它有哪些灯组、各自亮着什么？（两列灯组卡片 + 每组自己的开关）
+ *  2. 它有哪些灯组、各自亮着什么？（单列灯组行 + 每组的部位列表）
  *  3. 这台设备本身是什么？（固件 / 硬件号 / 灯组数 / 灯珠总数，只读）
  *
- * **任何灯效编辑都不在本页**：效果卡、参数、分区、步骤、方案都搬到
- * `pages/strip/strip`（#64–#67 逐票实现）。协议也没有「逐灯组亮度」——
- * 只有全局 brightness 与逐组 strip_power_mask，所以本页不画逐组亮度。
+ * **v5 起灯组行就地展开**（#155）：点一行列出它的部位，点部位进
+ * `pages/part/part` 编辑。以前那条「跳到一个独立的灯组详情页」的路径
+ * （`pages/strip`）随 v4 的「分区 / 方案」模型一起退役。
+ * 协议没有「逐灯组亮度」——只有全局 brightness 与逐组 strip_power_mask。
  *
  * ## 进入时的连接语义
  *
@@ -42,7 +43,6 @@ import {
   loadRegistry,
   type DeviceRegistry,
 } from "../../utils/control/device-registry";
-import { layerModeNameOf } from "../../utils/control/effect-view";
 import { PAGE_ROUTES, pushTo, queryText } from "../../utils/control/routes";
 import { ControlSession } from "../../utils/control/session";
 import { getSession, isMockSession } from "../../utils/control/session-singleton";
@@ -63,8 +63,27 @@ import {
   brightnessViewPatch,
   powerLabelText,
 } from "../../utils/control/view-model";
-import { MAX_STRIPS, NO_EFFECT } from "../../utils/protocol/constants";
-import type { DeviceState, LinkState, SegmentReport } from "../../utils/protocol/types";
+import {
+  EFFECT_TYPE_NAMES,
+  MAX_SCENES,
+  MAX_STRIPS,
+  NAME_BYTES,
+  NO_EFFECT,
+  PHASE,
+} from "../../utils/protocol/constants";
+import {
+  activateSceneIndex,
+  nameBytesOf as sceneNameBytesOf,
+  sceneBarView,
+  sceneNameIssue,
+} from "../../utils/control/scene-bar";
+import type {
+  DeviceState,
+  LayoutPart,
+  LayoutReadback,
+  LinkState,
+  SceneReport,
+} from "../../utils/protocol/types";
 
 /** 一张灯组卡片（WXML 直接渲染）。 */
 interface StripCardView {
@@ -76,15 +95,53 @@ interface StripCardView {
   photo: string;
   /** 封面是不是用户选的（决定长按菜单里「更换封面」的文案）。 */
   photoIsCustom: boolean;
-  /** 该组真实灯珠数（`State.stripCounts[stripId]`）。 */
+  /** 该组真实灯珠数（`State.stripLedCounts[stripId]`）。 */
   ledCount: number;
-  /** 当前效果摘要（设备读回的分区派生，不是本地草稿）。 */
+  /** 当前效果摘要（设备读回的布局 + 场景派生，不是本地草稿）。 */
   summary: string;
   /** 该组自己的开关位（`State.stripPowerMask`）。 */
   on: boolean;
-  /** 该组当前有动画类分区（`State.stripAnimMask`，只作显示提示）。 */
-  animating: boolean;
   /** 这一组的开关命令还在路上。 */
+  busy: boolean;
+  /**
+   * 就地展开（#155）：点一行展开它的部位列表，**不再 push 到另一页**。
+   *
+   * 同时只展开一组——多组同时展开会让「当前在编辑哪一组」变得含糊，
+   * 而且窄屏上会滚不到底。
+   */
+  expanded: boolean;
+  /** 展开后显示的部位行（未展开时为空，省不必要的渲染）。 */
+  parts: PartRowView[];
+  /** 该组的布局还没读到（展开瞬间的加载态）。 */
+  partsLoading: boolean;
+  /** 该组没有任何部位时的空态文案（null = 不是空态）。 */
+  emptyHint: string | null;
+}
+
+/**
+ * 展开区里的一行：一个部位（#155）。
+ *
+ * 点击进部位编辑器（`pages/part`）；右侧的开关是**场景里的部位开关**
+ * （ScenePart 0x25 的 `on`），只灭灯、不停时钟（T8/T9）。
+ */
+interface PartRowView {
+  stripId: number;
+  partId: number;
+  /** 部位名；空名按「部位 N」显示。 */
+  label: string;
+  /** 覆盖的灯珠描述，例如「1–15」或「1–5、20–25」。 */
+  rangeText: string;
+  /** 覆盖的灯珠总数。 */
+  pixelCount: number;
+  /** 本场景里该部位的步骤数（0 = 不演，恒黑）。 */
+  stepCount: number;
+  /** 本场景里的循环档位（0/1/2）。 */
+  loop: number;
+  /** 效果摘要（第一步的两层）。 */
+  stepSummary: string;
+  /** 部位开关（属于场景，不属于布局）。 */
+  on: boolean;
+  /** 开关命令还在路上。 */
   busy: boolean;
 }
 
@@ -133,6 +190,21 @@ Page({
     maxBrightness: 255,
     brightnessHintText: "连接后可调节",
 
+    /* ---- 场景条（#159）：三个场景，点一下就切 ---- */
+    sceneTabs: [] as ReturnType<typeof sceneBarView>["tabs"],
+    sceneActive: 0,
+    /** 三个场景都还没编排过时的引导（只在全部读回后才显示）。 */
+    sceneAllEmpty: false,
+    /** 改名弹窗。 */
+    sceneNameOpen: false,
+    sceneNameInput: "",
+    sceneNameBytes: 0,
+    sceneNameLimit: NAME_BYTES,
+    /** 正在改 / 正在切的场景号（防重复点击）。 */
+    sceneBusyId: -1,
+    /** 场景读回代次：连点时旧一轮静默退出。 */
+    sceneEpoch: 0,
+
     /* ---- 灯组卡片 ---- */
     stripCards: [] as StripCardView[],
 
@@ -165,12 +237,23 @@ Page({
   menuBusy: false,
   /** 灯组长按 / 改名 / 换封面进行中（防重复提交）。 */
   stripMetaBusy: false,
-  /** 每条灯组的当前效果摘要（设备读回，按灯组缓存）。 */
-  stripSummaries: new Map<number, string>(),
-  /** 摘要刷新代次：并发刷新时旧一轮静默退出，不覆盖新一轮。 */
-  summaryEpoch: 0,
+  /**
+   * 当前展开的灯组号（null = 全部收起）。
+   *
+   * **同时只展开一组**：多组同时展开会让「当前在编辑哪一组」变得含糊，
+   * 窄屏上也滚不到底（#155）。
+   */
+  expandedStripId: null as number | null,
+  /** 展开时读布局 / 场景的代次：连点两条灯组时旧一轮静默退出。 */
+  partsLoadEpoch: 0,
+  /** 正在读布局的灯组号（显示「读取中」而不是空态）。 */
+  partsBusy: new Set<number>(),
+  /** 正在下发部位开关的 `strip#part` 键（防重复点击）。 */
+  partBusyKeys: new Set<string>(),
   /** 正在下发组开关命令的灯组号（防重复点击）。 */
   stripBusyIds: new Set<number>(),
+  /** 场景读回代次（连点场景条时旧一轮静默退出）。 */
+  sceneLoadEpoch: 0,
 
   onLoad(options: Record<string, string | undefined>) {
     /* 页面私有状态（不进 data）。Page() 不保证对象字面量字段会被复制到
@@ -186,9 +269,12 @@ Page({
     this.lastBrightnessUiAt = 0;
     this.menuBusy = false;
     this.stripMetaBusy = false;
-    this.stripSummaries = new Map<number, string>();
-    this.summaryEpoch = 0;
+    this.expandedStripId = null;
+    this.partsLoadEpoch = 0;
+    this.partsBusy = new Set<number>();
+    this.partBusyKeys = new Set<string>();
     this.stripBusyIds = new Set<number>();
+    this.sceneLoadEpoch = 0;
 
     const storage = createWxStorage();
     this.storage = storage;
@@ -423,8 +509,16 @@ Page({
     if (current !== null && current !== undefined) {
       this.applyDeviceState(current);
     }
-    /* 刚连上：分区列表由页面按需读（每条灯组一次），读回来才有「效果摘要」。 */
-    void this.refreshStripSummaries();
+    /*
+     * 刚连上：布局与场景都是**按需读**（§9.1 第 3/4 步）——卡片上的摘要
+     * 只要有部位数就够了，明细在展开时读一次。
+     *
+     * 场景条例外：它要显示三个场景的名字，所以连上就把三个都读一遍
+     * （一次一帧、串行；已缓存的不重读）。
+     */
+    if (this.data.ready) {
+      void this.loadScenes();
+    }
   },
 
   /** 设备权威的 State → 总开关 / 全局亮度 / 灯组卡片 / 只读摘要。 */
@@ -466,7 +560,7 @@ Page({
     const stripCount = state === null ? 0 : Math.max(0, Math.min(MAX_STRIPS, state.stripCount));
     let ledTotal = 0;
     for (let stripId = 0; stripId < stripCount; stripId += 1) {
-      ledTotal += state?.stripCounts[stripId] ?? 0;
+      ledTotal += state?.stripLedCounts[stripId] ?? 0;
     }
     return {
       firmwareText:
@@ -524,15 +618,23 @@ Page({
     return map;
   },
 
-  /** 按 State + 启用掩码生成灯组卡片（顺序 = 灯组号升序）。 */
+  /**
+   * 按 State + 启用掩码生成灯组卡片（顺序 = 灯组号升序）。
+   *
+   * v5：卡片上的「摘要」不再是分区派生，而是**布局 + 场景**派生——
+   * 「N 个部位 · 当前场景名」。真正要读明细就展开（§9.1 第 3/4 步）。
+   */
   buildStripCards(state: DeviceState): StripCardView[] {
     const cards: StripCardView[] = [];
     const ids = this.visibleStripIds(state);
     const metas = this.stripMetaOf(ids);
     for (const stripId of ids) {
-      const ledCount = state.stripCounts[stripId] ?? 0;
-      const cached = this.stripSummaries.get(stripId);
+      const ledCount = state.stripLedCounts[stripId] ?? 0;
       const meta = metas.get(stripId);
+      const layout = this.session?.layoutOf(stripId) ?? null;
+      const partCount = layout?.parts.length ?? state.partCounts[stripId] ?? 0;
+      const expanded = this.expandedStripId === stripId;
+      const parts = expanded ? this.buildPartRows(stripId, layout, ledCount) : [];
       cards.push({
         stripId,
         label: meta?.name ?? `灯组 ${stripId + 1}`,
@@ -540,93 +642,123 @@ Page({
         photoIsCustom: meta?.photoIsCustom ?? false,
         ledCount,
         summary:
-          cached ??
-          this.summaryOfReports(
-            this.session?.segmentsOf(stripId) ?? [],
-            ledCount,
-          ),
+          partCount === 0
+            ? "空 · 未划分部位"
+            : `${partCount} 个部位 · ${sceneNameOf(this.session?.deviceState ?? null)}`,
         on: (state.stripPowerMask & (1 << stripId)) !== 0,
-        animating: (state.stripAnimMask & (1 << stripId)) !== 0,
         busy: this.stripBusyIds.has(stripId),
+        expanded,
+        parts,
+        partsLoading: expanded && layout === null && partCount > 0,
+        emptyHint:
+          expanded && partCount === 0 && !this.partsBusy.has(stripId)
+            ? "这条灯组还没有部位。点 + 播种「整条 / 1 步 / 常亮」。"
+            : null,
       });
     }
     return cards;
   },
 
-  /** 只重画卡片（组开关的 busy 态 / 摘要刷新用，不动亮度与摘要区）。 */
+  /**
+   * 展开区里的一行：一个部位（#155）。
+   *
+   * 步骤数 / 循环 / 开关都来自**当前场景**的读回（QueryScene），区间来自布局
+   * （QueryLayout）。任一读不到就退化成「未知」而不是编造——
+   * 部位行上写错一个「3 步」比显示 `—` 更糟。
+   */
+  buildPartRows(
+    stripId: number,
+    layout: LayoutReadback | null,
+    ledCount: number,
+  ): PartRowView[] {
+    if (layout === null) {
+      return [];
+    }
+    const scene = this.session?.deviceState?.activeScene ?? 0;
+    const report = this.session?.sceneOf(scene) ?? null;
+    const rows: PartRowView[] = [];
+    for (const part of layout.parts) {
+      const scenePart = partReportOf(report, stripId, part.partId);
+      rows.push({
+        stripId,
+        partId: part.partId,
+        label: part.name.length > 0 ? part.name : `部位 ${part.partId + 1}`,
+        rangeText: rangeTextOf(part, ledCount),
+        pixelCount: partPixelCount(part),
+        stepCount: scenePart?.stepCount ?? 0,
+        loop: scenePart?.loop ?? 0,
+        stepSummary: stepSummaryOf(report, stripId, part.partId),
+        on: scenePart?.on ?? false,
+        busy: this.partBusyKeys.has(`${stripId}#${part.partId}`),
+      });
+    }
+    return rows;
+  },
+
+  /** 只重画卡片（组开关的 busy 态 / 展开态用，不动亮度与摘要区）。 */
   renderStripCards(): void {
     const state = this.session?.deviceState ?? null;
     this.setData({ stripCards: state === null ? [] : this.buildStripCards(state) });
   },
 
   /**
-   * 从设备读回**每一条可见灯组**的分区，刷新卡片上的效果摘要。
+   * 展开一条灯组：读它的布局（§9.1 第 3 步）与当前场景（第 4 步）。
    *
-   * 分区不在 State 里，设备也不会主动上报，所以只能逐组 `QueryStrip`。
-   * 顺序发送（并发多帧重组会交错），并用代次号让旧一轮在 await 后静默退出。
+   * 两条查询都是「一次一帧、串行」（§8），且用代次号让旧一轮在 await 后静默
+   * 退出——连点两条灯组时，前一条的迟到结果不能覆盖后一条的展开态。
    */
-  async refreshStripSummaries(): Promise<void> {
+  async expandStrip(stripId: number): Promise<void> {
     const session = this.session;
-    const state = session?.deviceState ?? null;
-    if (session === null || state === null || !this.data.ready) {
+    if (session === null || !this.data.ready) {
       return;
     }
-    this.summaryEpoch += 1;
-    const epoch = this.summaryEpoch;
-    const ids = this.visibleStripIds(state);
-    const next = new Map<number, string>();
-    for (const stripId of ids) {
-      const ledCount = state.stripCounts[stripId] ?? 0;
-      const result = await session.queryStrip(stripId);
-      if (epoch !== this.summaryEpoch) {
+    if (this.expandedStripId === stripId) {
+      return;
+    }
+    this.expandedStripId = stripId;
+    this.partsBusy.add(stripId);
+    this.renderStripCards();
+    this.partsLoadEpoch += 1;
+    const epoch = this.partsLoadEpoch;
+    try {
+      const layout = await session.queryLayout(stripId);
+      if (epoch !== this.partsLoadEpoch) {
         return;
       }
-      if (result.kind === "ok") {
-        next.set(
-          stripId,
-          this.summaryOfReports(
-            result.reports.filter((report) => report.stripId === stripId),
-            ledCount,
-          ),
-        );
-      } else {
-        /* 读失败：保留会话镜像（可能是上次读到的好值），不编造效果名。 */
-        next.set(stripId, this.summaryOfReports(session.segmentsOf(stripId), ledCount));
+      /* 布局读完再读场景：QueryScene 一次给整个激活场景，读一次就够。 */
+      const scene = session.deviceState?.activeScene ?? 0;
+      if (session.sceneOf(scene) === null) {
+        await session.queryScene(scene);
+      }
+      if (epoch !== this.partsLoadEpoch) {
+        return;
+      }
+      if (layout.kind !== "ok" && layout.kind !== "error") {
+        return; /* stale：连接已经换了，别把旧数据画到新设备上 */
+      }
+    } finally {
+      if (epoch === this.partsLoadEpoch) {
+        this.partsBusy.delete(stripId);
+        this.renderStripCards();
       }
     }
-    if (epoch !== this.summaryEpoch) {
+  },
+
+  /** 收起：清掉展开态与逐部位的行缓存。 */
+  collapseStrip(): void {
+    if (this.expandedStripId === null) {
       return;
     }
-    this.stripSummaries = next;
+    this.expandedStripId = null;
+    this.partsLoadEpoch += 1;
     this.renderStripCards();
   },
 
-  /**
-   * 一组分区 → 卡片上的一行效果摘要。
-   *
-   * 单分区覆盖整组时只说效果名（最常见）；只覆盖一段时带区间；
-   * 多个分区时只说数量（卡片太窄，列不完）。
-   *
-   * 区间按**用户视角从 1 编号**（`1–15`），与灯组页的分区轴一致：协议里从 0
-   * 编号只出现在灯珠弹窗的提示里一次，卡片上出现 `0–29` 会让人以为少了一颗。
-   */
-  summaryOfReports(reports: readonly SegmentReport[], ledCount: number): string {
-    if (reports.length === 0) {
-      return "空";
-    }
-    if (reports.length > 1) {
-      return `${reports.length} 个分区`;
-    }
-    const only = reports[0];
-    const base = modeNameOf(only.layer0.type);
-    const name = only.layer1.type === NO_EFFECT ? base : `${base} + 叠加`;
-    const coversWhole = only.start === 0 && only.end >= Math.max(0, ledCount - 1);
-    return coversWhole ? name : `${name} · ${only.start + 1}–${only.end + 1}`;
-  },
-
   clearDeviceViews() {
-    this.stripSummaries = new Map<number, string>();
-    this.summaryEpoch += 1;
+    this.expandedStripId = null;
+    this.partsLoadEpoch += 1;
+    this.partsBusy = new Set<number>();
+    this.partBusyKeys = new Set<string>();
     this.stripBusyIds = new Set<number>();
     this.setData({
       power: 0,
@@ -683,7 +815,13 @@ Page({
 
   // ---------------- 灯组卡片 ----------------
 
-  /** 点卡片主体 → 进灯组页（带上灯组号）。 */
+  /**
+   * 点卡片主体 → **就地展开 / 收起**（#155）。
+   *
+   * 以前这里是 `pushTo(PAGE_ROUTES.strip)`，跳到一个独立的灯组详情页。
+   * v5 把入口收到设备页：一组只有一个部位列表那么大的信息量，跳页反而
+   * 让「哪一组」需要靠标题才想得起来。
+   */
   onStripCardTap(e: WechatMiniprogram.TouchEvent) {
     const stripId = Number(e.currentTarget.dataset.stripId ?? -1);
     if (!Number.isInteger(stripId) || stripId < 0 || stripId >= MAX_STRIPS) {
@@ -693,8 +831,168 @@ Page({
       wx.showToast({ title: "先连接设备", icon: "none" });
       return;
     }
-    this.session?.setActiveStripId(stripId);
-    pushTo(PAGE_ROUTES.strip, { strip: stripId });
+    if (this.expandedStripId === stripId) {
+      this.collapseStrip();
+      return;
+    }
+    void this.expandStrip(stripId);
+  },
+
+  /**
+   * 点一个部位行 → 进部位编辑器（`pages/part`）。
+   *
+   * 参数是 `strip` + `part`：编辑器要同时知道「哪条链」与「该链的哪个部位」。
+   */
+  onPartRowTap(e: WechatMiniprogram.TouchEvent) {
+    const dataset = e.currentTarget.dataset as { stripId?: number | string; partId?: number | string };
+    const stripId = Number(dataset.stripId ?? -1);
+    const partId = Number(dataset.partId ?? -1);
+    if (!Number.isInteger(stripId) || !Number.isInteger(partId) || partId < 0) {
+      return;
+    }
+    if (!this.data.ready) {
+      wx.showToast({ title: "先连接设备", icon: "none" });
+      return;
+    }
+    pushTo(PAGE_ROUTES.part, { strip: stripId, part: partId });
+  },
+
+  /**
+   * 展开区里的「点 + 播种」：整条 / 1 步 / 常亮（#155）。
+   *
+   * 这是**唯一**一个「从零建出可用的东西」的入口：新设备上一条链没有任何
+   * 部位时，用户点一下就得到一个覆盖整条、1 步常亮、循环关闭的部位。
+   * 写完整份布局（LayoutWrite → LayoutPart → LayoutSeg → LayoutCommit），
+   * 因为布局是「整份替换」的语义（§6.1：LayoutWrite 会清空该链）。
+   */
+  async onSeedPartTap(e: WechatMiniprogram.TouchEvent) {
+    const dataset = e.currentTarget.dataset as { stripId?: number | string };
+    const stripId = Number(dataset.stripId ?? -1);
+    const session = this.session;
+    if (session === null || !Number.isInteger(stripId) || stripId < 0 || !this.data.ready) {
+      return;
+    }
+    if (this.partsBusy.has(stripId)) {
+      return;
+    }
+    const state = session.deviceState;
+    if (state === null) {
+      return;
+    }
+    const ledCount = state.stripLedCounts[stripId] ?? 0;
+    if (ledCount < 1) {
+      wx.showToast({ title: "这条灯组没有灯珠", icon: "none" });
+      return;
+    }
+    this.partsBusy.add(stripId);
+    this.renderStripCards();
+    try {
+      const existing = session.layoutOf(stripId);
+      const parts: LayoutPart[] = existing === null ? [] : existing.parts.map((part) => ({ ...part }));
+      if (parts.length >= 8) {
+        wx.showToast({ title: "部位已满（最多 8 个）", icon: "none" });
+        return;
+      }
+      const partId = parts.length;
+      parts.push({
+        stripId,
+        partId,
+        nameLen: 0,
+        name: "",
+        segCount: 1,
+        /* 播种出来的部位用「连续」相位（S6 的默认）。 */
+        phase: PHASE.CONTINUOUS,
+        segs: [[0, ledCount - 1]],
+      });
+      const result = await session.writeLayout(stripId, parts);
+      if (result.kind === "ok") {
+        await session.queryLayout(stripId);
+        this.renderStripCards();
+        wx.showToast({ title: "已添加部位", icon: "none" });
+        return;
+      }
+      if (result.kind === "ack-error") {
+        wx.showToast({ title: resultText(result.ack.resultCode), icon: "none" });
+        return;
+      }
+      if (result.kind === "storage") {
+        wx.showToast({ title: "已生效但未保存", icon: "none" });
+        return;
+      }
+      if (result.kind === "error") {
+        wx.showToast({ title: result.message, icon: "none" });
+      }
+    } finally {
+      this.partsBusy.delete(stripId);
+      this.renderStripCards();
+    }
+  },
+
+  /**
+   * 展开区里某个部位的开关（ScenePart 0x25 的 `on`）。
+   *
+   * **只灭灯、不停时钟**（T8/T9）：关掉再打开，画面接着往下走。所以这里
+   * 只改 `on` 一位，不碰 step_count / loop——`ScenePart` 同一条命令携带三者，
+   * 步数不变时设备不会清空时间轴（§6.2）。
+   */
+  async onPartSwitchChange(e: WechatMiniprogram.SwitchChange) {
+    const dataset = e.currentTarget.dataset as {
+      stripId?: number | string;
+      partId?: number | string;
+    };
+    const stripId = Number(dataset.stripId ?? -1);
+    const partId = Number(dataset.partId ?? -1);
+    const on = Boolean(e.detail.value);
+    const session = this.session;
+    if (session === null || partId < 0 || stripId < 0 || !this.data.ready) {
+      return;
+    }
+    const key = `${stripId}#${partId}`;
+    if (this.partBusyKeys.has(key)) {
+      return;
+    }
+    const scene = session.deviceState?.activeScene ?? 0;
+    const report = session.sceneOf(scene);
+    const scenePart = partReportOf(report, stripId, partId);
+    if (scenePart === null) {
+      wx.showToast({ title: "这个部位没有时间轴", icon: "none" });
+      return;
+    }
+    this.partBusyKeys.add(key);
+    this.renderStripCards();
+    try {
+      const result = await session.setScenePart(
+        scene,
+        stripId,
+        partId,
+        scenePart.stepCount,
+        scenePart.loop,
+        on,
+      );
+      if (result.kind === "ok" || result.kind === "storage") {
+        await session.queryScene(scene);
+        this.renderStripCards();
+        if (result.kind === "storage") {
+          wx.showToast({ title: "已生效但未保存", icon: "none" });
+        }
+        return;
+      }
+      if (result.kind === "ack-error") {
+        wx.showToast({ title: resultText(result.ack.resultCode), icon: "none" });
+        return;
+      }
+      if (result.kind === "error") {
+        wx.showToast({ title: result.message, icon: "none" });
+      }
+    } finally {
+      this.partBusyKeys.delete(key);
+      this.renderStripCards();
+    }
+  },
+
+  /** 部位开关的 catchtap 保护（与灯组开关同理）。 */
+  onPartSwitchBlock() {
+    /* 故意为空：catchtap 的目的就是阻止行主体的点击。 */
   },
 
   /** 长按灯组卡片：弹出改名 / 换封面菜单（#94）。 */
@@ -1046,15 +1344,258 @@ Page({
     }
     pushTo(PAGE_ROUTES.deviceInfo);
   },
+
+  /* ---------------- 场景条（#159） ---------------- */
+
+  /**
+   * 读取三个场景（§9.1 第 4 步的推广：那一节只要求读**当前**场景，但场景条
+   * 要显示三个名字，所以三个都读）。
+   *
+   * 一次一帧、串行（§8），并用代次号让旧一轮在 await 之后静默退出。
+   * 已缓存的不重读——`queryScene` 的缓存在写入时会被作废，所以缓存是可信的。
+   */
+  async loadScenes(): Promise<void> {
+    const session = this.session;
+    if (session === null || !this.data.ready) {
+      return;
+    }
+    this.sceneLoadEpoch += 1;
+    const epoch = this.sceneLoadEpoch;
+    for (let sceneId = 0; sceneId < MAX_SCENES; sceneId += 1) {
+      if (session.sceneOf(sceneId) !== null) {
+        continue;
+      }
+      const read = await session.queryScene(sceneId);
+      if (epoch !== this.sceneLoadEpoch) {
+        return;
+      }
+      if (read.kind === "stale") {
+        return;
+      }
+    }
+    this.renderSceneBar();
+  },
+
+  /** 场景条的派生（`sceneBarView` 的唯一调用点）。 */
+  renderSceneBar(): void {
+    const session = this.session;
+    const activeScene = session?.deviceState?.activeScene ?? 0;
+    const scenes = Array.from({ length: MAX_SCENES }, (_, sceneId) =>
+      session?.sceneOf(sceneId) ?? null,
+    );
+    const view = sceneBarView(scenes, activeScene);
+    this.setData({
+      sceneTabs: view.tabs,
+      sceneActive: view.activeIndex,
+      sceneAllEmpty: view.allEmpty,
+    });
+  },
+
+  /**
+   * 点一个场景 → 切过去（C4：硬切 + 全部部位从第 1 步重跳）。
+   *
+   * 播放头重跳是**设备做的**，页面只丢掉自己的陈旧派生：所有展开中的部位行
+   * 的步号都作废，重读一次布局与场景。
+   */
+  async onSceneTap(e: WechatMiniprogram.TouchEvent) {
+    const dataset = e.currentTarget.dataset as { sceneId?: number | string };
+    const sceneId = Number(dataset.sceneId ?? -1);
+    const session = this.session;
+    if (session === null || !this.data.ready) {
+      wx.showToast({ title: "先连接设备", icon: "none" });
+      return;
+    }
+    const next = activateSceneIndex(this.data.sceneActive, sceneId);
+    if (next === this.data.sceneActive) {
+      return;
+    }
+    if (this.data.sceneBusyId >= 0) {
+      return;
+    }
+    this.setData({ sceneBusyId: sceneId });
+    try {
+      const result = await session.activateScene(sceneId);
+      if (result.kind === "ack-error") {
+        wx.showToast({ title: resultText(result.ack.resultCode), icon: "none" });
+        return;
+      }
+      if (result.kind === "error") {
+        wx.showToast({ title: result.message, icon: "none" });
+        return;
+      }
+      /* 设备已经把播放头重跳，页面上任何「演到第几步」都要重算。 */
+      this.renderSceneBar();
+      await this.loadScenes();
+      if (this.expandedStripId !== null) {
+        const stripId = this.expandedStripId;
+        this.partsLoadEpoch += 1;
+        const epoch = this.partsLoadEpoch;
+        await session.queryLayout(stripId);
+        if (epoch === this.partsLoadEpoch) {
+          this.renderStripCards();
+        }
+      }
+    } finally {
+      this.setData({ sceneBusyId: -1 });
+    }
+  },
+
+  /** 长按场景 → 改名（C2）。 */
+  onSceneLongPress(e: WechatMiniprogram.TouchEvent) {
+    const dataset = e.currentTarget.dataset as { sceneId?: number | string };
+    const sceneId = Number(dataset.sceneId ?? -1);
+    if (!Number.isInteger(sceneId) || sceneId < 0 || sceneId >= MAX_SCENES) {
+      return;
+    }
+    if (!this.data.ready) {
+      wx.showToast({ title: "先连接设备", icon: "none" });
+      return;
+    }
+    const current = this.data.sceneTabs.find((tab) => tab.sceneId === sceneId);
+    const name = current !== undefined && current.named ? current.label : "";
+    this.setData({
+      sceneNameOpen: true,
+      sceneBusyId: sceneId,
+      sceneNameInput: name,
+      sceneNameBytes: sceneNameBytesOf(name),
+    });
+  },
+
+  onSceneNameInput(e: WechatMiniprogram.Input) {
+    const text = String(e.detail.value ?? "").slice(0, 24);
+    this.setData({ sceneNameInput: text, sceneNameBytes: sceneNameBytesOf(text) });
+  },
+
+  onSceneNameClose() {
+    this.setData({ sceneNameOpen: false, sceneBusyId: -1 });
+  },
+
+  /** 提交场景名（SceneName 0x27，设备权威 C3）。 */
+  async onSceneNameSave() {
+    const session = this.session;
+    if (session === null || !this.data.ready) {
+      return;
+    }
+    const sceneId = this.data.sceneBusyId;
+    if (sceneId < 0) {
+      return;
+    }
+    const issue = sceneNameIssue(this.data.sceneNameInput);
+    if (issue !== null) {
+      wx.showToast({ title: issue, icon: "none" });
+      return;
+    }
+    const name = this.data.sceneNameInput.trim();
+    const result = await session.setSceneName(sceneId, name);
+    if (result.kind === "ack-error") {
+      wx.showToast({ title: resultText(result.ack.resultCode), icon: "none" });
+      return;
+    }
+    if (result.kind === "error") {
+      wx.showToast({ title: result.message, icon: "none" });
+      return;
+    }
+    /* 写成功后缓存已作废，重读以设备为准（C3）。 */
+    await session.queryScene(sceneId);
+    this.setData({ sceneNameOpen: false, sceneBusyId: -1 });
+    this.renderSceneBar();
+    wx.showToast({ title: "名字已保存", icon: "none" });
+  },
 });
 
 /**
- * 灯效类型 → 用户看到的名称。
+ * 灯效类型 → 用户看到的名称（单一来源是 constants 的 EFFECT_TYPE_NAMES）。
  *
- * 名字表与 `layerModeOf` 一起放在 `effect-view`（单一来源）：这里自己写一份
- * switch 时，新增类型（0x04 爆闪 / 0x05 心跳 / 0x06 熄灭）会静默落进
- * 默认分支，卡片上把正在爆闪的灯组写成「静态」。
+ * 自己写一份 switch 时，新增类型会静默落进默认分支，卡片上把正在爆闪的
+ * 灯组写成「静态」。
  */
 function modeNameOf(type: number): string {
-  return layerModeNameOf(type);
+  return EFFECT_TYPE_NAMES[type] ?? `0x${type.toString(16).toUpperCase()}`;
+}
+
+/** 当前场景名（State 只报 id；名字来自场景读回）。 */
+function sceneNameOf(state: DeviceState | null): string {
+  if (state === null) {
+    return "未连接";
+  }
+  return `场景 ${state.activeScene + 1}`;
+}
+
+/** 在某份场景读回里找一个部位的时间轴头（没有则 null）。 */
+function partReportOf(
+  report: SceneReport | null,
+  stripId: number,
+  partId: number,
+): { stepCount: number; loop: number; on: boolean } | null {
+  if (report === null) {
+    return null;
+  }
+  const found = report.parts.find(
+    (part) => part.stripId === stripId && part.partId === partId,
+  );
+  return found === undefined
+    ? null
+    : { stepCount: found.stepCount, loop: found.loop, on: found.on };
+}
+
+/**
+ * 部位覆盖的灯珠区间文案。
+ *
+ * 区间按**用户视角从 1 编号**（`1–15`），与灯组页的分区轴一致：协议里从 0
+ * 编号只出现在灯珠弹窗的提示里一次，卡片上出现 `0–29` 会让人以为少了一颗。
+ * 多段之间用「、」分隔，这也是「灰缝」在界面上的样子。
+ */
+function rangeTextOf(part: LayoutPart, ledCount: number): string {
+  if (part.segs.length === 0) {
+    return "未划灯珠";
+  }
+  const pieces = part.segs.map(([start, end]) => `${start + 1}–${end + 1}`);
+  const text = pieces.join("、");
+  /* 覆盖整条时后缀「（整条）」，比一串区间更好读。 */
+  if (
+    part.segs.length === 1 &&
+    part.segs[0][0] === 0 &&
+    part.segs[0][1] >= Math.max(0, ledCount - 1)
+  ) {
+    return `${text}（整条）`;
+  }
+  return text;
+}
+
+/** 一个部位覆盖的灯珠总数（所有段长度之和）。 */
+function partPixelCount(part: LayoutPart): number {
+  let total = 0;
+  for (const [start, end] of part.segs) {
+    if (end >= start) {
+      total += end - start + 1;
+    }
+  }
+  return total;
+}
+
+/**
+ * 一个部位在本场景里的效果摘要。
+ *
+ * 只看**第 1 步**（列表里放不下时间轴）。0 步 = 不演；两层都有 = 「A + B」。
+ * 混合方式是本地推出来的（§6.2：layer1 非空即「按亮度叠加」），不进摘要文案
+ * ——列表里「常亮 + 流星」已经说明问题，再写一个 blend 名反而干扰。
+ */
+function stepSummaryOf(report: SceneReport | null, stripId: number, partId: number): string {
+  if (report === null) {
+    return "—";
+  }
+  const part = report.parts.find((item) => item.stripId === stripId && item.partId === partId);
+  if (part === undefined || part.stepCount === 0) {
+    return "不演";
+  }
+  const step = report.steps.find(
+    (item) => item.stripId === stripId && item.partId === partId && item.stepIndex === 0,
+  );
+  if (step === undefined) {
+    return "—";
+  }
+  const base = modeNameOf(step.layer0.type);
+  const overlay = step.layer1.type === NO_EFFECT ? "" : ` + ${modeNameOf(step.layer1.type)}`;
+  const more = part.stepCount > 1 ? ` · ${part.stepCount} 步` : "";
+  return `${base}${overlay}${more}`;
 }

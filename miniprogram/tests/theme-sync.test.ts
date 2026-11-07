@@ -105,7 +105,7 @@ describe("全仓不再有橙色残留", () => {
 describe("原生 slider / switch 的激活色由页面数据传入", () => {
   it("wxml 里不再写死 activeColor / color 的字面色值", () => {
     const offenders: string[] = [];
-    for (const page of ["device", "device-info", "me", "strip"]) {
+    for (const page of ["device", "device-info", "me", "part"]) {
       const src = read(`pages/${page}/${page}.wxml`);
       for (const match of src.matchAll(/(?:activeColor|color)="([^"]*)"/g)) {
         const value = match[1].trim();
@@ -119,7 +119,7 @@ describe("原生 slider / switch 的激活色由页面数据传入", () => {
   });
 
   it("每个有原生控件的页面都把 accentColor 放进 data", () => {
-    for (const page of ["device", "device-info", "me", "strip"]) {
+    for (const page of ["device", "device-info", "me", "part"]) {
       const src = read(`pages/${page}/${page}.ts`);
       expect(src, `${page} 缺少 accentColor 数据字段`).toContain("accentColor");
     }
@@ -163,7 +163,7 @@ describe("页面在显示时读到最新主题（不是 onLoad 的缓存）", ()
   });
 
   it("每个页面的 onShow 都调 pageThemeData（不是只在 onLoad 里读一次）", () => {
-    for (const page of ["home", "device", "device-info", "discover", "strip", "me"]) {
+    for (const page of ["home", "device", "device-info", "discover", "part", "me"]) {
       const src = read(`pages/${page}/${page}.ts`);
       const onShow = /\n {2}onShow\s*\([\s\S]*?\n {2}\}/.exec(src);
       expect(onShow, `${page} 没有 onShow`).not.toBeNull();
@@ -217,7 +217,7 @@ describe("导航栏与 tabBar 的组件级重算", () => {
 
 describe("页面根节点挂主题 class（不是只有首页）", () => {
   it("六个页面的 wxml 根节点都绑定了 themeClass", () => {
-    for (const page of ["home", "device", "device-info", "discover", "strip", "me"]) {
+    for (const page of ["home", "device", "device-info", "discover", "part", "me"]) {
       const src = read(`pages/${page}/${page}.wxml`);
       expect(src, `${page}.wxml 根节点没挂 themeClass`).toMatch(
         /^<view class="page \{\{themeClass\}\}"/m,

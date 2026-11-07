@@ -9,11 +9,11 @@
 .searchbar {
   display: flex;
   align-items: center;
-  gap: 12rpx;
+  gap: var(--sp-3);
   height: 72rpx;
-  padding: 0 20rpx;
+  padding: 0 var(--sp-5);
   box-sizing: border-box;
-  border-radius: 18rpx;
+  border-radius: var(--radius-md);
   background: var(--card-2);
   border: 1rpx solid var(--border);
 }
@@ -51,7 +51,7 @@
   flex: 1;
   min-width: 0;
   height: 72rpx;
-  font-size: 27rpx;
+  font-size: var(--fs-body);
   color: var(--text);
 }
 
@@ -107,17 +107,17 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  padding: 4rpx 4rpx 0;
+  padding: var(--sp-1) var(--sp-1) 0;
 }
 
 .group-title {
-  font-size: 28rpx;
+  font-size: var(--fs-body);
   font-weight: 600;
   letter-spacing: -0.2rpx;
 }
 
 .group-count {
-  font-size: 23rpx;
+  font-size: var(--fs-caption);
   color: var(--text-3);
 }
 
@@ -126,12 +126,11 @@
 .scan-row {
   flex-direction: row;
   align-items: center;
-  gap: 20rpx;
-  padding: 20rpx;
+  gap: var(--sp-5);
+  padding: var(--sp-5);
   border-radius: var(--radius-md);
   background: var(--card);
   border: 1rpx solid var(--border);
-  box-shadow: var(--shadow);
 }
 
 .scan-row-hover {
@@ -145,7 +144,7 @@
 .row-cover {
   width: 96rpx;
   height: 96rpx;
-  border-radius: 16rpx;
+  border-radius: var(--radius-md);
   flex-shrink: 0;
   background: var(--card-2);
 }
@@ -158,7 +157,7 @@
 }
 
 .row-cover-initial {
-  font-size: 38rpx;
+  font-size: var(--fs-h1);
   font-weight: 700;
   color: var(--accent);
 }
@@ -168,18 +167,18 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 8rpx;
+  gap: var(--sp-2);
 }
 
 .row-title-line {
   display: flex;
   align-items: center;
-  gap: 12rpx;
+  gap: var(--sp-3);
   min-width: 0;
 }
 
 .row-name {
-  font-size: 30rpx;
+  font-size: var(--fs-h3);
   font-weight: 600;
   color: var(--text);
   overflow: hidden;
@@ -188,10 +187,10 @@
 }
 
 .row-badge {
-  font-size: 18rpx;
+  font-size: var(--fs-micro);
   color: var(--accent);
-  padding: 2rpx 12rpx;
-  border-radius: 999rpx;
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--radius-pill);
   background: var(--accent-soft);
   flex-shrink: 0;
 }
@@ -204,11 +203,11 @@
 .row-sub-line {
   display: flex;
   align-items: center;
-  gap: 12rpx;
+  gap: var(--sp-3);
 }
 
 .row-signal-text {
-  font-size: 22rpx;
+  font-size: var(--fs-caption);
   color: var(--text-3);
 }
 
@@ -216,7 +215,7 @@
 .signal-bars {
   display: flex;
   align-items: flex-end;
-  gap: 3rpx;
+  gap: var(--sp-1);
   height: 22rpx;
 }
 
@@ -260,32 +259,32 @@
 .empty-state {
   display: flex;
   flex-direction: column;
-  gap: 12rpx;
+  gap: var(--sp-3);
   align-items: center;
-  padding: 88rpx 32rpx;
+  padding: var(--sp-10) var(--sp-7);
   border-radius: var(--radius-lg);
   background: var(--card);
   border: 1rpx solid var(--border);
 }
 
 .empty-title {
-  font-size: 29rpx;
+  font-size: var(--fs-h3);
   font-weight: 600;
   color: var(--text);
   text-align: center;
 }
 
 .empty-hint {
-  font-size: 23rpx;
+  font-size: var(--fs-caption);
   color: var(--text-3);
   text-align: center;
   line-height: 1.7;
 }
 
 .scan-hint {
-  font-size: 22rpx;
+  font-size: var(--fs-caption);
   color: var(--danger);
-  padding: 0 4rpx;
+  padding: 0 var(--sp-1);
   line-height: 1.6;
 }
 
@@ -295,15 +294,15 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 14rpx;
-  margin-top: 8rpx;
+  gap: var(--sp-3);
+  margin-top: var(--sp-2);
 }
 
 .rescan-btn {
   width: 100%;
   height: 92rpx;
   line-height: 92rpx;
-  font-size: 29rpx;
+  font-size: var(--fs-h3);
 }
 
 .rescan-btn.busy {
@@ -311,7 +310,7 @@
 }
 
 .actions-hint {
-  font-size: 21rpx;
+  font-size: var(--fs-caption);
   color: var(--text-3);
 }
 
@@ -333,10 +332,10 @@
 .sheet {
   background: var(--bg-elevated);
   border-radius: var(--radius-xl) var(--radius-xl) 0 0;
-  padding: 16rpx 32rpx calc(32rpx + env(safe-area-inset-bottom));
+  padding: var(--sp-4) var(--sp-7) calc(var(--sp-7) + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
-  gap: 24rpx;
+  gap: var(--sp-6);
   max-height: 84vh;
   box-sizing: border-box;
   animation: sheet-rise 180ms ease-out;
@@ -364,50 +363,50 @@
 .sheet-head {
   display: flex;
   flex-direction: column;
-  gap: 4rpx;
+  gap: var(--sp-1);
 }
 
 .sheet-title {
-  font-size: 36rpx;
+  font-size: var(--fs-h2);
   font-weight: 700;
   letter-spacing: -0.4rpx;
   color: var(--text);
 }
 
 .sheet-sub {
-  font-size: 22rpx;
+  font-size: var(--fs-caption);
   color: var(--text-3);
 }
 
 .sheet-note {
-  font-size: 22rpx;
+  font-size: var(--fs-caption);
   color: var(--accent);
   background: var(--accent-soft);
   border-radius: var(--radius-sm);
-  padding: 14rpx 18rpx;
+  padding: var(--sp-3) var(--sp-4);
   line-height: 1.5;
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: 12rpx;
+  gap: var(--sp-3);
 }
 
 .field-label {
-  font-size: 23rpx;
+  font-size: var(--fs-caption);
   color: var(--text-2);
-  padding-left: 4rpx;
+  padding-left: var(--sp-1);
 }
 
 .field-input {
   height: 88rpx;
-  padding: 0 24rpx;
+  padding: 0 var(--sp-6);
   box-sizing: border-box;
   border-radius: var(--radius-md);
   background: var(--card-2);
   border: 1rpx solid var(--border);
-  font-size: 29rpx;
+  font-size: var(--fs-h3);
   color: var(--text);
 }
 
@@ -440,7 +439,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8rpx;
+  gap: var(--sp-2);
 }
 
 /* 加号：两条短线。 */
@@ -473,26 +472,26 @@
 }
 
 .cover-empty-text {
-  font-size: 21rpx;
+  font-size: var(--fs-caption);
   color: var(--text-3);
 }
 
 .cover-remove {
-  font-size: 22rpx;
+  font-size: var(--fs-caption);
   color: var(--danger);
-  padding-left: 4rpx;
+  padding-left: var(--sp-1);
 }
 
 .sheet-submit {
   width: 100%;
   height: 96rpx;
   line-height: 96rpx;
-  font-size: 30rpx;
-  margin-top: 8rpx;
+  font-size: var(--fs-h3);
+  margin-top: var(--sp-2);
 }
 
 .sheet-hint {
-  font-size: 21rpx;
+  font-size: var(--fs-caption);
   color: var(--text-3);
   text-align: center;
 }

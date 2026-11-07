@@ -2,9 +2,9 @@
  * 演示传输层（`utils/ble/mock-transport.ts`）与演示数据播种。
  *
  * 这两块是「首页在没有真机时也有内容」的地基，必须证明它们**与真机同构**：
- *  - 连接后真的走 ready，State 的形状与真机一致（37 字节解析出来的那些字段）；
+ *  - 连接后真的走 ready，State 的形状与真机一致（32 字节解析出来的那些字段）；
  *  - 写命令真的改内部状态，readState 读回新值（不是写死的假数据）；
- *  - QueryStrip / QueryStripConfig / QueryDeviceInfo 都给出设备权威形状；
+ *  - QueryLayout / QueryScene / QueryStripConfig / QueryDeviceInfo 都给出设备权威形状；
  *  - 播种写进的是真实存储键，关闭后能干净移除。
  */
 
@@ -23,8 +23,16 @@ import {
 import { loadRecentDevices, RECENT_DEVICES_KEY } from "../utils/control/device-history";
 import { DEVICE_REGISTRY_KEY, loadRegistry } from "../utils/control/device-registry";
 import { createSessionStorage } from "./helpers/storage";
-import { cmdSetBrightness, cmdSetPower, cmdSetSegment, staticSegment } from "../utils/protocol/commands";
-import { MAX_STRIPS, NO_EFFECT, SEGMENT_TYPE } from "../utils/protocol/constants";
+import {
+  cmdLayoutCommit,
+  cmdLayoutPart,
+  cmdLayoutSeg,
+  cmdLayoutWrite,
+  cmdSceneStep,
+  cmdSetBrightness,
+  cmdSetPower,
+} from "../utils/protocol/commands";
+import { MAX_STRIPS, PHASE } from "../utils/protocol/constants";
 
 const FIRST = MOCK_DEVICES[0].deviceId;
 
@@ -42,11 +50,13 @@ describe("MockTransport：与真机同形", () => {
     const state = await transport.readState();
     const spec = mockSpecOf(FIRST)!;
     expect(state.stripCount).toBe(2);
-    expect(state.ledCount).toBe(spec.stripCounts[0]);
+    expect(state.stripLedCounts[0]).toBe(spec.stripCounts[0]);
     expect(state.maxBrightness).toBe(spec.maxBrightness);
-    expect(state.stripCounts).toHaveLength(MAX_STRIPS);
-    expect(state.stripSegCounts).toHaveLength(MAX_STRIPS);
+    expect(state.stripLedCounts).toHaveLength(MAX_STRIPS);
+    expect(state.partCounts).toHaveLength(MAX_STRIPS);
     expect(state.power).toBe(1);
+    /* 出厂布局就是「有部位」，所以 layoutValid 为真（§7.3 字节 6）。 */
+    expect(state.layoutValid).toBe(true);
   });
 
   it("SetBrightness 真的改状态（readState 读回新值）", async () => {
@@ -73,7 +83,10 @@ describe("MockTransport：与真机同形", () => {
     const info = await transport.queryDeviceInfo();
     expect(info.hwId).toBe(mockSpecOf(FIRST)!.hwId);
     expect(info.supportsTwoLayers).toBe(true);
-    expect(info.firmwareVersion).toBe(0x0300);
+    /* v5 的演示设备报 0x0500（§4）。 */
+    expect(info.firmwareVersion).toBe(0x0500);
+    expect(info.maxParts).toBe(8);
+    expect(info.maxScenes).toBe(3);
   });
 
   it("QueryStripConfig 给出 8 路，已分配的带 flags bit0", async () => {
@@ -87,45 +100,86 @@ describe("MockTransport：与真机同形", () => {
     expect(config.channels[2].gpio).toBe(0xff);
   });
 
-  it("QueryStrip 读回设备上的段，形状与 SegmentReport 一致", async () => {
+  it("QueryLayout 读回部位，形状与 LayoutReport 一致", async () => {
     const transport = await connected();
-    const result = await transport.queryStrip(0);
+    const result = await transport.queryLayout(0);
+    /* 书桌的 strip 0 出厂有两个部位（前半 / 后半）。 */
     expect(result.reports).toHaveLength(2);
     expect(result.end.stripId).toBe(0);
-    /* bit0 / bit1 = 两个活动段。 */
-    expect(result.end.segMask).toBe(0b11);
+    expect(result.end.partMask).toBe(0b11);
     const first = result.reports[0];
-    expect(first.layer0.type).toBe(SEGMENT_TYPE.STATIC);
-    expect(first.layer1.type).toBe(NO_EFFECT);
-    /* 扁平投影字段也要有（#41 之前的页面靠它）。 */
-    expect(first.hue).toBe(first.layer0.hue);
+    expect(first.partId).toBe(0);
+    expect(first.name).toBe("前半");
+    expect(first.segs).toEqual([[0, 13]]);
   });
 
-  it("SetSegment 之后 QueryStrip 能读回新段", async () => {
+  it("QueryScene 读回三个片段：部位头 / 每步 / 收尾", async () => {
     const transport = await connected();
-    const segment = staticSegment(1, 0, 0, 5, 1000, 200);
-    const ack = await transport.sendAndWaitAck(cmdSetSegment(segment));
-    expect(ack.ok).toBe(true);
-    const result = await transport.queryStrip(1);
-    const stored = result.reports.find((report) => report.segId === 0);
-    expect(stored?.end).toBe(5);
-    expect(stored?.layer0.hue).toBe(1000);
+    const report = await transport.queryScene(0);
+    expect(report.sceneId).toBe(0);
+    /* 书桌出厂每个部位 1 步常亮。 */
+    expect(report.parts.length).toBe(report.steps.length);
+    expect(report.parts[0].stepCount).toBe(1);
+    expect(report.steps[0].layer0.type).toBe(0x00);
+    expect(report.end.name).toBe("场景 1");
+  });
+
+  it("LayoutWrite + LayoutPart + LayoutSeg 之后再读回新布局", async () => {
+    const transport = await connected();
+    expect((await transport.sendAndWaitAck(cmdLayoutWrite(1, 1))).ok).toBe(true);
+    expect((await transport.sendAndWaitAck(cmdLayoutPart(1, 0, "整条", 1, PHASE.CONTINUOUS))).ok).toBe(true);
+    expect((await transport.sendAndWaitAck(cmdLayoutSeg(1, 0, 0, 0, 17))).ok).toBe(true);
+    expect((await transport.sendAndWaitAck(cmdLayoutCommit())).ok).toBe(true);
+    const result = await transport.queryLayout(1);
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0].name).toBe("整条");
+    expect(result.reports[0].segs).toEqual([[0, 17]]);
   });
 
   it("越界段被设备拒绝（end >= 灯珠数）", async () => {
     const transport = await connected();
     /* 书桌的 strip 1 只有 18 颗灯：end=20 越界。 */
-    const ack = await transport.sendAndWaitAck(cmdSetSegment(staticSegment(1, 2, 0, 20, 0, 255)));
+    expect((await transport.sendAndWaitAck(cmdLayoutWrite(1, 1))).ok).toBe(true);
+    expect((await transport.sendAndWaitAck(cmdLayoutPart(1, 0, "", 1, PHASE.CONTINUOUS))).ok).toBe(true);
+    const ack = await transport.sendAndWaitAck(cmdLayoutSeg(1, 0, 0, 0, 20));
     expect(ack.ok).toBe(false);
     expect(ack.resultCode).toBe(0x01);
   });
 
-  it("同带区间重叠被拒（与固件行为一致）", async () => {
+  it("同链跨部位重叠被拒（一颗灯珠只属一个部位，S3）", async () => {
     const transport = await connected();
-    /* strip 0 已有 0-13 与 14-29；新段 5-10 与第一个重叠。 */
-    const ack = await transport.sendAndWaitAck(cmdSetSegment(staticSegment(0, 5, 5, 10, 0, 255)));
+    /* strip 0 已有 0-13 与 14-29；给部位 1 写 5-10 会压到部位 0。 */
+    const ack = await transport.sendAndWaitAck(cmdLayoutSeg(0, 1, 0, 5, 10));
     expect(ack.ok).toBe(false);
     expect(ack.resultCode).toBe(0x01);
+  });
+
+  it("SceneStep 之后 QueryScene 能读回这一步", async () => {
+    const transport = await connected();
+    const ack = await transport.sendAndWaitAck(
+      cmdSceneStep({
+        sceneId: 0,
+        stripId: 0,
+        partId: 0,
+        stepIndex: 0,
+        durationMs: 1234,
+        layer0: {
+          type: 0x00,
+          hue: 1000,
+          sat: 200,
+          periodMs: 0,
+          p5: 0,
+          flags: 0,
+          level: 100,
+        },
+        layer1: { type: 0xff, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 },
+      }),
+    );
+    expect(ack.ok).toBe(true);
+    const report = await transport.queryScene(0);
+    const step = report.steps.find((item) => item.stripId === 0 && item.partId === 0);
+    expect(step?.durationMs).toBe(1234);
+    expect(step?.layer0.hue).toBe(1000);
   });
 
   it("未知 deviceId 连接失败并进入 failed", async () => {

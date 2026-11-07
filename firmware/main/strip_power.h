@@ -3,39 +3,32 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "segment_store.h"
 #include "state.h"
 
 /*
  * 每带独立开关的纯逻辑（#38）。
  *
  * 本模块不含任何 ESP-IDF / FreeRTOS 头，host 可直接单测：
- *  - 出光门控：全局 power && strip_power_mask 对应位（自检例外，§9.5/§9.7）；
- *  - strip_anim_mask 的推导（State 字节 12 的摘要）；
+ *  - 出光门控：全局 power && strip_power_mask 对应位（自检例外，§9.5/§9.6）；
  *  - TDM 轮询的「推帧 / 先推黑再跳过 / 直接跳过」决策。
  *
  * 渲染层（led_render.c）与 TDM（led_engine.c）都只是这些纯函数的薄调用者，
  * 所以「关一条带的行为」可以在没有硬件的情况下被断言。
+ *
+ * v5 起**不再有 strip_anim_mask**（那是 v4 State 的字节 12，v5 的 State 只有
+ * 32 字节且不含它）。帧循环判据改用 `lumen_scene_strip_needs_frames()`
+ * （见 scene_compose.h）。
  */
 
 /*
- * 该灯带这一帧是否应该出光（docs/protocol-v4.md §7.3 / §9.5）。
+ * 该灯带这一帧是否应该出光（docs/protocol-v5.md §7.3 / §9.5）。
  *
- * 自检期间忽略每带开关：**所有**带都点亮（§9.7「自检期间忽略每带开关」），
+ * 自检期间忽略每带开关：**所有**带都点亮（§9.6「自检期间忽略每带开关」），
  * 因此 selftest_active 为 true 时直接返回 true（合法 strip_id 前提下）。
  *
  * 合法 strip_id 是 0..LUMEN_MAX_STRIPS-1；越界 / state 为 NULL 一律 false。
  */
 bool lumen_strip_mask_allows(const lumen_state_t *state, uint8_t strip_id, bool selftest_active);
-
-/*
- * 推导 strip_anim_mask（State 字节 12）：bit i = 第 i 条带有**动画类**活动段。
- *
- * 只看 strip_id < strip_count 的灯带；strip_count 为 0 或越界时按
- * LUMEN_MAX_STRIPS 处理（与 segment_store_needs_frames 同一口径）。
- * 空段表 / NULL 返回 0。纯查询，不加锁。
- */
-uint8_t lumen_strip_anim_mask(const lumen_segment_store_t *segments, uint8_t strip_count);
 
 /*
  * 改 strip_power_mask 的一位（§9.5）。strip_id 越界时原样返回 mask。

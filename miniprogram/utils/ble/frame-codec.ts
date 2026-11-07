@@ -15,24 +15,24 @@ import { decodeFrame, encodeFrame } from "../protocol/frame";
 import {
   parseAck,
   parseDeviceInfoReport,
-  parseScriptProgress,
-  parseScriptSummary,
-  parseSegmentListEnd,
-  parseSegmentReport,
+  parseLayoutListEnd,
+  parseLayoutReport,
+  parseSceneListEnd,
+  parseScenePartReport,
+  parseSceneStepReport,
   parseState,
   parseStripConfigReport,
-  type ScriptProgress,
-  type ScriptSummary,
 } from "../protocol/commands";
 import {
   describeAck,
   describeCommand,
   describeDeviceInfo,
   describeEvent,
-  describeScriptProgress,
-  describeScriptSummary,
-  describeSegmentListEnd,
-  describeSegmentReport,
+  describeLayoutListEnd,
+  describeLayoutReport,
+  describeSceneListEnd,
+  describeScenePartReport,
+  describeSceneStepReport,
   describeState,
   describeStateReadBytes,
   describeStripConfig,
@@ -42,8 +42,11 @@ import type {
   CommandRequest,
   DeviceInfo,
   DeviceState,
-  SegmentListEnd,
-  SegmentReport,
+  LayoutListEnd,
+  LayoutReport,
+  SceneListEnd,
+  ScenePartReport,
+  SceneStepReport,
   StripConfig,
 } from "../protocol/types";
 import { errorText } from "./errors";
@@ -54,13 +57,14 @@ export type InboundAction =
   | { kind: "ack"; ack: AckResult }
   | { kind: "state"; state: DeviceState }
   | { kind: "event"; code: number; detail: number }
-  /* #25：QueryStrip 的多帧回包。小程序按命令字区分类型、按 SegmentListEnd 收尾。 */
-  | { kind: "segment-report"; report: SegmentReport }
-  | { kind: "segment-list-end"; end: SegmentListEnd }
-  /* #32：QueryScript 的响应（ScriptSummary）与下发进度（ScriptProgress）。 */
-  | { kind: "script-summary"; summary: ScriptSummary }
-  | { kind: "script-progress"; progress: ScriptProgress }
-  /* v3：QueryStripConfig / QueryDeviceInfo 的单帧响应。 */
+  /* v5：QueryLayout 的多帧回包（逐部位 0x89 + 一条 0x8A 收尾）。 */
+  | { kind: "layout-report"; report: LayoutReport }
+  | { kind: "layout-list-end"; end: LayoutListEnd }
+  /* v5：QueryScene 的三段回包（部位头 0x8B / 每步 0x8C / 收尾 0x8D）。 */
+  | { kind: "scene-part-report"; report: ScenePartReport }
+  | { kind: "scene-step-report"; report: SceneStepReport }
+  | { kind: "scene-list-end"; end: SceneListEnd }
+  /* QueryStripConfig / QueryDeviceInfo 的单帧响应。 */
   | { kind: "strip-config"; config: StripConfig }
   | { kind: "device-info"; info: DeviceInfo };
 
@@ -149,70 +153,84 @@ export function routeInboundFrame(bytes: Uint8Array): InboundFrame {
     };
   }
 
-  /* #25：QueryStrip 的多帧回包。 */
-  if (command === DEVICE_CMD.SEGMENT_REPORT) {
+  /* v5：QueryLayout 的多帧回包。按命令字区分类型、按 LayoutListEnd 收尾。 */
+  if (command === DEVICE_CMD.LAYOUT_REPORT) {
     try {
-      const report = parseSegmentReport(payload);
+      const report = parseLayoutReport(payload);
       return {
         command,
         seq,
-        text: describeSegmentReport(report),
+        text: describeLayoutReport(report),
         ok: true,
-        action: { kind: "segment-report", report },
+        action: { kind: "layout-report", report },
       };
     } catch (err) {
       return { command, seq, text: errorText(err), ok: false, action: { kind: "none" } };
     }
   }
 
-  if (command === DEVICE_CMD.SEGMENT_LIST_END) {
+  if (command === DEVICE_CMD.LAYOUT_LIST_END) {
     try {
-      const end = parseSegmentListEnd(payload);
+      const end = parseLayoutListEnd(payload);
       return {
         command,
         seq,
-        text: describeSegmentListEnd(end),
+        text: describeLayoutListEnd(end),
         ok: true,
-        action: { kind: "segment-list-end", end },
+        action: { kind: "layout-list-end", end },
       };
     } catch (err) {
       return { command, seq, text: errorText(err), ok: false, action: { kind: "none" } };
     }
   }
 
-  /* #32：QueryScript 的响应与下发进度。两者都带 seq，但语义不同——
-   * ScriptSummary 收尾一次查询，ScriptProgress 只是进度旁证。 */
-  if (command === DEVICE_CMD.SCRIPT_SUMMARY) {
+  /* v5：QueryScene 的三段回包（§6.2），全部同 seq、按 SceneListEnd 收尾。 */
+  if (command === DEVICE_CMD.SCENE_PART_REPORT) {
     try {
-      const summary = parseScriptSummary(payload);
+      const report = parseScenePartReport(payload);
       return {
         command,
         seq,
-        text: describeScriptSummary(summary),
+        text: describeScenePartReport(report),
         ok: true,
-        action: { kind: "script-summary", summary },
+        action: { kind: "scene-part-report", report },
       };
     } catch (err) {
       return { command, seq, text: errorText(err), ok: false, action: { kind: "none" } };
     }
   }
 
-  if (command === DEVICE_CMD.SCRIPT_PROGRESS) {
+  if (command === DEVICE_CMD.SCENE_STEP_REPORT) {
     try {
-      const progress = parseScriptProgress(payload);
+      const report = parseSceneStepReport(payload);
       return {
         command,
         seq,
-        text: describeScriptProgress(progress),
+        text: describeSceneStepReport(report),
         ok: true,
-        action: { kind: "script-progress", progress },
+        action: { kind: "scene-step-report", report },
       };
     } catch (err) {
       return { command, seq, text: errorText(err), ok: false, action: { kind: "none" } };
     }
   }
 
-  /* v3：QueryStripConfig 0x87 / QueryDeviceInfo 0x88 的单帧响应。 */
+  if (command === DEVICE_CMD.SCENE_LIST_END) {
+    try {
+      const end = parseSceneListEnd(payload);
+      return {
+        command,
+        seq,
+        text: describeSceneListEnd(end),
+        ok: true,
+        action: { kind: "scene-list-end", end },
+      };
+    } catch (err) {
+      return { command, seq, text: errorText(err), ok: false, action: { kind: "none" } };
+    }
+  }
+
+  /* QueryStripConfig 0x87 / QueryDeviceInfo 0x88 的单帧响应。 */
   if (command === DEVICE_CMD.STRIP_CONFIG_REPORT) {
     try {
       const config = parseStripConfigReport(payload);

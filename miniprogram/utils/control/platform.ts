@@ -4,7 +4,7 @@
  * 都是纯函数（只读 wx 的环境信息），不接触 BLE。
  */
 
-import type { DeviceState, RGB } from "../protocol/types";
+import type { DeviceState } from "../protocol/types";
 
 /** 从 wx 取平台；devtools 归到 other（BLE 能力只模拟一部分）。 */
 export function detectPlatform(): "android" | "ios" | "other" {
@@ -45,28 +45,21 @@ export function detectDevMode(): boolean {
  * 还没有设备状态时的兜底快照：只用于页面渲染，不写入设备。
  * （正常路径下 latestState 在连接流水线读 State 后必然存在。）
  *
- * v3：State 是 37 字节（带逐带灯珠数 / 段数 / 开关位），兜底快照也要填满，
- * 否则页面按派生字段渲染时会读到 undefined。
+ * v5 的 State 是 32 字节（§7.3）：不含颜色摘要、不含播放位置，所以兜底
+ * 也不再需要那几项。**唯一保留的入参是 brightness**——未连接时页面要能
+ * 显示一个「上次的亮度」而不是 0。
  */
-export function fallbackState(rgb: RGB, power: 0 | 1 = 1, brightness = 0): DeviceState {
+export function fallbackState(power: 0 | 1 = 1, brightness = 0): DeviceState {
   return {
     power,
     brightness,
-    r: rgb.r,
-    g: rgb.g,
-    b: rgb.b,
-    ledCount: 0,
     maxBrightness: 255,
     stripCount: 1,
-    segCount: 0,
-    scriptId: 0xff,
-    stageIndex: 0,
-    playbackState: 0,
-    flags: 0,
     /** 兜底按「全开」显示，避免未连接时误显示为每条带都关着。 */
     stripPowerMask: 0xff,
-    stripAnimMask: 0,
-    stripCounts: [0, 0, 0, 0, 0, 0, 0, 0],
-    stripSegCounts: [0, 0, 0, 0, 0, 0, 0, 0],
+    activeScene: 0,
+    layoutValid: false,
+    stripLedCounts: [0, 0, 0, 0, 0, 0, 0, 0],
+    partCounts: [0, 0, 0, 0, 0, 0, 0, 0],
   };
 }

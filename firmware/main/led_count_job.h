@@ -29,6 +29,7 @@ typedef struct {
     bool pending;    /* 已排队，等渲染任务开始 */
     bool running;    /* 渲染任务正在重建句柄 */
     uint16_t target; /* 目标数量（1-100，#72） */
+    uint8_t strip;   /* 哪条灯带要改数量（v5 起 State 的 led_count 是逐条数组） */
     uint8_t seq;     /* 请求的 seq，用于延迟 ACK 回显 */
 } lumen_led_count_job_t;
 
@@ -38,20 +39,24 @@ void lumen_led_count_job_init(lumen_led_count_job_t *job);
  * 请求把数量改为 count（调用方保证 1-100 已校验）。
  * 顺序很重要：先判忙（即使 count 与当前值相同也回 Busy），再判无变化。
  */
-lumen_led_count_request_t lumen_led_count_job_request(lumen_led_count_job_t *job, uint16_t count,
-                                                      uint16_t current_count, uint8_t seq);
+lumen_led_count_request_t lumen_led_count_job_request(lumen_led_count_job_t *job, uint8_t strip,
+                                                      uint16_t count, uint16_t current_count,
+                                                      uint8_t seq);
 
 /* pending → running。返回 false 表示当前没有排队的重建。 */
 bool lumen_led_count_job_begin(lumen_led_count_job_t *job, uint16_t *target, uint8_t *seq);
 
 /*
  * 结束一次重建。
- *   ok = true：只把 state->led_count 改成目标值，其余字段（开关/亮度/RGB）不动，
- *              返回 true；
+ *   ok = true：只把 state->led_count[strip] 改成目标值，其余字段
+ *              （开关/亮度/场景）不动，返回 true；
  *   ok = false：state 不被修改（调用方传 NULL 即可），返回 false。
  * 无论成功失败都清 running，允许下一次请求。
  */
 bool lumen_led_count_job_complete(lumen_led_count_job_t *job, bool ok, lumen_state_t *state);
+
+/* 目标灯带号；没有重建时返回 0。 */
+uint8_t lumen_led_count_job_strip(const lumen_led_count_job_t *job);
 
 /* 是否有重建在排队或进行中（Busy 判定）。 */
 bool lumen_led_count_job_busy(const lumen_led_count_job_t *job);

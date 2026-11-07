@@ -1,8 +1,8 @@
 /**
- * 协议常量。唯一真相是 docs/protocol-v4.md；这里只是照抄字节值。
+ * 协议常量。唯一真相是 docs/protocol-v5.md；这里只是照抄字节值。
  *
  * 所有 UUID 统一用大写比较（微信在不同平台/系统版本返回的大小写不一致）。
- * 协议版本 v4（不向后兼容；v2 / v3 已退役）。
+ * 协议版本 v5（不向后兼容；v2 / v3 / v4 已退役）。
  */
 
 export const SERVICE_UUID = "6C756D65-6E00-4B1E-9A3C-000000000001";
@@ -15,7 +15,7 @@ export const STATE_UUID = "6C756D65-6E00-4B1E-9A3C-000000000004";
  * 整帧 = 8 + length；CRC16 覆盖 magic 到 payload 末字节。
  */
 export const MAGIC = 0xa6;
-export const PROTOCOL_VERSION = 0x04;
+export const PROTOCOL_VERSION = 0x05;
 export const HEADER_BYTES = 6;
 export const FRAME_OVERHEAD = 8;
 
@@ -36,52 +36,69 @@ export const CHUNK_INDEX_MASK = 0x3f;
 /** 重组超时（自上一個分片起算，§3.2）。 */
 export const ASSEMBLY_TIMEOUT_MS = 1000;
 
-/** 协议常量，两端硬编码（不进 State）。
- * 单条灯带的灯珠上限：#72 从 64 抬到 100，线上布局不变。 */
+/** 协议常量，两端硬编码（不进 State）。docs/protocol-v5.md §1.1。 */
 export const MAX_LEDS = 100;
 export const MIN_LEDS = 1;
 export const MAX_STRIPS = 8;
-export const MAX_SEGMENTS = 8; // 每条灯带
-export const MAX_STAGES = 8; // 每套剧本
-/** 单阶段时长上限（2 字节字段）。0 非法（设备回 InvalidParam）。 */
-export const MAX_STAGE_MS = 0xffff;
-export const MAX_SCRIPTS = 4;
-/** script_id 用 0xFF 表示「无激活剧本」。 */
-export const NO_SCRIPT = 0xff;
+/** 每条链的部位数（§1.1）。 */
+export const MAX_PARTS = 8;
+/** 每个部位的灯珠段数。 */
+export const MAX_PART_SEGS = 8;
+/** 每个部位的步骤数。 */
+export const MAX_STEPS = 8;
+/** 设备侧场景数。 */
+export const MAX_SCENES = 3;
+/** 部位名 / 场景名的字节上限（UTF-8，不强制字符边界）。 */
+export const NAME_BYTES = 24;
+/** 步骤时长区间（§1.1）。 */
+export const STEP_MIN_MS = 100;
+export const STEP_MAX_MS = 60000;
 /** 层类型用 0xFF 表示「该层为空」（§1.1 / §7.1）。 */
 export const NO_EFFECT = 0xff;
 /** 每段最多两层（§1.1）。 */
 export const MAX_LAYERS = 2;
 
-/** State 固定 37 字节（State read 与 StateReport 0x82 共用，§7.3；v4 未改）。 */
-export const STATE_BYTES = 37;
-/** 段载荷定宽：SetSegment 23、ScriptSegment 25、SegmentReport 23（§7.1）。 */
-export const SEGMENT_BYTES = 23;
-export const SCRIPT_SEGMENT_BYTES = 25;
-/** 段头：strip / seg / start / end / blend（层从偏移 5 起，layer1 在 14）。 */
-export const SEGMENT_HEADER_BYTES = 5;
+/**
+ * 部位相位模式（§9.2 / S6）：多段之间怎么取波形。
+ *
+ * 与固件 `lumen_phase_mode_t` 同值。它是**每部位**一份、随 `LayoutPart` 下发
+ * 并写进布局 blob 的属性，所以常量放在协议层而不是界面层。
+ */
+export const PHASE = {
+  /** 多段视为一条逻辑灯带，按升序名次取样（1–5 与 20–25 连成 0..10）。 */
+  CONTINUOUS: 0,
+  /** 每段从自己的起点起波（第二段的第一颗也是逻辑 0）。 */
+  PER_SEGMENT: 1,
+} as const;
+
+export type PhaseMode = (typeof PHASE)[keyof typeof PHASE];
+
+/** 一颗灯珠不属于任何部位时的哨兵值（只在本地派生里用）。 */
+export const PART_NONE = 0xff;
+/** State 固定 32 字节（State read 与 StateReport 0x82 共用，§7.3）。 */
+export const STATE_BYTES = 32;
+/** LayoutPart 0x21 载荷（29 字节，§1.1：名字 + 段数 + 相位模式）。 */
+export const LAYOUT_PART_BYTES = 29;
+/** LayoutReport 0x89 载荷（44 字节，§7.2）。 */
+export const LAYOUT_REPORT_BYTES = 45;
+/** SceneStep 0x26 / SceneStepReport 0x8C 载荷（24 字节，§1.1）。 */
+export const SCENE_STEP_BYTES = 24;
+/** SceneName 0x27 / SceneListEnd 0x8D 载荷（26 字节）。 */
+export const SCENE_NAME_BYTES = 26;
 /** 层编码定宽 9 字节（type + 7 字节参数 + level）。 */
 export const LAYER_BYTES = 9;
 /** 本层亮度档位上限（§7.1）：100 满亮、0 不出光；> 100 一律 InvalidParam。 */
 export const LAYER_LEVEL_MAX = 100;
-/** SegmentReport 0x87 / DeviceInfoReport 0x88 的固定载荷长度（§7.4）。 */
+/** StripConfigReport 0x87 / DeviceInfoReport 0x88 的固定载荷长度（§7.4）。 */
 export const STRIP_CONFIG_BYTES = 24;
 export const STRIP_CONFIG_RECORD_BYTES = 3;
 export const DEVICE_INFO_BYTES = 15;
 
-/** 播放状态（State 字节 9）：0 停止 / 1 播放 / 2 暂停。 */
-export const PLAYBACK = {
-  STOPPED: 0,
-  PLAYING: 1,
-  PAUSED: 2,
-} as const;
-
 /**
- * 小程序 → 设备命令字，docs/protocol-v3.md §6。
+ * 小程序 → 设备命令字，docs/protocol-v5.md §6。
  *
- * v2 退役了 v1 的 0x03 SetColor / 0x04 SetAll：0x03 / 0x04 两个值不再出现在
- * 本表里（设备收到回 0x02 未知命令）。v3 新增 0x1B/0x1C/0x1D；
- * v4 原地新增 0x1E ClearScript（#73，协议版本号不变）。
+ * v5 删掉了整个段与剧本族（0x03 / 0x04 与 0x10-0x1E）：设备收到一律回 0x02
+ * 未知命令，这些码**不复用**，所以本表里也不再有它们。
  */
 export const CMD = {
   SET_POWER: 0x01,
@@ -90,38 +107,41 @@ export const CMD = {
   SET_LED_COUNT: 0x06,
   SELF_TEST: 0x07,
 
-  SET_SEGMENT: 0x10,
-  CLEAR_SEGMENT: 0x11,
-  QUERY_STRIP: 0x12,
-  SET_PLAYBACK: 0x13,
-  SCRIPT_BEGIN: 0x14,
-  SCRIPT_STAGE: 0x15,
-  SCRIPT_SEGMENT: 0x16,
-  SCRIPT_COMMIT: 0x17,
-  SCRIPT_ABORT: 0x18,
-  ACTIVATE_SCRIPT: 0x19,
-  QUERY_SCRIPT: 0x1a,
-  CLEAR_SCRIPT: 0x1e,
-
   SET_STRIP_POWER: 0x1b,
   QUERY_STRIP_CONFIG: 0x1c,
   QUERY_DEVICE_INFO: 0x1d,
+
+  /** 布局族（§6）：灯组 → 部位 → 灯珠段。 */
+  LAYOUT_WRITE: 0x20,
+  LAYOUT_PART: 0x21,
+  LAYOUT_SEG: 0x22,
+  LAYOUT_COMMIT: 0x23,
+  QUERY_LAYOUT: 0x24,
+
+  /** 场景族（§6）：部位 → 步骤 → 两层。 */
+  SCENE_PART: 0x25,
+  SCENE_STEP: 0x26,
+  SCENE_NAME: 0x27,
+  ACTIVATE_SCENE: 0x28,
+  QUERY_SCENE: 0x29,
 } as const;
 
-/** 设备 → 小程序命令字，docs/protocol-v3.md §7.4。 */
+/** 设备 → 小程序命令字，docs/protocol-v5.md §7.4。 */
 export const DEVICE_CMD = {
   ACK: 0x80,
   EVENT: 0x81,
   STATE_REPORT: 0x82,
-  SEGMENT_REPORT: 0x83,
-  SEGMENT_LIST_END: 0x84,
-  SCRIPT_SUMMARY: 0x85,
-  SCRIPT_PROGRESS: 0x86,
+  /* 0x83-0x86（段报告 / 段列表收尾 / 剧本摘要 / 剧本进度）在 v5 已删除。 */
   STRIP_CONFIG_REPORT: 0x87,
   DEVICE_INFO_REPORT: 0x88,
+  LAYOUT_REPORT: 0x89,
+  LAYOUT_LIST_END: 0x8a,
+  SCENE_PART_REPORT: 0x8b,
+  SCENE_STEP_REPORT: 0x8c,
+  SCENE_LIST_END: 0x8d,
 } as const;
 
-/** ACK 载荷第二个字节，docs/protocol-v3.md §5。 */
+/** ACK 载荷第二个字节，docs/protocol-v5.md §5。 */
 export const RESULT = {
   OK: 0x00,
   INVALID_PARAM: 0x01,
@@ -133,17 +153,16 @@ export const RESULT = {
   UNSUPPORTED_VERSION: 0x07,
   BAD_MAGIC: 0x08,
   INTERNAL_ERROR: 0x09,
-  SCRIPT_TOO_LARGE: 0x0a,
+  /* 0x0A 是 v4 的 ScriptTooLarge，v5 不再发送；编号不复用。 */
 } as const;
 
 export const EVENT = {
   STORAGE_FAILED: 0x01,
-  /** ScriptCommit 校验失败（detail = 失败的 script_id）。 */
-  SCRIPT_COMMIT_FAILED: 0x02,
+  /* 0x02 是 v4 的剧本提交失败，v5 不再发送。 */
 } as const;
 
-/** 段/层类型（effects-spec §2）：参数块长度随类型不同。 */
-export const SEGMENT_TYPE = {
+/** 灯效层类型（effects-spec §2；v5 未改）。 */
+export const EFFECT_TYPE = {
   STATIC: 0x00,
   BREATHING: 0x01,
   RAINBOW: 0x02,
@@ -164,21 +183,13 @@ export const SEGMENT_TYPE = {
 } as const;
 
 /**
- * blend：层 1 如何叠加到层 0（§7.2）。
- *
- * `LUMA` 是「按亮度叠加」：`a = max(L1)/255`，`out = L1 + L0 × (1 − a)`。
- * 流动效果（流星 / 随机闪烁）叠在静态或彩虹之上时必须用它——`OVER` 会让
- * 上层每个黑像素都盖住背景，表现为「流星把彩虹全遮了」。
+ * v5 的混合方式**不在线上**：`layer1` 为空 → 覆盖；非空 → 按亮度叠加（§6.2）。
+ * 这两个常量只是本地推导值，不参与编码。
  */
-export const BLEND = {
+export const BLEND_LOCAL = {
   OVER: 0x00,
-  MULTIPLY: 0x01,
-  ADD: 0x02,
   LUMA: 0x03,
 } as const;
-
-/** blend 的合法上界（§7.2）。命令层用它做整体校验。 */
-export const BLEND_MAX = BLEND.LUMA;
 
 /**
  * 哪些类型值是**真实灯效**（不含空层 `0xFF`）。
@@ -190,14 +201,14 @@ export const BLEND_MAX = BLEND.LUMA;
  * 清单放在枚举旁边，由 `isKnownEffectType` 统一回答。
  */
 export const KNOWN_EFFECT_TYPES: readonly number[] = [
-  SEGMENT_TYPE.STATIC,
-  SEGMENT_TYPE.BREATHING,
-  SEGMENT_TYPE.RAINBOW,
-  SEGMENT_TYPE.COMET,
-  SEGMENT_TYPE.STROBE,
-  SEGMENT_TYPE.HEARTBEAT,
-  SEGMENT_TYPE.OFF,
-  SEGMENT_TYPE.FLICKER,
+  EFFECT_TYPE.STATIC,
+  EFFECT_TYPE.BREATHING,
+  EFFECT_TYPE.RAINBOW,
+  EFFECT_TYPE.COMET,
+  EFFECT_TYPE.STROBE,
+  EFFECT_TYPE.HEARTBEAT,
+  EFFECT_TYPE.OFF,
+  EFFECT_TYPE.FLICKER,
 ];
 
 /** `type` 是否是真实灯效类型（空层 `0xFF` 不算）。 */
@@ -207,15 +218,15 @@ export function isKnownEffectType(type: number): boolean {
 
 /** 灯效类型的中文名（UI 与日志用；空层给「无」，未知给 hex）。 */
 export const EFFECT_TYPE_NAMES: Record<number, string> = {
-  [SEGMENT_TYPE.STATIC]: "静态",
-  [SEGMENT_TYPE.BREATHING]: "呼吸",
-  [SEGMENT_TYPE.RAINBOW]: "彩虹",
-  [SEGMENT_TYPE.COMET]: "流光",
-  [SEGMENT_TYPE.STROBE]: "爆闪",
-  [SEGMENT_TYPE.HEARTBEAT]: "心跳",
-  [SEGMENT_TYPE.OFF]: "熄灭",
-  [SEGMENT_TYPE.FLICKER]: "随机闪烁",
-  [SEGMENT_TYPE.EMPTY]: "无",
+  [EFFECT_TYPE.STATIC]: "常亮",
+  [EFFECT_TYPE.BREATHING]: "呼吸",
+  [EFFECT_TYPE.RAINBOW]: "彩虹",
+  [EFFECT_TYPE.COMET]: "流星",
+  [EFFECT_TYPE.STROBE]: "爆闪",
+  [EFFECT_TYPE.HEARTBEAT]: "心跳",
+  [EFFECT_TYPE.OFF]: "熄灭",
+  [EFFECT_TYPE.FLICKER]: "随机闪烁",
+  [EFFECT_TYPE.EMPTY]: "无",
 };
 
 /**
@@ -290,10 +301,10 @@ export const COMET_HEADS_MAX = 4;
 export const COMET_FLAGS_RESERVED = 0xf0;
 
 /**
- * 循环模式（#98）：0 不循环 / 1 全部循环 / 2 最后一步循环。
+ * 循环三值（§7.5）：0 不循环 / 1 全部循环 / 2 最后一步循环。
  *
- * 取值就是线上字节，**不做重映射**；旧固件只接受 0/1，所以 2 会被它按
- * InvalidParam 安全拒绝（不改任何配置）。
+ * **v5 的宿主变了**：从 v4 的「剧本 / 方案级」变成**每个部位一份**（T2）。
+ * 取值不变，仍是线上字节，不做重映射。
  */
 export const LOOP = {
   NONE: 0,
@@ -303,23 +314,10 @@ export const LOOP = {
 export const LOOP_MAX = LOOP.LAST;
 
 /**
- * 循环模式的三值类型（#114）。
- *
- * 凡是下发循环的接口都收这个类型：布尔在那里过不了编译，于是「把三值
- * 压成布尔」在类型层面就被拦住。`boolean` 只在 `cmd*` 编码器里被显式
- * 折算，不再向上传播。
+ * 循环三值类型。凡是下发循环的接口都收这个类型：布尔在那里过不了编译，
+ * 于是「把三值压成布尔」在类型层面就被拦住。
  */
 export type LoopMode = (typeof LOOP)[keyof typeof LOOP];
-
-/**
- * State 字节 10 与 ScriptSummary 0x85 的 flags 位表（§7.5）：
- * bit0 循环中（旧语义）、bit1 active、bit2 最后一步循环、bit3-7 保留 = 0。
- */
-export const PLAYBACK_FLAG = {
-  LOOP: 0x01,
-  ACTIVE: 0x02,
-  LOOP_LAST: 0x04,
-} as const;
 
 /** 周期字段是 2 字节小端（D3）。 */
 export const MAX_PERIOD_MS = 0xffff;
@@ -334,30 +332,29 @@ export const COMMAND_NAMES: Record<number, string> = {
   [CMD.QUERY_STATE]: "QueryState",
   [CMD.SET_LED_COUNT]: "SetLedCount",
   [CMD.SELF_TEST]: "SelfTest",
-  [CMD.SET_SEGMENT]: "SetSegment",
-  [CMD.CLEAR_SEGMENT]: "ClearSegment",
-  [CMD.QUERY_STRIP]: "QueryStrip",
-  [CMD.SET_PLAYBACK]: "SetPlayback",
-  [CMD.SCRIPT_BEGIN]: "ScriptBegin",
-  [CMD.SCRIPT_STAGE]: "ScriptStage",
-  [CMD.SCRIPT_SEGMENT]: "ScriptSegment",
-  [CMD.SCRIPT_COMMIT]: "ScriptCommit",
-  [CMD.SCRIPT_ABORT]: "ScriptAbort",
-  [CMD.ACTIVATE_SCRIPT]: "ActivateScript",
-  [CMD.QUERY_SCRIPT]: "QueryScript",
-  [CMD.CLEAR_SCRIPT]: "ClearScript",
   [CMD.SET_STRIP_POWER]: "SetStripPower",
   [CMD.QUERY_STRIP_CONFIG]: "QueryStripConfig",
   [CMD.QUERY_DEVICE_INFO]: "QueryDeviceInfo",
+  [CMD.LAYOUT_WRITE]: "LayoutWrite",
+  [CMD.LAYOUT_PART]: "LayoutPart",
+  [CMD.LAYOUT_SEG]: "LayoutSeg",
+  [CMD.LAYOUT_COMMIT]: "LayoutCommit",
+  [CMD.QUERY_LAYOUT]: "QueryLayout",
+  [CMD.SCENE_PART]: "ScenePart",
+  [CMD.SCENE_STEP]: "SceneStep",
+  [CMD.SCENE_NAME]: "SceneName",
+  [CMD.ACTIVATE_SCENE]: "ActivateScene",
+  [CMD.QUERY_SCENE]: "QueryScene",
   [DEVICE_CMD.ACK]: "ACK",
   [DEVICE_CMD.EVENT]: "Event",
   [DEVICE_CMD.STATE_REPORT]: "StateReport",
-  [DEVICE_CMD.SEGMENT_REPORT]: "SegmentReport",
-  [DEVICE_CMD.SEGMENT_LIST_END]: "SegmentListEnd",
-  [DEVICE_CMD.SCRIPT_SUMMARY]: "ScriptSummary",
-  [DEVICE_CMD.SCRIPT_PROGRESS]: "ScriptProgress",
   [DEVICE_CMD.STRIP_CONFIG_REPORT]: "StripConfigReport",
   [DEVICE_CMD.DEVICE_INFO_REPORT]: "DeviceInfoReport",
+  [DEVICE_CMD.LAYOUT_REPORT]: "LayoutReport",
+  [DEVICE_CMD.LAYOUT_LIST_END]: "LayoutListEnd",
+  [DEVICE_CMD.SCENE_PART_REPORT]: "ScenePartReport",
+  [DEVICE_CMD.SCENE_STEP_REPORT]: "SceneStepReport",
+  [DEVICE_CMD.SCENE_LIST_END]: "SceneListEnd",
 };
 
 export function commandName(command: number): string {

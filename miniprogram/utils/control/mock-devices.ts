@@ -22,30 +22,33 @@ export interface MockDeviceSpec {
   remark: string;
   /** 卡片照片（`/assets/devices/*.webp`）。真实设备将来由用户上传。 */
   photo: string;
-  /** 逐带灯珠数（State.strip_counts）；长度即条数，最多 8。 */
+  /** 逐带灯珠数（State.led_count[8]）；长度即条数，最多 8。 */
   stripCounts: number[];
-  /** 每条带已配置的段数（State.strip_seg_counts）。 */
-  stripSegCounts: number[];
   /** 开机默认状态。 */
   power: 0 | 1;
   brightness: number;
   /** 全局最大亮度（真实固件 #14 结论是 200）。 */
   maxBrightness: number;
-  /** 基准色（State.r/g/b）。 */
-  rgb: { r: number; g: number; b: number };
   /** 每条带的独立开关掩码（State.strip_power_mask）。 */
   stripPowerMask: number;
-  /** 设备的默认段（连接时按 QueryStrip 读回，可被 mock 写入修改）。 */
-  segments: MockSegmentSeed[];
+  /**
+   * 设备的初始布局（连接时按 `QueryLayout` 读回，可被 mock 写入修改）。
+   *
+   * v5 的布局是「灯组 → 部位 → 灯珠段」；每个部位出厂带 1 步常亮，
+   * 与设备页上「点 + 播种整条 / 1 步 / 常亮」的语义一致。
+   */
+  parts: MockPartSeed[];
 }
 
-/** 段的初始状态：真实设备里段是持久配置，所以它也属于 spec。 */
-export interface MockSegmentSeed {
+/** 一个部位的初始状态：真实设备里布局是持久配置，所以它也属于 spec。 */
+export interface MockPartSeed {
   stripId: number;
-  segId: number;
-  start: number;
-  end: number;
-  /** 层 0：静态色（hue 0-65535 / sat 0-255）。 */
+  /** 部位号 0-7（该链内）。 */
+  partId: number;
+  name: string;
+  /** 闭区间灯珠段（最多 8 条）。 */
+  segs: Array<[number, number]>;
+  /** 该部位出厂时的常亮色（hue 0-65535 / sat 0-255）。 */
   hue: number;
   sat: number;
 }
@@ -66,16 +69,14 @@ export const MOCK_DEVICES: readonly MockDeviceSpec[] = [
     remark: "书桌",
     photo: "/assets/devices/desk.webp",
     stripCounts: [30, 18, 0, 0, 0, 0, 0, 0],
-    stripSegCounts: [2, 1, 0, 0, 0, 0, 0, 0],
     power: 1,
     brightness: 168,
     maxBrightness: 200,
-    rgb: { r: 255, g: 180, b: 120 },
     stripPowerMask: 0x03,
-    segments: [
-      { stripId: 0, segId: 0, start: 0, end: 13, hue: 7281, sat: 255 },
-      { stripId: 0, segId: 1, start: 14, end: 29, hue: 43690, sat: 200 },
-      { stripId: 1, segId: 0, start: 0, end: 17, hue: 7281, sat: 255 },
+    parts: [
+      { stripId: 0, partId: 0, name: "前半", segs: [[0, 13]], hue: 7281, sat: 255 },
+      { stripId: 0, partId: 1, name: "后半", segs: [[14, 29]], hue: 43690, sat: 200 },
+      { stripId: 1, partId: 0, name: "", segs: [[0, 17]], hue: 7281, sat: 255 },
     ],
   },
   {
@@ -85,17 +86,15 @@ export const MOCK_DEVICES: readonly MockDeviceSpec[] = [
     remark: "客厅",
     photo: "/assets/devices/living.webp",
     stripCounts: [60, 60, 60, 60, 24, 24, 0, 0],
-    stripSegCounts: [1, 1, 1, 1, 0, 0, 0, 0],
     power: 0,
     brightness: 120,
     maxBrightness: 200,
-    rgb: { r: 120, g: 220, b: 255 },
     stripPowerMask: 0x0f,
-    segments: [
-      { stripId: 0, segId: 0, start: 0, end: 59, hue: 36409, sat: 180 },
-      { stripId: 1, segId: 0, start: 0, end: 59, hue: 36409, sat: 180 },
-      { stripId: 2, segId: 0, start: 0, end: 59, hue: 36409, sat: 180 },
-      { stripId: 3, segId: 0, start: 0, end: 59, hue: 36409, sat: 180 },
+    parts: [
+      { stripId: 0, partId: 0, name: "顶", segs: [[0, 59]], hue: 36409, sat: 180 },
+      { stripId: 1, partId: 0, name: "左", segs: [[0, 59]], hue: 36409, sat: 180 },
+      { stripId: 2, partId: 0, name: "右", segs: [[0, 59]], hue: 36409, sat: 180 },
+      { stripId: 3, partId: 0, name: "底", segs: [[0, 59]], hue: 36409, sat: 180 },
     ],
   },
   {
@@ -105,13 +104,11 @@ export const MOCK_DEVICES: readonly MockDeviceSpec[] = [
     remark: "卧室",
     photo: "/assets/devices/bedroom.webp",
     stripCounts: [24, 0, 0, 0, 0, 0, 0, 0],
-    stripSegCounts: [1, 0, 0, 0, 0, 0, 0, 0],
     power: 1,
     brightness: 34,
     maxBrightness: 200,
-    rgb: { r: 180, g: 140, b: 255 },
     stripPowerMask: 0x01,
-    segments: [{ stripId: 0, segId: 0, start: 0, end: 23, hue: 50000, sat: 220 }],
+    parts: [{ stripId: 0, partId: 0, name: "床头", segs: [[0, 23]], hue: 50000, sat: 220 }],
   },
 ];
 

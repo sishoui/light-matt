@@ -1,70 +1,56 @@
 /**
- * 进阶档「效果面板」（#67 四类 → #80 七类）：效果类型 + 按类型整体替换的参数区。
+ * 效果面板的参数模型（#154 的可复用单元底座，v5 形状）。
  *
- * ## 为什么是纯模块
+ * ## 这一层守的是什么
  *
- * 这一层几乎全是「规则」而不是「布局」：
+ * 一层灯效的编辑有一组**规则**而不是布局：
  *
- *  1. **每种类型各自用哪几个旋钮**（见 `SLIDER_KEYS` / `CHOICE_KEYS`）。
- *     写错一个就是「用户看到了当前类型用不上的旋钮」；
- *  2. **切换类型时保留什么**。颜色（色相 / 饱和度）与亮度必须留下，其余参数按新
- *     类型的语义重置——把彩虹的「跨度」带进流光当「尾长」没有任何意义；
+ *  1. **每种类型各自用哪几个旋钮**（`SLIDER_KEYS` / `CHOICE_KEYS`）。写错一个
+ *     就是「用户看到了当前类型用不上的旋钮」；
+ *  2. **切换类型时保留什么**。颜色（色相 / 饱和度）与亮度必须留下，其余参数按
+ *     新类型的语义重置——把彩虹的「跨度」带进流星当「尾长」没有任何意义；
  *  3. **滑块刻度 ↔ 协议值**。色相 0-360° ↔ 0-65535、饱和度 0-100% ↔ 0-255、
  *     周期秒 ↔ 毫秒、频率赫兹 ↔ 周期毫秒、节奏 BPM ↔ 周期毫秒、
- *     最低亮 / 跨度 / 尾长百分比 ↔ 0-255；
- *  4. **装配分区**。面板只改 `layer0`，但写进设备前必须过 `zone-model.buildZoneSpec`
- *     （空叠加层归一、两层定宽、深拷贝），否则设备回 `InvalidParam`；
+ *     最低亮 / 跨度 / 尾长 / 密度百分比 ↔ 0-255；
+ *  4. **装配一层**。草稿 → `EffectLayer`（9 字节层的内存形状）；
  *  5. **本地预检**。频率过快、节奏过快或过慢在本机就拦住，一帧都不发。
  *
- * 页面只把结果塞进 `setData`、把滑块回调交给这里换算，不做算术与判断。
- * 不碰 wx / BLE，可直接单测。
+ * ## 与 v4 的差别
  *
- * ## 七种类型（#80）
+ * v4 的这一层还负责「装配分区」（`SegmentSpec` / `buildZoneSpec` / 叠加方式）。
+ * v5 没有分区模型：一个是**部位**（布局）在**场景**里的一步有**两层**，混合
+ * 方式由「叠加层是否为空」推出（`docs/protocol-v5.md` §6.2），不在线上。
+ * 所以这里只剩「一层 → 一个 `EffectLayer`」，装配与叠加交给 `panel-unit`。
  *
- * 静态 / 呼吸 / 彩虹 / 流光沿用 #67；爆闪 / 心跳 / 熄灭是 #74 的协议新增。
- * 「熄灭」在界面上**没有任何旋钮**：给它色相与周期只会让人以为那些参数有用，
- * 实际下发是全零参数块，界面只说明这一段保持黑色。
- *
- * ## 亮度（v4 起真实生效）
- *
- * `level`（逐分区亮度 0-100）是协议 v4 的层字段（#69 接通）。本模块的
- * `EffectParams.level` 经 `panelLayer()` 写进 `EffectLayer.level`，再由
- * `zone-model.buildZoneSpec` 归一（空层恒 0、非空层钳到 0-100）后编进 9 字节层。
- * 滑块松手即落进草稿，写设备仍只走「应用并播放」。
+ * 纯函数、不碰 wx / BLE / 页面。
  */
 
 import {
   ANIMATION_MIN_PERIOD_MS,
   BREATHING_MIN_PERIOD_MS,
-  BLEND,
+  EFFECT_TYPE,
+  EFFECT_TYPE_NAMES,
   FLICKER_MIN_PERIOD_MS,
   HEARTBEAT_MAX_PERIOD_MS,
   HEARTBEAT_MIN_PERIOD_MS,
-  SEGMENT_TYPE,
+  LAYER_LEVEL_MAX,
   STROBE_MIN_PERIOD_MS,
   WAVEFORM,
   WAVEFORM_NAMES,
 } from "../protocol/constants";
 import { breathingFlags, breathingWaveform, directionFlags } from "../protocol/commands";
-import { emptyLayer } from "../protocol/segment-shapes";
-import type { BlendMode, EffectLayer, SegmentSpec } from "../protocol/types";
+import { EMPTY_LAYER } from "../protocol/commands";
+import type { EffectLayer } from "../protocol/types";
 import { rgbToHex, segmentHueSatToRgb } from "../color/hsv";
-import { buildZoneSpec } from "./zone-model";
-import { WAVEFORM_OPTIONS } from "./effect-view";
-import { spanText, tailText } from "./segment-view";
-import {
-  clampLevel,
-  clampZoneLevel,
-  LEVEL_DEFAULT,
-  LEVEL_MAX,
-  LEVEL_MIN,
-  hueDegreesOf,
-  hueFromDegrees,
-  satFromPercent,
-  satPercentOf,
-} from "./strip-simple";
 
-/** 面板上的七种效果类型（与协议类型一一对应）。 */
+/* ---------------- 灯效类型 ---------------- */
+
+/**
+ * 面板上的八种效果类型（与协议 `EFFECT_TYPE` 一一对应）。
+ *
+ * **名字不带颜色**——用户是来选效果的，不是来选颜色的（只有「彩虹」例外，
+ * 它本身就是彩色的）。名字统一取 `EFFECT_TYPE_NAMES`，所以界面文案只有一份。
+ */
 export type PanelType =
   | "static"
   | "breathing"
@@ -75,188 +61,34 @@ export type PanelType =
   | "flicker"
   | "off";
 
-/**
- * 界面上的八个灯效（#100）：空 / 常亮 / 呼吸 / 彩虹 / 流星 / 爆闪 / 心跳 / 随机闪烁。
- *
- * 名字里不带颜色——用户是来选效果的，不是来选颜色的（只有「彩虹」例外，
- * 它本身就是彩色的）。「熄灭」这一项不再出现在清单里：不亮就是「空」。
- */
-export const PANEL_EFFECT_OPTIONS: ReadonlyArray<{ type: PanelType; name: string; hint: string }> = [
-  { type: "static", name: "常亮", hint: "整段一个颜色" },
-  { type: "breathing", name: "呼吸", hint: "缓亮缓暗" },
-  { type: "rainbow", name: "彩虹", hint: "颜色沿灯组铺开并流动" },
-  { type: "comet", name: "流星", hint: "亮点拖着尾巴跑动" },
-  { type: "strobe", name: "爆闪", hint: "高频闪烁" },
-  { type: "heartbeat", name: "心跳", hint: "一明一暗像心跳" },
-  { type: "flicker", name: "随机闪烁", hint: "零星亮点随机亮灭" },
-];
-
-/** 类型 → 界面文案（七个等宽按钮，顺序即票面顺序）。 */
-export const PANEL_TYPE_OPTIONS: ReadonlyArray<{ type: PanelType; name: string }> = [
-  { type: "static", name: "常亮" },
-  { type: "breathing", name: "呼吸" },
-  { type: "rainbow", name: "彩虹" },
-  { type: "comet", name: "流星" },
-  { type: "strobe", name: "爆闪" },
-  { type: "heartbeat", name: "心跳" },
-  { type: "flicker", name: "随机闪烁" },
-  /* 「空」在编码上写成熄灭类型；界面文案是「空」，不出现「熄灭」。 */
-  { type: "off", name: "空" },
-];
-
-/**
- * 叠加层可选类型：七种里去掉「熄灭」。
- *
- * 叠加一个「熄灭」等于什么都没做（它只会把下面那层乘成黑），
- * 让用户能选到它只会制造困惑。
- */
-export const PANEL_OVERLAY_TYPE_OPTIONS: ReadonlyArray<{ type: PanelType; name: string }> =
-  PANEL_TYPE_OPTIONS.filter((option) => option.type !== "off");
-
-/* ---------------- 叠加层（#71 US49/US50） ---------------- */
-
-/**
- * 叠加层的开关选项：「关闭」+ 可选的六种类型。
- *
- * 「关闭」不是 `PanelType`——它表示 `layer1` 是空层（`type = 0xFF`），
- * 与「点亮灭」是两件事：熄灭是一条真实存在、参数全零的层。
- */
-export type OverlayChoice = PanelType | "none";
-
-export const OVERLAY_CHOICE_OPTIONS: ReadonlyArray<{ value: OverlayChoice; name: string }> = [
-  /* #100：特效层的「无」叫「空」（不亮就是空，不需要「关闭」这个动词）。 */
-  { value: "none", name: "空" },
-  ...PANEL_OVERLAY_TYPE_OPTIONS.map((option) => ({ value: option.type, name: option.name })),
-];
-
-/**
- * 叠加层的叠加方式（覆盖 / 相乘 / 相加）。
- *
- * 与 `effect-view.BLEND_OPTIONS` 同一组语义；这里重列是为了让「叠加层」这一
- * 整块（选项 / 草稿 / 装配）留在同一个模块里，页面只认一个来源。
- */
-export const OVERLAY_BLEND_OPTIONS: ReadonlyArray<{
-  value: BlendMode;
-  name: string;
-  hint: string;
-}> = [
-  {
-    value: BLEND.LUMA,
-    name: "按亮度叠加",
-    hint: "特效层只盖住自己亮着的地方，其余位置透出背景层",
-  },
-];
-
-/** 一个分区的叠加层草稿：没有叠加层时 `type = "none"`。 */
-export interface OverlayDraft {
-  type: OverlayChoice;
-  /** 叠加层自己的参数，与主效果的草稿互相独立。 */
-  params: EffectParams;
-  blend: BlendMode;
-}
-
-/** 没有叠加层时的草稿（关闭 + 按亮度叠加）。 */
-export function emptyOverlayDraft(): OverlayDraft {
-  return { type: "none", params: defaultParams("static"), blend: BLEND.LUMA };
-}
-
-/**
- * 从设备读回的分区还原叠加层草稿。空层 → 「关闭」。
- *
- * 设备上若是「熄灭」叠加层（旧数据 / 别的客户端写的），这里如实还原成
- * 「关闭」——界面不提供这个选项，也不该假装它存在。
- *
- * **读回时不看设备上的 `blend`**：界面只有「按亮度叠加」一种，旧配置的
- * 覆盖 / 相乘 / 相加一律按新语义展示（用户下一次改这个分区就把它重写）。
- * 协议仍然接受那三个值，所以读回旧数据不会让面板读不出来。
- */
-export function overlayDraftOf(layer1: EffectLayer | null | undefined): OverlayDraft {
-  if (layer1 === null || layer1 === undefined || layer1.type === SEGMENT_TYPE.EMPTY) {
-    return emptyOverlayDraft();
-  }
-  const type = panelTypeOf(layer1.type);
-  if (type === "off") {
-    return emptyOverlayDraft();
-  }
-  return { type, params: paramsFromLayer(type, layer1), blend: BLEND.LUMA };
-}
-
-/** 叠加层是否真的启用。 */
-export function overlayEnabled(draft: OverlayDraft): boolean {
-  return draft.type !== "none";
-}
-
-/**
- * 叠加层草稿 → `layer1`（未启用时给空层）。
- *
- * 「熄灭」不在可选类型里，但草稿可能来自旧数据：这里再挡一次。叠加熄灭等于
- * 把下面那层乘成黑，用户真正想要的是「不加东西」，应该选「关闭」。
- */
-export function overlayLayer(draft: OverlayDraft): EffectLayer {
-  if (draft.type === "none" || draft.type === "off") {
-    return emptyLayer();
-  }
-  return panelLayer(draft.type, draft.params);
-}
-
-/**
- * 切换叠加层类型。
- *
- * 关闭时**保留原参数**：用户可能是误关，切回来还要接着调。
- * 从关闭切回来沿用上次参数；两种类型之间切换按新类型语义重置（与主效果一致）。
- */
-export function switchOverlayType(draft: OverlayDraft, next: OverlayChoice): OverlayDraft {
-  if (next === draft.type) {
-    return draft;
-  }
-  if (next === "none") {
-    return { ...draft, type: "none" };
-  }
-  const params =
-    draft.type === "none" ? draft.params : switchPanelType(draft.params, draft.type, next);
-  return { type: next, params, blend: draft.blend };
-}
-
-/** 叠加层的摘要（「关闭」时给空串，调用方据此不显示这一行）。 */
-export function overlaySummary(draft: OverlayDraft): string {
-  if (!overlayEnabled(draft)) {
-    return "";
-  }
-  /* `overlayEnabled` 已排除 "none"，这里只剩真实类型。 */
-  const type = draft.type as PanelType;
-  const name = PANEL_TYPE_OPTIONS.find((option) => option.type === type)?.name ?? "";
-  return `${name} · ${panelSummary(type, draft.params)}`;
-}
-
-
 /** 类型 → 协议枚举值。 */
-const TYPE_VALUE: Record<PanelType, number> = {
-  static: SEGMENT_TYPE.STATIC,
-  breathing: SEGMENT_TYPE.BREATHING,
-  rainbow: SEGMENT_TYPE.RAINBOW,
-  comet: SEGMENT_TYPE.COMET,
-  strobe: SEGMENT_TYPE.STROBE,
-  heartbeat: SEGMENT_TYPE.HEARTBEAT,
-  flicker: SEGMENT_TYPE.FLICKER,
-  off: SEGMENT_TYPE.OFF,
+export const TYPE_VALUE: Record<PanelType, number> = {
+  static: EFFECT_TYPE.STATIC,
+  breathing: EFFECT_TYPE.BREATHING,
+  rainbow: EFFECT_TYPE.RAINBOW,
+  comet: EFFECT_TYPE.COMET,
+  strobe: EFFECT_TYPE.STROBE,
+  heartbeat: EFFECT_TYPE.HEARTBEAT,
+  flicker: EFFECT_TYPE.FLICKER,
+  off: EFFECT_TYPE.OFF,
 };
 
 /** 协议枚举值 → 面板类型（空层 / 未知按静态）。 */
 export function panelTypeOf(type: number): PanelType {
   switch (type) {
-    case SEGMENT_TYPE.BREATHING:
+    case EFFECT_TYPE.BREATHING:
       return "breathing";
-    case SEGMENT_TYPE.RAINBOW:
+    case EFFECT_TYPE.RAINBOW:
       return "rainbow";
-    case SEGMENT_TYPE.COMET:
+    case EFFECT_TYPE.COMET:
       return "comet";
-    case SEGMENT_TYPE.STROBE:
+    case EFFECT_TYPE.STROBE:
       return "strobe";
-    case SEGMENT_TYPE.HEARTBEAT:
+    case EFFECT_TYPE.HEARTBEAT:
       return "heartbeat";
-    case SEGMENT_TYPE.FLICKER:
+    case EFFECT_TYPE.FLICKER:
       return "flicker";
-    case SEGMENT_TYPE.OFF:
+    case EFFECT_TYPE.OFF:
       return "off";
     default:
       /* 空层（0xFF）与未知值都按静态显示——空层不是「熄灭」，它表示这里没效果。 */
@@ -264,12 +96,87 @@ export function panelTypeOf(type: number): PanelType {
   }
 }
 
+/** 某个类型在协议里的枚举值（页面构造断言时用）。 */
+export function panelTypeValue(type: PanelType): number {
+  return TYPE_VALUE[type];
+}
+
+/**
+ * 类型按钮清单（顺序 = 票面顺序 = 协议枚举顺序）。
+ *
+ * 这是界面上「有哪些灯效可选」的唯一真相：页面的 picker / 类型行都从这里取，
+ * 不再各写一份。
+ */
+export const PANEL_TYPE_OPTIONS: ReadonlyArray<{ type: PanelType; name: string }> = (
+  ["static", "breathing", "rainbow", "comet", "strobe", "heartbeat", "flicker", "off"] as const
+).map((type) => ({ type, name: EFFECT_TYPE_NAMES[TYPE_VALUE[type]] }));
+
+/* ---------------- 亮度 / HSV 换算 ---------------- */
+
+/** 亮度滑块的显示下限：0 会让这一层不出光，不给拖到 0（除非设备本来就是 0）。 */
+export const LEVEL_MIN = 5;
+/** 亮度上限（协议 `LAYER_LEVEL_MAX`）。 */
+export const LEVEL_MAX = LAYER_LEVEL_MAX;
+/** 新层的默认亮度：满亮。 */
+export const LEVEL_DEFAULT = LAYER_LEVEL_MAX;
+
+/** 协议色相 0-65535 → 滑块的 0-359 度。 */
+export function hueDegreesOf(hue: number): number {
+  const value = Number.isFinite(hue) ? hue : 0;
+  const wrapped = ((Math.round(value) % 0x10000) + 0x10000) % 0x10000;
+  return Math.round((wrapped / 0x10000) * 360) % 360;
+}
+
+/** 滑块的 0-360 度 → 协议色相 0-65535（360 度回到红色，即 0）。 */
+export function hueFromDegrees(degrees: number): number {
+  const value = Number.isFinite(degrees) ? degrees : 0;
+  const wrapped = ((value % 360) + 360) % 360;
+  return Math.round((wrapped / 360) * 0x10000) & 0xffff;
+}
+
+/** 协议饱和度 0-255 → 滑块的 0-100（%）。 */
+export function satPercentOf(sat: number): number {
+  const value = Number.isFinite(sat) ? sat : 0;
+  return Math.max(0, Math.min(100, Math.round((value / 255) * 100)));
+}
+
+/** 滑块的 0-100（%）→ 协议饱和度 0-255。 */
+export function satFromPercent(percent: number): number {
+  const value = Number.isFinite(percent) ? percent : 0;
+  const clamped = Math.max(0, Math.min(100, value));
+  return Math.round((clamped / 100) * 255);
+}
+
+/** 亮度滑块的值钳到显示区间（越界 / 非有限值都给默认满亮）。 */
+export function clampLevel(level: number): number {
+  if (!Number.isFinite(level)) {
+    return LEVEL_DEFAULT;
+  }
+  return Math.max(LEVEL_MIN, Math.min(LEVEL_MAX, Math.round(level)));
+}
+
+/**
+ * 亮度钳到**协议合法区间 0-100**（越界 / 非有限值给默认满亮）。
+ *
+ * 与 `clampLevel` 的区别：滑块的显示下限是 5（0 会让这一层不出光，不给拖），
+ * 但 **0 在协议里合法**（这一层不出光）。设备读回 0 时必须原样保留，否则
+ * 「读-改-写」会把用户刻意关掉的那一层偷偷点亮。
+ */
+export function clampZoneLevel(level: number): number {
+  if (!Number.isFinite(level)) {
+    return LEVEL_DEFAULT;
+  }
+  return Math.max(0, Math.min(LEVEL_MAX, Math.round(level)));
+}
+
+/* ---------------- 区间常量 ---------------- */
+
 /** 周期滑块的秒数区间（0.5–10 秒，步进 0.5）。协议里是毫秒，界面只出现秒。 */
 export const PERIOD_MIN_MS = 500;
 export const PERIOD_MAX_MS = 10000;
 export const PERIOD_STEP_MS = 500;
 
-/** 最低亮 / 跨度 / 尾长 / 占空比在界面上的百分比区间。 */
+/** 最低亮 / 跨度 / 尾长 / 密度在界面上的百分比区间。 */
 export const PERCENT_MIN = 0;
 export const PERCENT_MAX = 100;
 export const PERCENT_STEP = 1;
@@ -278,7 +185,7 @@ export const PERCENT_STEP = 1;
  * 爆闪频率的界面区间：1–10 Hz。
  *
  * 10 Hz = 100ms 周期，是固件默认 20fps（每帧 50ms）能表现的上界；
- * 更快只会掉帧，看起来比低频更糟（#74 不提高帧率）。
+ * 更快只会掉帧，看起来比低频更糟（不提高帧率）。
  */
 export const FREQUENCY_MIN = 1;
 export const FREQUENCY_MAX = 10;
@@ -305,10 +212,12 @@ const HEARTBEAT_PULSE = 60;
 /** 心跳默认开双脉冲（flags bit0）。 */
 const HEARTBEAT_FLAGS = 0x01;
 
+/* ---------------- 草稿 ---------------- */
+
 /**
- * 面板的本地草稿。
+ * 一层的参数草稿。
  *
- * 一份草稿同时覆盖七种类型：每种类型只用其中一部分字段（见 `SLIDER_KEYS`）。
+ * 一份草稿同时覆盖八种类型：每种类型只用其中一部分字段（见 `SLIDER_KEYS`）。
  * 这样切换类型时「保留颜色」不需要在页面里做拆装。
  */
 export interface EffectParams {
@@ -316,24 +225,24 @@ export interface EffectParams {
   hue: number;
   /** 饱和度 0-255。 */
   sat: number;
-  /** 亮度 0-100；协议 v4 字段，编码在 #69（见模块头）。 */
+  /** 亮度 0-100（协议 `EffectLayer.level`）。 */
   level: number;
   /** 周期毫秒（静态 / 熄灭恒 0；爆闪与心跳由频率 / 节奏换算，草稿里不单独调）。 */
   periodMs: number;
   /**
    * 呼吸最低亮的占比 **0-100 百分比**（协议 `p5`）。
    *
-   * v4 起呼吸的 p5 是相对百分比（谷底 = 层亮度 × p5%），101-255 会被设备拒绝；
-   * 彩虹的跨度 / 流光的尾长仍是 0-255（`span` / `tail`）。
+   * 呼吸的 p5 是相对百分比（谷底 = 层亮度 × p5%），101-255 会被设备拒绝；
+   * 彩虹的跨度 / 流星的尾长 / 随机闪烁的密度仍是 0-255。
    */
   minLevel: number;
   /** 呼吸波形 0-3（正弦 / 三角 / 锯齿 / 方波）。 */
   waveform: number;
   /** 彩虹跨度 0-255（协议 `p5`）。 */
   span: number;
-  /** 流光尾长 0-255（协议 `p5`）。 */
+  /** 流星尾长 0-255（协议 `p5`）。 */
   tail: number;
-  /** 彩虹 / 流光的方向：true = 反转。 */
+  /** 彩虹 / 流星的方向：true = 反转。 */
   reverse: boolean;
   /** 爆闪频率 1-10 Hz（面板单位；编码时换成周期毫秒）。 */
   frequencyHz: number;
@@ -385,7 +294,7 @@ export function defaultParams(type: PanelType): EffectParams {
     case "heartbeat":
       return { ...base, periodMs: 0, bpm: 60 };
     case "flicker":
-      /* #121：周期默认 1 秒（滑块网格上的值，且远高于 334 的光敏线下限），
+      /* 周期默认 1 秒（滑块网格上的值，且远高于 334 的光敏线下限），
        * 密度中档 128/255 ≈ 50%。 */
       return { ...base, periodMs: 1000, density: 128 };
     case "off":
@@ -402,7 +311,7 @@ export function normalizeParams(params: Partial<EffectParams>): EffectParams {
     hue: clampHue(merged.hue),
     sat: clampByte(merged.sat),
     /* 0 是协议合法值（这一层不出光）：设备读回的 0 必须原样保留，
-     * 否则「改个颜色」会把用户关掉的分区偷偷点亮。滑块下限只管拖动。 */
+     * 否则「改个颜色」会把用户关掉的那一层偷偷点亮。滑块下限只管拖动。 */
     level: clampZoneLevel(merged.level),
     periodMs: clampPeriodMs(merged.periodMs),
     minLevel: clampPercent(merged.minLevel),
@@ -502,9 +411,11 @@ export function strobePeriodMs(frequencyHz: number): number {
 /** 节奏（BPM）→ 周期（毫秒），并钳到心跳的协议区间。 */
 export function heartbeatPeriodMs(bpm: number): number {
   const beats = clampBpm(bpm);
-  return Math.max(HEARTBEAT_MIN_PERIOD_MS, Math.min(HEARTBEAT_MAX_PERIOD_MS, Math.round(60000 / beats)));
+  return Math.max(
+    HEARTBEAT_MIN_PERIOD_MS,
+    Math.min(HEARTBEAT_MAX_PERIOD_MS, Math.round(60000 / beats)),
+  );
 }
-
 
 /* ---------------- 每种类型用哪些旋钮 ---------------- */
 
@@ -531,9 +442,8 @@ export type PanelChoiceKey = "waveform" | "direction" | "duty" | "pulse";
  * 的依据是它，不是页面里的 `wx:if` 集合。熄灭一个滑块都没有——它下发的是全零
  * 参数块，给旋钮只会让人以为那些参数有用。
  *
- * **简单档与进阶档共用这张表**（两边灯效种类与配置项完全一致）。彩虹也拿到
- * 色相 / 饱和度 / 亮度：色相是彩虹的基准相位、饱和度是浓淡——早期把它们藏起来，
- * 用户就没法调「柔和彩虹」。
+ * 彩虹也拿到色相 / 饱和度 / 亮度：色相是彩虹的基准相位、饱和度是浓淡——早期
+ * 把它们藏起来，用户就没法调「柔和彩虹」。
  */
 export const SLIDER_KEYS: Record<PanelType, readonly PanelSliderKey[]> = {
   static: ["hue", "sat", "level"],
@@ -542,7 +452,6 @@ export const SLIDER_KEYS: Record<PanelType, readonly PanelSliderKey[]> = {
   comet: ["hue", "sat", "level", "period", "tail"],
   strobe: ["hue", "sat", "level", "frequency"],
   heartbeat: ["hue", "sat", "level", "bpm"],
-  /* #100 随机闪烁：密度（p5）控制同时亮着的比例。 */
   flicker: ["hue", "sat", "level", "period", "density"],
   off: [],
 };
@@ -578,12 +487,14 @@ export const CHOICE_KEYS: Record<PanelType, readonly PanelChoiceKey[]> = {
   rainbow: ["direction"],
   comet: ["direction"],
   strobe: ["duty"],
-  /* 心跳的双脉冲开关（flags bit0）一直是协议里的真实参数，以前两边都没有
-   * 入口，恒为「双」。既然要求配置项完全展开，就不该留一个改不了的隐藏位。 */
+  /* 心跳的双脉冲开关（flags bit0）一直是协议里的真实参数，不该留一个改不了
+   * 的隐藏位。 */
   heartbeat: ["pulse"],
   flicker: [],
   off: [],
 };
+
+/* ---------------- 视图 ---------------- */
 
 /** 一个滑块的展示态。 */
 export interface PanelSliderView {
@@ -598,21 +509,11 @@ export interface PanelSliderView {
   display: string;
   /** 滑轨是否画彩虹渐变（只有色相）。 */
   rainbow: boolean;
-  /**
-   * 滑轨的 CSS 背景（`hue` 走彩虹，其余按参数含义算渐变）。
-   *
-   * 「空拖动轴」看不了自己在调什么：拖饱和度时轨上应该从灰渐变到当前色，
-   * 拖亮度时从黑渐变到当前色。渐变由 `sliderTrack` 从「当前色相 + 饱和度 +
-   * 参数含义」算出，拖动色相时其余滑块的轨色同步变。
-   */
+  /** 滑轨的 CSS 背景（`hue` 走彩虹，其余按参数含义算渐变；空串 = 主题色空轨）。 */
   track: string;
-  /** 滑块是否真的会改变设备（现存滑块全部为 true）。 */
-  sends: boolean;
-  /** 不下发时的说明；空串表示正常生效。 */
-  note: string;
 }
 
-/** 一个选择控件（波形 / 方向 / 占空比）。 */
+/** 一个选择控件（波形 / 方向 / 占空比 / 脉冲）。 */
 export interface PanelChoiceView {
   key: PanelChoiceKey;
   label: string;
@@ -621,7 +522,7 @@ export interface PanelChoiceView {
   value: number;
 }
 
-/** 七个类型按钮的展示态。 */
+/** 八个类型按钮的展示态。 */
 export interface PanelTypeView {
   type: PanelType;
   name: string;
@@ -645,7 +546,7 @@ export interface EffectPanelView {
   notice: string;
 }
 
-/** 七个类型按钮（等宽一排）。 */
+/** 八个类型按钮（等宽一排）。 */
 export function buildTypeViews(current: PanelType): PanelTypeView[] {
   return PANEL_TYPE_OPTIONS.map((option) => ({
     type: option.type,
@@ -667,11 +568,12 @@ const PULSE_OPTIONS: ReadonlyArray<{ value: number; label: string }> = [
 ];
 
 /** 波形选项（「正弦 / 三角 / 锯齿 / 方波」）。 */
-const WAVEFORM_CHOICE_OPTIONS = WAVEFORM_OPTIONS.map((option) => ({
-  value: option.value,
-  name: option.name,
-  label: option.name,
-}));
+const WAVEFORM_CHOICE_OPTIONS: ReadonlyArray<{ value: number; label: string }> = [
+  WAVEFORM.SINE,
+  WAVEFORM.TRIANGLE,
+  WAVEFORM.SAWTOOTH,
+  WAVEFORM.SQUARE,
+].map((value) => ({ value, label: WAVEFORM_NAMES[value] }));
 
 /** 秒的显示：2 / 2.5（不留 2.000 这种噪声）。 */
 function secondsText(ms: number): string {
@@ -690,11 +592,38 @@ export function p5FromPercent(percent: number): number {
   return Math.round((value / 100) * 255);
 }
 
+/** span（0-255）→ "整条同色" / "整圈" / "跨 N% 圈"。 */
+export function spanText(span: number): string {
+  if (span === 0) {
+    return "整条同色";
+  }
+  if (span === 255) {
+    return "整圈";
+  }
+  return `跨 ${Math.round((span / 255) * 100)}% 圈`;
+}
+
+/** tail（0-255）→ "无拖尾" / "整条拖尾" / "拖尾 N%"。 */
+export function tailText(tail: number): string {
+  if (tail === 0) {
+    return "无拖尾";
+  }
+  if (tail === 255) {
+    return "整条拖尾";
+  }
+  return `拖尾 ${Math.round((tail / 255) * 100)}%`;
+}
+
+/** 色相滑轨的彩虹渐变（hsl 不是 hex，不触发「wxss 不写死颜色」的规则）。 */
+export const HUE_RAMP_GRADIENT =
+  "linear-gradient(90deg, hsl(0, 100%, 50%), hsl(60, 100%, 50%), hsl(120, 100%, 50%), " +
+  "hsl(180, 100%, 50%), hsl(240, 100%, 50%), hsl(300, 100%, 50%), hsl(360, 100%, 50%))";
+
 /**
  * 一个滑块该画什么样的滑轨。
  *
- * 判据是**参数含义**，不是类型：同样的 `tail` 在彩虹里不存在、在流星里就是从
- * 实色到透明的拖尾；`period` 的轨与颜色无关，用主题色空轨。
+ * 判据是**参数含义**，不是类型：同样的 `tail` 在流星里就是从实色到透明的拖尾；
+ * `period` 的轨与颜色无关，用主题色空轨。
  *
  * 颜色一律用 `hsl()` 而不是 hex：这样「拖色相 → 其余轨道的颜色跟着变」是纯函数
  * 的结果，不需要页面在拖动时改一堆 data 字段。
@@ -708,28 +637,19 @@ export function sliderTrack(key: PanelSliderKey, params: EffectParams): string {
     case "hue":
       return HUE_RAMP_GRADIENT;
     case "sat":
-      /* 灰 → 当前色相满饱和：一眼看出自己在调「浓淡」。 */
       return `linear-gradient(90deg, hsl(${hue}, 0%, 50%), hsl(${hue}, 100%, 50%))`;
     case "level":
-      /* 黑 → 当前色：亮度滑块拖到头就是这颗灯珠最亮的样子。 */
-      return `linear-gradient(90deg, #000000, ${color})`;
     case "minLevel":
-      /* 呼吸谷底：同一个色，从黑到当前色。 */
       return `linear-gradient(90deg, #000000, ${color})`;
     case "span":
-      /* 彩虹跨度：0 = 整条同色，满 = 铺满一整圈。 */
-      return `${HUE_RAMP_GRADIENT}`;
+      return HUE_RAMP_GRADIENT;
     case "tail":
-      /* 拖尾：从实色渐隐到透明（用同一个色相的透明度表达）。 */
       return `linear-gradient(90deg, hsl(${hue}, ${satPercent}%, 50%), hsla(${hue}, ${satPercent}%, 50%, 0))`;
     case "density":
-      /* 密度：零星亮点 → 半数亮着。 */
       return `linear-gradient(90deg, hsla(${hue}, ${satPercent}%, 50%, 0.05), ${color})`;
     default:
-      /*
-       * 周期 / 频率 / 节奏与颜色无关：给一条主题色空轨（不是彩虹轨——那会让人
-       * 以为拖它能改颜色）。用 currentColor 让深色主题自动跟随。
-       */
+      /* 周期 / 频率 / 节奏与颜色无关：给一条主题色空轨（不是彩虹轨——那会让人
+       * 以为拖它能改颜色）。 */
       return "";
   }
 }
@@ -749,8 +669,6 @@ export function sliderView(key: PanelSliderKey, params: EffectParams): PanelSlid
         display: `${degrees}°`,
         rainbow: true,
         track: sliderTrack(key, params),
-        sends: true,
-        note: "",
       };
     }
     case "sat": {
@@ -765,8 +683,6 @@ export function sliderView(key: PanelSliderKey, params: EffectParams): PanelSlid
         display: `${percent}%`,
         rainbow: false,
         track: sliderTrack("sat", params),
-        sends: true,
-        note: "",
       };
     }
     case "level": {
@@ -782,29 +698,23 @@ export function sliderView(key: PanelSliderKey, params: EffectParams): PanelSlid
         display: `${level}%`,
         rainbow: false,
         track: sliderTrack("level", params),
-        sends: true,
-        note: "",
       };
     }
     case "period": {
       const ms = clampPeriodMs(params.periodMs);
-      const value = Math.max(PERIOD_MIN_MS, ms) / 1000;
       return {
         key,
         label: "周期",
-        value,
+        value: Math.max(PERIOD_MIN_MS, ms) / 1000,
         min: PERIOD_MIN_MS / 1000,
         max: PERIOD_MAX_MS / 1000,
         step: PERIOD_STEP_MS / 1000,
         display: secondsText(Math.max(PERIOD_MIN_MS, ms)),
         rainbow: false,
         track: sliderTrack("period", params),
-        sends: true,
-        note: "",
       };
     }
     case "minLevel": {
-      /* v4 起 lowest 就是百分比本身（0-100），不再从 0-255 换算。 */
       const percent = clampPercent(params.minLevel);
       return {
         key,
@@ -816,40 +726,32 @@ export function sliderView(key: PanelSliderKey, params: EffectParams): PanelSlid
         display: `${percent}%`,
         rainbow: false,
         track: sliderTrack("minLevel", params),
-        sends: true,
-        note: "",
       };
     }
     case "span": {
-      const percent = p5Percent(params.span);
       return {
         key,
         label: "跨度",
-        value: percent,
+        value: p5Percent(params.span),
         min: PERCENT_MIN,
         max: PERCENT_MAX,
         step: PERCENT_STEP,
         display: spanText(clampByte(params.span)),
         rainbow: false,
         track: sliderTrack("span", params),
-        sends: true,
-        note: "",
       };
     }
     case "tail": {
-      const percent = p5Percent(params.tail);
       return {
         key,
         label: "尾长",
-        value: percent,
+        value: p5Percent(params.tail),
         min: PERCENT_MIN,
         max: PERCENT_MAX,
         step: PERCENT_STEP,
         display: tailText(clampByte(params.tail)),
         rainbow: false,
         track: sliderTrack("tail", params),
-        sends: true,
-        note: "",
       };
     }
     case "density": {
@@ -864,8 +766,6 @@ export function sliderView(key: PanelSliderKey, params: EffectParams): PanelSlid
         display: `${percent}%`,
         rainbow: false,
         track: sliderTrack("density", params),
-        sends: true,
-        note: "",
       };
     }
     case "frequency": {
@@ -880,8 +780,6 @@ export function sliderView(key: PanelSliderKey, params: EffectParams): PanelSlid
         display: `${hz} Hz`,
         rainbow: false,
         track: sliderTrack("frequency", params),
-        sends: true,
-        note: "",
       };
     }
     default: {
@@ -896,8 +794,6 @@ export function sliderView(key: PanelSliderKey, params: EffectParams): PanelSlid
         display: `${bpm} BPM`,
         rainbow: false,
         track: sliderTrack("bpm", params),
-        sends: true,
-        note: "",
       };
     }
   }
@@ -937,12 +833,17 @@ function choiceView(key: PanelChoiceKey, params: EffectParams): PanelChoiceView 
   };
 }
 
+/** 占空比档位 → 界面文案（「窄 / 中 / 宽」）。 */
+function dutyLabel(duty: number): string {
+  return DUTY_OPTIONS.find((option) => option.value === duty)?.label ?? "中";
+}
+
 /** 一行摘要（给面板右上角与底部反馈用）。 */
 export function panelSummary(type: PanelType, params: EffectParams): string {
   const parts: string[] = [PANEL_TYPE_OPTIONS.find((o) => o.type === type)?.name ?? "静态"];
   if (type === "off") {
     /* 熄灭没有可说的参数，只描述结果。 */
-    parts.push("这一片不亮");
+    parts.push("这一层不亮");
     return parts.join(" · ");
   }
   if (type === "static") {
@@ -950,11 +851,17 @@ export function panelSummary(type: PanelType, params: EffectParams): string {
     return parts.join(" · ");
   }
   if (type === "strobe") {
-    parts.push(`${clampFrequency(params.frequencyHz)} Hz`, `占空比 ${dutyLabel(nearestDuty(params.duty))}`);
+    parts.push(
+      `${clampFrequency(params.frequencyHz)} Hz`,
+      `占空比 ${dutyLabel(nearestDuty(params.duty))}`,
+    );
     return parts.join(" · ");
   }
   if (type === "heartbeat") {
-    parts.push(`${clampBpm(params.bpm)} BPM`, params.doublePulse === false ? "单脉冲" : "双脉冲");
+    parts.push(
+      `${clampBpm(params.bpm)} BPM`,
+      params.doublePulse === false ? "单脉冲" : "双脉冲",
+    );
     return parts.join(" · ");
   }
   parts.push(secondsText(Math.max(PERIOD_MIN_MS, clampPeriodMs(params.periodMs))));
@@ -973,14 +880,8 @@ export function panelSummary(type: PanelType, params: EffectParams): string {
   return parts.join(" · ");
 }
 
-/** 占空比档位 → 界面文案（「窄 / 中 / 宽」）。 */
-function dutyLabel(duty: number): string {
-  return DUTY_OPTIONS.find((option) => option.value === duty)?.label ?? "中";
-}
-
-/** 熄灭的说明：没有旋钮可调，只告诉用户这一片的观感。 */
-export const PANEL_OFF_NOTICE =
-  "这一片保持不亮：它不会随整组变亮或呼吸，写进方案后就是一片黑。";
+/** 熄灭的说明：没有旋钮可调，只告诉用户这一层的观感。 */
+export const PANEL_OFF_NOTICE = "这一层保持不亮：它不会随时间变化，写进场景后就是一片黑。";
 
 /**
  * 类型 + 草稿 → 整个参数区。
@@ -998,7 +899,7 @@ export function buildEffectPanel(type: PanelType, params: EffectParams): EffectP
     types: buildTypeViews(type),
     sliders,
     choices,
-    /* 「熄灭」不出任何颜色：色块会让人以为这一片是那个颜色。 */
+    /* 「熄灭」不出任何颜色：色块会让人以为这一层是那个颜色。 */
     colorHex: type === "off" ? "" : rgbToHex(segmentHueSatToRgb(normalized.hue, normalized.sat)),
     summary: panelSummary(type, normalized),
     notice: type === "off" ? PANEL_OFF_NOTICE : "",
@@ -1009,10 +910,6 @@ export function buildEffectPanel(type: PanelType, params: EffectParams): EffectP
 
 /**
  * 切换效果类型：**保留颜色与亮度**，其余参数回到新类型的默认值。
- *
- * 与 `effect-view.applyLayerType` 同一套规则（保留颜色、清掉新类型用不到的
- * 标志位、周期抬到该类型的下限），差别只在「其余参数取新类型默认值」而不是
- * 沿用旧值——把彩虹的跨度直接当成流光的尾长，用户看到的是没调过的怪东西。
  *
  * 类型没变时返回同一个对象（引用相等 = 什么都没变，调用方据此不刷新）。
  */
@@ -1032,8 +929,8 @@ export function switchPanelType(
     hue: current.hue,
     sat: current.sat,
     level: current.level,
-    /* 呼吸 / 彩虹 / 流光 / 随机闪烁的周期抬到协议下限之上（与 applyLayerType 一致）；
-     * 静态 / 熄灭恒 0；爆闪与心跳的周期由频率 / 节奏换算，草稿里也是 0。 */
+    /* 呼吸 / 彩虹 / 流星 / 随机闪烁的周期抬到协议下限之上；静态 / 熄灭恒 0；
+     * 爆闪与心跳的周期由频率 / 节奏换算，草稿里也是 0。 */
     periodMs:
       to === "breathing" || to === "rainbow" || to === "comet" || to === "flicker"
         ? Math.max(
@@ -1046,6 +943,27 @@ export function switchPanelType(
           )
         : 0,
   };
+}
+
+/** 把滑块值钳到该 key 自己的区间（越界 / 非有限值）。 */
+export function clampSliderValue(key: PanelSliderKey, value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  switch (key) {
+    case "hue":
+      return Math.max(0, Math.min(360, value));
+    case "level":
+      return clampLevel(value);
+    case "period":
+      return Math.max(PERIOD_MIN_MS / 1000, Math.min(PERIOD_MAX_MS / 1000, value));
+    case "frequency":
+      return clampFrequency(value);
+    case "bpm":
+      return clampBpm(value);
+    default:
+      return Math.max(PERCENT_MIN, Math.min(PERCENT_MAX, value));
+  }
 }
 
 /**
@@ -1085,28 +1003,7 @@ export function applySlider(
   }
 }
 
-/** 把滑块值钳到该 key 自己的区间（越界 / 非有限值）。 */
-export function clampSliderValue(key: PanelSliderKey, value: number): number {
-  if (!Number.isFinite(value)) {
-    return 0;
-  }
-  switch (key) {
-    case "hue":
-      return Math.max(0, Math.min(360, value));
-    case "level":
-      return clampLevel(value);
-    case "period":
-      return Math.max(PERIOD_MIN_MS / 1000, Math.min(PERIOD_MAX_MS / 1000, value));
-    case "frequency":
-      return clampFrequency(value);
-    case "bpm":
-      return clampBpm(value);
-    default:
-      return Math.max(PERCENT_MIN, Math.min(PERCENT_MAX, value));
-  }
-}
-
-/** 改一个选择控件（波形 / 方向 / 占空比）。 */
+/** 改一个选择控件（波形 / 方向 / 占空比 / 脉冲）。 */
 export function applyChoice(
   params: EffectParams,
   key: PanelChoiceKey,
@@ -1129,9 +1026,7 @@ export function applyChoice(
 /**
  * 草稿 + 类型 → 协议层（`EffectLayer`）。
  *
- * **这是 `level` 唯一写进线上形状的地方。** `clampLevel` 把草稿的亮度钳到
- * 面板的显示区间（5-100），`buildZoneSpec` 再按协议规则归一一次（空层恒 0）。
- * 两层都经过它，所以「调了亮度却被设备拒」不会在真机上才暴露。
+ * **这是 `level` 唯一写进线上形状的地方。**
  */
 export function panelLayer(type: PanelType, params: EffectParams): EffectLayer {
   const normalized = normalizeParams(params);
@@ -1141,11 +1036,14 @@ export function panelLayer(type: PanelType, params: EffectParams): EffectLayer {
   switch (type) {
     case "breathing":
       return {
-        type: SEGMENT_TYPE.BREATHING,
+        type: EFFECT_TYPE.BREATHING,
         hue,
         sat,
-        periodMs: Math.max(clampPeriodMs(normalized.periodMs) || PERIOD_MIN_MS, BREATHING_MIN_PERIOD_MS),
-        /* v4：呼吸的最低亮是百分比 0-100（不是 0-255）。 */
+        periodMs: Math.max(
+          clampPeriodMs(normalized.periodMs) || PERIOD_MIN_MS,
+          BREATHING_MIN_PERIOD_MS,
+        ),
+        /* 呼吸的最低亮是百分比 0-100（不是 0-255）。 */
         p5: clampPercent(normalized.minLevel),
         /* 呼吸只有波形位（bit1-2）；bit0 是保留位，必须为 0。 */
         flags: breathingFlags(clampWaveform(normalized.waveform)),
@@ -1153,31 +1051,34 @@ export function panelLayer(type: PanelType, params: EffectParams): EffectLayer {
       };
     case "rainbow":
       return {
-        type: SEGMENT_TYPE.RAINBOW,
+        type: EFFECT_TYPE.RAINBOW,
         hue,
         sat,
-        periodMs: Math.max(clampPeriodMs(normalized.periodMs) || PERIOD_MIN_MS, ANIMATION_MIN_PERIOD_MS),
+        periodMs: Math.max(
+          clampPeriodMs(normalized.periodMs) || PERIOD_MIN_MS,
+          ANIMATION_MIN_PERIOD_MS,
+        ),
         p5: clampByte(normalized.span),
         flags: directionFlags(normalized.reverse),
         level,
       };
     case "comet":
       return {
-        type: SEGMENT_TYPE.COMET,
+        type: EFFECT_TYPE.COMET,
         hue,
         sat,
-        periodMs: Math.max(clampPeriodMs(normalized.periodMs) || PERIOD_MIN_MS, ANIMATION_MIN_PERIOD_MS),
+        periodMs: Math.max(
+          clampPeriodMs(normalized.periodMs) || PERIOD_MIN_MS,
+          ANIMATION_MIN_PERIOD_MS,
+        ),
         p5: clampByte(normalized.tail),
         flags: directionFlags(normalized.reverse),
         level,
       };
     case "strobe":
-      /*
-       * 爆闪（#74）：周期由频率换算（1000 / Hz，钳到 100ms 下限）；
-       * p5 是占空比，flags 必须为 0（没有方向 / 波形位）。
-       */
+      /* 周期由频率换算（1000 / Hz，钳到 100ms 下限）；p5 是占空比，flags 必须 0。 */
       return {
-        type: SEGMENT_TYPE.STROBE,
+        type: EFFECT_TYPE.STROBE,
         hue,
         sat,
         periodMs: strobePeriodMs(normalized.frequencyHz),
@@ -1186,12 +1087,10 @@ export function panelLayer(type: PanelType, params: EffectParams): EffectLayer {
         level,
       };
     case "heartbeat":
-      /*
-       * 心跳（#74）：周期由 BPM 换算（60000 / BPM，钳到 500-1500ms）；
-       * p5 是脉冲宽度（界面不给入口，固定中等），flags bit0 = 双脉冲。
-       */
+      /* 周期由 BPM 换算（60000 / BPM，钳到 500-1500ms）；p5 是脉冲宽度，
+       * flags bit0 = 双脉冲。 */
       return {
-        type: SEGMENT_TYPE.HEARTBEAT,
+        type: EFFECT_TYPE.HEARTBEAT,
         hue,
         sat,
         periodMs: heartbeatPeriodMs(normalized.bpm),
@@ -1200,47 +1099,49 @@ export function panelLayer(type: PanelType, params: EffectParams): EffectLayer {
         level,
       };
     case "flicker":
-      /*
-       * 随机闪烁（#98 / #121）：flags 必须 0，周期为 0 或 ≥334ms（光敏线），
-       * p5 是密度（同时亮着的比例）。
-       */
+      /* 随机闪烁：flags 必须 0，周期为 0 或 ≥334ms（光敏线），p5 是密度。 */
       return {
-        type: SEGMENT_TYPE.FLICKER,
+        type: EFFECT_TYPE.FLICKER,
         hue,
         sat,
-        periodMs: Math.max(clampPeriodMs(normalized.periodMs) || PERIOD_MIN_MS, FLICKER_MIN_PERIOD_MS),
+        periodMs: Math.max(
+          clampPeriodMs(normalized.periodMs) || PERIOD_MIN_MS,
+          FLICKER_MIN_PERIOD_MS,
+        ),
         p5: clampByte(normalized.density),
         flags: 0,
         level,
       };
     case "off":
-      /* 熄灭（#74）：参数块与 level 全 0——它本来就是黑的，亮度没有意义。 */
-      return {
-        type: SEGMENT_TYPE.OFF,
-        hue: 0,
-        sat: 0,
-        periodMs: 0,
-        p5: 0,
-        flags: 0,
-        level: 0,
-      };
+      /* 熄灭：参数块与 level 全 0——它本来就是黑的，亮度没有意义。 */
+      return { type: EFFECT_TYPE.OFF, hue: 0, sat: 0, periodMs: 0, p5: 0, flags: 0, level: 0 };
     default:
       /* 静态层：period / p5 / flags 必须为 0（协议硬约束）；level 不受这条约束。 */
-      return { type: SEGMENT_TYPE.STATIC, hue, sat, periodMs: 0, p5: 0, flags: 0, level };
+      return { type: EFFECT_TYPE.STATIC, hue, sat, periodMs: 0, p5: 0, flags: 0, level };
   }
+}
+
+/** 空层（叠加层「关闭」）。 */
+export function emptyLayer(): EffectLayer {
+  return { ...EMPTY_LAYER };
+}
+
+/** 一层是否为空（`type = 0xFF`）。 */
+export function layerIsEmpty(layer: EffectLayer | null | undefined): boolean {
+  return layer === null || layer === undefined || layer.type === EFFECT_TYPE.EMPTY;
 }
 
 /**
  * 周期 → 该类型可用的毫秒值。
  *
- * 呼吸 / 彩虹 / 流光走滑块口径（0.5 秒步进，见 `clampPeriodMs`）；
+ * 呼吸 / 彩虹 / 流星 / 随机闪烁走滑块口径（0.5 秒步进，见 `clampPeriodMs`）；
  * 爆闪 / 心跳的周期由频率 / 节奏换算，粒度是毫秒级，**不能**过 `clampPeriodMs`
  * （200ms 会被圆到 0 再抬到 500ms，读回来频率就错了）。
  *
- * **0 必须原样返回 0**：0 在协议里表示「静止」，而爆闪 / 心跳的下限钳位
- * 会把 0 抬成 100ms / 500ms —— 那正是**最快**的两档（10Hz / 120BPM）。
- * 若不在这里短路，一台把爆闪设成静止的设备读回来会显示成最亮的爆闪，
- * 用户一碰滑块就把「静止」变成「10Hz」。
+ * **0 必须原样返回 0**：0 在协议里表示「静止」，而爆闪 / 心跳的下限钳位会把
+ * 0 抬成 100ms / 500ms —— 那正是**最快**的两档（10Hz / 120BPM）。若不在这里
+ * 短路，一台把爆闪设成静止的设备读回来会显示成最亮的爆闪，用户一碰滑块就把
+ * 「静止」变成「10Hz」。
  */
 function periodMsFor(type: PanelType, periodMs: number): number {
   if (!Number.isFinite(periodMs) || periodMs <= 0) {
@@ -1263,9 +1164,6 @@ function periodMsFor(type: PanelType, periodMs: number): number {
  *
  * 只取该类型真正用的字段；周期为 0（静止）时退回该类型的默认周期，避免面板上
  * 出现一个「0 秒」的滑块位置。
- *
- * v4：`level` 也一起读回——否则用户切到别的分区再切回来，自己调的亮度会被
- * 悄悄重置成 100%（#69 之前正是靠页面里的一张草稿表救场的）。
  */
 export function paramsFromLayer(type: PanelType, layer: EffectLayer): EffectParams {
   const base = defaultParams(type);
@@ -1367,18 +1265,16 @@ export interface PanelCheckResult {
 }
 
 /**
- * 面板草稿的本地预检（#80）。
+ * 面板草稿的本地预检。
  *
  * 只有爆闪 / 心跳有会越界的旋钮：频率上限 10Hz（100ms 周期）、节奏 40-120 BPM
  * （500-1500ms）。越界时**不发帧**——`panelLayer` 会先钳位，但那样用户会以为
- * 「滑块拖到头了还是那个样子」；这里直接说清楚原因，按钮下方就地显示。
+ * 「滑块拖到头了还是那个样子」；这里直接说清楚原因。
  *
- * 其余类型没有额外约束（合法草稿一律放行）；调用方仍然要过
- * `session.validateScriptForDevice`，两层各管一段。
+ * 用**原始**草稿值判断：`normalizeParams` 会先钳位，那样越界输入永远「合法」，
+ * 用户拖动一个越界的滑块就看不到任何原因了。
  */
 export function panelCheck(type: PanelType, params: EffectParams): PanelCheckResult {
-  /* 用**原始**草稿值判断：`normalizeParams` 会先钳位，那样越界输入永远「合法」，
-   * 用户拖动一个越界的滑块就看不到任何原因了。 */
   if (type === "strobe") {
     if (Number.isFinite(params.frequencyHz) && params.frequencyHz > FREQUENCY_MAX) {
       return { ok: false, message: `爆闪最快 ${FREQUENCY_MAX} Hz：再快灯珠就跟不上了。` };
@@ -1407,13 +1303,13 @@ export function panelCheck(type: PanelType, params: EffectParams): PanelCheckRes
  * 周期 0 是「静止」（协议合法），不受这些区间约束。
  */
 export function layerCheck(layer: EffectLayer): PanelCheckResult {
-  if (layer.type === SEGMENT_TYPE.STROBE) {
+  if (layer.type === EFFECT_TYPE.STROBE) {
     if (layer.periodMs !== 0 && layer.periodMs < STROBE_MIN_PERIOD_MS) {
       return { ok: false, message: `爆闪最快 ${FREQUENCY_MAX} Hz：再快灯珠就跟不上了。` };
     }
     return { ok: true, message: "" };
   }
-  if (layer.type === SEGMENT_TYPE.HEARTBEAT) {
+  if (layer.type === EFFECT_TYPE.HEARTBEAT) {
     if (layer.periodMs === 0) {
       return { ok: true, message: "" };
     }
@@ -1439,71 +1335,115 @@ export function layersCheck(layers: readonly EffectLayer[]): PanelCheckResult {
   return { ok: true, message: "" };
 }
 
-/**
- * 把一个分区的主效果（必要时连叠加层一起）换掉，其余字段一字不动。
- *
- * 装配走 `buildZoneSpec`：叠加层为空时叠加方式归一为覆盖、两层定宽、深拷贝——
- * 「面板只改颜色 / 效果，不该顺手把叠加层弄丢」。
- *
- * `overlay` 省略时**保留设备 / 草稿里原有的叠加层**（只改主效果的老行为）；
- * 传进来则连同叠加方式一起替换（#71 的叠加层编辑器走这条路）。
- */
-export function applyPanelToZone(
-  zones: readonly SegmentSpec[],
-  segId: number,
-  type: PanelType,
-  params: EffectParams,
-  overlay?: OverlayDraft,
-): SegmentSpec[] {
-  return zones.map((zone) =>
-    zone.segId === segId
-      ? buildZoneSpec({
-          stripId: zone.stripId,
-          segId: zone.segId,
-          start: zone.start,
-          end: zone.end,
-          blend: overlay === undefined ? zone.blend : overlay.blend,
-          layer0: panelLayer(type, params),
-          layer1: overlay === undefined ? zone.layer1 : overlayLayer(overlay),
-        })
-      : zone,
-  );
-}
-
-/* ---------------- 界面必须告知的两条事实 ---------------- */
+/* ---------------- 叠加层 ---------------- */
 
 /**
- * 「方案内容只存在本机」。
+ * 叠加层可选类型：八种里去掉「熄灭」。
  *
- * v3 的查询只回 4 字节摘要（步骤数 / 是否启用 / 是否循环），步骤时长与分区
- * 内容都读不回来。用户以为能「从灯控把方案拉回来改」是最容易踩的误解。
+ * 叠加一个「熄灭」等于什么都没做（它只会把下面那层乘成黑），让用户能选到它
+ * 只会制造困惑。
  */
-export const PANEL_LOCAL_ONLY_NOTE =
-  "方案内容只存在这台手机上：灯控只回「有几个步骤、是否启用」，内容读不回来。";
+export const PANEL_OVERLAY_TYPE_OPTIONS: ReadonlyArray<{ type: PanelType; name: string }> =
+  PANEL_TYPE_OPTIONS.filter((option) => option.type !== "off");
 
-/** 第二条事实：换机 / 清缓存后要重新编排。 */
-export const PANEL_REBUILD_NOTE = "换手机或清缓存后需要重新编排。";
+/**
+ * 叠加层的开关选项：「关闭」+ 可选的七种类型。
+ *
+ * 「关闭」不是 `PanelType`——它表示 `layer1` 是空层（`type = 0xFF`），
+ * 与「点亮灭」是两件事：熄灭是一条真实存在、参数全零的层。
+ */
+export type OverlayChoice = PanelType | "none";
 
-/** 两条事实（界面按行渲染，避免挤成一段）。 */
-export const PANEL_FACTS: readonly string[] = [PANEL_LOCAL_ONLY_NOTE, PANEL_REBUILD_NOTE];
+export const OVERLAY_CHOICE_OPTIONS: ReadonlyArray<{ value: OverlayChoice; name: string }> = [
+  { value: "none", name: "空" },
+  ...PANEL_OVERLAY_TYPE_OPTIONS.map((option) => ({ value: option.type, name: option.name })),
+];
 
-/** 方案为空时的引导（不是一片空白）。 */
-export const PANEL_EMPTY_PLAN_GUIDE =
-  "这套方案还是空的：先在「分区」里点「+ 新增」划出灯珠区间，再回来选效果。";
-
-/** 当前步骤还没有分区时的引导。 */
-export const PANEL_EMPTY_STEP_GUIDE =
-  "这一步还没有分区：在「分区」里点「+ 新增」划出第一片灯珠区间。";
-
-/** 有分区但没选中任何一块时的引导。 */
-export const PANEL_NO_ZONE_GUIDE = "先在上面「分区」轴里点一块，再调它的效果。";
-
-/** 色相滑轨的彩虹渐变（hsl 不是 hex，不触发「wxss 不写死颜色」的规则）。 */
-export const HUE_RAMP_GRADIENT =
-  "linear-gradient(90deg, hsl(0, 100%, 50%), hsl(60, 100%, 50%), hsl(120, 100%, 50%), " +
-  "hsl(180, 100%, 50%), hsl(240, 100%, 50%), hsl(300, 100%, 50%), hsl(360, 100%, 50%))";
-
-/** 某个类型在协议里的枚举值（页面构造测试断言时用）。 */
-export function panelTypeValue(type: PanelType): number {
-  return TYPE_VALUE[type];
+/**
+ * 一个部位的叠加层草稿：没有叠加层时 `type = "none"`。
+ *
+ * v5 没有线上混合方式：`layer1` 为空 → 覆盖；非空 → 按亮度叠加（§6.2）。
+ * 所以这里没有 blend 字段。
+ */
+export interface OverlayDraft {
+  type: OverlayChoice;
+  /** 叠加层自己的参数，与主效果的草稿互相独立。 */
+  params: EffectParams;
 }
+
+/** 没有叠加层时的草稿。 */
+export function emptyOverlayDraft(): OverlayDraft {
+  return { type: "none", params: defaultParams("static") };
+}
+
+/**
+ * 从设备读回的层还原叠加层草稿。空层 → 「关闭」。
+ *
+ * 设备上若是「熄灭」叠加层（旧数据 / 别的客户端写的），这里如实还原成
+ * 「关闭」——界面不提供这个选项，也不该假装它存在。
+ */
+export function overlayDraftOf(layer1: EffectLayer | null | undefined): OverlayDraft {
+  if (layerIsEmpty(layer1)) {
+    return emptyOverlayDraft();
+  }
+  const type = panelTypeOf((layer1 as EffectLayer).type);
+  if (type === "off") {
+    return emptyOverlayDraft();
+  }
+  return { type, params: paramsFromLayer(type, layer1 as EffectLayer) };
+}
+
+/** 叠加层是否真的启用。 */
+export function overlayEnabled(draft: OverlayDraft): boolean {
+  return draft.type !== "none";
+}
+
+/**
+ * 叠加层草稿 → `layer1`（未启用时给空层）。
+ *
+ * 「熄灭」不在可选类型里，但草稿可能来自旧数据：这里再挡一次。叠加熄灭等于
+ * 把下面那层乘成黑，用户真正想要的是「不加东西」，应该选关闭。
+ */
+export function overlayLayer(draft: OverlayDraft): EffectLayer {
+  if (draft.type === "none" || draft.type === "off") {
+    return emptyLayer();
+  }
+  return panelLayer(draft.type, draft.params);
+}
+
+/**
+ * 切换叠加层类型。
+ *
+ * 关闭时**保留原参数**：用户可能是误关，切回来还要接着调。
+ * 从关闭切回来沿用上次参数；两种类型之间切换按新类型语义重置（与主效果一致）。
+ */
+export function switchOverlayType(draft: OverlayDraft, next: OverlayChoice): OverlayDraft {
+  if (next === draft.type) {
+    return draft;
+  }
+  if (next === "none") {
+    return { ...draft, type: "none" };
+  }
+  const params =
+    draft.type === "none" ? draft.params : switchPanelType(draft.params, draft.type, next);
+  return { type: next, params };
+}
+
+/** 叠加层的摘要（「关闭」时给空串，调用方据此不显示这一行）。 */
+export function overlaySummary(draft: OverlayDraft): string {
+  if (!overlayEnabled(draft)) {
+    return "";
+  }
+  /* `overlayEnabled` 已排除 "none"，这里只剩真实类型。 */
+  const type = draft.type as PanelType;
+  const name = PANEL_TYPE_OPTIONS.find((option) => option.type === type)?.name ?? "";
+  return `${name} · ${panelSummary(type, draft.params)}`;
+}
+
+/* ---------------- 空态引导 ---------------- */
+
+/** 这一步还没有内容时的引导（不是一片空白）。 */
+export const PANEL_EMPTY_STEP_GUIDE = "这一步还是空的：先选一个灯效，再调它的参数。";
+
+/** 还没读回这一步（设备未连接 / 读取失败）时的引导。 */
+export const PANEL_NO_STEP_GUIDE = "还没读到这一步：等设备连上再调效果。";

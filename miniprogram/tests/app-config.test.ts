@@ -175,7 +175,7 @@ describe("WXML 事件绑定必须在 TS 里有对应方法", () => {
     expect(labels).toContain("pages/device/device.wxml");
     expect(labels).toContain("pages/me/me.wxml");
     expect(labels).toContain("pages/discover/discover.wxml");
-    expect(labels).toContain("pages/strip/strip.wxml");
+    expect(labels).toContain("pages/part/part.wxml");
     expect(labels).toContain("components/nav-bar/nav-bar.wxml");
     expect(labels).toContain("custom-tab-bar/index.wxml");
   });

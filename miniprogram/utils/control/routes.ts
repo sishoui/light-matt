@@ -26,8 +26,8 @@ export const PAGE_ROUTES = {
   deviceInfo: "/pages/device-info/device-info",
   /** 扫描附近设备（设备页菜单 / 首页空态进入）。 */
   discover: "/pages/discover/discover",
-  /** 单个灯组的编辑页；query `strip` 指明是哪一组。 */
-  strip: "/pages/strip/strip",
+  /** 单个部位的编辑器；query `strip` / `part` 指明是哪一组、哪个部位（#155）。 */
+  part: "/pages/part/part",
 } as const;
 
 /** 切换到 tab 页（不会压栈）。 */

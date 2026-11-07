@@ -27,8 +27,10 @@ import { BleTransport, ConnectCancelledError } from "../utils/ble/transport";
 
 const DEVICE_ID = "DEV-1";
 
-const STATE_37 = hexToBytes(
-  "0180FFB478C802FF00000003011E003C000000000000000000000000000204000000000000",
+/** v5 的 State 是 32 字节（§7.3）：开灯 / 亮度 128 / max 200 / 2 条 30+60 /
+ * pmask 0x03 / scene 0 / layout 1 / part_count {1,2,…}。 */
+const STATE_V5 = hexToBytes(
+  "0180C802030001001E003C000000000000000000000000000001020000000000",
 ) as Uint8Array;
 
 type Handler = (res: unknown) => void;
@@ -45,8 +47,8 @@ class FakeWx {
   readonly writes: Uint8Array[] = [];
   /** 每次 readBLECharacteristicValue 调用的次数。 */
   readCalls = 0;
-  /** 下一次 State read 的回值（默认 37 字节）。 */
-  stateReadValue: Uint8Array = STATE_37;
+  /** 下一次 State read 的回值（默认 32 字节）。 */
+  stateReadValue: Uint8Array = STATE_V5;
   /** true 时 read 直接 fail（模拟平台拒绝）。 */
   failRead = false;
   mtuMode: "android-185" | "unknown" | "ios-247" = "android-185";
@@ -270,7 +272,7 @@ describe("MTU 与分片容量", () => {
     expect(transport.negotiatedMtu).toBeNull();
     expect(transport.chunkCapacityBytes).toBe(20);
     /* State 仍然拿到了（37 字节 read 成功）。 */
-    expect(state.ledCount).toBe(30);
+    expect(state.stripLedCounts[0]).toBe(30);
   });
 
   it("iOS 用系统协商值（247 被钳到 180）", async () => {
@@ -326,9 +328,9 @@ describe("入站分片重组", () => {
     await transport.connect(DEVICE_ID);
 
     const states: number[] = [];
-    transport.onState((state) => states.push(state.ledCount));
+    transport.onState((state) => states.push(state.stripLedCounts[0]));
 
-    const stateFrame = encodeFrame(0x82, 9, STATE_37);
+    const stateFrame = encodeFrame(0x82, 9, STATE_V5);
     for (const chunk of chunkFrame(stateFrame, 20)) {
       fakeWx.emitChunk(chunk);
     }
@@ -336,7 +338,7 @@ describe("入站分片重组", () => {
   });
 });
 
-describe("State read 回落（37 字节读不出来时走 QueryState）", () => {
+describe("State read 回落（32 字节读不出来时走 QueryState）", () => {
   it("read 返回 14 字节 → 发 QueryState 0x05，用 0x82 的载荷作为 State", async () => {
     const transport = makeTransport("android");
     /* 第一次 connect 的 read 走短读，回落路径要能拿到 0x82。 */
@@ -354,10 +356,10 @@ describe("State read 回落（37 字节读不出来时走 QueryState）", () => 
     /* 取 QueryState 的 seq（逻辑帧 byte 3）。 */
     const seq = query!.slice(1)[3];
     fakeWx.ack(0x05, seq, 0x00);
-    fakeWx.emitFrame(encodeFrame(0x82, seq, STATE_37));
+    fakeWx.emitFrame(encodeFrame(0x82, seq, STATE_V5));
 
     const state = await connectPromise;
-    expect(state.ledCount).toBe(30);
+    expect(state.stripLedCounts[0]).toBe(30);
     expect(state.stripCount).toBe(2);
   });
 
@@ -371,12 +373,12 @@ describe("State read 回落（37 字节读不出来时走 QueryState）", () => 
     expect(query).toBeDefined();
     const seq = query!.slice(1)[3];
     fakeWx.ack(0x05, seq, 0x00);
-    fakeWx.emitFrame(encodeFrame(0x82, seq, STATE_37));
+    fakeWx.emitFrame(encodeFrame(0x82, seq, STATE_V5));
 
     await expect(connectPromise).resolves.toMatchObject({ brightness: 128 });
   });
 
-  it("read 返回 37 字节时**不**发 QueryState", async () => {
+  it("read 返回 32 字节时**不**发 QueryState", async () => {
     const transport = makeTransport("android");
     await transport.connect(DEVICE_ID);
     const anyQueryState = fakeWx.writes.some((bytes) => bytes.slice(1)[2] === 0x05);
@@ -416,13 +418,16 @@ describe("v3 单帧查询（QueryStripConfig / QueryDeviceInfo）", () => {
     const seq = fakeWx.writes[0].slice(1)[3];
 
     fakeWx.ack(0x1d, seq, 0x00);
-    const payload = hexToBytes("0003AABBCCDDEEFF40080808040100") as Uint8Array;
+    /* v5 的 0x88 是 15 字节：版本 0x0500 + MAC + 五个上限 + caps（§7.4）。 */
+    const payload = hexToBytes("0005AABBCCDDEEFF64080808080301") as Uint8Array;
     fakeWx.emitFrame(encodeFrame(0x88, seq, payload));
 
     const info = await pending;
     expect(info.hwId).toBe("AA:BB:CC:DD:EE:FF");
-    expect(info.firmwareVersion).toBe(0x0300);
+    expect(info.firmwareVersion).toBe(0x0500);
     expect(info.supportsTwoLayers).toBe(true);
+    expect(info.maxParts).toBe(8);
+    expect(info.maxScenes).toBe(3);
   });
 
   it("ACK 被拒时立即失败，不悬挂等待者", async () => {
@@ -520,7 +525,7 @@ describe("适配器已打开（already opened）", () => {
 
     const state = await transport.connect(DEVICE_ID);
     expect(transport.linkState).toBe("ready");
-    expect(state.ledCount).toBe(30);
+    expect(state.stripLedCounts[0]).toBe(30);
   });
 });
 
@@ -601,6 +606,6 @@ describe("取消连接", () => {
     fakeWx.holdConnection = false;
     const state = await transport.connect(DEVICE_ID);
     expect(transport.linkState).toBe("ready");
-    expect(state.ledCount).toBe(30);
+    expect(state.stripLedCounts[0]).toBe(30);
   });
 });

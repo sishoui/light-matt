@@ -269,12 +269,13 @@ describe("#34 记录内容不含实时控制数据", () => {
     });
 
     await session.connect("DEV-1", "Lumen-1A2B");
-    // 制造一整套实时控制流量（开关 / 亮度 / 颜色 / 预设 / 灯珠数）。
+    // 制造一整套实时控制流量（开关 / 亮度 / 灯珠数 / 场景）。
+    // v5 不再有「设备颜色」这条通路（State 32 字节不含 RGB），所以颜色一项
+    // 换成场景写入——同样是实时控制流量。
     await session.setPower(true);
     session.commitBrightness(200);
-    session.commitColor({ r: 255, g: 0, b: 0 });
-    await session.applyPreset({ r: 0, g: 255, b: 0 });
     await session.setLedCount(42);
+    await session.setScenePart(0, 0, 0, 1, 0, true);
     await settle();
 
     // BLE 侧确实收到了这些命令……

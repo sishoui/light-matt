@@ -10,18 +10,16 @@
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
+#include "command.h"
 #include "effects.h"
 #include "gamma.h"
 #include "led_count_job.h"
-#include "led_engine_slots.h"
 #include "led_render.h"
 #include "led_stress.h"
 #include "led_strip_owner.h"
 #include "protocol.h"
-#include "script_blob.h"
-#include "script_scope.h"
-#include "script_store.h"
-#include "segment_store.h"
+#include "save_scheduler.h"
+#include "scene_compose.h"
 #include "selftest.h"
 #include "state_store.h"
 #include "strip_planar.h"
@@ -35,79 +33,78 @@ static const char *TAG = "lumen_engine";
  * 快照，配 s_mailbox_dirty + 二值信号量 s_render_signal 构成 latest-wins 邮箱：
  * 无论 BLE 回调提交多快，渲染任务醒来永远只取最后一个快照，不排队旧帧。
  *
- * s_segments 是段配置的唯一权威，同一把锁保护。段配置没有自己的邮箱：
- * 渲染任务每次醒来在锁内整份拷出（8 带 × 8 段 × 28 字节 = 1792 B，v4 记录），
- * 天然 latest-wins，并且与 State 快照来自同一临界区，不会出现
- * 「状态更新了但段还是旧的」这种撕裂帧。
+ * 与 State 同锁的还有**两张权威表**（布局 + 三个场景）与 64 个播放头：
+ *   - s_layout   ：灯组 → 部位 → 灯珠段；
+ *   - s_scenes   ：三个场景，各含 部位 → 步骤 → 两层；
+ *   - s_clocks   ：每个部位一个播放头（只存 origin_ms，不累加相位）。
+ * 渲染任务每次醒来在锁内整份**拷出**它要用的那部分，因此不会出现
+ * 「状态更新了但表还是旧的」这种撕裂帧。
  */
 static SemaphoreHandle_t s_state_lock;
 static SemaphoreHandle_t s_render_signal;
 static lumen_state_t s_state;
 static lumen_state_t s_mailbox;
 static bool s_mailbox_dirty;
-static lumen_segment_store_t s_segments;
+
+static lumen_layout_store_t s_layout;
+static lumen_scene_set_t s_scenes;
+static lumen_part_clocks_t s_clocks;
 
 /*
- * #32 剧本：已提交剧本表 + 播放时间轴 + 「当前阶段的段配置」缓存。
+ * 持久化用的 blob 静态缓冲。**必须静态**：
+ *   - 布局 blob 2760 字节、场景 blob 最坏 10472 字节；
+ *   - 存储任务栈只有 5120 字节（seams.md §B7 算过余量约 1.8 KB），
+ *     NimBLE 主机任务只有 4 KB，都不能在这些栈上编码；
+ *   - save_scheduler 只存指针、不拷贝，所以缓冲必须在写入完成前一直有效。
  *
- * 三者都由 s_state_lock 保护。s_stage_segments 是渲染任务的合成缓冲
- * （8 带 × 8 段 × 28 字节 = 1792 B，放静态区而不是 4KB 的渲染任务栈上）：
- * 内容由渲染任务在锁内按播放头重建；其它路径（SetLedCount 的裁剪）只在同一
- * 把锁下删掉越界段并把 s_stage_valid 置 false 请求重建，不参与逐帧写入。
- *
- * 阶段切换时把每个段的 t0_ms 重置为**切换时刻的剧本时间**，即相位重置
- * （docs/v2-effects-engine.md §6.2 的已定取舍）。
+ * 三个场景各一块：连续编辑 scene0 与 scene1 时不会互相覆盖。
  */
-static lumen_script_store_t s_scripts;
-static lumen_script_playback_t s_playback;
-static lumen_segment_store_t s_stage_segments;
+static uint8_t s_layout_blob[LUMEN_LAYOUT_BLOB_MAX];
+static uint8_t s_scene_blob[LUMEN_MAX_SCENES][LUMEN_SCENE_BLOB_MAX];
+
+/*
+ * 上电恢复用的两块工作区。**必须静态**：`lumen_led_engine_init` 由 app_main
+ * 调用，那个任务的栈默认只有 3584 字节（CONFIG_ESP_MAIN_TASK_STACK_SIZE），
+ * 而布局是 2696 字节、场景是 10530 字节。放进局部变量会在启动时打穿栈保护，
+ * 表现为设备一上电就 panic、连蓝牙广播都起不来。
+ *
+ * 只在 init 里用一次，与渲染任务的工作区不重叠，所以静态区不会打架。
+ */
+static lumen_layout_store_t s_restore_layout;
+static lumen_scene_t s_restore_scene;
 
 /*
  * 渲染任务的工作区（**静态**，不是栈上局部变量）。
  *
- * 为什么必须静态：lumen_segment_store_t 是 8×8×28 = 1792 字节，
- * lumen_persist_t 再大一点（状态 + 段表 ≈ 1.83 KB）。这些结构一旦放在
- * render_task 的栈上，再叠上 led_strip / RMT 驱动的调用深度，4KB 栈会被打穿
- * ——真机实测报 `Guru Meditation ... Stack protection fault, task "lumen_render"`，
- * 表现为上电即反复重启。
+ * 为什么必须静态：lumen_state_t + 布局快照（2696 B）+ 场景快照（10530 B）
+ * 一旦放在 render_task 的栈上，再叠上 led_strip / RMT 驱动的调用深度，
+ * 4KB 栈会被打穿——真机实测报
+ * `Guru Meditation ... Stack protection fault, task "lumen_render"`。
  *
- * 渲染任务是单实例任务，且这些缓冲只被它使用，所以静态区天然安全，
- * 不需要额外加锁；s_state_lock 仍然只保护共享状态本身。
+ * 渲染任务是单实例任务，且这些缓冲只被它使用，所以静态区天然安全；
+ * s_state_lock 仍然只保护共享状态本身。
  */
-static lumen_persist_t s_render_persist;
-static lumen_segment_store_t s_render_segments;
-
-/*
- * 这一帧归方案管的灯带位（#122）。与 s_render_segments 同寿命、同来源：
- * 有方案接管时是整份方案的并集（Q10），否则 0。
- *
- * 下游（合成 / 推帧）靠它区分「这条归方案管但这一步没内容」（该步全黑）
- * 与「这条根本不归方案管」（照常渲染实时分区）——这两种情况的段配置都是空，
- * 只有归属位能把它们分开。
- */
-static uint8_t s_render_script_mask;
+static lumen_state_t s_render_state;
+static lumen_layout_store_t s_render_layout;
+static lumen_scene_t s_render_scene;
+static lumen_part_clocks_t s_render_clocks;
 
 /*
  * 上一帧的实际渲染耗时（微秒）。帧循环用它做前馈：
- * 等待量 = 目标帧周期 − 上一帧耗时，这样「配置 20fps」才会真的得到 20fps，
- * 而不是「等 50ms 再花 20ms 渲染」得到的 14fps。
+ * 等待量 = 目标帧周期 − 上一帧耗时，这样「配置 20fps」才会真的得到 20fps。
  * 只被渲染任务读写，静态区即可。
  */
 static uint32_t s_last_frame_us;
 
 /*
- * BLE 回调路径（commit / set_segment / ...）也要构造持久化快照。
- * 单独一份，**不能**与 s_render_persist 共用：commit 在 NimBLE 主机任务里跑，
- * 渲染任务也在读自己那份，共用会撕裂。
+ * BLE 回调路径也要构造持久化快照；单独一份，不能与渲染任务的共用。
  */
 static lumen_persist_t s_commit_persist;
-static bool s_stage_valid;
-
-/* 上次打印过的 strip_anim_mask（只给「变化时打一行」的日志用，不参与任何判定）。 */
-static uint8_t s_anim_mask_logged = 0xFF;
+/* 渲染任务用的独立一份（重建路径在渲染任务里跑，不能与 BLE 回调共用）。 */
+static lumen_persist_t s_render_persist;
 
 /*
- * 自检进度（协议 §11.2）。与 s_state 分开保存：自检是渲染层的临时覆盖，
+ * 自检进度（§9.6）。与 s_state 分开保存：自检是渲染层的临时覆盖，
  * 绝不写共享状态、绝不触发 NVS。s_state_lock 同时保护这个结构。
  */
 static lumen_selftest_t s_selftest;
@@ -121,12 +118,12 @@ static lumen_led_count_job_t s_led_count_job;
 static lumen_led_engine_response_cb s_response_cb;
 
 /*
- * #29 多灯带 TDM 状态。s_planar 是引脚/灯珠数/降级的唯一权威，
- * s_planar_stats 是给串口看的轮询实测数据（票面要求「每轮耗时 / 每条刷新间隔」）。
+ * 多灯带 TDM 状态。s_planar 是引脚/灯珠数/降级的唯一权威，
+ * s_planar_stats 是给串口看的轮询实测数据。
  *
  * 只有渲染任务读写 s_planar 的 cursor / degraded / stats（它独占灯带句柄）；
- * BLE 回调只通过 lumen_led_engine_set_strip_count 改灯珠数，那条路径持
- * s_state_lock 并只动 count 字段。二者的交集用 s_state_lock 保护。
+ * BLE 回调只通过 lumen_led_engine_set_led_count_for_strip 改灯珠数，那条路径
+ * 持 s_state_lock 并只动 count 字段。
  */
 static lumen_planar_t s_planar;
 static lumen_planar_stats_t s_planar_stats;
@@ -141,16 +138,13 @@ static uint8_t s_tdm_rendered_frame[LUMEN_MAX_STRIPS][LUMEN_MAX_LEDS * 3];
  * 上一次 TDM 轮询时该条带是否真的出过光（#38）。
  *
  * 用来区分「本来就没光」与「刚被关掉」：前者直接跳过，后者必须先推一帧
- * 全黑（WS2812B 锁存最后画面，不推黑就一直停在旧颜色上）。只有渲染任务
- * 读写，不需要额外加锁——与 s_tdm_rendered_* 同一生命周期。
+ * 全黑（WS2812B 锁存最后画面，不推黑就一直停在旧颜色上）。
  */
 static bool s_tdm_strip_lit[LUMEN_MAX_STRIPS];
 
 /*
  * #20 错色实验开关：开启时跳过逐帧去重，静态画面也持续刷帧。
- * 必须用 #ifdef —— Kconfig 的 bool 关闭时**不定义宏**，直接写
- * `!CONFIG_LUMEN_FORCE_REFRESH` 在关闭状态下编译不过（实测踩过）。
- * 产品默认关闭；复现实验时把 sdkconfig.defaults 里改成 y。
+ * 必须用 #ifdef —— Kconfig 的 bool 关闭时**不定义宏**。
  */
 #ifdef CONFIG_LUMEN_FORCE_REFRESH
 #define LUMEN_SKIP_DEDUP true
@@ -165,251 +159,194 @@ static uint8_t max_brightness(void)
     return configured == 0 ? 255 : configured;
 }
 
-/* 与 effects / segment_store 相同的毫秒基准（无符号，49 天回绕）。 */
+/* 与 effects / scene_compose 相同的毫秒基准（无符号，49 天回绕）。 */
 static uint32_t now_ms(void)
 {
     return (uint32_t)(esp_timer_get_time() / 1000);
 }
 
-/*
- * 重算 State 的 v2 摘要字段（**调用者必须持锁**）。
- *
- *  - 字节 9 `seg_count`：strip 0 的**活动**段数。每次写段 / 清段都必须重算，
- *    不是只在初始化时算一次。
- *  - 字节 2-4 `R/G/B`：docs/protocol-v4.md §7.3 定义为「strip 0 / seg 0
- *    **层 0** 的基准色」，由 layer[0] 的 hue+sat 算出（不含动画包络、不含
- *    layer1 与 blend、**也不含这一层的 level**）；seg 0 不活动或不存在时是 0。
- *
- * 一个活动段都没有时 R/G/B 报 0：`seg 0 不存在 → 基准色为 0`（§7.3）。
- *
- * 这里曾经「保留 v1 单色」——无段时沿用暖白 255,180,120。那让渲染层把 strip0/seg0
- * 的颜色当成**全局兜底色**铺满所有无分区的带，于是没设过灯效的带亮成暖黄、改一组
- * 的颜色会让所有带一起变、调饱和度等于调这个全局色。渲染层现在不再有单色回退
- * （`led_render.c::compose_frame`），State 也必须如实报 0。
- *
- * `script_mask`（#122）决定每条带取 `stage` 还是 `live`：摘要必须与这一帧
- * **真正渲染的段配置**同源，否则方案只驱动 strip0 时 State 会按整份方案
- * 报其余带的动画位，下一帧又被渲染循环改回来——那正是「闪一下就恢复」。
- */
-static void state_summary_apply(lumen_state_t *state, const lumen_segment_store_t *stage,
-                                const lumen_segment_store_t *live, uint8_t script_mask)
+/* 是否有任何链划过灯珠（布局「有效」的判据：至少一条链有部位且有段）。 */
+static bool layout_any_segments_locked(void)
 {
-    const lumen_segment_store_t *strip0 = lumen_scope_source_for_strip(stage, live, script_mask, 0);
-    state->seg_count = lumen_segment_store_count(strip0, 0);
-    /*
-     * #38：动画位摘要与 seg_count 同源同寿命——段配置一变就重算，
-     * 不必等下一帧渲染。门控不读它，所以这里只是让 State read 立刻准确。
-     */
-    state->strip_anim_mask = lumen_scope_anim_mask(stage, live, script_mask, state->strip_count);
-    if (state->seg_count == 0) {
-        state->r = 0;
-        state->g = 0;
-        state->b = 0;
-        return;
+    for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
+        if (lumen_layout_store_has_segments(&s_layout, i)) {
+            return true;
+        }
     }
-    uint8_t rgb[3];
-    lumen_segment_store_state_rgb(strip0, 0, rgb);
-    state->r = rgb[0];
-    state->g = rgb[1];
-    state->b = rgb[2];
-}
-
-static void refresh_state_summary_locked(void)
-{
-    /* 静态配置路径没有方案接管：stage 为空、归属位 0。 */
-    state_summary_apply(&s_state, NULL, &s_segments, 0);
+    return false;
 }
 
 /*
- * 剧本画面此刻是否接管输出（**调用者必须持锁**）。
+ * 更新 State 里由布局派生的一列（**调用者必须持锁**）。
  *
- * 「暂停」也算接管：画面保持当前阶段；非循环播完后停在最后一阶段也算
- * （hold_last）；只有 stop 才把画面交回静态段配置。
+ * v5 的 State 只有「每链部位数」是布局的摘要，没有 seg_count、没有基准色、
+ * 没有动画位（§7.3 明确「State 不含部位开关 / 播放位置 / 颜色摘要」）。
  */
-static bool script_rendering_locked(void)
+static void refresh_layout_summary_locked(void)
 {
-    return s_playback.script_id != LUMEN_NO_SCRIPT &&
-           (s_playback.state != LUMEN_PLAYBACK_STOPPED || s_playback.hold_last);
-}
-
-/*
- * 方案此刻覆盖哪些灯带（**调用者必须持锁**）。
- *
- * 并集口径（Q10）：整份方案里任一阶段的任一段出现过，这条带就归方案管，
- * 中途不切换渲染源。没有方案接管画面时返回 0（全部按实时分区）。
- */
-static uint8_t script_mask_locked(void)
-{
-    if (!script_rendering_locked()) {
-        return 0;
+    for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
+        s_state.part_count[i] = s_layout.part_count[i];
     }
-    return lumen_script_strip_union_mask(lumen_script_get(&s_scripts, s_playback.script_id));
+    s_state.layout_valid = layout_any_segments_locked() ? 1u : 0u;
 }
 
-/*
- * State 摘要按**当前生效**的段配置重算（playback 中取当前阶段）。
- * 必须在每个改变播放头的点之后调用，否则 State 的 seg_count / 基准色会停在
- * 上一阶段的数字上。
- */
-static void refresh_state_summary_from_active_locked(void)
-{
-    /* 方案接管时 stage 是当前阶段，其余带取实时分区（#122 归属口径）。
-     * 「该阶段没有 strip 0 段 → 基准色报 0」已由 state_summary_apply 统一处理，
-     * 播放中与静态配置不再有两套口径。 */
-    state_summary_apply(&s_state, script_rendering_locked() ? &s_stage_segments : NULL, &s_segments,
-                        script_mask_locked());
-}
-
-/*
- * 拍一份持久化快照（**调用者必须持锁**）。
- * 段配置不在 State 里，必须一起写进 NVS，否则断电重启后各段颜色丢失。
- */
-/*
- * 填一份持久化快照（**写指针，不返回大结构**）。
- *
- * 为什么要指针出参：lumen_persist_t ≈ 1060 字节，按值返回会在调用者栈上
- * 再放一份临时对象。调用者里有 NimBLE 主机任务（4096 字节栈），叠上协议栈
- * 与 led_strip 的深度会溢出——真机已实测到 `Stack protection fault`。
- */
-static void persist_snapshot_locked(lumen_persist_t *out)
+/* 填一份 State 持久化快照（**写指针，不返回大结构**，见 v4 的栈说明）。 */
+static void persist_state_locked(lumen_persist_t *out)
 {
     out->state = s_state;
-    out->segments = s_segments;
-    /* #29：每条灯带的灯珠数一起存，断电重启后 8 条都要恢复。 */
-    for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
-        const lumen_planar_strip_t *cfg = lumen_planar_get(&s_planar, i);
-        out->strip_counts[i] = cfg != NULL ? cfg->count : 0;
-    }
 }
 
 /*
- * 请求持久化剧本表 + 激活 id + loop（**调用者必须持锁**）。
+ * 把当前布局编码进静态 blob 并排队落盘（**调用者必须持锁**）。
  *
- * 在这里就地编码成 blob（16KB 静态缓冲）再交给 state_store：剧本表本身约
- * 70KB（v4：5 套 × 8 阶段 × 8 带 × 8 段 × 28B），存储侧再存一份会白吃
- * 70KB DRAM，而编码是纯函数、只读表。
- * 锁序固定「引擎锁 → 存储锁」，存储任务从不反过来取引擎锁。
- *
- * 播放位置不在快照里，所以播放/暂停不会改变持久化内容（loop 会）。
+ * 布局的 debounce 是 0（§10.5：LayoutCommit 后立即落盘），所以这里写完就会
+ * 被存储任务取走。编码失败（超 4096）回 false，调用方回 StorageFailed。
  */
-static uint8_t s_script_persist_blob[LUMEN_SCRIPT_BLOB_MAX];
-static size_t s_script_persist_len;
-
-static void persist_scripts_locked(void)
+static bool persist_layout_locked(uint8_t command)
 {
-    size_t len = lumen_script_blob_encode(&s_scripts, s_playback.script_id, s_playback.loop,
-                                          s_script_persist_blob,
-                                          sizeof(s_script_persist_blob));
-    if (len == 0) {
-        /*
-         * 只有「已提交的剧本合起来超过 16KB」会走到这里（激活/loop 变更时的重新
-         * 持久化路径）。提交阶段的尺寸预检已经挡住了新提交，所以这是历史数据的
-         * 退化情形：RAM 仍然有效，NVS 保留上一次成功保存的内容。
-         */
-        ESP_LOGW(TAG, "剧本 blob 超出 %u 字节，跳过本次持久化",
-                 (unsigned)sizeof(s_script_persist_blob));
-        return;
+    uint16_t counts[LUMEN_MAX_STRIPS];
+    for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
+        counts[i] = s_state.led_count[i];
     }
-    lumen_state_store_request_script_save(s_script_persist_blob, len);
+    size_t len = lumen_layout_blob_encode(&s_layout, s_state.strip_count, counts, s_layout_blob,
+                                          sizeof(s_layout_blob));
+    if (len == 0) {
+        ESP_LOGW(TAG, "布局编码失败（超 %u 字节）", (unsigned)sizeof(s_layout_blob));
+        return false;
+    }
+    return lumen_state_store_request_layout_save(s_layout_blob, len, command);
 }
 
-/* 每条灯带自己的灯珠数（**调用者必须持锁**，与 lumen_led_engine_strip_counts 同源）。 */
+/* 把某个场景编码进静态 blob 并排队落盘（**调用者必须持锁**）。 */
+static bool persist_scene_locked(uint8_t scene_id, uint8_t command)
+{
+    if (scene_id >= LUMEN_MAX_SCENES) {
+        return false;
+    }
+    size_t len = lumen_scene_blob_encode(&s_scenes.scene[scene_id], s_scene_blob[scene_id],
+                                         sizeof(s_scene_blob[scene_id]));
+    if (len == 0) {
+        /* 超过 12288 → StorageFailed，RAM 保留（§10.4 末段）。 */
+        ESP_LOGW(TAG, "场景 %u 编码失败（超 %u 字节）", scene_id,
+                 (unsigned)sizeof(s_scene_blob[scene_id]));
+        return false;
+    }
+    bool queued =
+        lumen_state_store_request_scene_save(scene_id, s_scene_blob[scene_id], len, command);
+    if (!queued) {
+        /* 入队失败只可能是参数非法或调度器拒收——是异常，值得一条日志。 */
+        ESP_LOGW(TAG, "场景 %u 落盘入队失败：%u 字节", scene_id, (unsigned)len);
+    }
+    return queued;
+}
+
+/* 每条灯带自己的灯珠数（**调用者必须持锁**）。 */
 static void strip_counts_locked(uint16_t out[LUMEN_MAX_STRIPS])
 {
     for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
-        out[i] = 0;
-    }
-    if (s_planar.strip_count > 1) {
-        for (uint8_t i = 0; i < s_planar.strip_count; ++i) {
-            out[i] = s_planar.strips[i].count;
-        }
-    } else {
-        out[0] = s_state.led_count;
+        out[i] = s_state.led_count[i];
     }
 }
 
 /*
  * 灯珠数变化后的统一裁剪（**调用者必须持锁**）。
  *
- * 三条 SetLedCount 路径（strip 0 单灯带 / TDM 模式的 strip 0 / strip 1..7）
- * 必须做同一件事，否则同一份越界段在不同路径上会留下不同的持久化后果：
- *  - 静态段表与当前阶段快照里留着越界段 → 画面引用越界区间，State 摘要与
- *    下一次 commit 的校验口径不一致；
- *  - 已提交剧本里留着越界段 → 那份 blob 一旦落盘，下次上电
- *    `lumen_script_blob_decode` 会**整份拒收**（它复用单段校验，end 越界即
- *    非法），`led_engine` 回落到 `lumen_script_store_init`，**四套方案静默丢失**。
+ * 布局里的段一旦 end >= new_count 就整段失效（**不自动缩短**——自动改用户
+ * 边界比丢弃更意外）。场景不受影响：它不含几何（§6.2 两张表）。
  *
- * 语义严格对齐 `lumen_segment_store_prune`：`end >= new_count` 的活动段整体
- * 失效，**不自动缩短区间**。剧本表真的被改动时立即重新编码排队落盘
- * （写盘本身的 500ms debounce 由存储侧负责）。
+ * 返回失效的段数。有任何改动时把布局重新编码排队落盘，否则下次上电
+ * `lumen_layout_blob_decode` 会因为「段越界」整份拒收，布局静默丢失。
  */
-static void prune_for_strip_locked(uint8_t strip_id, uint16_t new_count)
+static uint16_t prune_layout_locked(uint8_t strip_id, uint16_t new_count)
 {
-    uint16_t static_pruned = lumen_segment_store_prune(&s_segments, strip_id, new_count);
-    /* 当前阶段快照是剧本的副本，同样要裁：渲染与 State 摘要都读它。 */
-    uint16_t stage_pruned = lumen_segment_store_prune(&s_stage_segments, strip_id, new_count);
-    uint16_t script_pruned = lumen_script_store_prune_strip(&s_scripts, strip_id, new_count);
-
-    if (static_pruned > 0 || stage_pruned > 0 || script_pruned > 0) {
-        ESP_LOGW(TAG, "led count -> strip %u = %u：越界段失效 static=%u stage=%u scripts=%u",
-                 strip_id, new_count, static_pruned, stage_pruned, script_pruned);
+    if (strip_id >= LUMEN_MAX_STRIPS) {
+        return 0;
     }
-    if (stage_pruned > 0 || script_pruned > 0) {
-        /* 阶段缓存必须按裁剪后的剧本重建，否则画面里还留着那条已失效的段。 */
-        s_stage_valid = false;
-    }
-    if (script_pruned > 0) {
-        /* 已提交剧本属于持久化内容：改了就必须重新落盘一遍。 */
-        persist_scripts_locked();
-    }
-}
-
-/*
- * 把播放状态镜像进 State 字节 7-10（**调用者必须持锁**）。
- *
- *  - script_id / stage_index / playback_state 直接来自播放时间轴；
- *  - flags 走 script_store.h 的位表：bit0 循环中、bit1 有激活剧本、
- *    bit2 最后一步循环、bit3-7 恒 0（#98）。
- */
-static void sync_script_state_locked(void)
-{
-    s_state.script_id = s_playback.script_id;
-    s_state.stage_index = s_playback.stage_index;
-    s_state.playback_state = (uint8_t)s_playback.state;
-    /* 位表见 script_store.h：bit0 循环中、bit1 有激活剧本、bit2 最后一步循环。 */
-    s_state.flags = (uint8_t)(lumen_loop_flags(s_playback.loop) |
-                              (s_playback.script_id != LUMEN_NO_SCRIPT
-                                   ? LUMEN_PLAYBACK_FLAG_ACTIVE
-                                   : 0x00u));
-}
-
-/*
- * 按当前播放头重建「这一阶段的段配置」（**调用者必须持锁**）。
- *
- * t0_ms 一律写成切换时刻的剧本时间 —— 这就是 v2-effects-engine §6.2 的
- * 「阶段切换重置相位」：新阶段从相位 0 开始，不延续上一阶段的相位。
- *
- * 只填 strip_id < 剧本的 strip_count 的段；其余槽位保持全 0（渲染时该条
- * 走「没有活动段」路径，即熄灭或单色，取决于它是哪条灯带）。
- */
-static void rebuild_stage_locked(uint32_t script_time)
-{
-    memset(&s_stage_segments, 0, sizeof(s_stage_segments));
-    const lumen_script_t *script = lumen_script_get(&s_scripts, s_playback.script_id);
-    if (script == NULL || s_playback.stage_index >= script->stage_count) {
-        return;
-    }
-    const lumen_script_stage_t *stage = &script->stages[s_playback.stage_index];
-    for (uint8_t strip = 0; strip < script->strip_count; ++strip) {
-        for (uint8_t seg = 0; seg < LUMEN_MAX_SEGMENTS; ++seg) {
-            if (!stage->segments[strip][seg].active) {
+    uint16_t pruned = 0;
+    uint8_t parts = s_layout.part_count[strip_id];
+    for (uint8_t p = 0; p < parts && p < LUMEN_MAX_PARTS; ++p) {
+        lumen_part_segs_t *segs = &s_layout.part[strip_id][p].segs;
+        for (uint8_t s = 0; s < segs->seg_count && s < LUMEN_MAX_PART_SEGS; ++s) {
+            uint8_t start = segs->seg[s][0];
+            uint8_t end = segs->seg[s][1];
+            if (start == LUMEN_SEG_UNWRITTEN || end == LUMEN_SEG_UNWRITTEN) {
                 continue;
             }
-            lumen_segment_t applied = stage->segments[strip][seg];
-            applied.t0_ms = script_time;
-            s_stage_segments.slot[strip][seg] = applied;
+            if (end >= new_count) {
+                /* 失效：打回「未写」标记，该槽位不再占用灯珠。 */
+                segs->seg[s][0] = LUMEN_SEG_UNWRITTEN;
+                segs->seg[s][1] = LUMEN_SEG_UNWRITTEN;
+                ++pruned;
+            }
         }
     }
+    if (pruned > 0) {
+        ESP_LOGW(TAG, "led count -> strip %u = %u：%u 个越界段失效", strip_id, new_count, pruned);
+        (void)persist_layout_locked(LUMEN_CMD_SET_LED_COUNT);
+    }
+    return pruned;
+}
+
+/*
+ * 这一帧是否有任何链需要持续出帧（**调用者必须持锁**）。
+ *
+ * 判据只在 scene_compose 一处（lumen_scene_strip_needs_frames）：只有真的要
+ * 出光的部位参与——0 步、部位开关关掉、未覆盖段都不该让渲染任务一直转。
+ */
+static bool scene_needs_frames_locked(void)
+{
+    const lumen_scene_t *scene = &s_scenes.scene[s_state.active_scene];
+    for (uint8_t i = 0; i < s_state.strip_count; ++i) {
+        if (lumen_scene_strip_needs_frames(&s_layout, scene, i)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * 启动还没有播放头的部位（**调用者必须持锁**）。
+ *
+ * 新加的部位从自己的第 1 步起跳（T7）。已经启动过的部位不会被重置——
+ * 「编辑不打断时钟」（E2）：改颜色 / 改时长 / 改层都不该让正在播的画面
+ * 跳回第 1 步。
+ */
+static void start_pending_clocks_locked(uint32_t now)
+{
+    for (uint8_t i = 0; i < s_state.strip_count && i < LUMEN_MAX_STRIPS; ++i) {
+        uint8_t parts = s_layout.part_count[i];
+        for (uint8_t p = 0; p < parts && p < LUMEN_MAX_PARTS; ++p) {
+            lumen_part_clock_start(&s_clocks.clock[i][p], now);
+        }
+    }
+}
+
+/*
+ * 自检期间把时钟「停住」（**调用者必须持锁**）。
+ *
+ * 播放头只存 origin_ms，所以「暂停」就是把 origin 往后推同样长的时间。
+ * 只对已经启动过的部位生效，且只在自检真的推进时调用（见调用点）。
+ */
+static void hold_clocks_locked(uint32_t now)
+{
+    /* 上一次记录的挂起时刻；0 = 没有在挂起。 */
+    static uint32_t s_hold_since;
+    if (s_hold_since == 0) {
+        s_hold_since = now;
+        return;
+    }
+    uint32_t delta = now - s_hold_since;
+    if (delta == 0) {
+        return;
+    }
+    for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
+        for (uint8_t p = 0; p < LUMEN_MAX_PARTS; ++p) {
+            if (s_clocks.clock[i][p].started) {
+                s_clocks.clock[i][p].origin_ms += delta;
+            }
+        }
+    }
+    s_hold_since = now;
 }
 
 /* 压力模式通过函数指针取快照 / 提交 / 亮度上限，不需要反向包含 led_engine.h。 */
@@ -422,21 +359,15 @@ static const lumen_led_stress_engine_t k_stress_engine = {
 #endif
 
 /*
- * SetLedCount 的句柄重建（协议 §11.3）。只在渲染任务里执行。
+ * SetLedCount 的句柄重建（§11.3）。只在渲染任务里执行。
  *
  * 并发模型：
- *  - BLE 回调里的 lumen_led_engine_set_led_count() 只做三件事：判忙、登记
- *    pending、给渲染信号量。它绝不调 led_strip_*（句柄唯一所有者是渲染任务）。
+ *  - BLE 回调里的 lumen_led_engine_set_led_count_for_strip() 只做三件事：
+ *    判忙、登记 pending、给渲染信号量。它绝不调 led_strip_*。
  *  - 渲染任务在每次醒来时调用本函数：取走 pending → create_strip 新句柄 →
- *    成功才在锁内替换 s_strip 并写 s_state.led_count（保留其它字段）、
- *    裁剪越界段、重算摘要，然后 del 旧句柄、强制重绘、debounce 持久化、回 ACK 0x00；
+ *    成功才在锁内替换句柄并写 s_state.led_count[strip]、裁剪越界段，
+ *    然后 del 旧句柄、强制重绘、debounce 持久化、回 ACK 0x00；
  *    失败则什么都不替换（旧句柄、旧数量原样保留），回 ACK 0x09。
- *  - 重建期间到达的其它命令照常 commit 到 s_mailbox；本函数成功后按最新
- *    s_state 重绘（render_snapshot 用强制标志），因此画面不会丢最新状态。
- *
- * 为什么在渲染任务里：led_strip_new_rmt_device 会申请 RMT 通道与内存，
- * led_strip_del 会释放；与 set_pixel / refresh 并发会直接损坏在途事务。
- * 把「重建 + 旧句柄释放 + 立即重绘」放在同一个任务里，句柄生命周期天然串行。
  */
 static void rebuild_led_count_if_pending(void)
 {
@@ -445,21 +376,22 @@ static void rebuild_led_count_if_pending(void)
 
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
     bool have_job = lumen_led_count_job_begin(&s_led_count_job, &target, &seq);
+    uint8_t strip_id = lumen_led_count_job_strip(&s_led_count_job);
     xSemaphoreGive(s_state_lock);
     if (!have_job) {
         return;
     }
 
-    ESP_LOGI(TAG, "led count rebuild begin: %u leds (seq=0x%02X)", target, seq);
+    ESP_LOGI(TAG, "led count rebuild begin: strip %u -> %u leds (seq=0x%02X)", strip_id, target,
+             seq);
 
     /*
-     * #29：TDM 模式下所有条共用**一个**按 max_count 建的句柄，绝不能在改
-     * strip 0 的数量时把它删掉重建——那会连带中断其余 7 条的输出，而且
-     * s_tdm_strip 会变成悬空指针（它指向已被 del 的句柄）。
+     * 多灯带 TDM 模式下所有条共用一个按 max_count 建的句柄，绝不能在改
+     * strip 0 的数量时把它删掉重建——那会连带中断其余条的输出，而且
+     * s_tdm_strip 会变成悬空指针。
      *
      * 所以 TDM 下这里只更新数量与配置：只要新数量不超过句柄的 max_leds 就
-     * 无需重建；超出时按 max_count 重建一次同一个句柄，并把 s_tdm_strip 换成
-     * 新句柄。两条路径都必须让 s_tdm_strip 与 owner 的当前句柄保持一致。
+     * 无需重建；超出时按新 max_count 重建一次同一个句柄。
      */
     bool tdm_mode = s_planar.strip_count > 1;
 
@@ -467,19 +399,16 @@ static void rebuild_led_count_if_pending(void)
         uint16_t prev_max = s_planar.max_count;
         xSemaphoreTake(s_state_lock, portMAX_DELAY);
         bool committed = lumen_led_count_job_complete(&s_led_count_job, true, &s_state);
-        s_state.led_count = target;
-        (void)lumen_planar_set_count(&s_planar, 0, target);
+        (void)lumen_planar_set_count(&s_planar, strip_id, target);
         /*
-         * 越界段必须一起裁掉：静态段表、当前阶段快照、已提交剧本三处都要。
-         * 以前这里只改了数量就落盘，一份带尾巴段的剧本会让下次上电的 blob
-         * 解码整份失败，四套方案静默丢失（见 prune_for_strip_locked 的说明）。
+         * 越界段必须一起裁掉并重新落盘，否则一份带尾巴段的布局会让下次上电
+         * 的 blob 解码整份失败（见 prune_layout_locked 的说明）。
          */
         if (committed) {
-            prune_for_strip_locked(0, target);
-            /* 裁剪可能让当前生效段数 / 基准色变化：摘要按裁剪后的表重算。 */
-            refresh_state_summary_from_active_locked();
+            prune_layout_locked(strip_id, target);
+            refresh_layout_summary_locked();
         }
-        persist_snapshot_locked(&s_render_persist);
+        persist_state_locked(&s_render_persist);
         xSemaphoreGive(s_state_lock);
 
         if (!committed) {
@@ -528,7 +457,7 @@ static void rebuild_led_count_if_pending(void)
         }
         lumen_led_render_invalidate();
         lumen_state_store_request_save(&s_render_persist, LUMEN_CMD_SET_LED_COUNT);
-        ESP_LOGI(TAG, "led count strip0 -> %u（TDM 模式）", target);
+        ESP_LOGI(TAG, "led count strip %u -> %u（TDM 模式）", strip_id, target);
         if (s_response_cb != NULL) {
             s_response_cb(seq, LUMEN_CMD_SET_LED_COUNT, LUMEN_RESULT_OK);
         }
@@ -539,29 +468,25 @@ static void rebuild_led_count_if_pending(void)
      * 顺序很关键：先清黑旧灯带 → 删旧句柄 → 再建新句柄。
      *
      * 不能先建后删：RMT TX 在创建时用 esp_gpio_reserve() 占住 GPIO，若旧句柄
-     * 还活着，新句柄会拿到 "GPIO 3 is not usable, maybe conflict with others"
-     * 的警告，输出路径仍指向旧通道——新句柄能 set_pixel/refresh 但不驱动灯带，
-     * 表现为「改完数量后整条灯带不再响应任何操作」。
+     * 还活着，新句柄会拿到 "GPIO 3 is not usable" 的警告，输出路径仍指向旧通道
+     * ——表现为「改完数量后整条灯带不再响应任何操作」。
      *
-     * 另外 WS2812B 会把最后一帧像素锁存住，句柄只驱动前 target 颗时，多出来的
-     * 灯收不到新数据就一直停在旧颜色上。所以删之前必须按旧数量整条清黑。
+     * 另外 WS2812B 会把最后一帧像素锁存住，删之前必须按旧数量整条清黑。
      */
     led_strip_handle_t old;
     uint16_t old_count;
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
     old = lumen_led_strip_owner_get();
-    /* 旧数量要在 complete() 覆盖 s_state.led_count 之前取出来。 */
-    old_count = s_state.led_count;
+    /* 旧数量要在 complete() 覆盖之前取出来。 */
+    old_count = s_state.led_count[0];
     xSemaphoreGive(s_state_lock);
 
     if (old != NULL) {
-        /* 旧句柄按旧数量清黑（led_strip_clear 用句柄自己的 max_leds）。 */
         esp_err_t clear_err = lumen_led_strip_owner_clear(old);
         if (clear_err != ESP_OK) {
             ESP_LOGW(TAG, "led count rebuild: 清黑旧灯带失败 %s（多余灯珠可能保持旧色）",
                      esp_err_to_name(clear_err));
         }
-        /* 释放旧句柄，让出 RMT 通道与 GPIO 预留，新句柄才能正确接管输出。 */
         lumen_led_strip_owner_destroy(old);
     }
 
@@ -590,51 +515,24 @@ static void rebuild_led_count_if_pending(void)
         return;
     }
 
-    lumen_state_t latest;
-    lumen_selftest_t selftest;
     bool committed = false;
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
     lumen_led_strip_owner_set(fresh);
-    /* 只改数量：重建期间其它命令可能已改过开关/亮度/颜色，那些值原样保留。 */
+    /* 只改该条的数量：重建期间其它命令可能已改过开关/亮度/场景，原样保留。 */
     committed = lumen_led_count_job_complete(&s_led_count_job, true, &s_state);
     if (committed) {
-        /*
-         * 裁剪越界段（docs/v2-effects-engine.md §7.2 第 3 条）：任何 end >= 新数量
-         * 的段失效，不自动缩短阈值——自动改用户边界比丢弃更意外。
-         *
-         * 静态段表 / 当前阶段快照 / 已提交剧本三处都要裁，规则与文案集中在
-         * prune_for_strip_locked。剧本被改动时它会顺手重新编码排队落盘。
-         */
-        prune_for_strip_locked(0, s_state.led_count);
-        refresh_state_summary_from_active_locked();
+        prune_layout_locked(strip_id, s_state.led_count[strip_id]);
+        refresh_layout_summary_locked();
         /* 重建期间 commit 过的快照已经被这一帧覆盖，邮箱不再需要。 */
         s_mailbox_dirty = false;
     }
-    latest = s_state;
-    /* 方案接管时按当前阶段重绘，避免改完数量后闪一帧静态配置（#122 逐条按归属合成）。 */
-    s_render_script_mask = script_rendering_locked() ? script_mask_locked() : 0;
-    if (script_rendering_locked()) {
-        lumen_scope_compose(&s_render_segments, &s_stage_segments, &s_segments,
-                            s_render_script_mask, s_state.strip_count);
-    } else {
-        s_render_segments = s_segments;
-    }
-    /*
-     * #32：剧本播放中相位基准是剧本时间轴（暂停时冻结），不是墙上时钟——
-     * 否则「改灯珠数量」会让暂停的画面跳一下相位。在锁内取值，出锁后只用副本。
-     */
-    bool script_phase = script_rendering_locked();
-    uint32_t phase_now = lumen_script_playback_time(&s_playback, now_ms());
-    selftest = s_selftest;
-    persist_snapshot_locked(&s_render_persist);
+    persist_state_locked(&s_render_persist);
     xSemaphoreGive(s_state_lock);
 
-    /* 新句柄的像素缓冲是空的：清掉「已渲染」标记，强制按最新状态重绘。
-     * 放在 committed 判定之前，任何返回路径都不会留下「以为已渲染」的状态。 */
+    /* 新句柄的像素缓冲是空的：强制按最新状态重绘。 */
     lumen_led_render_invalidate();
 
     if (!committed) {
-        /* 状态机异常（不该发生）：新句柄已经接管，但状态没更新，按失败回。 */
         ESP_LOGE(TAG, "led count job complete rejected after swap");
         if (s_response_cb != NULL) {
             s_response_cb(seq, LUMEN_CMD_SET_LED_COUNT, LUMEN_RESULT_INTERNAL_ERROR);
@@ -642,41 +540,28 @@ static void rebuild_led_count_if_pending(void)
         return;
     }
 
-    /* 自检激活时新句柄也该显示自检色（§11.2 第 4 条）。 */
-    uint32_t redraw_now = script_phase ? phase_now : now_ms();
-    lumen_led_render_snapshot(lumen_led_strip_owner_get(), &latest, &s_render_segments, &selftest,
-                              max_brightness(), redraw_now, s_render_script_mask);
-
     /* 成功后才持久化（§11.3 第 2 条）；触发命令是 SetLedCount。 */
     lumen_state_store_request_save(&s_render_persist, LUMEN_CMD_SET_LED_COUNT);
 
-    ESP_LOGI(TAG, "led count -> %u (seq=0x%02X)", latest.led_count, seq);
+    ESP_LOGI(TAG, "led count strip %u -> %u (seq=0x%02X)", strip_id, s_state.led_count[strip_id],
+             seq);
     if (s_response_cb != NULL) {
         s_response_cb(seq, LUMEN_CMD_SET_LED_COUNT, LUMEN_RESULT_OK);
     }
 }
 
 /*
- * TDM 轮询一条灯带（#29）。只有渲染任务调用。
+ * TDM 轮询一条灯带。只有渲染任务调用。
  *
- * 一次调用 = 切 GPIO → 合成该条像素 → 推一帧。返回 true 表示真的推了帧
- * （像素有变化或强制重绘）；false 表示该条跳过（无变化 / 降级）。
+ * 一次调用 = 切 GPIO → 合成该条像素 → 推一帧。返回 true 表示真的推了帧。
  *
- * 为什么一条一条刷而不是同步刷全部 8 条：C3 只有一个 RMT 通道（TDM 复用），
- * 一轮里逐条切换引脚。WS2812B 锁存住自己最后收到的画面，所以切走之后
- * 那条灯带保持不动——这是 TDM 可行的物理前提。
- *
- * 去重按条独立：一段动画只让那一段所在的灯带每帧都刷，其余灯带不变就跳过，
- * 这样「静态段不因动画帧循环而空转刷帧」在多灯带下依然成立（#30 验收点）。
- *
- * #38 每带独立开关（§9.5）：关掉的带先推**一帧全黑**（compose 门控会给全 0，
- * 且 push_pixels_n 把 max_count 之后的尾巴也写 0），之后整轮**跳过**该带——
- * 不切引脚、不传像素，那一份 RMT 时间就省下来了。重开时绕过去重立刻推，
- * 所以不会残留黑帧、也不需要重设段。
+ * WS2812B 锁存住自己最后收到的画面，所以切走之后那条灯带保持不动——
+ * 这是 TDM 可行的物理前提。去重按条独立：一个部位在动画只让那一条每帧都刷。
  */
 static bool tdm_push_strip(uint8_t strip_id, const lumen_state_t *snapshot,
-                           const lumen_segment_store_t *segments, uint8_t script_mask,
-                           const lumen_selftest_t *selftest, bool force, uint32_t now_ms_value)
+                           const lumen_layout_store_t *layout, const lumen_scene_t *scene,
+                           const lumen_part_clocks_t *clocks, const lumen_selftest_t *selftest,
+                           bool force, uint32_t now_ms_value)
 {
     const lumen_planar_strip_t *cfg = lumen_planar_get(&s_planar, strip_id);
     if (cfg == NULL || !cfg->enabled || cfg->degraded) {
@@ -687,7 +572,7 @@ static bool tdm_push_strip(uint8_t strip_id, const lumen_state_t *snapshot,
     }
 
     /*
-     * 出光门控：全局 power && 该带掩码位；自检期间忽略每带开关（§9.7）。
+     * 出光门控：全局 power && 该带掩码位；自检期间忽略每带开关（§9.6）。
      * 决策本身是纯函数（strip_power.c），这里只按结果执行。
      */
     bool selftest_on = lumen_selftest_active(selftest);
@@ -695,53 +580,44 @@ static bool tdm_push_strip(uint8_t strip_id, const lumen_state_t *snapshot,
     lumen_strip_tdm_action_t action = lumen_strip_tdm_plan(want_on, s_tdm_strip_lit[strip_id]);
 
     if (action == LUMEN_STRIP_TDM_SKIP) {
-        /* 本来就不出光：本轮不占 RMT（这就是「关 4 条带缩短轮周期」的来源）。 */
+        /* 本来就不出光：本轮不占 RMT（这就是「关 N 条缩短轮周期」的来源）。 */
         s_tdm_rendered_valid[strip_id] = false;
         return false;
     }
 
     uint8_t frame[LUMEN_MAX_LEDS * 3];
-    uint16_t n = lumen_led_render_compose_strip(snapshot, segments, selftest, max_brightness(),
-                                               now_ms_value, strip_id, cfg->count, script_mask,
-                                               frame, sizeof(frame));
+    uint16_t n = lumen_led_render_compose_strip(snapshot, layout, scene, clocks, selftest,
+                                                max_brightness(), now_ms_value, strip_id,
+                                                cfg->count, frame, sizeof(frame));
     if (n == 0) {
         return false;
     }
-    /* 关带时 compose 已按门控输出全 0；重开时是真实画面。 */
 
     /*
-     * 逐条去重：画面没变就不刷，省一整帧 RMT（静态段不因别人的动画而空转）。
-     *
-     * CONFIG_LUMEN_FORCE_REFRESH 下**跳过**去重——#20 的错色实验要求
-     * 「画面恒定 + 持续刷帧」：画面恒定才能逐帧比对基线，持续刷帧才能
-     * 让 BLE 抢占 RMT 中断的机会出现。那时必须每轮都真的发一帧。
-     *
-     * 用 LUMEN_SKIP_DEDUP 而非直接引用宏：Kconfig 的 bool 关闭时不定义宏。
-     *
-     * REENABLE（刚从关到开）也强制推送：上一帧是黑帧，去重会把真实画面
-     * 当成「没变化」吞掉，表现为重开无效。
+     * 逐条去重：画面没变就不刷，省一整帧 RMT。
+     * CONFIG_LUMEN_FORCE_REFRESH 下跳过（#20 的错色实验要求持续刷帧）。
+     * REENABLE（刚从关到开）也强制推送：上一帧是黑帧，去重会把真实画面吞掉。
      */
     bool must_push = force || action != LUMEN_STRIP_TDM_PUSH;
     if (!LUMEN_SKIP_DEDUP && !must_push && s_tdm_rendered_valid[strip_id] &&
         s_tdm_rendered_count[strip_id] == n &&
         memcmp(frame, s_tdm_rendered_frame[strip_id], (size_t)n * 3u) == 0) {
-        lumen_led_render_note_skipped(); /* 该条画面没变：不切引脚、不刷，省一整帧 RMT */
+        lumen_led_render_note_skipped();
         return false;
     }
 
     esp_err_t err = lumen_led_strip_owner_switch_gpio(s_tdm_strip, cfg->gpio);
     if (err != ESP_OK) {
-        /* 切引脚失败：该条判降级，其余 7 条继续（票面「一条不接不影响其它」）。 */
+        /* 切引脚失败：该条判降级，其余条继续。 */
         if (lumen_planar_mark_degraded(&s_planar, strip_id)) {
-            ESP_LOGW(TAG, "strip %u (GPIO%u) 切换引脚失败 %s，已降级；其余灯带继续",
-                     strip_id, cfg->gpio, esp_err_to_name(err));
+            ESP_LOGW(TAG, "strip %u (GPIO%u) 切换引脚失败 %s，已降级；其余灯带继续", strip_id,
+                     cfg->gpio, esp_err_to_name(err));
         }
         return false;
     }
 
     err = lumen_led_strip_owner_push_pixels_n(s_tdm_strip, frame, s_planar.max_count, n);
     if (err != ESP_OK) {
-        /* refresh 失败同样按「这条不接」处理，不让它拖住整轮。 */
         if (lumen_planar_mark_degraded(&s_planar, strip_id)) {
             ESP_LOGW(TAG, "strip %u (GPIO%u) 刷新失败 %s，已降级；其余灯带继续", strip_id,
                      cfg->gpio, esp_err_to_name(err));
@@ -750,16 +626,13 @@ static bool tdm_push_strip(uint8_t strip_id, const lumen_state_t *snapshot,
     }
 
     if (action == LUMEN_STRIP_TDM_BLACK_THEN_SKIP) {
-        /*
-         * 黑帧推完了：这一带从下一轮起真正跳过。清掉上一帧记录，
-         * 避免重开时把黑帧当成「已渲染的当前画面」而误判去重。
-         */
+        /* 黑帧推完了：这一带从下一轮起真正跳过。 */
         s_tdm_rendered_valid[strip_id] = false;
         s_tdm_rendered_count[strip_id] = 0;
         s_tdm_strip_lit[strip_id] = false;
         lumen_led_render_note_drawn();
         ESP_LOGI(TAG, "strip %u 关闭：已推黑帧，后续 TDM 轮询跳过", strip_id);
-        return true; /* 这次确实占了一帧 RMT（推黑），计入本轮推送数 */
+        return true;
     }
 
     memcpy(s_tdm_rendered_frame[strip_id], frame, (size_t)n * 3u);
@@ -770,32 +643,21 @@ static bool tdm_push_strip(uint8_t strip_id, const lumen_state_t *snapshot,
     return true;
 }
 
-/*
- * 跑一轮 TDM：把每条可用灯带刷一遍，并记录本轮耗时（票面要求的实测数字）。
- * 单灯带（strip_count == 1）时不走这里，仍用 lumen_led_render_snapshot，
- * 保证 v1 单灯带行为逐字节不变。
- */
-static void tdm_run_round(const lumen_state_t *snapshot, const lumen_segment_store_t *segments,
-                          uint8_t script_mask, const lumen_selftest_t *selftest, bool force,
-                          uint32_t now_ms_value)
+/* 跑一轮 TDM，并记录本轮耗时（串口实测证据）。 */
+static void tdm_run_round(const lumen_state_t *snapshot, const lumen_layout_store_t *layout,
+                          const lumen_scene_t *scene, const lumen_part_clocks_t *clocks,
+                          const lumen_selftest_t *selftest, bool force, uint32_t now_ms_value)
 {
     int64_t t0 = esp_timer_get_time();
     uint8_t pushed = 0;
     for (uint8_t i = 0; i < s_planar.strip_count; ++i) {
-        if (tdm_push_strip(i, snapshot, segments, script_mask, selftest, force, now_ms_value)) {
+        if (tdm_push_strip(i, snapshot, layout, scene, clocks, selftest, force, now_ms_value)) {
             ++pushed;
         }
     }
     uint32_t round_us = (uint32_t)(esp_timer_get_time() - t0);
     lumen_planar_note_round(&s_planar_stats, round_us, pushed);
 
-    /*
-     * 每 60 轮打一行：这是「8 路轮询实测周期」的唯一固件侧证据（#20 要求
-     * 由 #29 补上这个数字）。逐轮打会把串口淹掉，且串口本身会干扰测量。
-     *
-     * #38 起这一行还带 lit（本轮真正出光的条数）：关掉 N 条带后 lit 应减少、
-     * round/avg 应下降，这正是「关带省 RMT」的实测判据（见票面测量说明）。
-     */
     if (s_planar_stats.rounds % 60u == 0u) {
         uint8_t lit = 0;
         for (uint8_t i = 0; i < s_planar.strip_count; ++i) {
@@ -816,13 +678,10 @@ static void tdm_run_round(const lumen_state_t *snapshot, const lumen_segment_sto
 /*
  * 上电后补发帧的次数与间隔。
  *
- * 灯带用独立 5V 供电（见 docs/led-bringup.md），它的电源建立可能晚于 MCU
- * 启动——启动日志里第一次 render 出现在 325ms，此时灯带那路可能还没上电，
- * 整帧被 WS2812B 丢掉。而 s_rendered_valid 已经置位，只要状态不变就不会
- * 再发，用户看到的是「断电重启后灯是灭的，开关一次才亮」。
- *
- * 所以启动后额外强制重绘几次，把窗口覆盖过去。次数/间隔按「覆盖到 1s 左右」
- * 取，代价是 4 帧 RMT 传输，可以忽略。
+ * 灯带用独立 5V 供电，它的电源建立可能晚于 MCU 启动——启动日志里第一次
+ * render 出现在 325ms，此时灯带那路可能还没上电，整帧被 WS2812B 丢掉。
+ * 而 s_rendered_valid 已经置位，只要状态不变就不会再发，用户看到的是
+ * 「断电重启后灯是灭的，开关一次才亮」。所以启动后额外强制重绘几次。
  */
 #define LUMEN_BOOT_REASSERT_COUNT 4
 #define LUMEN_BOOT_REASSERT_INTERVAL_MS 200
@@ -837,20 +696,14 @@ static void render_task(void *arg)
 #endif
 
     /*
-     * 自检开始后渲染任务必须按步醒来，因此等待超时取「距离下一次换色的
-     * tick 数」；启动补发窗口内也按固定间隔醒来。
-     *
-     * 两种模式（docs/v2-effects-engine.md §3.1）：
-     *  - **静态模式**（need_frames == false）：仍然 portMAX_DELAY 阻塞在
-     *    信号量上，只有 commit / 段变更唤醒。与 v1 完全一致，零额外 CPU、
-     *    零额外 RMT——静态段不会因为这个帧循环而空转刷帧。
-     *  - **动画模式**（need_frames == true）：带 1000/CONFIG_LUMEN_ANIM_FPS
-     *    超时等待，超时即渲染下一帧。不另起定时器任务（理由见 Kconfig）。
+     * 两种模式：
+     *  - **静态**（need_frames == false）：阻塞在信号量上，只有 commit /
+     *    布局场景变更唤醒。零额外 CPU、零额外 RMT。
+     *  - **动画**（need_frames == true）：带 1000/CONFIG_LUMEN_ANIM_FPS 超时
+     *    等待，超时即渲染下一帧。
      */
     uint8_t logged_step = 0xFF;
-    /* 启动补发计数：前几次醒来不看去重，强制把像素再推一遍。 */
     uint8_t boot_reassert_left = LUMEN_BOOT_REASSERT_COUNT;
-    /* 帧循环状态切换只打一次日志，方便串口上看「模式真的切了」。 */
     bool logged_anim_mode = false;
 
     for (;;) {
@@ -858,38 +711,21 @@ static void render_task(void *arg)
         bool anim_mode = false;
         xSemaphoreTake(s_state_lock, portMAX_DELAY);
         if (boot_reassert_left > 0) {
-            /* 补发窗口内按固定间隔醒来，覆盖灯带电源建立的那段时间。 */
             wait = pdMS_TO_TICKS(LUMEN_BOOT_REASSERT_INTERVAL_MS);
         }
         if (lumen_selftest_active(&s_selftest)) {
             int64_t remaining_us =
                 lumen_selftest_next_step_in_us(&s_selftest, esp_timer_get_time());
-            /* FreeRTOS 里 0 表示「不等待」，至少等 1 tick 才不会死锁在自检中。 */
             TickType_t ticks =
                 remaining_us > 0
                     ? pdMS_TO_TICKS((uint32_t)((remaining_us + 999) / 1000))
                     : 1;
             wait = ticks > 0 ? ticks : 1;
-        } else if (LUMEN_SKIP_DEDUP ||
-                   lumen_segment_store_needs_frames(&s_segments, s_state.strip_count) ||
-                   lumen_script_playback_active(&s_playback)) {
+        } else if (LUMEN_SKIP_DEDUP || scene_needs_frames_locked()) {
             /*
-             * 动画模式：按帧率超时等待。
-             *
-             * **等待量 = 帧周期 − 上一帧耗时**，不是直接等一个完整周期。
-             * 早先写成「等 1000/fps」是错的：100ms 是两次渲染之间要空等的时间，
-             * 而实际周期还要加上渲染本身（8 路 × 100 灯约 26–32ms），
-             * 于是配 10fps 实际只有 8.3fps。真机实测 120ms 周期与
-             * 「100ms 等待 + 20.8ms 渲染」完全吻合，确认是这个原因。
-             *
-             * 用上一帧的实际耗时做前馈：帧周期 = max(1 tick, 目标周期 − 上一帧耗时)。
-             * 帧耗时包含 TDM 轮询（或单灯带 refresh），已由渲染路径记在 s_last_frame_us。
-             *
-             * 至少 1 tick：0 表示不等待，会变成忙循环（100Hz tick 下 20fps 只剩 5 tick，
-             * 若目标帧率再高就必须靠这个下限兜住）。
-             *
-             * 剧本在播放**或暂停**时同样进入这一模式：暂停要保持画面响应
-             * （State read / 亮度变化仍能重绘），只是时间轴不前进。
+             * 等待量 = 帧周期 − 上一帧耗时（前馈），不是直接等一个完整周期：
+             * 早先写成「等 1000/fps」是错的，实际周期还要加上渲染本身。
+             * 至少 1 tick：0 表示不等待，会变成忙循环。
              */
             uint32_t target_us = 1000000u / (uint32_t)CONFIG_LUMEN_ANIM_FPS;
             uint32_t spent_us = s_last_frame_us;
@@ -905,12 +741,6 @@ static void render_task(void *arg)
             uint32_t skipped = 0;
             lumen_led_render_counters(&drawn, &skipped);
             logged_anim_mode = anim_mode;
-            /*
-             * 串口上「静态不空转 / 动画持续刷」的判定证据（#30 验收点）：
-             * 切换时打一行，并带上到目前为止的累计刷新 / 跳过次数。
-             * 纯静态场景从启动到关灯都只有这一行 + 状态变更的 render 行，
-             * 动画模式下每 10 帧一行的 render seg 会持续出现。
-             */
             ESP_LOGI(TAG, "帧循环模式 -> %s（fps=%d）已绘制=%u 跳过=%u",
                      anim_mode ? "动画" : "静态（阻塞等待，不空转）", CONFIG_LUMEN_ANIM_FPS,
                      (unsigned)drawn, (unsigned)skipped);
@@ -919,12 +749,6 @@ static void render_task(void *arg)
         /* 超时（自检换色 / 启动补发）与状态信号都会走到这里；统一重渲染。 */
         (void)xSemaphoreTake(s_render_signal, wait);
 
-        /*
-         * 启动补发：上电后头几帧不走去重，确保灯带电源晚于 MCU 建立时
-         * 也能收到像素（否则首帧被丢后要等用户碰一次开关才亮）。
-         * TDM 路径下同样要逐条强制刷一遍，否则降级标记与供电建立的窗口
-         * 会让某条灯带一直黑着。
-         */
         bool force_round = false;
         if (boot_reassert_left > 0) {
             lumen_led_render_invalidate();
@@ -935,12 +759,9 @@ static void render_task(void *arg)
             --boot_reassert_left;
         }
 
-        /* 先处理 SetLedCount 的重建：它会重建句柄、强制重绘并回延迟 ACK。
-         * 重建期间的其它命令已进邮箱，下面的 latest-wins 取最新快照兜底。 */
+        /* 先处理 SetLedCount 的重建：它会重建句柄、强制重绘并回延迟 ACK。 */
         rebuild_led_count_if_pending();
 
-        lumen_state_t snapshot;
-        lumen_selftest_t selftest;
         bool dirty;
         bool selftest_active;
         uint8_t selftest_rgb[3] = {0, 0, 0};
@@ -948,162 +769,67 @@ static void render_task(void *arg)
         uint32_t frame_now = now_ms();
 
         /*
-         * #32：**在每帧开头推进剧本播放头**（docs/v2-effects-engine.md §6.1）。
-         * 不另起定时器：渲染任务本身就是唯一的定时消费者。
+         * 在本帧开头**推进播放头**。v5 的播放头不存相位变量——只存 origin_ms，
+         * 步号与步内时间都由 lumen_part_clock_advance 从 (now - origin) 一次性
+         * 算出，不做累加（§9.4：累加会长时间运行后越走越偏）。
          *
-         * 阶段变了就重建这一阶段的段配置，并把各段 t0_ms 重置为切换时刻
-         * （相位重置，§6.2 已定取舍）。暂停时 tick 不改播放头，剧本时间
-         * 冻结，因此下面用 script_time 作合成基准 → 画面冻结。
+         * 自检是渲染层的最高优先级覆盖：自检期间不推进播放头，结束后从原处
+         * 继续——实现方式是自检结束时把各部位的 origin 整体后移。
          */
         xSemaphoreTake(s_state_lock, portMAX_DELAY);
-        uint32_t script_time = 0;
-        bool stage_changed = false;
-        /*
-         * 自检是渲染层的最高优先级覆盖（v2-effects-engine §7.1）：自检进行时
-         * **不推进剧本播放头**，结束后从原阶段继续。tick 里只更新 last_tick，
-         * 所以恢复时不会一次性补进整段自检时长。
-         */
         if (!lumen_selftest_active(&s_selftest)) {
-            const lumen_script_t *script = lumen_script_get(&s_scripts, s_playback.script_id);
-            stage_changed = lumen_script_playback_tick(script, &s_playback, frame_now,
-                                                       &script_time);
-            if (s_playback.script_id != LUMEN_NO_SCRIPT && (stage_changed || !s_stage_valid)) {
-                rebuild_stage_locked(script_time);
-                s_stage_valid = true;
-                /* 切阶段 = 换一套段配置：State 摘要（seg_count / 基准色）跟着变。 */
-                refresh_state_summary_from_active_locked();
-                ESP_LOGI(TAG, "剧本 stage %u/%u 开始（phase 重置）", s_playback.stage_index + 1,
-                         script != NULL ? script->stage_count : 0);
-            }
+            /* 新部位（刚建的）从自己的第 1 步起跳（T7）。 */
+            start_pending_clocks_locked(frame_now);
         } else {
-            /*
-             * 自检覆盖期间不推进播放头（v2-effects-engine §7.1）：把这段时间
-             * 记为「不算时间」，自检结束后从原阶段原相位继续，而不是一次补进
-             * 整整 2 秒。
-             */
-            lumen_script_playback_hold(&s_playback, frame_now);
-            script_time = lumen_script_playback_time(&s_playback, frame_now);
+            /* 自检覆盖期间把这段时间记为「不算时间」，时钟整体后移。 */
+            hold_clocks_locked(frame_now);
         }
-        sync_script_state_locked();
-        /*
-         * 剧本画面接管的条件：正在播放 / 暂停，或非循环播完后停在最后一阶段。
-         * 停止（action 0）会把 hold_last 清掉，画面回到静态段配置
-         * （v2-effects-engine §6.3）。自检期间不接管（自检只能单色，§11.2）。
-         */
-        bool script_rendering = script_rendering_locked() && !lumen_selftest_active(&s_selftest);
-        uint32_t render_now = script_rendering ? script_time : frame_now;
 
         dirty = s_mailbox_dirty;
         if (dirty) {
-            snapshot = s_mailbox;
+            s_render_state = s_mailbox;
             s_mailbox_dirty = false;
         } else {
-            snapshot = s_state;
+            s_render_state = s_state;
         }
-        /*
-         * 邮箱快照可能是 commit 之前的，剧本摘要字段一律以播放时间轴为准
-         * （否则切阶段后的那一帧会带着旧的 stage_index）。
-         */
-        snapshot.script_id = s_state.script_id;
-        snapshot.stage_index = s_state.stage_index;
-        snapshot.playback_state = s_state.playback_state;
-        snapshot.flags = s_state.flags;
-        /*
-         * 段配置与状态来自同一临界区，避免撕裂帧。
-         *
-         * #122：不再整份取「当前阶段」或「静态配置」，而是逐条按归属合成
-         * （Q16）。参与的带取当前阶段的内容，其余带取自己的实时分区——
-         * 方案因此只驱动它包含的灯带，停播 / 播完 / 切步骤都碰不到别人。
-         * `script_mask` 与段配置同源同寿命，下游靠它区分「归方案管但没有段」
-         * （该步全黑）与「根本不归方案管」（照常渲实时分区）。
-         */
-        s_render_script_mask = script_rendering ? script_mask_locked() : 0;
-        if (script_rendering) {
-            lumen_scope_compose(&s_render_segments, &s_stage_segments, &s_segments,
-                                s_render_script_mask, s_state.strip_count);
-        } else {
-            s_render_segments = s_segments;
-        }
-        /*
-         * #38：每帧维护 strip_anim_mask（State 字节 12）——bit i = 第 i 条带
-         * 当前有动画类活动段。App 用它判断「这条是否在跑动画」，不需要逐带
-         * QueryStrip。以**这一帧真正要渲染**的段配置为准，否则暂停/切阶段时
-         * State 会报上一套的动画位。
-         *
-         * #122：必须按归属逐条取——未参与方案的带保留自己的动画位，这正是
-         * 「方案只驱动它包含的灯带」在 State 上的可观测证据。
-         *
-         * 只是摘要：渲染门控与 TDM 跳过都不读它，所以这里任意时刻的旧值
-         * 都不会造成画面错误。
-         */
-        uint8_t anim_mask = lumen_scope_anim_mask(
-            script_rendering ? &s_stage_segments : NULL, &s_segments, s_render_script_mask,
-            s_state.strip_count);
-        /*
-         * 变化时打一行（不变不打，避免淹掉串口）。这是「闪一下就恢复」唯一
-         * 帧级准确的证据：BLE 逐帧轮询最高只有 ~33Hz，而渲染是 20fps，
-         * 只存在一帧的瞬态正好落在采样间隙里。串口日志是每帧必到的。
-         *
-         * 用独立的 `s_anim_mask_logged` 而不是比较 `s_state.strip_anim_mask`：
-         * 阶段切换路径会在锁内顺手重算一次摘要并写进 s_state，渲染循环随后
-         * 看到的是「没变化」，于是 0xFF -> 0xFE 这一半永远不会被打印。
-         */
-        if (anim_mask != s_anim_mask_logged) {
-            const lumen_script_t *mask_script =
-                lumen_script_get(&s_scripts, s_playback.script_id);
-            ESP_LOGI(TAG, "anim_mask 0x%02X -> 0x%02X（scope=0x%02X stage=%u/%u pb=%u）",
-                     s_anim_mask_logged, anim_mask, s_render_script_mask, s_state.stage_index,
-                     mask_script != NULL ? mask_script->stage_count : 0,
-                     (unsigned)s_playback.state);
-            s_anim_mask_logged = anim_mask;
-        }
-        s_state.strip_anim_mask = anim_mask;
+        /* 布局 / 场景 / 播放头与状态来自同一临界区，避免撕裂帧。 */
+        s_render_layout = s_layout;
+        s_render_scene = s_scenes.scene[s_state.active_scene];
+        s_render_clocks = s_clocks;
+
         /*
          * 推进自检步骤（持锁：与取消/重启自检的命令互斥），并把整份自检状态
-         * 拷出来给渲染用——出锁后不能再用 s_selftest，BLE 回调随时可能改它。
-         * 序列走完后 active 自动变 false，渲染就会回到存储状态，这就是
-         * 「结束后恢复自检前的开关/亮度/颜色」（§11.2 第 3/4 条）。
+         * 拷出来给渲染用。
          */
         lumen_selftest_advance(&s_selftest, esp_timer_get_time());
-        selftest = s_selftest;
+        lumen_selftest_t selftest = s_selftest;
         selftest_active = lumen_selftest_color(&selftest, selftest_rgb);
         uint8_t step = lumen_selftest_step(&selftest);
         xSemaphoreGive(s_state_lock);
 
         if (!selftest_active) {
             if (logged_step != 0xFF) {
-                /* 序列走完或被取消：串口上要能看到「已经回到存储状态」。 */
-                ESP_LOGI(TAG, "自检结束，恢复存储状态 power=%u brightness=%u rgb=%u,%u,%u",
-                         snapshot.power, snapshot.brightness, snapshot.r, snapshot.g,
-                         snapshot.b);
+                ESP_LOGI(TAG, "自检结束，恢复存储状态 power=%u brightness=%u",
+                         s_render_state.power, s_render_state.brightness);
             }
             logged_step = 0xFF;
         } else if (step != logged_step) {
-            /* 串口自检序列证据：与小程序日志无关，不依赖 BLE 也能看。 */
             logged_step = step;
             ESP_LOGI(TAG, "自检 %u/%d %s rgb=%u,%u,%u", (unsigned)step + 1,
                      LUMEN_SELFTEST_STEPS, lumen_selftest_step_name(step), selftest_rgb[0],
                      selftest_rgb[1], selftest_rgb[2]);
         }
 
-        /* 渲染耗时（set_pixel + 阻塞 refresh）不持锁，State read 不会被拖住。
-         *
-         * 单灯带：走 v1 路径（逐字节行为不变）。
-         * 多灯带（#29）：一轮 TDM 把所有可用条刷一遍；某条画面没变就跳过，
-         * 所以静态条不会因为别人的动画而空转刷帧。 */
+        /* 渲染耗时（set_pixel + 阻塞 refresh）不持锁，State read 不会被拖住。 */
         int64_t frame_t0 = esp_timer_get_time();
         if (s_planar.strip_count > 1) {
-            tdm_run_round(&snapshot, &s_render_segments, s_render_script_mask, &selftest, force_round,
-                          render_now);
+            tdm_run_round(&s_render_state, &s_render_layout, &s_render_scene, &s_render_clocks,
+                          &selftest, force_round, frame_now);
         } else {
-            lumen_led_render_snapshot(lumen_led_strip_owner_get(), &snapshot, &s_render_segments,
-                                      &selftest, max_brightness(), render_now,
-                                      s_render_script_mask);
+            lumen_led_render_snapshot(lumen_led_strip_owner_get(), &s_render_state,
+                                      &s_render_layout, &s_render_scene, &s_render_clocks,
+                                      &selftest, max_brightness(), frame_now);
         }
-        /*
-         * 记这一帧的实际耗时，供下一轮的帧周期前馈使用（见上面的等待计算）。
-         * 包含 TDM 轮询 / refresh；不含等待，所以它就是「渲染本身有多重」。
-         */
         s_last_frame_us = (uint32_t)(esp_timer_get_time() - frame_t0);
     }
 }
@@ -1117,55 +843,77 @@ esp_err_t lumen_led_engine_init(void)
     }
 
     lumen_gamma_init();
-    /* #30：正弦包络查表在这里建好（用 math.h，只在初始化时），渲染路径零浮点。 */
+    /* 正弦包络查表在这里建好（用 math.h，只在初始化时），渲染路径零浮点。 */
     lumen_effects_init();
     lumen_selftest_reset(&s_selftest);
     lumen_led_count_job_init(&s_led_count_job);
-    lumen_segment_store_init(&s_segments);
-    /* #32：剧本表与播放时间轴。上电一律「第一阶段 + 停止」（播放位置不持久化）。 */
-    lumen_script_store_init(&s_scripts);
-    lumen_script_playback_init(&s_playback);
-    memset(&s_stage_segments, 0, sizeof(s_stage_segments));
-    s_stage_valid = false;
+    lumen_layout_store_init(&s_layout);
+    lumen_scene_set_init(&s_scenes);
+    lumen_part_clocks_init(&s_clocks);
+    s_mailbox_dirty = false;
     s_response_cb = NULL;
 
     lumen_state_defaults(&s_state, CONFIG_LUMEN_LED_COUNT);
 
     /*
-     * 恢复持久化配置（状态 + 段配置）。失败（无历史 / 损坏 / 旧版本）时
-     * 保留协议默认值，并按「没有任何段」继续——沿用 v1 的 corrupt → defaults。
+     * 恢复持久化配置（State → 布局 → 三个场景）。任一步失败都保留默认值
+     * ——沿用 v1 的 corrupt → defaults，绝不半套加载。
      */
-    /* 静态：lumen_persist_t ≈ 1060 字节，不进 app_main 的栈（见 s_render_persist 的说明）。 */
     static lumen_persist_t restored;
     bool have_saved = lumen_state_store_load(&restored);
     if (have_saved) {
         s_state = restored.state;
-        s_segments = restored.segments;
-        /*
-         * t0_ms 不持久化（docs/v2-effects-engine.md §7.3）：加载后统一设为
-         * 当前时刻，动画从这个时刻起算相位。静态段不用它，但保持字段有效。
-         */
-        uint32_t t0 = now_ms();
-        for (uint8_t strip = 0; strip < LUMEN_MAX_STRIPS; ++strip) {
-            for (uint8_t slot = 0; slot < LUMEN_MAX_SEGMENTS; ++slot) {
-                s_segments.slot[strip][slot].t0_ms = t0;
-            }
-        }
-        refresh_state_summary_locked();
     }
     s_state.brightness = lumen_state_clamp_brightness(s_state.brightness, max_brightness());
 
-    ESP_LOGI(TAG,
-             "state %s: power=%u brightness=%u rgb=%u,%u,%u leds=%u max=%u segs=%u",
-             have_saved ? "restored" : "default", s_state.power, s_state.brightness, s_state.r,
-             s_state.g, s_state.b, s_state.led_count, max_brightness(), s_state.seg_count);
+    /*
+     * 恢复布局。它必须按**当前**灯珠数整份校验：数量被改小之后旧布局里越界的
+     * 段应当整份拒绝，而不是让半套越界配置进入 RAM（与 v4 的剧本同一取舍）。
+     *
+     * 用 s_restore_layout 而不是局部变量：lumen_layout_store_t 是 2696 字节，
+     * 而 lumen_led_engine_init 跑在 app_main 任务的 3584 字节栈上——放局部变量
+     * 直接打穿栈保护（真机实测 `Stack protection fault, task "main"`）。
+     */
+    lumen_layout_store_init(&s_restore_layout);
+    if (lumen_state_store_load_layout(&s_restore_layout, s_state.led_count)) {
+        s_layout = s_restore_layout;
+        ESP_LOGI(TAG, "布局已恢复：strip0 parts=%u", s_layout.part_count[0]);
+    }
 
     /*
-     * #29 多灯带初始化。引脚来自 Kconfig 的逗号分隔列表；少于 2 条时直接走
-     * 单灯带路径（v1 行为逐字节不变，验收点「现有单灯带功能不退化」）。
+     * 恢复三个场景。播放头**不持久化**（§9.4：上电从每个部位的第 1 步起跳），
+     * 所以这里只恢复内容，播放头保持「未启动」。
      *
-     * 注意：TDM 只占 1 个 RMT 通道，所以句柄按「所有条里最大的灯珠数」建
-     * 一次，运行时用 led_strip_switch_gpio 切引脚复用（C3 只有 2 个 TX 通道）。
+     * 同样必须静态：lumen_scene_t 是 10530 字节，一轮循环就把 app_main 的栈
+     * 彻底压穿。循环复用同一块工作区，逐个场景载入后立刻拷进 s_scenes。
+     */
+    for (uint8_t i = 0; i < LUMEN_MAX_SCENES; ++i) {
+        lumen_scene_init(&s_restore_scene);
+        bool loaded = lumen_state_store_load_scene(i, &s_restore_scene);
+        if (loaded) {
+            s_scenes.scene[i] = s_restore_scene;
+        }
+        /*
+         * 每个场景都记一行：只记成功的话，「一个都没恢复」和「根本没读」在
+         * 日志里长得一样（#162 就是靠这一行才看出三个场景全没恢复）。
+         */
+        ESP_LOGI(TAG, "场景 %u %s：name_len=%u strip0 steps=%u/%u", i,
+                 loaded ? "已恢复" : "未恢复（无 key 或 blob 被拒）", s_restore_scene.name_len,
+                 s_restore_scene.part[0][0].step_count, s_restore_scene.part[0][1].step_count);
+    }
+    refresh_layout_summary_locked();
+
+    ESP_LOGI(TAG, "state %s: power=%u brightness=%u leds=%u max=%u parts=%u scene=%u layout=%u",
+             have_saved ? "restored" : "default", s_state.power, s_state.brightness,
+             s_state.led_count[0], max_brightness(), s_state.part_count[0],
+             s_state.active_scene, s_state.layout_valid);
+
+    /*
+     * 多灯带初始化。引脚来自 Kconfig 的逗号分隔列表；少于 2 条时直接走
+     * 单灯带路径（单灯带行为逐字节不变）。
+     *
+     * TDM 只占 1 个 RMT 通道，所以句柄按「所有条里最大的灯珠数」建一次，
+     * 运行时用 led_strip_switch_gpio 切引脚复用（C3 只有 2 个 TX 通道）。
      */
     uint16_t pins_buf[LUMEN_MAX_STRIPS];
     uint8_t pin_count = lumen_planar_parse_list(CONFIG_LUMEN_STRIP_PINS, pins_buf,
@@ -1185,13 +933,12 @@ esp_err_t lumen_led_engine_init(void)
              * 灯珠数：有恢复的持久化值就用它（断电重启后 8 条各自恢复），
              * 否则用 State 的默认值（首次上电）。
              */
-            uint16_t restored_count = have_saved ? restored.strip_counts[i] : 0;
+            uint16_t restored_count = have_saved ? s_state.led_count[i] : 0;
             counts[i] = (restored_count >= 1 && restored_count <= LUMEN_MAX_LEDS)
                             ? restored_count
-                            : s_state.led_count;
+                            : s_state.led_count[0];
         }
-        if (strip_n > 1 &&
-            !lumen_planar_init(&s_planar, pins8, counts, strip_n)) {
+        if (strip_n > 1 && !lumen_planar_init(&s_planar, pins8, counts, strip_n)) {
             ESP_LOGE(TAG, "TDM 配置非法（引脚重复 / 灯珠数越界），退回单灯带");
             strip_n = 1;
         }
@@ -1204,16 +951,15 @@ esp_err_t lumen_led_engine_init(void)
         if (err == ESP_OK) {
             lumen_led_strip_owner_set(s_tdm_strip);
         }
-        ESP_LOGI(TAG, "TDM: %u 条灯带, pins=%s, max_leds=%u, mem_block_symbols=%d",
-                 strip_n, CONFIG_LUMEN_STRIP_PINS, s_planar.max_count,
-                 CONFIG_LUMEN_RMT_MEM_BLOCK_SYMBOLS);
+        ESP_LOGI(TAG, "TDM: %u 条灯带, pins=%s, max_leds=%u, mem_block_symbols=%d", strip_n,
+                 CONFIG_LUMEN_STRIP_PINS, s_planar.max_count, CONFIG_LUMEN_RMT_MEM_BLOCK_SYMBOLS);
     } else {
         lumen_planar_stats_reset(&s_planar_stats);
-        err = lumen_led_strip_owner_init(s_state.led_count);
+        err = lumen_led_strip_owner_init(s_state.led_count[0]);
     }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "strip init failed: %s (mem_block_symbols=%d, leds=%u)",
-                 esp_err_to_name(err), CONFIG_LUMEN_RMT_MEM_BLOCK_SYMBOLS, s_state.led_count);
+                 esp_err_to_name(err), CONFIG_LUMEN_RMT_MEM_BLOCK_SYMBOLS, s_state.led_count[0]);
 #if CONFIG_LUMEN_RMT_STRESS_MODE
         if (CONFIG_LUMEN_RMT_MEM_BLOCK_SYMBOLS > 192) {
             ESP_LOGE(TAG, "C3 每个 RMT group 只有 4x48=192 word，mem_block_symbols>192 "
@@ -1223,39 +969,30 @@ esp_err_t lumen_led_engine_init(void)
         return err;
     }
 
-    /* State 字节 8 报实际配置的灯带数（小程序据此知道要查几条）。 */
+    /* State 报实际配置的灯带数（小程序据此知道要查几条）。 */
     s_state.strip_count = strip_n > 1 ? strip_n : 1;
-    /*
-     * #38：strip_count 刚被改成真实条数，动画位摘要必须按同一口径重算
-     * （恢复路径里的 refresh_state_summary_locked 用的是持久化时的条数）。
-     */
-    s_state.strip_anim_mask = lumen_strip_anim_mask(&s_segments, s_state.strip_count);
 
     /*
-     * #32 恢复已提交剧本 + 激活 id + loop。
+     * 把每条链的灯珠数写回 State。
      *
-     * **播放位置不持久化**（docs/protocol-v4.md §12 / 21-design §6 的二选一）：
-     * 上电一律「从第一阶段 + playback_state = 0（停止）」。所以这里只用
-     * active_script_id 建时间轴，不恢复 stage_index / elapsed。
+     * 上面那份 counts[] 只喂给了 lumen_planar_init（渲染要按它建句柄），而
+     * State 的 led_count[] 一直是默认值：首条有数、其余 0。后果不是「显示不
+     * 对」——lumen_layout_store_validate 拿 strip_counts 校验每条已配置的链
+     * 都不得为 0，于是**每一句 LayoutCommit 都被 InvalidParam 拒掉**，布局永远
+     * 落不了盘，部位划分改了也不生效（真机实测 55/58，三条失败全是它）。
      *
-     * 剧本里记录的段区间必须落在**当前**灯珠数内，否则整份拒绝（回落到
-     * 「没有剧本」）——改小灯珠数之后旧剧本越界，让它半套生效更危险。
+     * 多条链时以 counts[] 为准（它已经合成了「恢复值 / 默认值」）；单条链时
+     * led_count[0] 就是唯一那条，保持原样即可。
      */
-    {
-        uint16_t counts_for_scripts[LUMEN_MAX_STRIPS];
-        strip_counts_locked(counts_for_scripts);
-        uint8_t active_id = LUMEN_NO_SCRIPT;
-        uint8_t loop = LUMEN_LOOP_NONE;
-        if (lumen_state_store_load_scripts(counts_for_scripts, &s_scripts, &active_id, &loop)) {
-            lumen_script_playback_select(&s_playback, active_id, loop, now_ms());
-            ESP_LOGI(TAG, "剧本已恢复：active=%u loop=%u（从第一阶段、停止态开始）", active_id,
-                     loop);
-        } else {
-            lumen_script_store_init(&s_scripts);
-            lumen_script_playback_init(&s_playback);
+    if (strip_n > 1) {
+        for (uint8_t i = 0; i < strip_n; ++i) {
+            s_state.led_count[i] = counts[i];
         }
-        sync_script_state_locked();
+        for (uint8_t i = strip_n; i < LUMEN_MAX_STRIPS; ++i) {
+            s_state.led_count[i] = 0;
+        }
     }
+    refresh_layout_summary_locked();
 
     BaseType_t created =
         xTaskCreate(render_task, "lumen_render", CONFIG_LUMEN_RENDER_TASK_STACK_SIZE, NULL,
@@ -1268,7 +1005,6 @@ esp_err_t lumen_led_engine_init(void)
     xSemaphoreGive(s_render_signal);
 
 #if CONFIG_LUMEN_RMT_STRESS_MODE
-    /* 压力模式的心跳打印跑在独立低优先级任务里，必须晚于指标锁创建。 */
     esp_err_t stress_err = lumen_stress_start();
     if (stress_err != ESP_OK) {
         ESP_LOGW(TAG, "压力指标心跳任务创建失败: %s", esp_err_to_name(stress_err));
@@ -1282,22 +1018,10 @@ void lumen_led_engine_state_bytes(uint8_t out[LUMEN_STATE_BYTES])
     if (out == NULL) {
         return;
     }
-    /* State 的条带维度（§7.3）：灯珠数与活动段数都按灯带展开，必须与状态
-     * 快照来自同一个临界区，否则会出现「段数更新了但灯珠数还是旧的」。 */
-    uint16_t counts[LUMEN_MAX_STRIPS];
-    uint8_t segs[LUMEN_MAX_STRIPS];
+    /* 逐条灯珠数与部位数与状态快照来自同一临界区，避免「部位数更新了但灯珠数
+     * 还是旧的」。 */
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    strip_counts_locked(counts);
-    uint8_t mask = script_mask_locked();
-    for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
-        /* State 报的是**这一帧真正要渲染的**段配置：#122 起逐条按归属取，
-         * 参与的带取当前阶段、其余取实时分区。 */
-        segs[i] = lumen_segment_store_count(
-            lumen_scope_source_for_strip(script_rendering_locked() ? &s_stage_segments : NULL,
-                                         &s_segments, mask, i),
-            i);
-    }
-    lumen_state_to_bytes(&s_state, max_brightness(), counts, segs, out);
+    lumen_state_to_bytes(&s_state, max_brightness(), out);
     xSemaphoreGive(s_state_lock);
 }
 
@@ -1323,166 +1047,308 @@ void lumen_led_engine_commit(const lumen_state_t *next, uint8_t command)
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
     s_state = accepted;
     /*
-     * State 摘要永远由段配置决定，不信任调用方传进来的 seg_count / rgb。
+     * 布局派生的字段（part_count / layout_valid）永远由布局表决定，
+     * 不信任调用方传进来的值。
      */
-    refresh_state_summary_locked();
-    /*
-     * #38：动画位按**这一帧真正要渲染的段配置**算——方案接管时逐条按归属取
-     * （参与的带取当前阶段、其余取实时分区），与渲染任务每帧的算法一致。
-     * 命令快照里的旧值不能漏进 State read。
-     *
-     * #122：这里必须与渲染循环同源，否则方案只驱动 strip0 时，命令到达那一
-     * 刻 State 会按整份方案报其余带的动画位，下一帧又被渲染循环改回来——
-     * 那正是「闪一下就恢复」的瞬态。
-     */
-    s_state.strip_anim_mask = lumen_scope_anim_mask(
-        script_rendering_locked() ? &s_stage_segments : NULL, &s_segments, script_mask_locked(),
-        s_state.strip_count);
-    /*
-     * 剧本摘要字段（字节 10-13）**不**信任命令层快照：播放头可能刚被渲染任务
-     * 推进，用旧快照会把 stage_index / playback_state 回退。以播放时间轴为准。
-     */
-    sync_script_state_locked();
+    refresh_layout_summary_locked();
     s_mailbox = s_state;
     s_mailbox_dirty = true;
-    persist_snapshot_locked(&s_commit_persist);
+    persist_state_locked(&s_commit_persist);
     xSemaphoreGive(s_state_lock);
 
     /* 二值信号量天然只保留一个 pending 唤醒，旧快照会被 s_mailbox 覆盖。 */
     xSemaphoreGive(s_render_signal);
 
-    /* 写失败在 ACK 之后由 Event 0x81 异步上报（§10.3）；command 是 detail。 */
+    /* 写失败在 ACK 之后由 Event 0x81 异步上报（§10.5）；command 是 detail。 */
     lumen_state_store_request_save(&s_commit_persist, command);
 }
 
-uint8_t lumen_led_engine_set_segment(uint8_t strip_id, uint8_t seg_id,
-                                     const lumen_segment_t *segment, uint8_t command)
+/* ---------------- 布局族 ---------------- */
+
+uint8_t lumen_led_engine_layout_write(uint8_t strip_id, uint8_t part_count)
 {
-    if (segment == NULL) {
-        return LUMEN_RESULT_INVALID_PARAM;
-    }
-
-    lumen_segment_t applied = *segment;
-    applied.active = true;
-    /* 生效时刻由引擎填：相位以写入时刻为基准（docs/v2-effects-engine.md §5.1）。 */
-    applied.t0_ms = now_ms();
-
     uint8_t result;
-    uint8_t seg_count;
-
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    /*
-     * 防御性再校验一次（命令层已校验；这里用引擎里的权威段表）。
-     *
-     * #36 / spec-v3 §4.2 第 1 处缺陷：这里过去用 s_state.led_count（strip 0 的
-     * 数字）校验**所有**灯带的段区间，与命令层的 per-strip 校验不一致——
-     * strip 3 只有 10 灯时会放行 end=40（设成功但后半段不亮）。改为按各自
-     * 灯带的灯珠数校验；未配置（0）时退回协议上限，与命令层同一规则。
-     */
-    uint16_t per_strip[LUMEN_MAX_STRIPS];
-    strip_counts_locked(per_strip);
-    uint16_t strip_leds = strip_id < LUMEN_MAX_STRIPS ? per_strip[strip_id] : 0;
-    if (strip_leds == 0 || strip_leds > LUMEN_MAX_LEDS) {
-        strip_leds = LUMEN_MAX_LEDS;
-    }
-    result = lumen_segment_store_set(&s_segments, strip_id, s_state.strip_count, seg_id,
-                                     (uint8_t)strip_leds, &applied);
+    result = lumen_layout_store_write(&s_layout, strip_id, part_count, s_state.strip_count);
     if (result == LUMEN_RESULT_OK) {
-        /*
-         * 摘要按**当前生效**的段配置算：剧本播放中 State 应报当前阶段，
-         * 而不是用户正在编辑的静态配置（否则 State 会与画面不一致）。
-         */
-        refresh_state_summary_from_active_locked();
+        refresh_layout_summary_locked();
         s_mailbox = s_state;
         s_mailbox_dirty = true;
-        persist_snapshot_locked(&s_commit_persist);
-        seg_count = s_state.seg_count;
-    } else {
-        seg_count = 0;
     }
     xSemaphoreGive(s_state_lock);
-
     if (result != LUMEN_RESULT_OK) {
-        ESP_LOGW(TAG, "SetSegment 被拒 strip=%u seg=%u start=%u end=%u result=0x%02X", strip_id,
-                 seg_id, applied.start, applied.end, result);
+        ESP_LOGW(TAG, "LayoutWrite 被拒 strip=%u parts=%u", strip_id, part_count);
         return result;
     }
-
     xSemaphoreGive(s_render_signal);
-    /* 只有配置变更才请求持久化（动画帧循环绝不写 NVS，§7.3）。 */
-    lumen_state_store_request_save(&s_commit_persist, command);
-
-    ESP_LOGI(TAG,
-             "SetSegment strip=%u seg=%u [%u-%u] l0=0x%02X l1=0x%02X blend=%u segs=%u",
-             strip_id, seg_id, applied.start, applied.end, applied.layer[0].type,
-             applied.layer[1].type, applied.blend, seg_count);
+    ESP_LOGI(TAG, "LayoutWrite strip=%u parts=%u（该链部位已清空）", strip_id, part_count);
     return LUMEN_RESULT_OK;
 }
 
-uint8_t lumen_led_engine_clear_segment(uint8_t strip_id, uint8_t seg_id, uint8_t command)
+uint8_t lumen_led_engine_layout_part(uint8_t strip_id, uint8_t part_id, uint8_t name_len,
+                                     const uint8_t *name, uint8_t seg_count, uint8_t phase)
 {
-    if (strip_id >= LUMEN_MAX_STRIPS || seg_id >= LUMEN_MAX_SEGMENTS) {
-        return LUMEN_RESULT_INVALID_PARAM;
+    uint8_t result;
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    result = lumen_layout_store_set_part(&s_layout, strip_id, part_id, name_len, name, seg_count,
+                                         phase, s_state.strip_count);
+    xSemaphoreGive(s_state_lock);
+    if (result != LUMEN_RESULT_OK) {
+        ESP_LOGW(TAG, "LayoutPart 被拒 strip=%u part=%u name_len=%u segs=%u phase=%u", strip_id,
+                 part_id, name_len, seg_count, phase);
+        return result;
     }
+    ESP_LOGI(TAG, "LayoutPart strip=%u part=%u name_len=%u segs=%u phase=%u", strip_id, part_id,
+             name_len, seg_count, phase);
+    return LUMEN_RESULT_OK;
+}
 
-    bool was_active;
-    uint8_t seg_count;
+uint8_t lumen_led_engine_layout_seg(uint8_t strip_id, uint8_t part_id, uint8_t seg_id,
+                                    uint8_t start, uint8_t end)
+{
+    uint8_t result;
+    uint16_t led_count = 0;
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    led_count = lumen_command_strip_count(&s_state, strip_id);
+    result = lumen_layout_store_set_seg(&s_layout, strip_id, part_id, seg_id, start, end,
+                                        led_count, s_state.strip_count);
+    xSemaphoreGive(s_state_lock);
+    if (result != LUMEN_RESULT_OK) {
+        /* 最常见原因：压到了别的部位（S3），旧布局保持不变（S4）。 */
+        ESP_LOGW(TAG, "LayoutSeg 被拒 strip=%u part=%u seg=%u [%u-%u] led_count=%u", strip_id,
+                 part_id, seg_id, start, end, led_count);
+        return result;
+    }
+    ESP_LOGI(TAG, "LayoutSeg strip=%u part=%u seg=%u [%u-%u]", strip_id, part_id, seg_id, start,
+             end);
+    return LUMEN_RESULT_OK;
+}
+
+uint8_t lumen_led_engine_layout_commit(uint8_t command)
+{
+    uint16_t counts[LUMEN_MAX_STRIPS];
+    uint8_t result;
 
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    was_active = lumen_segment_store_clear(&s_segments, strip_id, seg_id);
-    refresh_state_summary_from_active_locked();
+    strip_counts_locked(counts);
+    /* 整份校验：每链部位数 / 每部位段数 / 段已写齐 / 段互斥 / 段在灯珠数内。 */
+    result = lumen_layout_store_validate(&s_layout, s_state.strip_count, counts);
+    if (result != LUMEN_RESULT_OK) {
+        xSemaphoreGive(s_state_lock);
+        ESP_LOGW(TAG, "LayoutCommit 校验失败：整份布局非法，RAM 与 NVS 都不动");
+        return result;
+    }
+    /*
+     * 先确认能落盘，再改 RAM。编码失败（> 4096）时一个字节都不改，
+     * 直接回 StorageFailed。
+     */
+    if (!persist_layout_locked(command)) {
+        xSemaphoreGive(s_state_lock);
+        return LUMEN_RESULT_STORAGE_FAILED;
+    }
+    /*
+     * 布局是「结构改动」，会打断该链时钟（§6.1 末段）：把**所有**链的播放头
+     * 重置到此刻——这是唯一允许打断时钟的操作。
+     */
+    uint32_t t = now_ms();
+    for (uint8_t i = 0; i < s_state.strip_count; ++i) {
+        lumen_part_clocks_reset_strip(&s_clocks, i, s_layout.part_count[i], t);
+    }
+    refresh_layout_summary_locked();
     s_mailbox = s_state;
     s_mailbox_dirty = true;
-    persist_snapshot_locked(&s_commit_persist);
-    seg_count = s_state.seg_count;
+    persist_state_locked(&s_commit_persist);
     xSemaphoreGive(s_state_lock);
 
     xSemaphoreGive(s_render_signal);
+    /* layout_valid 变了 → State 也要落盘（它不在 layout blob 里）。 */
     lumen_state_store_request_save(&s_commit_persist, command);
-
-    ESP_LOGI(TAG, "ClearSegment strip=%u seg=%u was_active=%d segs=%u", strip_id, seg_id,
-             was_active ? 1 : 0, seg_count);
+    ESP_LOGI(TAG, "LayoutCommit ok（已落盘，该链时钟已重置）");
     return LUMEN_RESULT_OK;
 }
 
-void lumen_led_engine_segments_snapshot(lumen_segment_store_t *out)
+void lumen_led_engine_layout_snapshot(lumen_layout_store_t *out)
 {
     if (out == NULL) {
         return;
     }
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    *out = s_segments;
+    *out = s_layout;
     xSemaphoreGive(s_state_lock);
 }
 
-uint8_t lumen_led_engine_segments(uint8_t strip_id, lumen_segment_t *out, uint8_t *out_slots,
-                                  uint8_t cap)
-{
-    if (out == NULL || cap == 0 || strip_id >= LUMEN_MAX_STRIPS) {
-        return 0;
-    }
-    /*
-     * 槽位枚举在 led_engine_slots.c（纯逻辑、无 RTOS 依赖，host 可测）。
-     * 这里只保留「进锁 → 枚举 → 出锁」：枚举期间 s_segments 不会变，
-     * 与抽取前在同一临界区里遍历的结果完全一致（#49）。
-     */
-    xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    uint8_t written =
-        lumen_led_engine_collect_segments(&s_segments, strip_id, out, out_slots, cap);
-    xSemaphoreGive(s_state_lock);
-    return written;
-}
-
-uint8_t lumen_led_engine_segment_mask(uint8_t strip_id)
+uint8_t lumen_led_engine_part_count(uint8_t strip_id)
 {
     if (strip_id >= LUMEN_MAX_STRIPS) {
         return 0;
     }
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    uint8_t mask = lumen_segment_store_mask(&s_segments, strip_id);
+    uint8_t count = s_layout.part_count[strip_id];
     xSemaphoreGive(s_state_lock);
-    return mask;
+    return count;
 }
+
+/* ---------------- 场景族 ---------------- */
+
+uint8_t lumen_led_engine_scene_part(uint8_t scene_id, uint8_t strip_id, uint8_t part_id,
+                                    uint8_t step_count, uint8_t loop, uint8_t on,
+                                    uint8_t command)
+{
+    if (scene_id >= LUMEN_MAX_SCENES) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    /*
+     * 先确认能落盘再改 RAM：场景编码后超过 12288 字节时回 StorageFailed 且
+     * RAM 原样保留（§10.4 末段）。做法是「试写一份候选」——但场景表 10KB，
+     * 拷贝一份太贵，所以这里先改 RAM、编码、失败再回滚那一个部位的头。
+     */
+    lumen_part_scene_t backup;
+    uint8_t result;
+
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    lumen_scene_t *scene = &s_scenes.scene[scene_id];
+    backup = scene->part[strip_id][part_id];
+    result = lumen_scene_set_part(scene, strip_id, part_id, step_count, loop, on,
+                                  s_state.strip_count, LUMEN_MAX_PARTS);
+    if (result != LUMEN_RESULT_OK) {
+        xSemaphoreGive(s_state_lock);
+        ESP_LOGW(TAG, "ScenePart 被拒 scene=%u strip=%u part=%u steps=%u loop=%u on=%u",
+                 scene_id, strip_id, part_id, step_count, loop, on);
+        return result;
+    }
+    if (!persist_scene_locked(scene_id, command)) {
+        scene->part[strip_id][part_id] = backup; /* 回滚：不半套生效 */
+        xSemaphoreGive(s_state_lock);
+        return LUMEN_RESULT_STORAGE_FAILED;
+    }
+    /*
+     * 新部位或步数变多时，让新出现的部位从自己的第 1 步起跳（T7）。
+     * 已经启动过的部位不重置（编辑不打断时钟，E2）。
+     */
+    lumen_part_clock_start(&s_clocks.clock[strip_id][part_id], now_ms());
+    xSemaphoreGive(s_state_lock);
+
+    xSemaphoreGive(s_render_signal);
+    ESP_LOGI(TAG, "ScenePart scene=%u strip=%u part=%u steps=%u loop=%u on=%u", scene_id,
+             strip_id, part_id, step_count, loop, on);
+    return LUMEN_RESULT_OK;
+}
+
+uint8_t lumen_led_engine_scene_step(uint8_t scene_id, uint8_t strip_id, uint8_t part_id,
+                                    uint8_t step_index, uint16_t duration_ms,
+                                    const uint8_t layer0[9], const uint8_t layer1[9],
+                                    uint8_t command)
+{
+    if (scene_id >= LUMEN_MAX_SCENES || layer0 == NULL || layer1 == NULL) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+
+    lumen_effect_layer_t l0;
+    lumen_effect_layer_t l1;
+    (void)lumen_layer_decode(layer0, &l0);
+    (void)lumen_layer_decode(layer1, &l1);
+
+    lumen_scene_step_t backup;
+    uint8_t result;
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    lumen_scene_t *scene = &s_scenes.scene[scene_id];
+    backup = scene->part[strip_id][part_id].step[step_index];
+    result = lumen_scene_set_step(scene, strip_id, part_id, step_index, duration_ms, l0, l1,
+                                  s_state.strip_count, LUMEN_MAX_PARTS);
+    if (result != LUMEN_RESULT_OK) {
+        xSemaphoreGive(s_state_lock);
+        ESP_LOGW(TAG, "SceneStep 被拒 scene=%u strip=%u part=%u step=%u duration=%ums", scene_id,
+                 strip_id, part_id, step_index, duration_ms);
+        return result;
+    }
+    if (!persist_scene_locked(scene_id, command)) {
+        scene->part[strip_id][part_id].step[step_index] = backup;
+        xSemaphoreGive(s_state_lock);
+        return LUMEN_RESULT_STORAGE_FAILED;
+    }
+    xSemaphoreGive(s_state_lock);
+
+    xSemaphoreGive(s_render_signal);
+    ESP_LOGI(TAG, "SceneStep scene=%u strip=%u part=%u step=%u duration=%ums l0=0x%02X l1=0x%02X",
+             scene_id, strip_id, part_id, step_index, duration_ms, l0.type, l1.type);
+    return LUMEN_RESULT_OK;
+}
+
+uint8_t lumen_led_engine_scene_name(uint8_t scene_id, uint8_t name_len, const uint8_t *name,
+                                    uint8_t command)
+{
+    if (scene_id >= LUMEN_MAX_SCENES) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    uint8_t result;
+    uint8_t backup_len;
+    uint8_t backup_name[LUMEN_NAME_BYTES];
+
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    lumen_scene_t *scene = &s_scenes.scene[scene_id];
+    backup_len = scene->name_len;
+    memcpy(backup_name, scene->name, sizeof(backup_name));
+    result = lumen_scene_set_name(scene, name_len, name);
+    if (result != LUMEN_RESULT_OK) {
+        xSemaphoreGive(s_state_lock);
+        return result;
+    }
+    if (!persist_scene_locked(scene_id, command)) {
+        scene->name_len = backup_len;
+        memcpy(scene->name, backup_name, sizeof(scene->name));
+        xSemaphoreGive(s_state_lock);
+        return LUMEN_RESULT_STORAGE_FAILED;
+    }
+    xSemaphoreGive(s_state_lock);
+    ESP_LOGI(TAG, "SceneName scene=%u name_len=%u", scene_id, name_len);
+    return LUMEN_RESULT_OK;
+}
+
+uint8_t lumen_led_engine_activate_scene(uint8_t scene_id, uint8_t command)
+{
+    if (scene_id >= LUMEN_MAX_SCENES) {
+        return LUMEN_RESULT_INVALID_PARAM;
+    }
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    s_state.active_scene = scene_id;
+    /*
+     * 硬切 + **所有部位**的播放头重置到此刻（T3/C4）：切场景后每个部位都从
+     * 自己的第 1 步重新开始，不延续上一个场景的相位。
+     */
+    uint32_t t = now_ms();
+    for (uint8_t i = 0; i < s_state.strip_count; ++i) {
+        lumen_part_clocks_reset_strip(&s_clocks, i, s_layout.part_count[i], t);
+    }
+    s_mailbox = s_state;
+    s_mailbox_dirty = true;
+    persist_state_locked(&s_commit_persist);
+    xSemaphoreGive(s_state_lock);
+
+    xSemaphoreGive(s_render_signal);
+    lumen_state_store_request_save(&s_commit_persist, command);
+    ESP_LOGI(TAG, "ActivateScene scene=%u（硬切，全部部位从第 1 步重跳）", scene_id);
+    return LUMEN_RESULT_OK;
+}
+
+void lumen_led_engine_scene_snapshot(uint8_t scene_id, lumen_scene_t *out)
+{
+    if (out == NULL || scene_id >= LUMEN_MAX_SCENES) {
+        return;
+    }
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    *out = s_scenes.scene[scene_id];
+    xSemaphoreGive(s_state_lock);
+}
+
+uint8_t lumen_led_engine_active_scene(void)
+{
+    xSemaphoreTake(s_state_lock, portMAX_DELAY);
+    uint8_t scene = s_state.active_scene;
+    xSemaphoreGive(s_state_lock);
+    return scene;
+}
+
+/* ---------------- 灯珠数与自检 ---------------- */
 
 void lumen_led_engine_set_store_event_cb(lumen_store_event_cb cb)
 {
@@ -1495,23 +1361,10 @@ void lumen_led_engine_set_response_cb(lumen_led_engine_response_cb cb)
     s_response_cb = cb;
 }
 
-uint8_t lumen_led_engine_set_led_count(uint16_t count, uint8_t seq)
-{
-    return lumen_led_engine_set_led_count_for_strip(0, count, seq);
-}
-
-/*
- * #29：按灯带独立设数量。
- *
- * strip 0 走原来的重建路径（会重建整个句柄）。
- * strip 1..7 不改句柄——TDM 下所有条共用一个句柄，句柄按 max_count 建，
- * 所以只需改 s_planar 里那条的 count 并把该条的「已渲染」标记清掉，
- * 下一次轮询自然按新数量推送。这里同步完成，可以直接回 ACK 0x00。
- */
 uint8_t lumen_led_engine_set_led_count_for_strip(uint8_t strip_id, uint16_t count, uint8_t seq)
 {
     if (count < 1 || count > LUMEN_MAX_LEDS) {
-        /* 命令层已拦下越界值；这里防御性拒绝，不改状态机。 */
+        /* 命令层已拦下；这里防御性拒绝，不改状态机。 */
         return LUMEN_RESULT_INVALID_PARAM;
     }
     if (strip_id >= LUMEN_MAX_STRIPS) {
@@ -1526,32 +1379,27 @@ uint8_t lumen_led_engine_set_led_count_for_strip(uint8_t strip_id, uint16_t coun
         xSemaphoreTake(s_state_lock, portMAX_DELAY);
         bool valid = strip_id < s_planar.strip_count;
         if (valid) {
-            if (s_planar.strips[strip_id].count == count) {
+            if (s_state.led_count[strip_id] == count) {
                 xSemaphoreGive(s_state_lock);
                 return LUMEN_RESULT_OK;
             }
             (void)lumen_planar_set_count(&s_planar, strip_id, count);
+            s_state.led_count[strip_id] = count;
             /* 数量变了：该条上一帧的尺寸不再有效，强制重刷一次。 */
             s_tdm_rendered_valid[strip_id] = false;
             /*
-             * 越界段必须一起裁掉（这条路径以前既没裁剪也没持久化）：
-             * 不裁剪 → 越界段仍然生效，剧本 blob 还会被整份拒收；
-             * 不持久化 → 重启后数量又回到旧值。
+             * 越界段必须一起裁掉并重新落盘：不裁剪 → 越界段仍然生效，
+             * 布局 blob 还会被整份拒收；不持久化 → 重启后数量又回到旧值。
              */
-            prune_for_strip_locked(strip_id, count);
-            /* 摘要按**当前生效**的段表重算（播放中即已裁剪的阶段快照）。 */
-            refresh_state_summary_from_active_locked();
-            /*
-             * 本路径跑在 BLE 回调（NimBLE 主机任务）里，**不能**用
-             * s_render_persist——那是渲染任务的私有缓冲，共用会撕裂。
-             */
-            persist_snapshot_locked(&s_commit_persist);
+            prune_layout_locked(strip_id, count);
+            refresh_layout_summary_locked();
+            persist_state_locked(&s_commit_persist);
         }
         xSemaphoreGive(s_state_lock);
         if (!valid) {
             return LUMEN_RESULT_INVALID_PARAM;
         }
-        /* 成功才持久化（§11.3 第 2 条）：数量与裁剪后的段表一起跨断电。 */
+        /* 成功才持久化（§11.3 第 2 条）：数量与裁剪后的布局一起跨断电。 */
         lumen_state_store_request_save(&s_commit_persist, LUMEN_CMD_SET_LED_COUNT);
         xSemaphoreGive(s_render_signal);
         ESP_LOGI(TAG, "SetLedCount strip %u -> %u（seq=0x%02X），无需重建句柄", strip_id, count,
@@ -1561,7 +1409,8 @@ uint8_t lumen_led_engine_set_led_count_for_strip(uint8_t strip_id, uint16_t coun
 
     lumen_led_count_request_t status;
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    status = lumen_led_count_job_request(&s_led_count_job, count, s_state.led_count, seq);
+    status = lumen_led_count_job_request(&s_led_count_job, strip_id, count,
+                                         s_state.led_count[strip_id], seq);
     xSemaphoreGive(s_state_lock);
 
     switch (status) {
@@ -1589,17 +1438,8 @@ void lumen_led_engine_strip_counts(uint16_t out[LUMEN_MAX_STRIPS])
     if (out == NULL) {
         return;
     }
-    for (uint8_t i = 0; i < LUMEN_MAX_STRIPS; ++i) {
-        out[i] = 0;
-    }
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    if (s_planar.strip_count > 1) {
-        for (uint8_t i = 0; i < s_planar.strip_count; ++i) {
-            out[i] = s_planar.strips[i].count;
-        }
-    } else {
-        out[0] = s_state.led_count;
-    }
+    strip_counts_locked(out);
     xSemaphoreGive(s_state_lock);
 }
 
@@ -1608,314 +1448,8 @@ uint8_t lumen_led_engine_max_brightness(void)
     return max_brightness();
 }
 
-/* ---------------- #32 剧本下发与播放控制 ---------------- */
-
 /*
- * 剧本命令全部在 s_state_lock 内执行：剧本表、播放时间轴与段配置共用同一把锁，
- * 因此「commit 成功」与「渲染任务开始用这一套」之间没有可观察的中间态。
- *
- * 提交 / 激活成功后请求持久化（deferred 500ms）；播放控制**不**写 NVS，
- * 因为播放位置不持久化（§12）。
- */
-uint8_t lumen_led_engine_script_begin(uint8_t script_id, uint8_t stage_count,
-                                      uint8_t strip_count)
-{
-    xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    bool ok = lumen_script_begin(&s_scripts, script_id, stage_count, strip_count);
-    xSemaphoreGive(s_state_lock);
-    if (!ok) {
-        ESP_LOGW(TAG, "ScriptBegin 被拒 id=%u stages=%u strips=%u", script_id, stage_count,
-                 strip_count);
-        return LUMEN_RESULT_INVALID_PARAM;
-    }
-    ESP_LOGI(TAG, "ScriptBegin id=%u stages=%u strips=%u（暂存区已清空）", script_id,
-             stage_count, strip_count);
-    return LUMEN_RESULT_OK;
-}
-
-uint8_t lumen_led_engine_script_stage(uint8_t script_id, uint8_t stage_index,
-                                     uint16_t duration_ms, uint16_t fade_ms)
-{
-    xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    bool ok = lumen_script_stage(&s_scripts, script_id, stage_index, duration_ms, fade_ms);
-    xSemaphoreGive(s_state_lock);
-    if (!ok) {
-        /* 最常见原因：没有对应 id 的 ScriptBegin，或 stage_index 超出本次声明。 */
-        ESP_LOGW(TAG, "ScriptStage 被拒 id=%u stage=%u duration=%ums（未 Begin 或下标越界）",
-                 script_id, stage_index, duration_ms);
-        return LUMEN_RESULT_INVALID_PARAM;
-    }
-    return LUMEN_RESULT_OK;
-}
-
-uint8_t lumen_led_engine_script_segment(uint8_t script_id, uint8_t stage_index, uint8_t strip_id,
-                                        uint8_t seg_id, const lumen_segment_t *segment,
-                                        uint16_t *frames_written)
-{
-    if (segment == NULL) {
-        return LUMEN_RESULT_INVALID_PARAM;
-    }
-    xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    bool ok = lumen_script_segment(&s_scripts, script_id, stage_index, strip_id, seg_id, segment,
-                                   frames_written);
-    xSemaphoreGive(s_state_lock);
-    if (!ok) {
-        ESP_LOGW(TAG, "ScriptSegment 被拒 id=%u stage=%u strip=%u seg=%u", script_id,
-                 stage_index, strip_id, seg_id);
-        return LUMEN_RESULT_INVALID_PARAM;
-    }
-    return LUMEN_RESULT_OK;
-}
-
-uint8_t lumen_led_engine_script_commit(uint8_t script_id)
-{
-    uint16_t counts[LUMEN_MAX_STRIPS];
-    uint8_t stage_count = 0;
-    lumen_script_commit_result_t result;
-
-    xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    strip_counts_locked(counts);
-    /*
-     * commit 内部先整份校验，再把候选剧本试编码到 s_script_persist_blob 量尺寸。
-     * 超限 → TOO_LARGE，此时 committed 槽位与 NVS 都没动过（「能提交的一定能
-     * 持久化」的不变式）。成功时 blob 已在缓冲里，直接排队保存，不重复编码。
-     */
-    result = lumen_script_commit(&s_scripts, script_id, counts, s_script_persist_blob,
-                                 sizeof(s_script_persist_blob), &s_script_persist_len);
-    if (result == LUMEN_SCRIPT_COMMIT_OK) {
-        /*
-         * commit 成功就持久化：已提交剧本必须能跨断电存活（「设备存多套剧本」
-         * 的前提）。播放位置仍然不写。
-         */
-        lumen_state_store_request_script_save(s_script_persist_blob, s_script_persist_len);
-        stage_count = lumen_script_stage_count(&s_scripts, script_id);
-    }
-    xSemaphoreGive(s_state_lock);
-
-    if (result == LUMEN_SCRIPT_COMMIT_TOO_LARGE) {
-        ESP_LOGW(TAG, "ScriptCommit id=%u 编码后超过 %u 字节：拒签，配置未改变", script_id,
-                 (unsigned)sizeof(s_script_persist_blob));
-        return LUMEN_RESULT_SCRIPT_TOO_LARGE;
-    }
-    if (result != LUMEN_SCRIPT_COMMIT_OK) {
-        /*
-         * 失败：暂存已丢弃、已提交剧本原样保留（验收点）。
-         * 调用方另发 Event 0x02（detail = script_id）让小程序看到具体是哪个失败。
-         */
-        ESP_LOGW(TAG, "ScriptCommit 失败 id=%u：整份校验不过，暂存已丢弃，保留上一套", script_id);
-        return LUMEN_RESULT_INVALID_PARAM;
-    }
-
-    xSemaphoreGive(s_render_signal);
-    ESP_LOGI(TAG, "ScriptCommit ok id=%u stages=%u（已原子替换）", script_id, stage_count);
-    return LUMEN_RESULT_OK;
-}
-
-uint8_t lumen_led_engine_script_abort(uint8_t script_id)
-{
-    xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    lumen_script_abort(&s_scripts, script_id);
-    xSemaphoreGive(s_state_lock);
-    ESP_LOGI(TAG, "ScriptAbort id=%u（暂存已丢弃，已提交剧本不变）", script_id);
-    return LUMEN_RESULT_OK;
-}
-
-/*
- * ClearScript 0x1E（#73）：真正从设备上删掉一套已提交剧本。
- *
- * 顺序刻意与 ScriptCommit 一致：**先确认能落盘，再改 RAM**。
- *
- *  1. 持锁，用 script_blob 的「把该槽位当成未提交」编码做预检；
- *     预检失败时一个字节都不改，直接回 StorageFailed——原剧本继续可用。
- *  2. 预检通过才 memset 槽位（未提交即成功，幂等）。
- *  3. 清掉的正是激活剧本时退回「无激活剧本」并**停止播放**：
- *     select(LUMEN_NO_SCRIPT) 已经把播放头/状态归零，画面随即交回静态配置。
- *     「谁算命中」的判定是 script_store 里的纯函数，host 有独立测试。
- *  4. 同步 State 镜像、重算摘要、置邮箱 dirty、排队写 NVS。
- *
- * 为什么不做「清空后再试编码、失败再回滚」：剧本表 ~70KB，没有廉价快照，
- * 而清空只会让 blob 变短，预检几乎不可能失败——但顺序摆在这里，将来
- * 格式变化也不会退化成「RAM 改了、flash 没写」。
- */
-uint8_t lumen_led_engine_clear_script(uint8_t script_id)
-{
-    if (script_id >= LUMEN_MAX_SCRIPTS) {
-        return LUMEN_RESULT_INVALID_PARAM;
-    }
-
-    xSemaphoreTake(s_state_lock, portMAX_DELAY);
-
-    /*
-     * 激活 id 按**清空后**的状态写：命中的话就是「没有激活剧本」。
-     * loop 是播放属性而不是剧本属性（§12），清空剧本不该顺手把它复位，
-     * 所以无论是否命中都沿用当前值。
-     */
-    bool deactivate = lumen_script_should_deactivate(s_playback.script_id, script_id);
-    uint8_t active_after = deactivate ? LUMEN_NO_SCRIPT : s_playback.script_id;
-
-    size_t len = lumen_script_blob_encode_with_cleared(&s_scripts, script_id, active_after,
-                                                       s_playback.loop, s_script_persist_blob,
-                                                       sizeof(s_script_persist_blob));
-    if (len == 0) {
-        xSemaphoreGive(s_state_lock);
-        ESP_LOGW(TAG, "ClearScript id=%u 持久化预检失败：回 StorageFailed，剧本保持可用",
-                 script_id);
-        return LUMEN_RESULT_STORAGE_FAILED;
-    }
-
-    /* 预检通过：真正抹掉该槽位（同时丢弃同 id 的暂存）。 */
-    (void)lumen_script_store_clear(&s_scripts, script_id);
-
-    if (deactivate) {
-        /*
-         * 停播 + 退回无激活剧本：select(LUMEN_NO_SCRIPT) 把播放头与时间量归零、
-         * 状态置 STOPPED，画面随即交回静态段配置（s_stage_valid 置 false 让
-         * 渲染任务重建）。loop 原样保留（它不是剧本属性）。
-         */
-        lumen_script_playback_select(&s_playback, LUMEN_NO_SCRIPT, s_playback.loop, now_ms());
-        s_stage_valid = false;
-        ESP_LOGI(TAG, "ClearScript id=%u 是激活剧本：已停止播放并退回无激活剧本", script_id);
-    }
-
-    sync_script_state_locked();
-    refresh_state_summary_from_active_locked();
-    s_mailbox = s_state;
-    s_mailbox_dirty = true;
-    /* 清空是持久化内容的变化：把预检时编码好的快照排队写入（500ms debounce）。 */
-    lumen_state_store_request_script_save(s_script_persist_blob, len);
-    xSemaphoreGive(s_state_lock);
-
-    xSemaphoreGive(s_render_signal);
-    ESP_LOGI(TAG, "ClearScript id=%u 已清空（未提交即成功）", script_id);
-    return LUMEN_RESULT_OK;
-}
-
-uint8_t lumen_led_engine_activate_script(uint8_t script_id, uint8_t loop)
-{
-    if (script_id >= LUMEN_MAX_SCRIPTS || loop > LUMEN_LOOP_MAX) {
-        return LUMEN_RESULT_INVALID_PARAM;
-    }
-
-    xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    if (!lumen_script_is_committed(&s_scripts, script_id)) {
-        xSemaphoreGive(s_state_lock);
-        ESP_LOGW(TAG, "ActivateScript id=%u 被拒：该剧本未提交", script_id);
-        return LUMEN_RESULT_INVALID_PARAM;
-    }
-    /*
-     * 激活 = 换剧本 + 播放头回 0 + 停止态。**不自动播放**：用户按播放才走，
-     * 这样「切换剧本」不会突然开始跑时间轴。
-     */
-    lumen_script_playback_select(&s_playback, script_id, loop, now_ms());
-    s_stage_valid = false; /* 让渲染任务按新剧本重建当前阶段的段配置 */
-    sync_script_state_locked();
-    refresh_state_summary_from_active_locked();
-    s_mailbox = s_state;
-    s_mailbox_dirty = true;
-    /* 激活的剧本 id 与 loop 要跨断电（§12）；播放位置不写。 */
-    persist_scripts_locked();
-    xSemaphoreGive(s_state_lock);
-
-    xSemaphoreGive(s_render_signal);
-    ESP_LOGI(TAG, "ActivateScript id=%u loop=%u（播放头回 0，待播放）", script_id, loop);
-    return LUMEN_RESULT_OK;
-}
-
-uint8_t lumen_led_engine_set_playback(uint8_t action, uint8_t loop)
-{
-    if (action > 2 || loop > LUMEN_LOOP_MAX) {
-        return LUMEN_RESULT_INVALID_PARAM;
-    }
-
-    uint32_t t = now_ms();
-    xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    /* loop 在三种 action 下都写入（stop 时也记，供下次 play 使用）。 */
-    s_playback.loop = loop;
-
-    switch (action) {
-    case 0: /* stop：播放头回 stage 0，画面交回静态配置 */
-        lumen_script_playback_stop(&s_playback, t);
-        s_stage_valid = false;
-        refresh_state_summary_from_active_locked();
-        break;
-    case 1: /* play：从当前播放头开始 / 继续（暂停后继续不从头） */
-        lumen_script_playback_play(&s_playback, t);
-        break;
-    case 2: /* pause：冻结播放头与画面 */
-        lumen_script_playback_pause(&s_playback, t);
-        break;
-    default:
-        break;
-    }
-    sync_script_state_locked();
-    /* State 变了：邮箱同步一份，State read 立刻能看到新的 playback_state。 */
-    s_mailbox = s_state;
-    s_mailbox_dirty = true;
-    /*
-     * loop 属于持久化字段（§12），三种 action 下都要写；播放位置不写。
-     * debounce 500ms，连续点 play/pause 只会写最后一次。
-     */
-    persist_scripts_locked();
-    uint8_t state_after = s_state.playback_state;
-    uint8_t stage_after = s_state.stage_index;
-    uint8_t script_after = s_state.script_id;
-    xSemaphoreGive(s_state_lock);
-
-    xSemaphoreGive(s_render_signal);
-    ESP_LOGI(TAG, "SetPlayback action=%u loop=%u -> state=%u stage=%u script=%u", action, loop,
-             state_after, stage_after, script_after);
-    return LUMEN_RESULT_OK;
-}
-
-bool lumen_led_engine_script_summary(uint8_t script_id, uint8_t *stage_count, uint8_t *flags)
-{
-    if (script_id >= LUMEN_MAX_SCRIPTS) {
-        return false;
-    }
-    bool ok;
-    xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    const lumen_script_t *script = lumen_script_get(&s_scripts, script_id);
-    ok = script != NULL;
-    if (ok) {
-        if (stage_count != NULL) {
-            *stage_count = script->stage_count;
-        }
-        if (flags != NULL) {
-            /*
-             * 位表与 State 字节 10 一致（#98）：bit0 循环中、bit1 active、
-             * bit2 最后一步循环。只对激活剧本报循环位——未激活剧本没有独立
-             * 的循环存储位置（loop 是播放属性不是剧本属性）。
-             */
-            uint8_t value = 0;
-            if (s_playback.script_id == script_id) {
-                value = (uint8_t)(LUMEN_PLAYBACK_FLAG_ACTIVE | lumen_loop_flags(s_playback.loop));
-            }
-            /*
-             * 未激活剧本的 loop 没有独立存储位置（loop 是播放属性不是剧本属性），
-             * 所以只对激活剧本报 bit0。这与 State 字节 13 的定义一致。
-             */
-            *flags = value;
-        }
-    }
-    xSemaphoreGive(s_state_lock);
-    return ok;
-}
-
-uint16_t lumen_led_engine_script_frames(uint8_t script_id, uint16_t *frames_written)
-{
-    xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    uint16_t frames = (s_scripts.staging_active && s_scripts.staging_script_id == script_id)
-                          ? s_scripts.frames_written
-                          : 0;
-    xSemaphoreGive(s_state_lock);
-    if (frames_written != NULL) {
-        *frames_written = frames;
-    }
-    return frames;
-}
-
-/*
- * 协议 §11.2 自检控制。三个函数都不碰 s_state / s_mailbox / NVS：
+ * 协议 §9.6 自检控制。三个函数都不碰 s_state / s_mailbox / NVS：
  * 自检只是渲染层的临时覆盖，结束后渲染任务直接回到存储状态。
  */
 void lumen_led_engine_start_selftest(void)
@@ -1924,7 +1458,7 @@ void lumen_led_engine_start_selftest(void)
         return;
     }
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
-    /* 重复收到 0x07 时从这里重新计时（§11.2 第 7 条）。 */
+    /* 重复收到 0x07 时从这里重新计时。 */
     lumen_selftest_start(&s_selftest, esp_timer_get_time());
     xSemaphoreGive(s_state_lock);
     xSemaphoreGive(s_render_signal);

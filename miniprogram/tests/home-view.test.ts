@@ -63,8 +63,8 @@ describe("buildHomeView", () => {
     expect(view.current?.initial).toBe("书");
   });
 
-  it("已连接且开灯：光晕 > 0，颜色取自设备基准色", () => {
-    const state = baseState({ power: 1, brightness: 200, maxBrightness: 200, r: 255, g: 180, b: 120 });
+  it("已连接且开灯：光晕 > 0，颜色是中性底色（v5 的 State 不再报 RGB）", () => {
+    const state = baseState({ power: 1, brightness: 200, maxBrightness: 200 });
     const view = buildHomeView({
       recent: [recent()],
       registry: [registryEntry()],
@@ -76,7 +76,9 @@ describe("buildHomeView", () => {
     expect(card?.connected).toBe(true);
     expect(card?.tone).toBe("on");
     expect(card?.glow).toBeGreaterThan(0);
-    expect(card?.colorHex.toUpperCase()).toBe("#FFB478");
+    /* v5 的 State 是 32 字节且不含颜色摘要（§7.3），首页大卡只能用中性底色。
+     * 以前那个颜色是 strip0/seg0 的投影，本来也不代表整台设备。 */
+    expect(card?.colorHex.toUpperCase()).toBe("#8E8E93");
     expect(card?.brightnessPercent).toBe(100);
   });
 

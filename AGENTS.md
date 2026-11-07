@@ -7,9 +7,29 @@
 **先读 [`docs/handoff.md`](docs/handoff.md)。** 它写清了当前在哪、哪些已完成、剩余工作卡在
 什么上。不要凭本文件的简短描述推断进度——项目已经过了三个大版本。
 
-> **当前状态：第八轮（测试流程改造）在 `integration/test-flow`，待合入 `master`**，
-> 规格 [#102](https://github.com/sishoui/light-matt/issues/102)，实现票 #103–#111 全部关闭。
-> 上一条主线是第五轮（UI / 交互，规格 #85）已合入 `master`（merge `ef295fe`）。
+> **当前状态：第十一轮（v5 · 部位与场景）在 `integration/lumen-v5`（PR #163，ready for review），
+> 九张票全部落地并**全部关闭**，五层测试全绿、**没有未验证的层**。**
+> 规格 [#145](https://github.com/sishoui/light-matt/issues/145)，实现票 `#154`–`#162`。
+> 详见 [`docs/handoff.md`](docs/handoff.md) §0 与
+> [`docs/evidence/v5-integration-2026-11-07.md`](docs/evidence/v5-integration-2026-11-07.md)。
+> v5 是**断崖**：协议 v5、灯组 → **部位**（多段灯珠、各有独立时间轴）、三套**场景**；
+> 「灯组详情页」与「简单档」已删，压成「设备页 → 部位编辑器」两层。
+> **`ui` 层必须跑**（`scripts/verify-v5.mjs` 48/48），改 `pages/device` / `pages/part` 时它验的是
+> 「点得动 + 设备真的收到」——单测（直接 `new ControlSession`）覆盖不到那一层。
+> **改过页面之后若 `ui` 报「方法不存在」，先重开 `cli auto`**：开发者工具会缓存旧编译产物。
+>
+> **800 颗 / 64 播放头的帧率基线已实测**：`--framerate` 把 8 条链的 `SetLedCount`
+> 全部设成 100（不必真的接 800 颗灯——RMT 仍按 100 颗的位时间真的发，CPU 成本是真实的），
+> **round ≈ 5.53 ms / 轮，20fps 预算 50 ms**。
+> 注意判据：必须 `lit=8` 且 `pushed` 持续增长，否则测到的是「去重跳过、什么都没推」
+> （第一版就踩了这个坑，读出物理上不可能的 1.9ms）。
+>
+> **仍未闭环（下个会话先读 [`docs/handoff.md`](docs/handoff.md) §0）**：
+> ① PR #163 还没人批准、未合入（领先 master 51 commit、0 冲突）；
+> ② **相位漂移没有真机数字**（协议不报播放头位置，只有 host 数学证明）；
+> ③ `pages/part` 的 `pushSteps()` 缺 busy 重入保护（已知限制，见 `pending-tasks.md`）。
+>
+> 上一轮（第十轮）的修复在 `fix/no-segment-black-and-layer-blend`，已随本分支带上。
 
 **第五轮**（规格 [#85](https://github.com/sishoui/light-matt/issues/85)，实现票 #90–#101）：
 
@@ -39,7 +59,7 @@
 
 **验收**：真机探针（`scripts/probe-v4.py`）、模拟器渲染回归、三端单测全部通过，
 肉眼观感已确认。数字见 [`docs/acceptance-v4.md`](docs/acceptance-v4.md)、
-[`docs/acceptance-v5.md`](docs/acceptance-v5.md) 与最近一次测试报告。
+[`docs/acceptance-v5.md`](docs/acceptance-v5.md)（指针）与最近一次测试报告。
 
 **上上轮**：v3 的 11 张实现票（#36–#45）与 4 张缺口票（#47–#50）全部关闭，
 **已合入 `master`**（PR #51，merge commit `f9f2fe3`）。**设备侧验收已全部跑完**：协议层探针 + 行为语义探针
@@ -139,18 +159,40 @@ SHA-256 索引、配置丢失记录。
 
 ## 字节契约
 
-- **v4（当前唯一真相）**：`docs/protocol-v4.md` + 可执行副本
-  `docs/protocol-testvectors-v4.json`（由 `scripts/gen-protocol-testvectors-v4.mjs` 生成）
-- **v3 已作废**：`docs/protocol-v3.md` 与 `protocol-testvectors-v3.json` 仅保留供对照
-- **v2 已作废**：`docs/protocol.md` 与 `docs/spec-v2.md` 仅保留供对照
+- **v5（当前唯一真相）**：`docs/protocol-v5.md` + 可执行副本
+  `docs/protocol-testvectors-v5.json`（由 `scripts/gen-protocol-testvectors-v5.mjs` 生成，
+  `scripts/check-protocol-testvectors-v5.mjs` 独立校验）
+- **v4 / v3 / v2 全部作废**：`protocol-v4.md`、`protocol-v3.md`、`protocol.md`、
+  `spec-v2.md` 顶部都有 ⛔ 横幅，**只作历史对照，不再被任何测试消费**
 
-改任何字节布局 = 契约 + 向量 + 两端实现同一个 commit。
+改任何字节布局 = 契约 + 向量 + 两端实现同一个 commit（现有 113 条向量）。
 
 ## 测试
 
 **怎么跑、改哪类代码该跑哪层、报告在哪、清单怎么维护，全部见 [`docs/testing.md`](docs/testing.md)。**
 日常一条命令：`node scripts/test-run.mjs`（固件 / 小程序 / 后端三层，约 10 秒）。
 改页面再加 `node scripts/test-run.mjs ui`；发版前 `--release`。
+
+### `ui` 层（渲染回归）怎么开起来
+
+`ui` 层长期报 `SKIPPED: 缺自动化端口`，**不是没装工具，是没开自动化**。三步：
+
+```powershell
+# 1. 开发者工具已安装（本机：C:\Program Files (x86)\Tencent\微信web开发者工具）
+# 2. 用 CLI 开自动化（IDE 已在 9501 上跑时，auto 会自己占 9502）
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'C:\Program Files (x86)\Tencent\微信web开发者工具\cli.bat' auto --project 'C:\Users\13092\Desktop\项目\zcode\lumen\miniprogram'"
+# 3. 指定端口跑（auto 通常落在 9502）
+WS=ws://127.0.0.1:9502 node scripts/verify-v5.mjs
+```
+
+- **9501 是 IDE 的 HTTP 端口，不是自动化 ws**。探 9501 通 ≠ 自动化可用。
+- 带中文路径的 `.ps1` 必须存成 **UTF-8 with BOM**，否则 PowerShell 把 `微信` 读成乱码、
+  报「找不到 cli.bat」。
+- `cli auto` 若报 `IDE server has started on 9501 and must be restarted on 9420`，
+  **不要加 `--port`**，直接不带端口重跑。
+- `scripts/verify-v5.mjs` 的断言集已改写成 **v5 页面**（设备页就地展开 + 部位编辑器），
+  实测 **38/38**。改这两个页面时它必须跟着改——它验的是「点得动 + 设备真的收到」，
+  这是单测（直接 `new ControlSession`）覆盖不到的那一层。
 
 ## Agent skills
 
@@ -189,6 +231,15 @@ python scripts/notify-feishu.py --status green \
 | 目标群 | 默认 `oc_19c2c88a44e0ae537b82d72712afbf53`，换群用 `--chat-id` |
 | 验证 | 脚本会打印 `message_id`；要复核可 `GET /open-apis/im/v1/messages/{id}` |
 
+**凭证放在 `lumen/.env`**（已 gitignore，键名 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`）。
+**不要每次重新找**：直接 `set -a && . ./.env && set +a` 再跑脚本即可。
+
+```bash
+cd "C:\Users\13092\Desktop\项目\zcode\lumen"
+set -a && . ./.env && set +a
+python scripts/notify-feishu.py --status green --title "..." --body-file .scratch/xxx.md
+```
+
 **为什么是应用凭证而不是自定义机器人 Webhook**：Webhook 只能发到「它被添加的那个群」，
 不能指定 `chat_id`；要发固定群就得走 `im/v1/messages`。
 **前提是应用已发布并开了 `im:message` 权限**，否则换得到 token 但发消息会报权限错。
@@ -198,14 +249,39 @@ python scripts/notify-feishu.py --status green \
 
 ## 真机工具
 
-- `scripts/probe-v3.py` —— 协议层真机验证（PC 当 central，需 bleak；项数看末尾汇总行）
-- `scripts/probe-v3-deep.py` —— 行为语义验证（段回滚 / 逐带独立 / 剧本推进 /
-  断连续播 / 过大回滚），`--skip-heavy` 跳过 ~900 帧大剧本下发
+- `scripts/probe-v5.py` —— **v5 协议层真机验证（67 项，当前唯一有效的协议探针）**。
+  含断崖、布局往返、段互斥、场景往返、复位恢复。`--skip-persist` 跳过复位段
+- `scripts/probe-v3.py` / `probe-v3-deep.py` / `probe-v4.py` —— v3/v4 时代的探针，
+  **对 v5 固件全部无效**（命令字与 State 布局都换了），只留作历史
 - `scripts/ble-gateway.py` —— BLE 网关（bleak → JSON over stdio），**由 e2e 自动拉起**。
   让 Node 侧的小程序代码直连 PC 真实蓝牙，无需手机
 - `scripts/stress-fragment-v3.py` —— 分片重组压力测试
 - `scripts/capture-serial.py` —— 抓串口日志（`--reset` 用 DTR/RTS 复位）
 - `scripts/build-firmware.cmd` / `flash-firmware.cmd COM6` —— 编译与烧录
 
-**烧录是断崖升级**：刷 v4 后设备配置回默认值，这是设计取舍，不是 bug（v3 的 State blob
-版本 4 与脚本 blob `LMS3`/v2 会被整份拒绝，v4 用版本 5 与 `LMS4`/v3）。
+### 本机环境（换机器要重做）
+
+| 项 | 值 |
+|---|---|
+| ESP-IDF | v6.1，checkout 在 `C:\Users\13092\esp\esp-idf\esp-idf` |
+| Python 环境 | `C:\Espressif\python_env\idf6.1_py3.11_env` |
+| **export.bat 的坑** | 它默认找 `idf6.1_py3.12_env`，本机只装了 3.11 → **必须先 `set IDF_PYTHON_ENV_PATH`**，否则报 `not found` |
+| 设备 | `Lumen-5662` / `CC:8D:A2:C2:56:62`，串口 `COM6`，8 条链 × 30 颗 |
+| **组件注册表** | 本机连不上 `components-file.espressif.com`（TLS 失败）。`idf.py build` 会卡在配置阶段——**把 `%TEMP%\lumen-firmware\managed_components` 里的 `espressif__led_strip` 复制到新目录**即可离线编译 |
+| **仓库路径含中文** | `项目` 会让 riscv gcc 读 `picolibc.specs` 时把路径截成 `\x0a`。**必须在 ASCII 路径下编译**（`scripts/build-firmware.cmd` 拷到 `%TEMP%\lumen-firmware` 就是为了这个） |
+
+一条能跑通的编译+烧录（在 ASCII 目录里）：
+
+```bat
+set "MSYSTEM="
+set "IDF_TOOLS_PATH=C:\Espressif"
+set "IDF_PYTHON_ENV_PATH=C:\Espressif\python_env\idf6.1_py3.11_env"
+call "C:\Users\13092\esp\esp-idf\esp-idf\export.bat"
+idf.py --no-ccache set-target esp32c3
+idf.py --no-ccache build
+idf.py -p COM6 flash
+```
+
+**烧录是断崖升级**：刷 v5 后设备配置回默认值，这是设计取舍，不是 bug（v4 的 State blob
+版本 5、脚本 blob `LMS4`/v3 与段表都会被整份拒绝，v5 用 State blob 版本 6、
+布局键 `LML1`、场景键 `LMS5`）。**灯组名与封面存在手机上，不受影响。**

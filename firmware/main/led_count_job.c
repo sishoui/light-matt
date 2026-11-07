@@ -12,14 +12,19 @@ void lumen_led_count_job_init(lumen_led_count_job_t *job)
     job->pending = false;
     job->running = false;
     job->target = 0;
+    job->strip = 0;
     job->seq = 0;
 }
 
-lumen_led_count_request_t lumen_led_count_job_request(lumen_led_count_job_t *job, uint16_t count,
-                                                      uint16_t current_count, uint8_t seq)
+lumen_led_count_request_t lumen_led_count_job_request(lumen_led_count_job_t *job, uint8_t strip,
+                                                      uint16_t count, uint16_t current_count,
+                                                      uint8_t seq)
 {
     if (job == NULL) {
         return LUMEN_LED_COUNT_BUSY;
+    }
+    if (strip >= LUMEN_MAX_STRIPS) {
+        return LUMEN_LED_COUNT_BUSY; /* 调用方已拦下；防御性拒绝 */
     }
     /* §11.3：重建进行中（含已排队未开始）收到第二个请求 → Busy，不排队。
      * 先于「与当前值相同」判断：此时共享状态还是旧数量，用旧值判断没有意义。 */
@@ -35,6 +40,7 @@ lumen_led_count_request_t lumen_led_count_job_request(lumen_led_count_job_t *job
     }
     job->pending = true;
     job->target = count;
+    job->strip = strip;
     job->seq = seq;
     return LUMEN_LED_COUNT_ACCEPTED;
 }
@@ -64,8 +70,10 @@ bool lumen_led_count_job_complete(lumen_led_count_job_t *job, bool ok, lumen_sta
     if (!ok || state == NULL) {
         return false;
     }
-    /* 成功：只改数量，保留当前开关/亮度/颜色（§11.3「当前状态保持不变」）。 */
-    state->led_count = job->target;
+    /* 成功：只改**该条灯带**的数量，保留当前开关/亮度/场景（§11.3「当前状态保持不变」）。 */
+    if (job->strip < LUMEN_MAX_STRIPS) {
+        state->led_count[job->strip] = job->target;
+    }
     return true;
 }
 
@@ -77,4 +85,9 @@ bool lumen_led_count_job_busy(const lumen_led_count_job_t *job)
 uint16_t lumen_led_count_job_target(const lumen_led_count_job_t *job)
 {
     return job == NULL ? 0 : job->target;
+}
+
+uint8_t lumen_led_count_job_strip(const lumen_led_count_job_t *job)
+{
+    return job == NULL ? 0 : job->strip;
 }

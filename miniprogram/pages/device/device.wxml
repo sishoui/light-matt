@@ -48,6 +48,26 @@
     <text class="retry-action">重连</text>
   </view>
 
+  <!-- ============ 场景条（#159）：点一下就切，长按改名 ============ -->
+  <view wx:if="{{ready}}" class="scene-bar">
+    <view
+      wx:for="{{sceneTabs}}"
+      wx:key="sceneId"
+      class="scene-tab {{item.active ? 'active' : ''}} {{sceneBusyId === item.sceneId ? 'busy' : ''}}"
+      data-scene-id="{{item.sceneId}}"
+      bindtap="onSceneTap"
+      bindlongpress="onSceneLongPress"
+      hover-class="scene-tab-hover"
+    >
+      <text class="scene-tab-label">{{item.label}}</text>
+      <text wx:if="{{item.active && item.hasContent}}" class="scene-tab-hint">正在演</text>
+      <text wx:elif="{{!item.hasContent}}" class="scene-tab-hint">空</text>
+    </view>
+  </view>
+  <text wx:if="{{ready && sceneAllEmpty}}" class="scene-empty-hint">
+    三个场景都还没有编排。点灯组展开部位，再从部位编辑器里排时间轴。
+  </text>
+
   <!-- ---------------- 设备级：总开关 + 整台设备的亮度 ---------------- -->
   <view class="control-card {{ready ? '' : 'disabled'}}">
     <view class="power-card">
@@ -91,47 +111,90 @@
       <text class="section-value">{{stripCards.length}} 组</text>
     </view>
 
-    <!-- #94：一列排布，左封面 / 中名称与灯珠数 / 右开关。长按弹出改名与换封面。 -->
+    <!-- v5：一列排布，左封面 / 中名称与部位数 / 右开关。点行**就地展开**部位列表。 -->
     <view wx:if="{{stripCards.length > 0}}" class="strip-list {{ready ? '' : 'disabled'}}">
-      <view
-        wx:for="{{stripCards}}"
-        wx:key="stripId"
-        class="strip-row {{item.on ? '' : 'off'}}"
-        data-strip-id="{{item.stripId}}"
-        bindtap="onStripCardTap"
-        bindlongpress="onStripCardLongPress"
-        hover-class="strip-row-hover"
-      >
-        <image wx:if="{{item.photo}}" class="strip-cover" src="{{item.photo}}" mode="aspectFill" />
-        <view wx:else class="strip-cover strip-cover-fallback"></view>
+      <block wx:for="{{stripCards}}" wx:key="stripId">
+        <view
+          class="strip-row {{item.on ? '' : 'off'}} {{item.expanded ? 'expanded' : ''}}"
+          data-strip-id="{{item.stripId}}"
+          bindtap="onStripCardTap"
+          bindlongpress="onStripCardLongPress"
+          hover-class="strip-row-hover"
+        >
+          <image wx:if="{{item.photo}}" class="strip-cover" src="{{item.photo}}" mode="aspectFill" />
+          <view wx:else class="strip-cover strip-cover-fallback"></view>
 
-        <view class="strip-row-main">
-          <view class="strip-row-title-line">
-            <text class="strip-row-title">{{item.label}}</text>
-            <view wx:if="{{item.animating}}" class="strip-anim-dot"></view>
+          <view class="strip-row-main">
+            <view class="strip-row-title-line">
+              <text class="strip-row-title">{{item.label}}</text>
+              <text class="strip-chevron">{{item.expanded ? '▾' : '▸'}}</text>
+            </view>
+            <text class="strip-row-meta">{{item.ledCount}} 颗 · {{item.summary}}</text>
           </view>
-          <text class="strip-row-meta">{{item.ledCount}} 颗 · {{item.summary}}</text>
+
+          <!-- catchtap 拦住冒泡：点开关不能顺带展开。
+               开关自己的状态变化走 bindchange（change 与 tap 是两条独立事件）。 -->
+          <view class="strip-switch" catchtap="onStripSwitchBlock">
+            <switch
+              checked="{{item.on}}"
+              color="{{accentColor}}"
+              disabled="{{!ready || item.busy}}"
+              data-strip-id="{{item.stripId}}"
+              bindchange="onStripPowerChange"
+            />
+          </view>
         </view>
 
-        <!-- catchtap 拦住冒泡：点开关不能顺带进灯组页。
-             开关自己的状态变化走 bindchange（change 与 tap 是两条独立事件）。 -->
-        <view class="strip-switch" catchtap="onStripSwitchBlock">
-          <switch
-            checked="{{item.on}}"
-            color="{{accentColor}}"
-            disabled="{{!ready || item.busy}}"
+        <!-- 展开区：部位列表（#155）。空态给一个「+」播种入口。 -->
+        <view wx:if="{{item.expanded}}" class="part-list">
+          <text wx:if="{{item.partsLoading}}" class="part-hint">正在读取部位…</text>
+          <text wx:elif="{{item.emptyHint}}" class="part-hint">{{item.emptyHint}}</text>
+
+          <view
+            wx:for="{{item.parts}}"
+            wx:for-item="part"
+            wx:key="partId"
+            class="part-row {{part.on ? '' : 'off'}}"
+            data-strip-id="{{part.stripId}}"
+            data-part-id="{{part.partId}}"
+            bindtap="onPartRowTap"
+            hover-class="part-row-hover"
+          >
+            <view class="part-row-main">
+              <text class="part-row-title">{{part.label}}</text>
+              <text class="part-row-meta">{{part.rangeText}} · {{part.pixelCount}} 颗</text>
+              <text class="part-row-meta">{{part.stepSummary}}</text>
+            </view>
+            <view class="strip-switch" catchtap="onPartSwitchBlock">
+              <switch
+                checked="{{part.on}}"
+                color="{{accentColor}}"
+                disabled="{{!ready || part.busy}}"
+                data-strip-id="{{part.stripId}}"
+                data-part-id="{{part.partId}}"
+                bindchange="onPartSwitchChange"
+              />
+            </view>
+          </view>
+
+          <view
+            wx:if="{{!item.partsLoading}}"
+            class="part-add"
             data-strip-id="{{item.stripId}}"
-            bindchange="onStripPowerChange"
-          />
+            catchtap="onSeedPartTap"
+            hover-class="part-row-hover"
+          >
+            <text class="part-add-text">+ 添加部位（整条 · 1 步 · 常亮）</text>
+          </view>
         </view>
-      </view>
+      </block>
     </view>
 
     <text wx:else class="section-hint">
       {{ready ? '没有可见的灯组' : '连接后显示灯组'}}
     </text>
     <text wx:if="{{ready && stripCards.length > 0}}" class="section-hint">
-      点卡片进入灯组编辑，长按可改名或换封面；右边的开关只影响这一组
+      点一行展开部位，再点部位进入编辑；长按可改名或换封面
     </text>
   </view>
 
@@ -195,5 +258,28 @@
       <text class="sheet-item-sub">{{stripMenuPhotoIsCustom ? '恢复默认占位图' : '当前是默认封面'}}</text>
     </view>
     <view class="sheet-cancel" bindtap="onStripMenuClose">取消</view>
+  </view>
+
+  <!-- ============ 场景改名（#159） ============ -->
+  <view wx:if="{{sceneNameOpen}}" class="sheet-mask" bindtap="onSceneNameClose"></view>
+  <view wx:if="{{sceneNameOpen}}" class="sheet">
+    <view class="sheet-grabber"></view>
+    <view class="sheet-head">
+      <text class="sheet-title">场景名称</text>
+      <text class="sheet-sub">{{sceneNameBytes}} / {{sceneNameLimit}} 字节</text>
+    </view>
+    <input
+      class="scene-name-input"
+      value="{{sceneNameInput}}"
+      placeholder="例如：待机 / 战斗 / 演出"
+      maxlength="24"
+      focus="{{sceneNameOpen}}"
+      bindinput="onSceneNameInput"
+    />
+    <view class="sheet-item" bindtap="onSceneNameSave" hover-class="sheet-item-hover">
+      <text class="sheet-item-label">保存名字</text>
+      <text class="sheet-item-sub">存进设备，换手机也在</text>
+    </view>
+    <view class="sheet-cancel" bindtap="onSceneNameClose">取消</view>
   </view>
 </view>

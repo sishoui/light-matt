@@ -196,32 +196,12 @@ describe("#40 session.queryStripConfig / queryDeviceInfo", () => {
   });
 });
 
-describe("#40 currentLedCounts 来自 State 的逐带字段", () => {
-  it("多灯带返回真实值（不再沿用 strip 0）", () => {
-    const transport = new FakeTransport();
-    const session = makeSession(transport);
-    transport.emitState(
-      baseState({
-        stripCount: 3,
-        stripCounts: [30, 45, 60, 0, 0, 0, 0, 0],
-        stripSegCounts: [1, 2, 3, 0, 0, 0, 0, 0],
-      }),
-    );
-    expect(session.currentLedCounts()).toEqual([30, 45, 60]);
-  });
-
-  it("未连接时返回空数组（剧本校验据此跳过上界检查）", () => {
+describe("#40 currentLedCounts（v5：随剧本容量校验一起退役）", () => {
+  it("会话不再暴露 currentLedCounts —— 逐带灯珠数直接从 State 读", () => {
     const session = makeSession(new FakeTransport());
-    expect(session.currentLedCounts()).toEqual([]);
-  });
-
-  it("按 strip_count 截断到实际条数", () => {
-    const transport = new FakeTransport();
-    const session = makeSession(transport);
-    transport.emitState(
-      baseState({ stripCount: 1, stripCounts: [12, 34, 0, 0, 0, 0, 0, 0] }),
-    );
-    expect(session.currentLedCounts()).toEqual([12]);
+    /* v5 的 State 里 stripLedCounts 就是权威字段（§7.3），
+     * currentLedCounts 只是 v4 剧本容量校验的中间层，已删除。 */
+    expect((session as unknown as Record<string, unknown>).currentLedCounts).toBeUndefined();
   });
 });
 
@@ -229,17 +209,19 @@ describe("#40 activeStripId 接缝（#41 的灯带切换器入口）", () => {
   it("#41 起 stripId 必填（不再缺省跟随 activeStripId）", async () => {
     const transport = new FakeTransport();
     const session = makeSession(transport);
-    transport.emitState(baseState({ stripCount: 2, stripCounts: [30, 40, 0, 0, 0, 0, 0, 0] }));
+    transport.emitState(
+      baseState({ stripCount: 2, stripLedCounts: [30, 40, 0, 0, 0, 0, 0, 0] }),
+    );
     expect(session.activeStripId).toBe(0);
 
     session.setActiveStripId(1);
     expect(session.activeStripId).toBe(1);
     expect(session.stripLedCount(1)).toBe(40);
 
-    /* 显式传带号：发的是 [strip 1, seg 3]。缺省参数会在改签名时变成编译错误，
-     * 运行期拿 undefined 也会被命令构造器的校验挡住——两条防线都在。 */
-    await session.clearSegment(1, 3);
-    expect(Array.from(transport.writes[0].payload)).toEqual([1, 3]);
+    /* 显式传带号：SetStripPower 的载荷是 [strip, on]。
+     * 缺省参数会在改签名时变成编译错误——这是「stripId 必填」的运行时兜底。 */
+    await session.setStripPower(1, false);
+    expect(Array.from(transport.writes[0].payload)).toEqual([1, 0]);
   });
 
   it("灯带号越界抛错（不静默夹住）", () => {
@@ -253,13 +235,13 @@ describe("#40 setLedCount 维护逐带灯珠数", () => {
   it("改 strip 0 同时更新派生 ledCount", async () => {
     const transport = new FakeTransport();
     const session = makeSession(transport);
-    transport.emitState(baseState({ ledCount: 30 }));
+    transport.emitState(baseState({ stripLedCounts: [30, 0, 0, 0, 0, 0, 0, 0] }));
 
     const result = await session.setLedCount(60);
     expect(result.kind).toBe("ok");
     expect(transport.writes[0].command).toBe(0x06);
     expect(Array.from(transport.writes[0].payload)).toEqual([0x00, 0x3c, 0x00]);
-    expect(session.deviceState?.ledCount).toBe(60);
+    expect(session.deviceState?.stripLedCounts[0]).toBe(60);
     expect(session.stripLedCount(0)).toBe(60);
   });
 
@@ -267,14 +249,18 @@ describe("#40 setLedCount 维护逐带灯珠数", () => {
     const transport = new FakeTransport();
     const session = makeSession(transport);
     transport.emitState(
-      baseState({ stripCount: 3, stripCounts: [30, 40, 50, 0, 0, 0, 0, 0] }),
+      baseState({
+        stripCount: 3,
+        stripLedCounts: [30, 40, 50, 0, 0, 0, 0, 0],
+      }),
     );
 
     const result = await session.setLedCount(55, 2);
     expect(result.kind).toBe("ok");
     expect(Array.from(transport.writes[0].payload)).toEqual([0x02, 0x37, 0x00]);
     expect(session.stripLedCount(2)).toBe(55);
-    expect(session.deviceState?.ledCount).toBe(30);
+    /* 别的条不受影响（v5 起 State 的 led_count 是逐条数组）。 */
+    expect(session.deviceState?.stripLedCounts[0]).toBe(30);
   });
 });
 

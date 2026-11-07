@@ -1,13 +1,26 @@
 # lumen 协议规格 v4
 
-**状态**：**已实现（2026-11-03，分支 `feat/68-protocol-v4`；2026-11-04 原地扩展 #98）**。
-本文件取代 `docs/protocol-v3.md`（v3 保留为历史参考，不再维护）。
-固件 host 测试与 `docs/protocol-testvectors-v4.json` 的全部向量都对着本文件跑
-（向量条数以该文件为准，`scripts/check-protocol-testvectors-v4.mjs` 校验它与本文一致；
-断言数见最近一次测试报告，跑法见 [`docs/testing.md`](testing.md)）。
-**适用范围**：微信小程序 ↔ ESP32-C3 固件之间的 BLE 协议。
-**唯一真相**：本文件定义字节级契约，`docs/protocol-testvectors-v4.json` 是它的可执行副本。
-改协议 = 本文件 + 测试向量 + 两端实现进同一个 commit。
+> ⛔ **已作废（协议 v5 断崖，2026-11-07）**
+>
+> v5 把字节契约与持久化格式整个换掉了：State 37 → **32 字节**、段/剧本族
+> `0x10`–`0x1E` **整族退役**（收到回 `UnknownCommand`）、新增布局族 `0x20`–`0x24`
+> 与场景族 `0x25`–`0x29`、blob 全部换版本。**v4 的帧在 v5 固件上会被拒**
+> （version 0x04 ≠ 0x05）。
+>
+> **现行契约**：[`protocol-v5.md`](./protocol-v5.md)（唯一真相）+
+> [`protocol-testvectors-v5.json`](./protocol-testvectors-v5.json)（可执行副本）。
+> 本文件**只作历史对照**，不再维护、不再被任何测试消费。
+
+**状态（历史记录，2026-11-03 实现 · 2026-11-07 作废）**：v4 当时取代了
+`docs/protocol-v3.md`，现在它自己已被 v5 取代（见顶部横幅）。
+
+本文件与 `docs/protocol-testvectors-v4.json`、`scripts/check-protocol-testvectors-v4.mjs`
+**都不再被现行测试消费**——只有 v5 的那一套在跑。保留它们是为了让「v4 当时到底怎么
+编码的」可查（对照 v5 的改动时有用）。
+
+**适用范围**：微信小程序 ↔ ESP32-C3 固件之间的 BLE 协议（历史版本）。
+**当时的唯一真相**（现已让位）：v4 时代本文件定义字节级契约，
+`docs/protocol-testvectors-v4.json` 是它的可执行副本。**现行契约看 v5。**
 **相关**：[灯效规格](./effects-spec.md)（参数块语义）、[v3 规格](./protocol-v3.md)（历史）。
 
 > **读 `effects-spec.md` 时注意**：那份文档是 **v2/v3 语义**的历史定义，其中

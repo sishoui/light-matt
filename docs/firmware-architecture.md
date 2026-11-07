@@ -178,7 +178,7 @@ firmware\test\run-tests.cmd
 
 它做三件事：把 `test_skeleton.c` 与 `main/` 下能脱离 ESP-IDF 编译的源文件一起编到
 `%TEMP%`（不污染仓库）→ 跑可执行文件并传入 v4 向量路径 → 用
-`scripts/check-protocol-testvectors-v4.mjs` 把向量文件与 `docs/protocol-v4.md` 对一遍。
+`scripts/check-protocol-testvectors-v5.mjs` 把向量文件与 `docs/protocol-v5.md` 对一遍。
 没有 `node` 时最后一步打印 `SKIPPED: v4 vector self-check (node not found)` 并以 0 退出
 ——「没跑」必须可见，不能和「跑过了」长得一样。
 

@@ -29,8 +29,7 @@ import {
   loadDevicePhotos,
   photoKeyOf,
 } from "./device-photo";
-import { clearPlanDraftsForDevice } from "./plan-drafts";
-import { clearStripMetaForDevice } from "./strip-meta";
+import { clearStripMetaForDevice, countStripMetaForDevice } from "./strip-meta";
 import { isMockDeviceId } from "./mock-mode";
 import { markMockDeleted } from "./mock-deleted";
 import type { ControlSession } from "./session";
@@ -47,6 +46,9 @@ export interface DeleteDeviceInput {
 }
 
 /** 删除结果：给调用方做提示与断言。 */
+/** v4 的方案草稿键（退役；启动时也会清一次，见 migrations.ts）。 */
+const RETIRED_DRAFT_KEY = "lumen.planDrafts.v1";
+
 export interface DeleteDeviceResult {
   /** 是否真的断开了（已经未连接时为 false，不是失败）。 */
   disconnected: boolean;
@@ -109,21 +111,32 @@ export async function deleteDeviceFully(input: DeleteDeviceInput): Promise<Delet
     removeDevice(storage, deviceId);
   }
 
-  /* 5. 方案草稿：键可能是 hardwareId 或 deviceId，两个都清。 */
+  /*
+   * 5. 方案草稿：**v5 已经没有本地方案草稿**（`lumen.planDrafts.v1` 随
+   * 「剧本 / 方案」模型一起退役，编辑内容现在存在设备的场景里）。
+   *
+   * 这个键的清理在**启动时**做一次（`utils/control/migrations.ts`，#161），
+   * 不在这里：它是全局退役键，与删哪台设备无关。这里仍然删一遍并如实计数，
+   * 覆盖「用户在本次会话里回退过旧版又写回草稿」这种少见情况——但正常情况下
+   * 它恒为 0，因为启动时已经清过了。
+   */
   let planDraftsCleared = 0;
-  if (hardwareId.length > 0) {
-    planDraftsCleared += clearPlanDraftsForDevice(storage, hardwareId);
-  }
-  if (deviceId.length > 0) {
-    planDraftsCleared += clearPlanDraftsForDevice(storage, deviceId);
+  if (storage.get(RETIRED_DRAFT_KEY) !== null) {
+    storage.remove(RETIRED_DRAFT_KEY);
+    planDraftsCleared = 1;
   }
 
-  /* 6. 灯组元数据：按 deviceKey 前缀清理，连同自定义封面文件一起删。 */
+  /* 6. 灯组元数据：按 deviceKey 前缀清理，连同自定义封面文件一起删。
+   *
+   * `stripMetaCleared` 数的是**元数据条目**（灯组名 / 封面映射），不是被删掉
+   * 的封面文件数——后者只属于 `photosDeleted`。两者数量不同：一条元数据可以
+   * 没有自定义封面（用的是占位图），而有封面的那条还要再算进第 7 步。 */
   let stripMetaCleared = 0;
   let photosDeleted = 0;
   if (key.length > 0) {
+    const before = countStripMetaForDevice(storage, key);
     const removed = clearStripMetaForDevice(storage, key);
-    stripMetaCleared = removed.removedPhotos.length;
+    stripMetaCleared = before;
     for (const photo of removed.removedPhotos) {
       deleteDevicePhotoFile(photo);
     }

@@ -5,7 +5,7 @@
     "pages/discover/discover",
     "pages/device/device",
     "pages/device-info/device-info",
-    "pages/strip/strip"
+    "pages/part/part"
   ],
   "window": {
     "navigationStyle": "custom",

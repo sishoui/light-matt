@@ -1,0 +1,340 @@
+<view class="page {{themeClass}}">
+  <nav-bar title="{{title}}" subtitle="{{deviceName}}" back="{{true}}" bind:back="onBack" />
+
+  <view class="content">
+    <!-- 写入失败原因显示在页面顶部（#125 的口径）。 -->
+    <view wx:if="{{applyError}}" class="apply-error" bindtap="onDismissApplyError">
+      <text class="apply-error-text">{{applyError}}</text>
+      <text class="apply-error-close">×</text>
+    </view>
+
+    <view wx:if="{{hint}}" class="hint-card">
+      <text class="hint-text">{{hint}}</text>
+    </view>
+
+    <block wx:if="{{ready && !hint}}">
+      <!-- ---------------- 结构区（布局，0x21 / 0x23） ---------------- -->
+      <view class="section-head">
+        <text class="section-title">结构</text>
+        <text class="section-note">{{partCount}} / {{partLimit}} 部位</text>
+      </view>
+
+      <view class="card">
+        <view class="field">
+          <text class="field-label">部位名</text>
+          <input
+            class="field-input"
+            value="{{nameInput}}"
+            placeholder="例如：床头"
+            maxlength="24"
+            bindinput="onNameInput"
+          />
+        </view>
+        <text class="field-hint">{{nameBytes}} / {{nameLimit}} 字节（中文按 3 字节算）</text>
+
+        <!-- 线视图（U5）：一条线表示整条链，各部位占的灯珠用不同色块标出。
+             空闲灯珠不产生块，露出的底色就是灰缝——漏掉哪几颗一眼看得见。 -->
+        <view class="line-track">
+          <view
+            wx:for="{{lineBlocks}}"
+            wx:key="key"
+            class="line-block {{item.current ? 'current' : ''}}"
+            style="left: {{item.leftPercent}}%; width: {{item.widthPercent}}%; background: {{item.color}};"
+            data-part-id="{{item.partId}}"
+            data-seg-index="{{item.segIndex}}"
+            bindtap="onLineBlockTap"
+          ></view>
+        </view>
+        <view class="line-legend">
+          <text class="field-hint">{{coveredCount}} / {{stripLedCount}} 颗已划分</text>
+          <text class="field-hint">{{rangeText}}</text>
+        </view>
+
+        <view class="field">
+          <text class="field-label">灯珠段</text>
+          <text class="field-value">{{segCount}} / {{segLimit}} 段 · {{pixelCount}} 颗</text>
+        </view>
+
+        <!-- 相位模式（S6，每部位一份）：多段之间怎么取波形。
+             它是布局属性，随 LayoutPart 下发并落盘，断电重启后仍在。 -->
+        <view class="field">
+          <text class="field-label">相位</text>
+          <picker mode="selector" range="{{phaseOptions}}" value="{{phaseIndex}}" bindchange="onPhasePick">
+            <view class="picker-value">{{phaseOptions[phaseIndex]}}</view>
+          </picker>
+        </view>
+        <text class="field-hint">
+          连续：多段按灯珠顺序连成一条，波从第一段跑到最后一段；
+          各自起点：每段都从自己的第一颗起波
+        </text>
+
+        <button
+          class="primary-btn"
+          disabled="{{busy || segCount >= segLimit}}"
+          bindtap="onOpenGridAdd"
+        >+ 选区（方格拖选）</button>
+
+        <button
+          class="primary-btn"
+          disabled="{{busy}}"
+          bindtap="onSaveName"
+        >保存名字</button>
+        <text class="field-hint">
+          改结构会重写整条灯组的布局，并把这条链的播放头重置到此刻
+        </text>
+      </view>
+
+      <!-- ---------------- 内容区（场景，0x25 / 0x26） ---------------- -->
+      <view class="section-head">
+        <text class="section-title">内容</text>
+        <text class="section-note">{{sceneLabel}} · {{stepCount}} 步</text>
+      </view>
+
+      <view class="card">
+        <!--
+          时间轴（`timeline-unit` 的 timelineUnitView 输出）：每个部位 0–8 步，
+          各走各的时钟（#157）。加 / 删步骤后**立刻下发**（E1 编辑即下发）；
+          其它部位的画面不受影响（E3）。
+        -->
+        <view class="field">
+          <text class="field-label">时间轴</text>
+          <text class="field-value">{{timelineBlocks.length}} 步 · {{timelineTotalMs}} ms</text>
+        </view>
+        <view class="timeline-row">
+          <view
+            wx:for="{{timelineBlocks}}"
+            wx:key="key"
+            class="timeline-block {{item.selected ? 'selected' : ''}}"
+            style="{{item.style}}"
+            data-index="{{item.index}}"
+            bindtap="onStepTap"
+          >
+            <text wx:if="{{item.showLabel}}" class="timeline-label">{{item.durationText}}</text>
+            <text class="timeline-order">{{item.index + 1}}</text>
+          </view>
+        </view>
+        <view class="step-actions">
+          <view
+            class="step-action {{timelineCanAdd ? '' : 'disabled'}}"
+            bindtap="onAddStep"
+          >+ 加一步</view>
+          <view
+            class="step-action {{timelineCanRemove ? 'danger' : 'disabled'}}"
+            bindtap="onRemoveStep"
+          >删掉第 {{stepIndex + 1}} 步</view>
+        </view>
+        <text class="field-hint">
+          最多 {{timelineMax}} 步；加删步骤只重写这个部位，别的部位照常演
+        </text>
+
+        <slider
+          min="{{durationMin}}"
+          max="{{durationMax}}"
+          value="{{durationMs}}"
+          activeColor="{{accentColor}}"
+          bindchange="onDurationChange"
+        />
+        <view class="tick-row">
+          <text
+            wx:for="{{durationTicks}}"
+            wx:key="key"
+            class="tick tick-{{item.align}}"
+            style="left: {{item.percent}}%"
+            data-ms="{{item.durationMs}}"
+            bindtap="onDurationTick"
+          >{{item.label}}</text>
+        </view>
+
+        <!--
+          效果面板（`panel-unit` 的 panelUnitView 输出）：参数区完全由类型决定，
+          页面这里没有任何按类型的 wx:if——这是「参数控件定义只有一份」的落地。
+        -->
+        <view class="field">
+          <text class="field-label">灯效</text>
+          <text class="field-value">{{panelSummary}}</text>
+        </view>
+        <view class="type-row">
+          <view
+            wx:for="{{panelTypes}}"
+            wx:key="type"
+            class="type-cell {{item.selected ? 'selected' : ''}}"
+            data-type="{{item.type}}"
+            bindtap="onPanelTypeTap"
+          >{{item.name}}</view>
+        </view>
+
+        <text wx:if="{{panelGuide}}" class="field-hint">{{panelGuide}}</text>
+        <text wx:if="{{panelNotice}}" class="field-hint">{{panelNotice}}</text>
+
+        <view class="slider-row" wx:for="{{panelSliders}}" wx:key="key">
+          <view class="field">
+            <text class="field-label">{{item.label}}</text>
+            <text class="field-value">{{item.display}}</text>
+          </view>
+          <slider
+            min="{{item.min}}"
+            max="{{item.max}}"
+            step="{{item.step}}"
+            value="{{item.value}}"
+            activeColor="{{accentColor}}"
+            data-key="{{item.key}}"
+            bindchange="onPanelSliderChange"
+          />
+        </view>
+
+        <view class="choice-row" wx:for="{{panelChoices}}" wx:key="key">
+          <text class="field-label">{{item.label}}</text>
+          <view class="choice-cells">
+            <view
+              wx:for="{{item.options}}"
+              wx:for-item="option"
+              wx:key="value"
+              class="choice-cell {{option.value === item.value ? 'selected' : ''}}"
+              data-key="{{item.key}}"
+              data-value="{{option.value}}"
+              bindtap="onPanelChoiceTap"
+            >{{option.label}}</view>
+          </view>
+        </view>
+
+        <!--
+          叠加层（第二层，#158）：界面上只有「开 / 关」这一个开关。
+          关闭 = 覆盖；打开 = 按亮度叠加——由系统按有无叠加层自己选（E6），
+          用户不需要理解四种混合之间的区别。
+        -->
+        <view class="field">
+          <text class="field-label">叠加层</text>
+          <switch
+            checked="{{overlayEnabled}}"
+            color="{{accentColor}}"
+            disabled="{{busy || !panelHasLayer}}"
+            bindchange="onOverlayToggle"
+          />
+        </view>
+        <text wx:if="{{!panelHasLayer}}" class="field-hint">
+          这一步还没有内容，先选一个灯效再加叠加
+        </text>
+
+        <block wx:if="{{overlayEnabled}}">
+          <view class="field">
+            <text class="field-label">叠加效果</text>
+            <text class="field-value">{{overlaySummary}}</text>
+          </view>
+          <view class="type-row">
+            <view
+              wx:for="{{overlayChoices}}"
+              wx:key="value"
+              class="type-cell {{item.value === overlayChoice ? 'selected' : ''}}"
+              data-type="{{item.value}}"
+              bindtap="onOverlayTypeTap"
+            >{{item.label}}</view>
+          </view>
+          <text wx:if="{{panelNotice}}" class="field-hint">{{panelNotice}}</text>
+
+          <view class="slider-row" wx:for="{{overlaySliders}}" wx:key="key">
+            <view class="field">
+              <text class="field-label">{{item.label}}</text>
+              <text class="field-value">{{item.display}}</text>
+            </view>
+            <slider
+              min="{{item.min}}"
+              max="{{item.max}}"
+              step="{{item.step}}"
+              value="{{item.value}}"
+              activeColor="{{accentColor}}"
+              data-key="{{item.key}}"
+              bindchange="onOverlaySliderChange"
+            />
+          </view>
+
+          <view class="choice-row" wx:for="{{overlayChoices2}}" wx:key="key">
+            <text class="field-label">{{item.label}}</text>
+            <view class="choice-cells">
+              <view
+                wx:for="{{item.options}}"
+                wx:for-item="option"
+                wx:key="value"
+                class="choice-cell {{option.value === item.value ? 'selected' : ''}}"
+                data-key="{{item.key}}"
+                data-value="{{option.value}}"
+                bindtap="onOverlayChoiceTap"
+              >{{option.label}}</view>
+            </view>
+          </view>
+        </block>
+
+        <view class="field">
+          <text class="field-label">循环</text>
+          <picker mode="selector" range="{{loopOptions}}" value="{{loopIndex}}" bindchange="onLoopChange">
+            <view class="picker-value">{{loopOptions[loopIndex]}}</view>
+          </picker>
+        </view>
+
+        <view class="field">
+          <text class="field-label">这个部位</text>
+          <switch checked="{{on}}" color="{{accentColor}}" disabled="{{busy}}" bindchange="onToggleOn" />
+        </view>
+
+        <button class="primary-btn" disabled="{{busy}}" bindtap="onSaveContent">下发</button>
+        <text class="field-hint">下发只写这一步，不会重置播放头</text>
+      </view>
+    </block>
+  </view>
+
+  <!-- ============ 方格表弹窗（U5 / U7 / S4） ============ -->
+  <view wx:if="{{gridOpen}}" class="grid-mask" bindtap="onGridClose"></view>
+  <view wx:if="{{gridOpen}}" class="grid-sheet">
+    <view class="grid-head">
+      <text class="grid-title">{{editingSegIndex >= 0 ? '编辑这一段' : '选一段灯珠'}}</text>
+      <text class="grid-sub">{{stripLedCount}} 颗 · 按住拖动选取</text>
+    </view>
+
+    <!-- 按住拖动：松手成段。格子状态（空闲 / 自己 / 别的部位 / 选区 /
+         斜纹）全部由 `gridRowsView` 派生，页面不拼条件。 -->
+    <view class="grid-wrap">
+      <view wx:for="{{gridRows}}" wx:key="key" class="grid-row">
+        <view
+          wx:for="{{item.cells}}"
+          wx:for-item="cell"
+          wx:key="index"
+          class="grid-cell cell-{{cell.state}} {{cell.decadeStart ? 'decade-start' : ''}}"
+          style="{{cell.color ? 'background:' + cell.color + ';' : ''}}"
+          data-index="{{cell.index}}"
+          catchtouchstart="onGridTouchStart"
+          catchtouchmove="onGridTouchMove"
+          catchtouchend="onGridTouchEnd"
+        >{{cell.label}}</view>
+      </view>
+    </view>
+
+    <view class="grid-draft">
+      <text class="field-label">选中</text>
+      <text class="field-value">{{draftStartText}} – {{draftEndText}}</text>
+    </view>
+    <text wx:if="{{draftConflict}}" class="grid-conflict">{{draftConflict}}</text>
+
+    <!-- 起止数字滚轮（U7）：拖完再微调，手指粗也能落到单颗。 -->
+    <view class="grid-pickers">
+      <picker mode="selector" range="{{pixelOptions}}" value="{{startIndex}}" bindchange="onStartPick">
+        <view class="picker-box">
+          <text class="picker-label">起点</text>
+          <text class="picker-value">{{startIndex + 1}}</text>
+        </view>
+      </picker>
+      <picker mode="selector" range="{{pixelOptions}}" value="{{endIndex}}" bindchange="onEndPick">
+        <view class="picker-box">
+          <text class="picker-label">终点</text>
+          <text class="picker-value">{{endIndex + 1}}</text>
+        </view>
+      </picker>
+    </view>
+
+    <view class="grid-actions">
+      <view class="grid-cancel" bindtap="onGridClose">取消</view>
+      <view
+        class="grid-confirm {{draftConflict ? 'disabled' : ''}}"
+        bindtap="onGridConfirm"
+      >确认</view>
+    </view>
+  </view>
+</view>

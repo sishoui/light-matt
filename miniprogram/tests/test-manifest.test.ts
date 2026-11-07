@@ -192,7 +192,12 @@ describe("仓库自身的清单", () => {
     expect(result.misplaced).toEqual([]);
     expect(result.unknownLayer).toEqual([]);
     expect(result.emptyCovers).toEqual([]);
-    expect(result.total).toBeGreaterThan(70);
+    /*
+     * 下限只是「规则没有空过」的护栏，不是某个历史数字。
+     * 2026-11-07（#155）批量退役 v4 的段 / 剧本界面层与其 33 个测试文件后，
+     * 清单从 87 项降到 54 项——这正是本次改动的预期，所以下限同步下调。
+     */
+    expect(result.total).toBeGreaterThan(45);
   });
 
   it("五层都有定义，且有环境成本的层写明了缺什么", () => {

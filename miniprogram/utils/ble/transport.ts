@@ -42,7 +42,6 @@ import {
   cmdQueryState,
   cmdQueryStripConfig,
   parseState,
-  type ScriptSummary,
 } from "../protocol/commands";
 import { chunkCapacityForMtu, chunkDataCapacity, chunkFrame, ChunkAssembler } from "../protocol/chunk";
 import type {
@@ -52,8 +51,8 @@ import type {
   DeviceState,
   DiscoveredDevice,
   LinkState,
-  SegmentListEnd,
-  SegmentReport,
+  LayoutListEnd,
+  LayoutReport,
   StripConfig,
 } from "../protocol/types";
 import { AckWaiters } from "./ack-waiters";
@@ -68,7 +67,11 @@ import { TransportListeners, type LinkDetail } from "./link-listeners";
 import { FrameLog } from "./log";
 import { DeviceScanner } from "./scan-controller";
 import { StateReadSlot } from "./state-read";
-import { StripQueryCollector } from "./strip-collector";
+import {
+  LayoutQueryCollector,
+  SceneQueryCollector,
+  type SceneQueryResult,
+} from "./query-collectors";
 import { WxCallError, WxCallTimeoutError, wxCall } from "./wx-promise";
 import { SerialWriter } from "./writer";
 
@@ -225,18 +228,10 @@ export class BleTransport {
   private readonly writer: SerialWriter;
   private readonly ackWaiters = new AckWaiters();
   private readonly stateRead = new StateReadSlot();
-  /** #25：QueryStrip 的多帧收集（seg_count 条 SegmentReport + 1 条 ListEnd）。 */
-  private readonly stripQueries = new StripQueryCollector();
-  /**
-   * #32：QueryScript 的响应（一条 ScriptSummary 0x85，回显请求 seq）。
-   * 同一时刻只允许一个查询：下发流程与 UI 不会并发查剧本。
-   */
-  private pendingScriptQuery: {
-    seq: number;
-    resolve: (summary: ScriptSummary) => void;
-    reject: (err: unknown) => void;
-    timer: ReturnType<typeof setTimeout>;
-  } | null = null;
+  /** v5：QueryLayout 的多帧收集（逐部位 0x89 + 一条 0x8A 收尾）。 */
+  private readonly layoutQueries = new LayoutQueryCollector();
+  /** v5：QueryScene 的多帧收集（部位头 / 每步 / 一条 0x8D 收尾）。 */
+  private readonly sceneQueries = new SceneQueryCollector();
 
   /** v3：QueryStripConfig 0x1C → StripConfigReport 0x87（单飞）。 */
   private pendingStripConfig: SingleReportQuery<StripConfig> | null = null;
@@ -823,42 +818,42 @@ export class BleTransport {
   }
 
   /**
-   * #25：QueryStrip 0x12 + 多条 SegmentReport + SegmentListEnd。
+   * v5：QueryLayout 0x24 + 逐部位 LayoutReport + LayoutListEnd（§7.2 / §8）。
    *
    * 与 sendAndWaitAck 的区别：响应不是单帧 ACK，而是同 seq 的多帧。
-   * 这里同一 seq 既登记 ACK 等待者（拿到拒绝时的结果码），又登记段收集器
-   * （拿到 SegmentReport 列表与 ListEnd）。ACK 与收尾两者都成功才返回。
+   * 这里同一 seq 既登记 ACK 等待者（拿到拒绝时的结果码），又登记布局收集器
+   * （拿到 LayoutReport 列表与 ListEnd）。ACK 与收尾两者都成功才返回。
    *
-   * ACK 可能是非零（InvalidParam）：那时设备不会再发 SegmentReport，
+   * ACK 可能是非零（InvalidParam）：那时设备不会再发 LayoutReport，
    * 所以先 await ACK；ok 才等收尾。超时按链路异常抛出。
    */
-  async queryStrip(
+  async queryLayout(
     stripId: number,
     opts: { timeoutMs?: number } = {},
-  ): Promise<{ reports: SegmentReport[]; end: SegmentListEnd }> {
+  ): Promise<{ reports: LayoutReport[]; end: LayoutListEnd }> {
     this.ensureWritable();
     const seq = this.allocateSeq();
-    const req: CommandRequest = { command: 0x12, payload: new Uint8Array([stripId & 0xff]) };
+    const req: CommandRequest = { command: 0x24, payload: new Uint8Array([stripId & 0xff]) };
     const frame = encodeTxFrame(req.command, seq, req.payload);
     const timeoutMs = this.scaledTimeout(opts.timeoutMs ?? this.ackTimeoutMs, frame);
 
     const ackPromise = this.ackWaiters.register(seq, req.command, timeoutMs);
-    const collectPromise = this.stripQueries.open(seq, stripId, timeoutMs);
+    const collectPromise = this.layoutQueries.open(seq, stripId, timeoutMs);
 
     try {
       await this.writeLogicalFrame(req, seq, frame);
     } catch (err) {
       this.ackWaiters.fail(seq, err);
-      this.stripQueries.reset(err instanceof Error ? err : new Error(String(err)));
+      this.layoutQueries.reset(seq, err instanceof Error ? err : new Error(String(err)));
       this.noteWriteFailure(err);
       throw err;
     }
 
     const ack = await ackPromise;
     if (!ack.ok) {
-      /* 非零 ACK：设备不会发段回包。收尾 Promise 必须显式丢弃，避免悬挂。 */
-      this.stripQueries.reset(new Error(`QueryStrip 被拒（${resultText(ack.resultCode)}）`));
-      throw new Error(`QueryStrip 失败：${resultText(ack.resultCode)}`);
+      /* 非零 ACK：设备不会发部位回包。收尾 Promise 必须显式丢弃，避免悬挂。 */
+      this.layoutQueries.reset(seq, new Error(`QueryLayout 被拒（${resultText(ack.resultCode)}）`));
+      throw new Error(`QueryLayout 失败：${resultText(ack.resultCode)}`);
     }
 
     const result = await collectPromise;
@@ -866,48 +861,39 @@ export class BleTransport {
   }
 
   /**
-   * #32：QueryScript 0x1A + ScriptSummary 0x85。
+   * v5：QueryScene 0x29 + 部位头 / 每步 / 收尾三段（§6.2 / §8）。
    *
-   * 响应是一条**单独**的 0x85（不是 ACK 的多帧续），同样回显请求 seq。
-   * 流程与 queryStrip 一致：先等 ACK；ACK 非零时设备不会发 0x85。
+   * 流程与 queryLayout 一致，只是收尾帧是 SceneListEnd 0x8D。
    */
-  async queryScript(
-    scriptId: number,
+  async queryScene(
+    sceneId: number,
     opts: { timeoutMs?: number } = {},
-  ): Promise<ScriptSummary> {
+  ): Promise<SceneQueryResult> {
     this.ensureWritable();
     const seq = this.allocateSeq();
-    const req = { command: 0x1a, payload: new Uint8Array([scriptId & 0xff]) };
+    const req: CommandRequest = { command: 0x29, payload: new Uint8Array([sceneId & 0xff]) };
     const frame = encodeTxFrame(req.command, seq, req.payload);
     const timeoutMs = this.scaledTimeout(opts.timeoutMs ?? this.ackTimeoutMs, frame);
 
     const ackPromise = this.ackWaiters.register(seq, req.command, timeoutMs);
-    const summaryPromise = new Promise<ScriptSummary>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingScriptQuery = null;
-        reject(new WxCallTimeoutError("QueryScript", timeoutMs));
-      }, timeoutMs);
-      this.pendingScriptQuery = { seq, resolve, reject, timer };
-    });
-    summaryPromise.catch(() => undefined);
+    const collectPromise = this.sceneQueries.open(seq, sceneId, timeoutMs);
 
     try {
       await this.writeLogicalFrame(req, seq, frame);
     } catch (err) {
       this.ackWaiters.fail(seq, err);
-      this.failPendingScriptQuery(err instanceof Error ? err : new Error(String(err)));
+      this.sceneQueries.reset(seq, err instanceof Error ? err : new Error(String(err)));
       this.noteWriteFailure(err);
       throw err;
     }
 
     const ack = await ackPromise;
     if (!ack.ok) {
-      this.failPendingScriptQuery(
-        new Error(`QueryScript 被拒（${resultText(ack.resultCode)}）`),
-      );
-      throw new Error(`QueryScript 失败：${resultText(ack.resultCode)}`);
+      this.sceneQueries.reset(seq, new Error(`QueryScene 被拒（${resultText(ack.resultCode)}）`));
+      throw new Error(`QueryScene 失败：${resultText(ack.resultCode)}`);
     }
-    return summaryPromise;
+
+    return collectPromise;
   }
 
   /** v3：QueryStripConfig 0x1C → StripConfigReport 0x87（单帧，回显 seq）。 */
@@ -1370,28 +1356,21 @@ export class BleTransport {
       case "event":
         this.listeners.emitEvent(frame.action.code, frame.action.detail);
         return;
-      case "segment-report":
-        /* #25：同 seq 多帧，交给 QueryStrip 的收集器。 */
-        this.stripQueries.report(frame.seq as number, frame.action.report);
+      case "layout-report":
+        /* v5：同 seq 多帧，交给 QueryLayout 的收集器。 */
+        this.layoutQueries.report(frame.seq as number, frame.action.report);
         return;
-      case "segment-list-end":
-        this.stripQueries.listEnd(frame.seq as number, frame.action.end);
+      case "layout-list-end":
+        this.layoutQueries.listEnd(frame.seq as number, frame.action.end);
         return;
-      case "script-summary": {
-        const pending = this.pendingScriptQuery;
-        if (pending !== null && pending.seq === frame.seq) {
-          clearTimeout(pending.timer);
-          this.pendingScriptQuery = null;
-          pending.resolve(frame.action.summary);
-        }
+      case "scene-part-report":
+        this.sceneQueries.partReport(frame.seq as number, frame.action.report);
         return;
-      }
-      case "script-progress":
-        /* 设备侧旁证，不进 ACK 等待表；只广播给关心进度的 UI。 */
-        this.listeners.emitScriptProgress(
-          frame.action.progress.scriptId,
-          frame.action.progress.framesWritten,
-        );
+      case "scene-step-report":
+        this.sceneQueries.stepReport(frame.seq as number, frame.action.report);
+        return;
+      case "scene-list-end":
+        this.sceneQueries.listEnd(frame.seq as number, frame.action.end);
         return;
       case "strip-config": {
         const pending = this.pendingStripConfig;
@@ -1416,16 +1395,6 @@ export class BleTransport {
     }
   }
 
-  /** 丢掉 in-flight 的 QueryScript（写失败 / 被拒 / 断线）。 */
-  private failPendingScriptQuery(err: Error): void {
-    const pending = this.pendingScriptQuery;
-    if (pending === null) {
-      return;
-    }
-    clearTimeout(pending.timer);
-    this.pendingScriptQuery = null;
-    pending.reject(err);
-  }
 
   /** 丢掉 in-flight 的 0x1C / 0x1D 查询（写失败 / 被拒 / 断线）。 */
   private failPendingReport<T>(
@@ -1546,8 +1515,8 @@ export class BleTransport {
     this.writer.reset(reason);
     this.ackWaiters.reset(reason);
     this.stateRead.reset(reason);
-    this.stripQueries.reset(reason);
-    this.failPendingScriptQuery(reason);
+    this.layoutQueries.reset(undefined, reason);
+    this.sceneQueries.reset(undefined, reason);
     this.failPendingReport(this.pendingStripConfig, (v) => {
       this.pendingStripConfig = v;
     }, reason);

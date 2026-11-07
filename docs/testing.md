@@ -27,7 +27,7 @@ node scripts/test-run.mjs --list   # 看有哪几层
 
 **`firmware`**：`run-tests.cmd` 把 `test_skeleton.c` 与 `main/*.c` 里能脱离 ESP-IDF
 编译的部分一起编译到 `%TEMP%`（不污染仓库），跑完用 `scripts/check-protocol-testvectors-v4.mjs`
-把向量文件与 `docs/protocol-v4.md` 对一遍。没有 `node` 时它打印 `SKIPPED: v4 vector self-check (node not found)`
+把向量文件与 `docs/protocol-v5.md` 对一遍。没有 `node` 时它打印 `SKIPPED: v5 vector self-check (node not found)`
 并以 0 退出——**「没跑」和「跑过了」在终端上必须长得不一样**，编排器把这行收进未验证清单。
 
 固件侧按测试函数统计断言数：每个 `test_*()` 前后各读一次全局计数，打一行
@@ -270,7 +270,7 @@ node scripts/check-test-manifest.mjs
 
 ## 7. 验收文档的编号与三态符号
 
-`docs/acceptance-v3.md`、`acceptance-v4.md`、`acceptance-v5.md` 是**已发布的历史记录**，
+`docs/acceptance-v3.md`、`acceptance-v4.md`、`acceptance-ui-round5.md` 是**已发布的历史记录**，
 编号与结论不重写。新写验收记录时沿用同一套，跨轮比对才有稳定 ID。
 
 **编号（统一口径：三级）**：`§<章>.<节>.<项>`，如 `§1.2.3`。章 = 一个大验收面
@@ -278,7 +278,7 @@ node scripts/check-test-manifest.mjs
 项在节内排。编号一旦发布不改；作废的项保留编号并在结论栏写「不作验收」。
 
 > `acceptance-v3.md` 就是这个形状（55 行逐项清单）。`acceptance-v4.md` 与
-> `acceptance-v5.md` 是命令级表格，只用到两级（`§1`、`§4`），**已发布，不重编号**；
+> `acceptance-ui-round5.md`（原 `acceptance-v5.md`）是命令级表格，只用到两级（`§1`、`§4`），**已发布，不重编号**；
 > 新写的验收记录一律三级。
 
 **三态符号**：

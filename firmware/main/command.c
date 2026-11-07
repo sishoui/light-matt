@@ -5,16 +5,22 @@
 
 #include "effects.h"
 
+/*
+ * 命令层（纯 reducer）。docs/protocol-v5.md §5 / §6 / §7.1。
+ *
+ * 校验顺序固定：命令字是否已知（0x02）→ 载荷长度（0x04）→ 载荷取值（0x01）。
+ * 命令层只做「一条命令自己能判定」的部分；跨命令的不变量（布局里一颗灯珠
+ * 只属一个部位、整份布局是否完整、场景的步号是否 < step_count）交给引擎在
+ * 持有权威表时判——那正是 v4 把段校验放在 segment_store 的做法。
+ */
+
 bool lumen_command_is_known(uint8_t command)
 {
     /*
-     * 只包含「已实现」的命令（docs/protocol-v4.md §6）。0x03 / 0x04 在 v2 退役，
-     * 落到 default → 0x02 未知命令，小程序能明确看到「该命令需要升级固件」。
-     * v3 加入 0x1B SetStripPower / 0x1C QueryStripConfig / 0x1D QueryDeviceInfo。
-     * v4 原地加入 0x1E ClearScript（#73）；协议版本号不变，旧固件回 0x02。
+     * 只包含**已实现**的命令（docs/protocol-v5.md §6）。
      *
-     * 0x1B 在 #36 只做取值校验与意图登记（真正的掩码写入与 TDM 跳带是 #38）；
-     * 已实现的是「认识这条命令并按 §5 的顺序校验」，不是完整行为。
+     * v5 删掉了整个段 / 剧本族 0x10-0x1E：它们落到 default → 0x02 未知命令，
+     * 小程序能明确看到「这个固件不支持该命令」。这些码**不复用**。
      */
     switch (command) {
     case LUMEN_CMD_SET_POWER:
@@ -22,21 +28,19 @@ bool lumen_command_is_known(uint8_t command)
     case LUMEN_CMD_QUERY_STATE:
     case LUMEN_CMD_SET_LED_COUNT:
     case LUMEN_CMD_SELF_TEST:
-    case LUMEN_CMD_SET_SEGMENT:
-    case LUMEN_CMD_CLEAR_SEGMENT:
-    case LUMEN_CMD_QUERY_STRIP:
-    case LUMEN_CMD_SET_PLAYBACK:
-    case LUMEN_CMD_SCRIPT_BEGIN:
-    case LUMEN_CMD_SCRIPT_STAGE:
-    case LUMEN_CMD_SCRIPT_SEGMENT:
-    case LUMEN_CMD_SCRIPT_COMMIT:
-    case LUMEN_CMD_SCRIPT_ABORT:
-    case LUMEN_CMD_ACTIVATE_SCRIPT:
-    case LUMEN_CMD_QUERY_SCRIPT:
     case LUMEN_CMD_SET_STRIP_POWER:
     case LUMEN_CMD_QUERY_STRIP_CONFIG:
     case LUMEN_CMD_QUERY_DEVICE_INFO:
-    case LUMEN_CMD_CLEAR_SCRIPT:
+    case LUMEN_CMD_LAYOUT_WRITE:
+    case LUMEN_CMD_LAYOUT_PART:
+    case LUMEN_CMD_LAYOUT_SEG:
+    case LUMEN_CMD_LAYOUT_COMMIT:
+    case LUMEN_CMD_QUERY_LAYOUT:
+    case LUMEN_CMD_SCENE_PART:
+    case LUMEN_CMD_SCENE_STEP:
+    case LUMEN_CMD_SCENE_NAME:
+    case LUMEN_CMD_ACTIVATE_SCENE:
+    case LUMEN_CMD_QUERY_SCENE:
         return true;
     default:
         return false;
@@ -48,46 +52,40 @@ uint8_t lumen_command_payload_len(uint8_t command)
     switch (command) {
     case LUMEN_CMD_SET_POWER:
     case LUMEN_CMD_SET_BRIGHTNESS:
+    case LUMEN_CMD_ACTIVATE_SCENE:
+    case LUMEN_CMD_QUERY_SCENE:
+    case LUMEN_CMD_QUERY_LAYOUT:
         return 1;
     case LUMEN_CMD_QUERY_STATE:
     case LUMEN_CMD_SELF_TEST:
     case LUMEN_CMD_QUERY_STRIP_CONFIG:
     case LUMEN_CMD_QUERY_DEVICE_INFO:
+    case LUMEN_CMD_LAYOUT_COMMIT:
         return 0;
     case LUMEN_CMD_SET_LED_COUNT:
-        /* strip_id + count 小端（docs/protocol-v4.md §6）。 */
+        /* strip_id + count 小端（§6）。 */
         return 3;
     case LUMEN_CMD_SET_STRIP_POWER:
         /* strip_id, on。 */
         return 2;
-    case LUMEN_CMD_CLEAR_SEGMENT:
+    case LUMEN_CMD_LAYOUT_WRITE:
+        /* strip_id, part_count。 */
         return 2;
-    case LUMEN_CMD_QUERY_STRIP:
-        return 1;
-    case LUMEN_CMD_SET_PLAYBACK:
-        /* action, loop。 */
-        return 2;
-    case LUMEN_CMD_SCRIPT_BEGIN:
-        /* script_id, stage_count, strip_count。 */
-        return 3;
-    case LUMEN_CMD_SCRIPT_STAGE:
-        /* script_id, stage_index, duration_ms(2), fade_ms(2)。 */
+    case LUMEN_CMD_LAYOUT_PART:
+        /* strip_id, part_id, name_len, name[24], seg_count（§1.1 LAYOUT_PART_BYTES）。 */
+        return LUMEN_LAYOUT_PART_BYTES;
+    case LUMEN_CMD_LAYOUT_SEG:
+        /* strip_id, part_id, seg_id, start, end。 */
+        return 5;
+    case LUMEN_CMD_SCENE_PART:
+        /* scene_id, strip_id, part_id, step_count, loop, on。 */
         return 6;
-    case LUMEN_CMD_SCRIPT_SEGMENT:
-        /* 固定 25：script_id + stage_index + §7.1 的 23 字节段。 */
-        return 25;
-    case LUMEN_CMD_SCRIPT_COMMIT:
-    case LUMEN_CMD_SCRIPT_ABORT:
-    case LUMEN_CMD_QUERY_SCRIPT:
-    case LUMEN_CMD_CLEAR_SCRIPT:
-        /* script_id。 */
-        return 1;
-    case LUMEN_CMD_ACTIVATE_SCRIPT:
-        /* script_id, loop。 */
-        return 2;
-    case LUMEN_CMD_SET_SEGMENT:
-        /* 固定 23（docs/protocol-v4.md §7.1）：定宽 9 字节层，不再按 type 变长。 */
-        return 23;
+    case LUMEN_CMD_SCENE_STEP:
+        /* scene, strip, part, step, duration(2), 两层各 9 字节（§1.1）。 */
+        return LUMEN_SCENE_STEP_BYTES;
+    case LUMEN_CMD_SCENE_NAME:
+        /* scene_id, name_len, name[24]。 */
+        return LUMEN_SCENE_NAME_BYTES;
     default:
         return 0;
     }
@@ -98,13 +96,24 @@ bool lumen_command_payload_len_ok(const lumen_frame_t *frame)
     if (frame == NULL) {
         return false;
     }
-    /*
-     * v4 的段命令都是**固定长度**（23 / 25），不再有「先读 type 再定长」的
-     * 二次校验路径——这正是 §7.1 选择定宽层编码的目的。长度不符一律
-     * BadLength，交给 type 校验之前就拒。
-     */
+    /* v5 全部命令都是固定长度，没有「先读 type 再定长」的二次校验路径。 */
     return frame->payload_len == lumen_command_payload_len(frame->command);
 }
+
+uint16_t lumen_command_strip_count(const lumen_state_t *current, uint8_t strip_id)
+{
+    if (current == NULL || strip_id >= LUMEN_MAX_STRIPS) {
+        return LUMEN_MAX_LEDS;
+    }
+    uint16_t count = current->led_count[strip_id];
+    if (count == 0 || count > LUMEN_MAX_LEDS) {
+        /* 未配置 / 未初始化：按协议上限兜底（与 v4 同一口径，避免误拒合法段）。 */
+        return LUMEN_MAX_LEDS;
+    }
+    return count;
+}
+
+/* ---------------- 整机 ---------------- */
 
 /*
  * SetPower 0x01：载荷 1 字节，只接受 0 / 1。
@@ -130,13 +139,13 @@ static void dispatch_set_power(const lumen_frame_t *frame, const lumen_state_t *
 }
 
 /*
- * SetBrightness 0x02：载荷 1 字节 0-255，按 §11.4 钳位到构建期上限。
+ * SetBrightness 0x02：载荷 1 字节 0-255，按构建期上限钳位（§6）。
  *
  * 关键语义：
  *  - 越界不拒绝：钳位后照常回 0x00（协议 §6 的 SetBrightness 没有错误码）。
  *  - 只写 brightness，绝不动 power：亮度 0 是合法状态，视觉等于关灯，
- *    但设备状态里 power 仍为 1；关灯也保留亮度（§7）。
- *  - 钳位后的值与当前值相同则不 commit（避免无意义的渲染与 NVS 写入）。
+ *    但设备状态里 power 仍为 1；关灯也保留亮度。
+ *  - 钳位后的值与当前值相同则不 commit。
  */
 static void dispatch_set_brightness(const lumen_frame_t *frame,
                                     const lumen_state_t *current, uint8_t max_brightness,
@@ -152,42 +161,12 @@ static void dispatch_set_brightness(const lumen_frame_t *frame,
     }
 }
 
-bool lumen_command_changes_state(uint8_t command)
-{
-    /* 协议 §11.2 第 5 条列出的改变状态命令；QueryState / SelfTest / QueryStrip 不在其中。
-     * v2 的 0x03 / 0x04 已退役，不再属于这一类别。 */
-    switch (command) {
-    case LUMEN_CMD_SET_POWER:
-    case LUMEN_CMD_SET_BRIGHTNESS:
-    case LUMEN_CMD_SET_LED_COUNT:
-    case LUMEN_CMD_SET_SEGMENT:
-    case LUMEN_CMD_CLEAR_SEGMENT:
-    case LUMEN_CMD_SET_PLAYBACK:
-    case LUMEN_CMD_SCRIPT_BEGIN:
-    case LUMEN_CMD_SCRIPT_STAGE:
-    case LUMEN_CMD_SCRIPT_SEGMENT:
-    case LUMEN_CMD_SCRIPT_COMMIT:
-    case LUMEN_CMD_SCRIPT_ABORT:
-    case LUMEN_CMD_ACTIVATE_SCRIPT:
-    case LUMEN_CMD_SET_STRIP_POWER:
-    case LUMEN_CMD_CLEAR_SCRIPT:
-        return true;
-    default:
-        return false;
-    }
-}
-
 /*
- * SetLedCount 0x06：载荷 3 字节 strip_id, count_lo, count_hi，合法数量 1-100（§6，#72）。
+ * SetLedCount 0x06：载荷 3 字节 strip_id, count_lo, count_hi，合法数量 1-100（§6）。
  *
- * 关键语义（§11.3）：
- *  - 这里只校验并标记「需要重建」。数量必须在渲染任务重建 led_strip 成功后
- *    才写入共享状态，ACK 也要等重建结果——所以本 reducer 不改 next、
- *    state_changed 保持 false，由 led_engine 在重建完成时提交 / 回滚。
- *  - strip_id 必须先落在 0 ≤ strip_id < strip_count 内（#29 之后多条灯带各自
- *    独立设置灯珠数）。先校验 strip_id 再校验数量，保证「这条命令到底改
- *    哪条灯带」先被确认。
- *  - 越界（0、>100、小端读出的 65535 等）→ 0x01，不请求重建、不改状态。
+ * 这里只校验并标记「需要重建」。数量必须在渲染任务重建 led_strip 成功后
+ * 才写入共享状态，ACK 也要等重建结果——所以本 reducer 不改 next、
+ * state_changed 保持 false，由 led_engine 在重建完成时提交 / 回滚。
  */
 static void dispatch_set_led_count(const lumen_frame_t *frame, const lumen_state_t *current,
                                    lumen_command_outcome_t *outcome)
@@ -210,235 +189,8 @@ static void dispatch_set_led_count(const lumen_frame_t *frame, const lumen_state
 }
 
 /*
- * 从 v4 段载荷解析层与段。
- *
- * 载荷布局（docs/protocol-v4.md §7.1）：固定 23 字节
- *   0 strip_id | 1 seg_id | 2 start | 3 end | 4 blend | 5..13 layer0 | 14..22 layer1
- *
- * 层是 **9 字节**定宽：type + param[7] + level，解码统一走 effects.c 的
- * lumen_layer_decode（线格式与 layer 结构一一对应，别再在命令层抄一份字段解析）。
- *
- * 为什么定宽：未知 type 也能安全判定为非法而不是越界读（§7.1 的取舍记录）。
- * 这也是 v4 段命令长度固定的原因，命令层不再需要「先读 type 再定长」。
- */
-#define LUMEN_WIRE_SEGMENT_BYTES 23
-/* 段块内 layer1 的起始偏移 = 5 字节段头 + 9 字节 layer0。 */
-#define LUMEN_WIRE_LAYER1_OFFSET 14
-
-/*
- * 把 23 字节段载荷解码成两层结构（§7.1）。
- *
- * 只做**结构**映射，不做任何校验：形状与参数由 lumen_segment_validate_shape
- * 统一判（命令层与 blob 解码共用同一份规则）。layer_decode 的返回值不在这里
- * 丢掉——未知 type 被复制进结构后，validate_shape 第 2/3 步会拒。
- */
-static void wire_segment_read(const uint8_t payload[LUMEN_WIRE_SEGMENT_BYTES],
-                              lumen_segment_t *seg)
-{
-    memset(seg, 0, sizeof(*seg));
-    seg->active = true;
-    seg->start = payload[2];
-    seg->end = payload[3];
-    seg->blend = payload[4];
-    (void)lumen_layer_decode(&payload[5], &seg->layer[0]);
-    (void)lumen_layer_decode(&payload[LUMEN_WIRE_LAYER1_OFFSET], &seg->layer[1]);
-    seg->t0_ms = 0; /* 生效时刻由 led_engine 在真正写入时填 */
-}
-
-/*
- * #32 剧本命令的形状校验（docs/protocol-v4.md §6 / §11.3）。
- *
- * 这里只做「命令层能判定」的部分：id / 下标 / 类型 / 长度 / 时长非 0。
- * 区间越界与重叠是**整份**校验，必须等 ScriptCommit（协议 §10.4 明确：
- * 失败回滚发生在 commit，逐帧下发的中间态允许不完整）。
- *
- * 真正的暂存 / 提交 / 激活在 led_engine 里执行——它持剧本表与锁。
- */
-
-/*
- * SetPlayback 0x13：action ∈ {0,1,2}，loop ∈ {0,1,2}（#98 三值）。
- *
- * 旧固件原本就是 `loop > 1 → InvalidParam`，所以 2 这个新值天然被旧固件
- * 安全拒绝——这里把边界放到 LUMEN_LOOP_MAX，两端对同一帧给同一个判定。
- */
-static void dispatch_set_playback(const lumen_frame_t *frame, const lumen_state_t *current,
-                                  lumen_command_outcome_t *outcome)
-{
-    uint8_t action = frame->payload[0];
-    uint8_t loop = frame->payload[1];
-    if (action > 2) {
-        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
-        return;
-    }
-    if (loop > LUMEN_LOOP_MAX) {
-        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
-        return;
-    }
-    /* 没有激活剧本时 stop / pause 仍合法（幂等），play 也无副作用。 */
-    (void)current;
-    outcome->result_code = LUMEN_RESULT_OK;
-    outcome->script_op = LUMEN_SCRIPT_OP_PLAYBACK;
-    outcome->script_action = action;
-    outcome->script_loop = loop;
-}
-
-/* ScriptBegin 0x14：script_id < MAX_SCRIPTS，stage_count 1-8，strip_count 1-8。 */
-static void dispatch_script_begin(const lumen_frame_t *frame, const lumen_state_t *current,
-                                  lumen_command_outcome_t *outcome)
-{
-    uint8_t script_id = frame->payload[0];
-    uint8_t stage_count = frame->payload[1];
-    uint8_t strip_count = frame->payload[2];
-
-    if (script_id >= LUMEN_MAX_SCRIPTS) {
-        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
-        return;
-    }
-    if (stage_count < 1 || stage_count > LUMEN_MAX_STAGES) {
-        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
-        return;
-    }
-    /*
-     * strip_count 不能超过设备实际配置的灯带数：声明 8 条但设备只有 1 条时，
-     * 后续 ScriptSegment 会永远被拒，用户看到的是一套下发不完的剧本。
-     * 提前在 Begin 就明确拒绝。
-     */
-    if (strip_count < 1 || strip_count > LUMEN_MAX_STRIPS ||
-        strip_count > current->strip_count) {
-        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
-        return;
-    }
-    outcome->result_code = LUMEN_RESULT_OK;
-    outcome->script_op = LUMEN_SCRIPT_OP_BEGIN;
-    outcome->script_id = script_id;
-    outcome->script_stage_count = stage_count;
-    outcome->script_strip_count = strip_count;
-}
-
-/* ScriptStage 0x15：duration 非 0（stage_index 的上界由引擎按本次 Begin 校验）。 */
-static void dispatch_script_stage(const lumen_frame_t *frame, lumen_command_outcome_t *outcome)
-{
-    uint8_t script_id = frame->payload[0];
-    uint8_t stage_index = frame->payload[1];
-    uint16_t duration =
-        (uint16_t)(frame->payload[2] | ((uint16_t)frame->payload[3] << 8));
-    uint16_t fade = (uint16_t)(frame->payload[4] | ((uint16_t)frame->payload[5] << 8));
-
-    if (script_id >= LUMEN_MAX_SCRIPTS || stage_index >= LUMEN_MAX_STAGES) {
-        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
-        return;
-    }
-    if (duration == 0) {
-        /* 协议 §9.6：脚本类命令额外校验 duration_ms != 0。 */
-        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
-        return;
-    }
-    /*
-     * fade_ms 在 v3 是**格式预留**（docs/protocol-v4.md §9.6）：非 0 值照常接受、
-     * 存储并持久化（blob v2 的 stage 头有 2 字节），但播放行为仍是硬切——
-     * 过渡期要同时渲染两套阶段帧，RMT 负载翻倍，与已实测的 BLE 抢 RMT ISR
-     * 问题叠加。所以这里刻意只校验长度、不校验取值。
-     */
-    outcome->result_code = LUMEN_RESULT_OK;
-    outcome->script_op = LUMEN_SCRIPT_OP_STAGE;
-    outcome->script_id = script_id;
-    outcome->script_stage_index = stage_index;
-    outcome->script_duration_ms = duration;
-    outcome->script_fade_ms = fade;
-}
-
-/*
- * ScriptSegment 0x16：载荷
- *   script_id, stage_index, 然后 §7.1 的 23 字节段（共 25 字节）。
- *
- * 注意字段顺序：两个前缀字节在**最前面**（与 v2 的 script_id/stage_index 前缀
- * 一致，测试向量也是这么排的）。docs/protocol-v4.md §7.1 的「末尾再追加」
- * 只是描述长度来源；字节级契约以向量为准。
- *
- * 与 SetSegment 的差别只有一条：**两层都空表示「清空该槽位」**（§9.6），
- * 所以这里 layer0 允许为空层，但「layer0 空、layer1 非空」仍是非法。
- * **v4：清槽要求两层的 level 都为 0**，否则按参数非法拒绝（清槽不是
- * 「带亮度的空段」）。
- *
- * 第 5 步 strip 范围用**本次下发的 strip_count** 判断不了（命令层没有暂存区），
- * 所以下界只到 LUMEN_MAX_STRIPS；引擎在写入时按暂存的 strip_count 再拒一次。
- * 区间与重叠留给 ScriptCommit（§9.6）。
- */
-static void dispatch_script_segment(const lumen_frame_t *frame,
-                                    lumen_command_outcome_t *outcome)
-{
-    uint8_t script_id = frame->payload[0];
-    uint8_t stage_index = frame->payload[1];
-    uint8_t strip_id = frame->payload[2];
-    uint8_t seg_id = frame->payload[3];
-    uint8_t start = frame->payload[4];
-    uint8_t end = frame->payload[5];
-
-    if (script_id >= LUMEN_MAX_SCRIPTS || stage_index >= LUMEN_MAX_STAGES ||
-        strip_id >= LUMEN_MAX_STRIPS || seg_id >= LUMEN_MAX_SEGMENTS) {
-        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
-        return;
-    }
-
-    if (start > end) {
-        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
-        return;
-    }
-
-    /*
-     * 载荷 = script_id + stage_index 两个前缀字节，其后是 §7.1 的 23 字节段
-     * （与 SetSegment 完全同构，因此段块从 payload[2] 开始）。t0_ms 在剧本里
-     * 无意义，wire_segment_read 已置 0。
-     */
-    lumen_segment_t candidate;
-    wire_segment_read(&frame->payload[2], &candidate);
-
-    if (lumen_layer_is_empty(&candidate.layer[1]) &&
-        lumen_layer_is_empty(&candidate.layer[0])) {
-        /*
-         * 清空槽位（§9.6）：效果等同于不下发该段。交出非活动段，由调用方
-         * 释放槽位。
-         *
-         * **v4 的旁路漏洞修复**：这条路径**绕过 lumen_segment_validate_shape**，
-         * 所以「空层 level 必须为 0」必须在**这里**显式再判一次，否则一个
-         * layer0=0xFF/level=50 的清槽帧会被静默接受。level 非 0 时按参数非法
-         * 拒绝（它不是清槽，也不是合法空层）。
-         */
-        if (candidate.layer[0].level != 0 || candidate.layer[1].level != 0) {
-            outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
-            return;
-        }
-        outcome->result_code = LUMEN_RESULT_OK;
-        outcome->script_op = LUMEN_SCRIPT_OP_SEGMENT;
-        outcome->script_id = script_id;
-        outcome->script_stage_index = stage_index;
-        outcome->script_strip = strip_id;
-        outcome->script_seg = seg_id;
-        outcome->script_segment = (lumen_segment_t){0};
-        return;
-    }
-
-    /* 形状 / 参数：与 SetSegment、blob 解码同一份 §7.1 规则。 */
-    if (lumen_segment_validate_shape(&candidate) != LUMEN_RESULT_OK) {
-        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
-        return;
-    }
-
-    outcome->result_code = LUMEN_RESULT_OK;
-    outcome->script_op = LUMEN_SCRIPT_OP_SEGMENT;
-    outcome->script_id = script_id;
-    outcome->script_stage_index = stage_index;
-    outcome->script_strip = strip_id;
-    outcome->script_seg = seg_id;
-    outcome->script_segment = candidate;
-}
-
-/*
- * SetStripPower 0x1B（docs/protocol-v4.md §9.5）：strip_id 必须已分配、on ∈ {0,1}。
- *
- * #36 只做校验与意图登记（outcome->strip_power_op）；掩码写入、推黑帧与 TDM
- * 跳带在 #38。命令仍然**算已知命令**：小程序要能收到 ACK 0x00，而不是被旧
- * 固件的 0x02 误导成「这个固件不支持」。
+ * SetStripPower 0x1B（§9.5）：strip_id 必须已分配、on ∈ {0,1}。
+ * 掩码写入与渲染门控由调用方执行；命令层只登记意图。
  */
 static void dispatch_set_strip_power(const lumen_frame_t *frame, const lumen_state_t *current,
                                      lumen_command_outcome_t *outcome)
@@ -459,239 +211,378 @@ static void dispatch_set_strip_power(const lumen_frame_t *frame, const lumen_sta
     outcome->strip_power_on = on != 0;
 }
 
-/* ScriptCommit / ScriptAbort / QueryScript 共用 1 字节 script_id。 */
-static void dispatch_script_single_id(const lumen_frame_t *frame, uint8_t op,
-                                      lumen_command_outcome_t *outcome)
-{
-    uint8_t script_id = frame->payload[0];
-    /* QueryScript 允许查 0xFF（表示「问当前激活的是谁以外」没有意义，仍拒）。 */
-    if (script_id >= LUMEN_MAX_SCRIPTS) {
-        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
-        return;
-    }
-    outcome->result_code = LUMEN_RESULT_OK;
-    outcome->script_op = op;
-    outcome->script_id = script_id;
-}
+/* ---------------- 布局族 0x20-0x24 ---------------- */
 
 /*
- * ClearScript 0x1E（#73，docs/protocol-v4.md §6 / §9.6）：载荷 1 字节 script_id。
- *
- * 只判 id 范围。**「未提交即成功」是设备侧语义**：命令层看不到剧本表，
- * 也不应该为它引入一次状态快照——led_engine 在锁内清空并返回 OK。
- * 越界一律 InvalidParam（与 ScriptCommit / ScriptAbort 同一条边界）。
+ * 该链的部位数（布局快照的权威值）。越界返回 0。
+ * 命令层用它判「part_id 是否在该链已声明的部位范围内」——与引擎同一口径，
+ * 所以引擎不会因为一条已经通过命令层校验的请求再拒一次。
  */
-static void dispatch_clear_script(const lumen_frame_t *frame, lumen_command_outcome_t *outcome)
+static uint8_t layout_part_count(const lumen_layout_store_t *layout, uint8_t strip_id)
 {
-    uint8_t script_id = frame->payload[0];
-    if (script_id >= LUMEN_MAX_SCRIPTS) {
-        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
-        return;
-    }
-    outcome->result_code = LUMEN_RESULT_OK;
-    outcome->clear_script = true;
-    outcome->clear_script_id = script_id;
-}
-
-/* ActivateScript 0x19：script_id, loop（0/1/2，见 lumen_loop_mode_t）。 */
-static void dispatch_activate_script(const lumen_frame_t *frame,
-                                     lumen_command_outcome_t *outcome)
-{
-    uint8_t script_id = frame->payload[0];
-    uint8_t loop = frame->payload[1];
-    if (script_id >= LUMEN_MAX_SCRIPTS || loop > LUMEN_LOOP_MAX) {
-        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
-        return;
-    }
-    outcome->result_code = LUMEN_RESULT_OK;
-    outcome->script_op = LUMEN_SCRIPT_OP_ACTIVATE;
-    outcome->script_id = script_id;
-    outcome->script_loop = loop;
-}
-
-/*
- * 取某条灯带的灯珠数：优先用 #29 的 per-strip 表，没有表（单灯带 / host 单测）
- * 时退回 State 的 strip 0 值。越界/未初始化时按协议上限处理。
- */
-uint16_t lumen_command_strip_count(const lumen_state_t *current, const uint16_t *strip_counts,
-                                   uint8_t strip_id)
-{
-    if (current == NULL) {
+    if (layout == NULL || strip_id >= LUMEN_MAX_STRIPS) {
         return 0;
     }
-    uint16_t count = 0;
-    if (strip_counts != NULL && strip_id < LUMEN_MAX_STRIPS) {
-        count = strip_counts[strip_id];
+    return layout->part_count[strip_id];
+}
+
+/* LayoutWrite 0x20：strip_id, part_count。声明部位数并清空该链的部位（§6.1 第 1 条）。 */
+static void dispatch_layout_write(const lumen_frame_t *frame, const lumen_state_t *current,
+                                  lumen_command_outcome_t *outcome)
+{
+    uint8_t strip_id = frame->payload[0];
+    uint8_t part_count = frame->payload[1];
+    if (strip_id >= current->strip_count) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
     }
-    if (count == 0) {
-        count = current->led_count; /* 单灯带 / 未提供表：退回 strip 0 值 */
+    if (part_count > LUMEN_MAX_PARTS) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
     }
-    if (count == 0 || count > LUMEN_MAX_LEDS) {
-        count = LUMEN_MAX_LEDS; /* 防御：状态未初始化时按协议上限 */
-    }
-    return count;
+    outcome->result_code = LUMEN_RESULT_OK;
+    outcome->layout_op = true;
+    outcome->layout_opcode = LUMEN_CMD_LAYOUT_WRITE;
+    outcome->layout_strip = strip_id;
+    outcome->layout_part_count = part_count;
 }
 
 /*
- * SetSegment 0x10（#25 / #30 / #31 / #36 / #37 / v4）。
+ * LayoutPart 0x21：strip_id, part_id, name_len, name[24], seg_count, phase
+ * （§6.1 第 2 条，载荷 29 字节）。
  *
- * 校验顺序严格按 docs/protocol-v4.md §7.1（再叠 §5 的信封级顺序）：
- *   1 载荷长度精确等于 23（在上层 payload_len_ok 完成）
- *   2 layer0 已知且不为 0xFF
- *   3 layer1 已知或 0xFF；空层的 level 必须为 0
- *   4 各层 level ≤ 100
- *   5 layer1 为空 ⇒ blend 必须为 0
- *   6 blend ≤ 2
- *   7 静态层 param[3..6] 全 0
- *   8 各层按 type 校验参数（周期下限、flags 保留位；呼吸 p5 ≤ 100）
- *   然后 strip 范围 / 区间 / 重叠（lumen_segment_store_validate）
+ * name_len ≤ 24；name 不足 24 字节的部分由调用方保证补 0（解码端只信任 name_len）。
+ * seg_count ≤ 8。phase ∈ {0, 1}（S6：每部位一份）。part_id 必须已被 LayoutWrite 声明过。
  */
-static void dispatch_set_segment(const lumen_frame_t *frame, const lumen_state_t *current,
-                                 const lumen_segment_store_t *segments,
-                                 const uint16_t *strip_counts,
+static void dispatch_layout_part(const lumen_frame_t *frame, const lumen_state_t *current,
+                                 const lumen_layout_store_t *layout,
                                  lumen_command_outcome_t *outcome)
 {
-    if (frame->payload_len != LUMEN_WIRE_SEGMENT_BYTES) {
-        outcome->result_code = LUMEN_RESULT_BAD_LENGTH;
-        return;
-    }
-
-    /* 23 字节段块 → 两层结构（layer0/layer1 都是 9 字节定宽）。 */
-    lumen_segment_t candidate;
-    wire_segment_read(frame->payload, &candidate);
-
     uint8_t strip_id = frame->payload[0];
-    uint8_t seg_id = frame->payload[1];
-    if (seg_id >= LUMEN_MAX_SEGMENTS) {
+    uint8_t part_id = frame->payload[1];
+    uint8_t name_len = frame->payload[2];
+    uint8_t seg_count = frame->payload[27];
+    uint8_t phase = frame->payload[28];
+
+    if (strip_id >= current->strip_count) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    if (part_id >= LUMEN_MAX_PARTS || part_id >= layout_part_count(layout, strip_id)) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    if (name_len > LUMEN_NAME_BYTES || seg_count > LUMEN_MAX_PART_SEGS) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    if (phase > LUMEN_PHASE_MAX) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    outcome->result_code = LUMEN_RESULT_OK;
+    outcome->layout_op = true;
+    outcome->layout_opcode = LUMEN_CMD_LAYOUT_PART;
+    outcome->layout_strip = strip_id;
+    outcome->layout_part = part_id;
+    outcome->layout_name_len = name_len;
+    outcome->layout_seg_count = seg_count;
+    outcome->layout_phase = phase;
+    memset(outcome->layout_name, 0, sizeof(outcome->layout_name));
+    if (name_len > 0) {
+        memcpy(outcome->layout_name, &frame->payload[3], name_len);
+    }
+}
+
+/*
+ * LayoutSeg 0x22：strip_id, part_id, seg_id, start, end（§6.1 第 3 条）。
+ *
+ * 命令层判：下标范围、start ≤ end、end < 该链灯珠数、seg_id < 该部位声明的
+ * seg_count、以及与**同链其它部位的所有段**互斥（S3：一颗灯珠只属一个部位）。
+ *
+ * 最后一条在这里判（而不是等 LayoutCommit）是刻意与 v4 的 SetSegment 对齐：
+ * 向一条已经通过校验的帧回 InvalidParam 时，旧布局保持不变（S4：不自动裁剪、
+ * 不覆盖），用户能立刻知道是哪一段压到了谁。
+ */
+static void dispatch_layout_seg(const lumen_frame_t *frame, const lumen_state_t *current,
+                                const lumen_layout_store_t *layout,
+                                lumen_command_outcome_t *outcome)
+{
+    uint8_t strip_id = frame->payload[0];
+    uint8_t part_id = frame->payload[1];
+    uint8_t seg_id = frame->payload[2];
+    uint8_t start = frame->payload[3];
+    uint8_t end = frame->payload[4];
+
+    if (strip_id >= current->strip_count) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    if (part_id >= LUMEN_MAX_PARTS || part_id >= layout_part_count(layout, strip_id)) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    if (seg_id >= LUMEN_MAX_PART_SEGS) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    const lumen_part_layout_t *part = lumen_layout_store_part(layout, strip_id, part_id);
+    if (part == NULL || seg_id >= part->segs.seg_count) {
+        /* 声明了 seg_count 才能写那些槽位——先 LayoutPart 再 LayoutSeg。 */
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    if (start > end) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    uint16_t led_count = lumen_command_strip_count(current, strip_id);
+    if (end >= led_count) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    /* 与同链其它部位的所有段互斥（S3）。未写的段（0xFF）不参与。 */
+    for (uint8_t p = 0; p < layout_part_count(layout, strip_id) && p < LUMEN_MAX_PARTS; ++p) {
+        const lumen_part_layout_t *other = &layout->part[strip_id][p];
+        for (uint8_t s = 0; s < other->segs.seg_count && s < LUMEN_MAX_PART_SEGS; ++s) {
+            if (p == part_id && s == seg_id) {
+                continue; /* 段号等于自身时视为替换 */
+            }
+            uint8_t ostart = other->segs.seg[s][0];
+            uint8_t oend = other->segs.seg[s][1];
+            if (ostart == LUMEN_SEG_UNWRITTEN || oend == LUMEN_SEG_UNWRITTEN) {
+                continue;
+            }
+            if (!(end < ostart || oend < start)) {
+                outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+                return;
+            }
+        }
+    }
+
+    outcome->result_code = LUMEN_RESULT_OK;
+    outcome->layout_op = true;
+    outcome->layout_opcode = LUMEN_CMD_LAYOUT_SEG;
+    outcome->layout_strip = strip_id;
+    outcome->layout_part = part_id;
+    outcome->layout_seg = seg_id;
+    outcome->layout_start = start;
+    outcome->layout_end = end;
+}
+
+/*
+ * LayoutCommit 0x23：整份校验 + 立即落盘（§6.1 第 4 条）。
+ *
+ * 命令层无载荷可判，只登记意图；整份校验（每链部位数、每部位段数、段互斥、
+ * 段已写齐）与落盘由引擎在持有布局表时做——它才看得到 RAM 里的完整布局。
+ */
+static void dispatch_layout_commit(lumen_command_outcome_t *outcome)
+{
+    outcome->result_code = LUMEN_RESULT_OK;
+    outcome->layout_op = true;
+    outcome->layout_opcode = LUMEN_CMD_LAYOUT_COMMIT;
+}
+
+/* QueryLayout 0x24：ACK 之后逐部位 LayoutReport 0x89 + 一条 LayoutListEnd 0x8A。 */
+static void dispatch_query_layout(const lumen_frame_t *frame, const lumen_state_t *current,
+                                  lumen_command_outcome_t *outcome)
+{
+    uint8_t strip_id = frame->payload[0];
+    if (strip_id >= current->strip_count) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    outcome->result_code = LUMEN_RESULT_OK;
+    outcome->layout_op = true;
+    outcome->layout_opcode = LUMEN_CMD_QUERY_LAYOUT;
+    outcome->layout_strip = strip_id;
+}
+
+/* ---------------- 场景族 0x25-0x29 ---------------- */
+
+/*
+ * ScenePart 0x25：scene_id, strip_id, part_id, step_count, loop, on（§6.2）。
+ *
+ * **不校验 part_id < 布局的部位数**：场景与布局是两张表（§6.2 末段）。用户可以
+ * 先编排时间轴再划灯珠，也可以给一条还没划分的链预置内容。步数为 0 合法
+ * （本场景不演，S10）；loop 只有三值；on ∈ {0,1}。
+ */
+static void dispatch_scene_part(const lumen_frame_t *frame, const lumen_state_t *current,
+                                lumen_command_outcome_t *outcome)
+{
+    uint8_t scene_id = frame->payload[0];
+    uint8_t strip_id = frame->payload[1];
+    uint8_t part_id = frame->payload[2];
+    uint8_t step_count = frame->payload[3];
+    uint8_t loop = frame->payload[4];
+    uint8_t on = frame->payload[5];
+
+    if (scene_id >= LUMEN_MAX_SCENES || strip_id >= current->strip_count) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    if (part_id >= LUMEN_MAX_PARTS || step_count > LUMEN_MAX_STEPS) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    if (loop > LUMEN_LOOP_V5_MAX || on > 1) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    outcome->result_code = LUMEN_RESULT_OK;
+    outcome->scene_op = true;
+    outcome->scene_opcode = LUMEN_CMD_SCENE_PART;
+    outcome->scene_id = scene_id;
+    outcome->scene_strip = strip_id;
+    outcome->scene_part = part_id;
+    outcome->scene_step_count = step_count;
+    outcome->scene_loop = loop;
+    outcome->scene_on = on;
+}
+
+/*
+ * SceneStep 0x26：scene_id, strip_id, part_id, step_index, duration(2),
+ * 两层各 9 字节（§6.2 / §7.1）。
+ *
+ * 命令层判：下标范围、时长区间、两层形状（与 v4 的段完全同一份规则，复用
+ * lumen_segment_validate_shape）。「step_index < step_count」需要场景表的上下文，
+ * 由引擎判（§6.2 明确单步增量写入）。
+ */
+static void dispatch_scene_step(const lumen_frame_t *frame, const lumen_state_t *current,
+                                lumen_command_outcome_t *outcome)
+{
+    uint8_t scene_id = frame->payload[0];
+    uint8_t strip_id = frame->payload[1];
+    uint8_t part_id = frame->payload[2];
+    uint8_t step_index = frame->payload[3];
+    uint16_t duration = (uint16_t)(frame->payload[4] | ((uint16_t)frame->payload[5] << 8));
+
+    if (scene_id >= LUMEN_MAX_SCENES || strip_id >= current->strip_count) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    if (part_id >= LUMEN_MAX_PARTS || step_index >= LUMEN_MAX_STEPS) {
+        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
+        return;
+    }
+    if (duration < LUMEN_STEP_MIN_MS || duration > LUMEN_STEP_MAX_MS) {
         outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
         return;
     }
 
-    /* 第 2-7 步：层类型、blend、保留位、各类型参数。 */
-    if (lumen_segment_validate_shape(&candidate) != LUMEN_RESULT_OK) {
-        outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
-        return;
-    }
-
-    /* strip 范围 / 区间 / 重叠（段配置快照为 NULL 时视为「没有任何活动段」）。 */
-    static const lumen_segment_store_t k_empty_store;
-    const lumen_segment_store_t *store = segments != NULL ? segments : &k_empty_store;
-
+    /* 两层按 §7.1 的 9 字节定宽解码，再走与段 / blob 同一份形状校验。 */
+    lumen_segment_t probe;
+    memset(&probe, 0, sizeof(probe));
+    probe.active = true;
+    (void)lumen_layer_decode(&frame->payload[6], &probe.layer[0]);
+    (void)lumen_layer_decode(&frame->payload[15], &probe.layer[1]);
     /*
-     * 灯珠数必须按「这条灯带自己」的数字校验（#29）。current->led_count 只是
-     * strip 0 的；拿它校验 strip 3 会放行真实越界（设成功但后半段不亮），
-     * 或误拒合法段。
+     * 混合方式**不在线上**（§6.2）：layer1 为空 → 覆盖；非空 → 按亮度叠加。
+     * 这里规范化成校验期望的值，让 validate_shape 第 5 步不误判。
      */
-    uint16_t led_count = lumen_command_strip_count(current, strip_counts, strip_id);
-
-    uint8_t result = lumen_segment_store_validate(store, strip_id, current->strip_count, seg_id,
-                                                  (uint8_t)led_count, &candidate);
-    outcome->result_code = result;
-    if (result != LUMEN_RESULT_OK) {
-        return;
-    }
-
-    /* 校验通过：把写入意图交给调用方（段配置不在 lumen_state_t 里）。 */
-    outcome->segment_op = true;
-    outcome->segment_clear = false;
-    outcome->segment_strip = strip_id;
-    outcome->segment_id = seg_id;
-    outcome->segment = candidate;
-}
-
-/*
- * ClearSegment 0x11（#25）：释放槽位，其灯珠归入未覆盖区（写 0）。
- * 幂等：清一个本来就不活动的槽位也回 0x00（命令是绝对值语义）。
- */
-static void dispatch_clear_segment(const lumen_frame_t *frame, const lumen_state_t *current,
-                                   lumen_command_outcome_t *outcome)
-{
-    uint8_t strip_id = frame->payload[0];
-    uint8_t seg_id = frame->payload[1];
-    if (strip_id >= current->strip_count || strip_id >= LUMEN_MAX_STRIPS) {
+    probe.blend = lumen_layer_is_empty(&probe.layer[1]) ? (uint8_t)LUMEN_BLEND_OVER
+                                                        : (uint8_t)LUMEN_BLEND_LUMA;
+    if (lumen_segment_validate_shape(&probe) != LUMEN_RESULT_OK) {
         outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
         return;
     }
-    if (seg_id >= LUMEN_MAX_SEGMENTS) {
+
+    outcome->result_code = LUMEN_RESULT_OK;
+    outcome->scene_op = true;
+    outcome->scene_opcode = LUMEN_CMD_SCENE_STEP;
+    outcome->scene_id = scene_id;
+    outcome->scene_strip = strip_id;
+    outcome->scene_part = part_id;
+    outcome->scene_step_index = step_index;
+    outcome->scene_duration_ms = duration;
+    memcpy(outcome->scene_layer[0], &frame->payload[6], 9);
+    memcpy(outcome->scene_layer[1], &frame->payload[15], 9);
+}
+
+/* SceneName 0x27：scene_id, name_len, name[24]。 */
+static void dispatch_scene_name(const lumen_frame_t *frame, lumen_command_outcome_t *outcome)
+{
+    uint8_t scene_id = frame->payload[0];
+    uint8_t name_len = frame->payload[1];
+    if (scene_id >= LUMEN_MAX_SCENES || name_len > LUMEN_NAME_BYTES) {
         outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
         return;
     }
     outcome->result_code = LUMEN_RESULT_OK;
-    outcome->segment_op = true;
-    outcome->segment_clear = true;
-    outcome->segment_strip = strip_id;
-    outcome->segment_id = seg_id;
+    outcome->scene_op = true;
+    outcome->scene_opcode = LUMEN_CMD_SCENE_NAME;
+    outcome->scene_id = scene_id;
+    outcome->scene_name_len = name_len;
+    memset(outcome->scene_name, 0, sizeof(outcome->scene_name));
+    if (name_len > 0) {
+        memcpy(outcome->scene_name, &frame->payload[2], name_len);
+    }
 }
 
-/*
- * QueryStrip 0x12（#25）：只做 strip 范围校验，真正的多帧回包由 ble_link
- * 在 ACK 之后发出（seg_count 条 SegmentReport + 1 条 SegmentListEnd，同 seq）。
- */
-static void dispatch_query_strip(const lumen_frame_t *frame, const lumen_state_t *current,
-                                 lumen_command_outcome_t *outcome)
+/* ActivateScene 0x28 / QueryScene 0x29：都只有 1 字节 scene_id（§6）。 */
+static void dispatch_scene_single_id(const lumen_frame_t *frame, uint8_t opcode,
+                                     lumen_command_outcome_t *outcome)
 {
-    uint8_t strip_id = frame->payload[0];
-    if (strip_id >= current->strip_count || strip_id >= LUMEN_MAX_STRIPS) {
+    uint8_t scene_id = frame->payload[0];
+    if (scene_id >= LUMEN_MAX_SCENES) {
         outcome->result_code = LUMEN_RESULT_INVALID_PARAM;
         return;
     }
     outcome->result_code = LUMEN_RESULT_OK;
-    outcome->strip_query = true;
-    outcome->query_strip_id = strip_id;
+    outcome->scene_op = true;
+    outcome->scene_opcode = opcode;
+    outcome->scene_id = scene_id;
+}
+
+bool lumen_command_changes_state(uint8_t command)
+{
+    /* docs/protocol-v5.md §9.6：任何会改变持久化内容或输出内容的命令。
+     * 查询（含 QueryLayout / QueryScene）与 SelfTest 不在其中。 */
+    switch (command) {
+    case LUMEN_CMD_SET_POWER:
+    case LUMEN_CMD_SET_BRIGHTNESS:
+    case LUMEN_CMD_SET_LED_COUNT:
+    case LUMEN_CMD_SET_STRIP_POWER:
+    case LUMEN_CMD_LAYOUT_WRITE:
+    case LUMEN_CMD_LAYOUT_PART:
+    case LUMEN_CMD_LAYOUT_SEG:
+    case LUMEN_CMD_LAYOUT_COMMIT:
+    case LUMEN_CMD_SCENE_PART:
+    case LUMEN_CMD_SCENE_STEP:
+    case LUMEN_CMD_SCENE_NAME:
+    case LUMEN_CMD_ACTIVATE_SCENE:
+        return true;
+    default:
+        return false;
+    }
 }
 
 void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *current,
-                            const lumen_segment_store_t *segments,
-                            const uint16_t *strip_counts, uint8_t max_brightness,
+                            const lumen_layout_store_t *layout, uint8_t max_brightness,
                             lumen_command_outcome_t *outcome)
 {
     if (frame == NULL || current == NULL || outcome == NULL) {
         return;
     }
 
+    /*
+     * 先把 current 拷到本地：调用方允许 current 与 outcome->next 指向同一块内存
+     * （「把上一条命令的结果当下一条命令的输入」是 host 测试的常见写法），
+     * 下面的 memset 会先把 outcome 清零。
+     */
+    const lumen_state_t baseline = *current;
+
     /* 默认：状态不变、结果码未知、不碰自检，等具体分支覆盖。 */
+    memset(outcome, 0, sizeof(*outcome));
     outcome->result_code = LUMEN_RESULT_UNKNOWN_COMMAND;
-    outcome->state_changed = false;
-    outcome->start_selftest = false;
-    outcome->cancels_selftest = false;
-    outcome->state_report = false;
-    outcome->led_count_rebuild = false;
-    outcome->led_count = current->led_count;
-    outcome->led_count_strip = 0;
-    outcome->segment_op = false;
-    outcome->segment_clear = false;
-    outcome->segment_strip = 0;
-    outcome->segment_id = 0;
-    outcome->segment = (lumen_segment_t){0};
-    outcome->strip_query = false;
-    outcome->query_strip_id = 0;
-    outcome->strip_power_op = false;
-    outcome->strip_power_strip = 0;
-    outcome->strip_power_on = false;
-    outcome->strip_config_query = false;
-    outcome->device_info_query = false;
-    outcome->script_op = LUMEN_SCRIPT_OP_NONE;
-    outcome->script_id = LUMEN_NO_SCRIPT;
-    outcome->script_action = 0;
-    outcome->script_stage_count = 0;
-    outcome->script_strip_count = 0;
-    outcome->script_stage_index = 0;
-    outcome->script_duration_ms = 0;
-    outcome->script_fade_ms = 0;
-    outcome->script_strip = 0;
-    outcome->script_seg = 0;
-    outcome->script_segment.active = false;
-    outcome->script_loop = LUMEN_LOOP_NONE;
-    outcome->clear_script = false;
-    outcome->clear_script_id = 0;
-    outcome->next = *current;
+    outcome->next = baseline;
 
     /*
-     * §11.3 顺序：command (0x02) → payload 长度 (0x04) → payload 取值 (0x01)。
+     * §5 顺序：command (0x02) → payload 长度 (0x04) → payload 取值 (0x01)。
      * 先判命令字是否协议已知，再判该命令的载荷长度，最后才看取值。
      */
     if (!lumen_command_is_known(frame->command)) {
-        return; /* 0x08-0xFF（含保留命令、app 写入 0x80）→ 0x02 */
+        return; /* 退役 / 保留 / 设备→小程序命令字 → 0x02 */
     }
 
     if (!lumen_command_payload_len_ok(frame)) {
@@ -710,60 +601,54 @@ void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *cur
 
     case LUMEN_CMD_SET_LED_COUNT:
         /*
-         * #12 实现重建语义；这里**不能 return**——必须走到下面的统一收尾，
-         * 否则 SetLedCount 不会置 cancels_selftest（§11.2 第 5 条要求灯珠
-         * 数量变更同样立即取消自检）。
+         * 这里**不能 return**——必须走到统一收尾，否则 SetLedCount 不会置
+         * cancels_selftest（§9.6 要求灯珠数量变更同样取消自检）。
          */
         dispatch_set_led_count(frame, current, outcome);
         break;
 
-    case LUMEN_CMD_SET_SEGMENT:
-        dispatch_set_segment(frame, current, segments, strip_counts, outcome);
+    case LUMEN_CMD_SET_STRIP_POWER:
+        dispatch_set_strip_power(frame, current, outcome);
         break;
 
-    case LUMEN_CMD_CLEAR_SEGMENT:
-        dispatch_clear_segment(frame, current, outcome);
+    case LUMEN_CMD_LAYOUT_WRITE:
+        dispatch_layout_write(frame, current, outcome);
         break;
 
-    case LUMEN_CMD_QUERY_STRIP:
-        dispatch_query_strip(frame, current, outcome);
+    case LUMEN_CMD_LAYOUT_PART:
+        dispatch_layout_part(frame, current, layout, outcome);
         break;
 
-    case LUMEN_CMD_SET_PLAYBACK:
-        dispatch_set_playback(frame, current, outcome);
+    case LUMEN_CMD_LAYOUT_SEG:
+        dispatch_layout_seg(frame, current, layout, outcome);
         break;
 
-    case LUMEN_CMD_SCRIPT_BEGIN:
-        dispatch_script_begin(frame, current, outcome);
+    case LUMEN_CMD_LAYOUT_COMMIT:
+        dispatch_layout_commit(outcome);
         break;
 
-    case LUMEN_CMD_SCRIPT_STAGE:
-        dispatch_script_stage(frame, outcome);
+    case LUMEN_CMD_QUERY_LAYOUT:
+        dispatch_query_layout(frame, current, outcome);
         break;
 
-    case LUMEN_CMD_SCRIPT_SEGMENT:
-        dispatch_script_segment(frame, outcome);
+    case LUMEN_CMD_SCENE_PART:
+        dispatch_scene_part(frame, current, outcome);
         break;
 
-    case LUMEN_CMD_SCRIPT_COMMIT:
-        dispatch_script_single_id(frame, LUMEN_SCRIPT_OP_COMMIT, outcome);
+    case LUMEN_CMD_SCENE_STEP:
+        dispatch_scene_step(frame, current, outcome);
         break;
 
-    case LUMEN_CMD_SCRIPT_ABORT:
-        dispatch_script_single_id(frame, LUMEN_SCRIPT_OP_ABORT, outcome);
+    case LUMEN_CMD_SCENE_NAME:
+        dispatch_scene_name(frame, outcome);
         break;
 
-    case LUMEN_CMD_ACTIVATE_SCRIPT:
-        dispatch_activate_script(frame, outcome);
+    case LUMEN_CMD_ACTIVATE_SCENE:
+        dispatch_scene_single_id(frame, LUMEN_CMD_ACTIVATE_SCENE, outcome);
         break;
 
-    case LUMEN_CMD_QUERY_SCRIPT:
-        dispatch_script_single_id(frame, LUMEN_SCRIPT_OP_QUERY, outcome);
-        break;
-
-    case LUMEN_CMD_CLEAR_SCRIPT:
-        /* #73：真正删掉一套已提交剧本（不是只删本机草稿）。 */
-        dispatch_clear_script(frame, outcome);
+    case LUMEN_CMD_QUERY_SCENE:
+        dispatch_scene_single_id(frame, LUMEN_CMD_QUERY_SCENE, outcome);
         break;
 
     case LUMEN_CMD_QUERY_STATE:
@@ -773,24 +658,20 @@ void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *cur
         outcome->state_report = true;
         break;
 
-    case LUMEN_CMD_SET_STRIP_POWER:
-        dispatch_set_strip_power(frame, current, outcome);
-        break;
-
     case LUMEN_CMD_QUERY_STRIP_CONFIG:
-        /* 无载荷查询：ACK 之后一条 StripConfigReport 0x87（§7.4 / §8）。 */
+        /* 无载荷查询：ACK 之后一条 StripConfigReport 0x87（§7.4）。 */
         outcome->result_code = LUMEN_RESULT_OK;
         outcome->strip_config_query = true;
         break;
 
     case LUMEN_CMD_QUERY_DEVICE_INFO:
-        /* 无载荷查询：ACK 之后一条 DeviceInfoReport 0x88（§7.4 / §8）。 */
+        /* 无载荷查询：ACK 之后一条 DeviceInfoReport 0x88（§7.4）。 */
         outcome->result_code = LUMEN_RESULT_OK;
         outcome->device_info_query = true;
         break;
 
     case LUMEN_CMD_SELF_TEST:
-        /* §11.2 第 1 条：立即回 ACK 0x00；序列由调用方启动。
+        /* §9.6 第 1 条：立即回 ACK 0x00；序列由调用方启动。
          * 自检不改共享状态（不写 NVS），因此 state_changed 保持 false。 */
         outcome->result_code = LUMEN_RESULT_OK;
         outcome->start_selftest = true;
@@ -803,9 +684,9 @@ void lumen_command_dispatch(const lumen_frame_t *frame, const lumen_state_t *cur
     }
 
     /*
-     * 统一收尾（协议 §11.2 第 5 条）：只要命令属于「改变状态」的类别且已
-     * 被接受，就要求调用方结束自检——即使 state_changed 为 false（值没变）。
-     * 非法命令（0x01 / 0x02 / 0x04）不取消自检，因为新命令并未生效。
+     * 统一收尾（§9.6）：只要命令属于「改变状态」的类别且已被接受，就要求
+     * 调用方结束自检——即使 state_changed 为 false（值没变）。
+     * 非法命令不取消自检，因为新命令并未生效。
      */
     outcome->cancels_selftest =
         outcome->result_code == LUMEN_RESULT_OK && lumen_command_changes_state(frame->command);
