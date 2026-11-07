@@ -540,6 +540,8 @@ async def drift_check(probe, chk, minutes):
         failures == 0,
         f"{elapsed:.0f}s，{samples} 次采样，{failures} 次异常",
     )
+    # 把采样间隔也报出来：判据是「不掉线」，采样密度只是可复核性的补充。
+    print(f"  采样间隔 {minutes * 60 / max(1, samples):.0f}s，共 {samples} 次。")
     print(
         "  说明：播放头用绝对时间差推进（`lumen_part_clock_advance`），"
         "累积漂移在 host 单测 `test_part_clock_no_drift` 里钉住；"
