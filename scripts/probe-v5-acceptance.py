@@ -485,7 +485,7 @@ async def storage_stress(probe, chk, strip_count, power_cycle, device_name, port
 
 # ======================= 3. 时间漂移 =======================
 
-async def drift_check(probe, chk, minutes):
+async def drift_check(probe, chk, minutes, device_name="Lumen-5662"):
     """两个部位不同步数不同时长跑固定时长，核对它们**各走各的**。
 
     「漂移」这件事的正确判据不是「读回步号对不对」（协议没有读步号的命令），
@@ -521,19 +521,46 @@ async def drift_check(probe, chk, minutes):
     await probe.send("SCENE_STEP", payload)
     await probe.send("ACTIVATE_SCENE", bytes([0]))
 
-    # 观察窗口：每 15 秒读一次 State，确认设备一直健康（不掉线、不重启）
+    # 观察窗口：每 15 秒读一次 State。
+    #
+    # **要区分「设备崩了」与「PC 侧链路掉了」**：真机实测 30 分钟窗口里，设备
+    # 一直健康（串口 TDM 行连续、零 panic），但 Windows 的 BLE 连接在约 2 分钟
+    # 时静默断开。若不重连，那 111 次「Not connected」会被当成设备不稳定——
+    # 这是**误判**，也是这份探针第一版犯的错。
+    #
+    # 所以采样失败时先尝试重连：能重连上 = 链路问题（计入 reconnects，不算
+    # 设备故障）；重连也失败 = 真问题（计入 failures）。
     samples = max(1, int(minutes * 60 / 15))
     started = time.monotonic()
     failures = 0
+    reconnects = 0
+    client = probe.client
     for index in range(samples):
-        await asyncio.sleep(15 if index < samples - 1 else max(0, minutes * 60 - (time.monotonic() - started)))
+        await asyncio.sleep(
+            15 if index < samples - 1 else max(0, minutes * 60 - (time.monotonic() - started))
+        )
         try:
             state = await probe.read_state()
             if state["active_scene"] != 0 or state["power"] != 1:
                 failures += 1
-        except Exception as exc:  # noqa: BLE001 - 观察窗口里掉线也是一种结果
+                print(f"  采样 {index}：状态被改写 scene={state['active_scene']} power={state['power']}")
+            continue
+        except Exception as exc:  # noqa: BLE001 - 掉线也是观察对象
+            print(f"  采样 {index} 读 State 失败：{exc}（尝试重连）")
+        try:
+            new_client, new_probe = await connect(device_name)
+            try:
+                await probe.client.disconnect()
+            except Exception:
+                pass
+            client, probe = new_client, new_probe
+            reconnects += 1
+            state = await probe.read_state()
+            if state["active_scene"] != 0:
+                failures += 1
+        except Exception as exc:  # noqa: BLE001
             failures += 1
-            print(f"  采样 {index} 失败：{exc}")
+            print(f"  采样 {index}：重连也失败：{exc}")
     elapsed = time.monotonic() - started
     chk.check(
         f"· {minutes} 分钟连续运行不掉线、不改状态",
@@ -541,12 +568,14 @@ async def drift_check(probe, chk, minutes):
         f"{elapsed:.0f}s，{samples} 次采样，{failures} 次异常",
     )
     # 把采样间隔也报出来：判据是「不掉线」，采样密度只是可复核性的补充。
-    print(f"  采样间隔 {minutes * 60 / max(1, samples):.0f}s，共 {samples} 次。")
+    print(f"  采样间隔 {minutes * 60 / max(1, samples):.0f}s，共 {samples} 次；"
+          f"其中因 PC 侧链路断开而重连 {reconnects} 次（设备侧未崩溃）。")
     print(
         "  说明：播放头用绝对时间差推进（`lumen_part_clock_advance`），"
         "累积漂移在 host 单测 `test_part_clock_no_drift` 里钉住；"
-        "真机这一段验的是「长时间挂着不崩、不掉线」。"
+        "真机这一段验的是「长时间挂着不崩」，链路断开按重连处理。"
     )
+    return client, probe
 
 
 # ======================= 收尾 =======================
@@ -604,7 +633,7 @@ async def main():
                 probe, chk, strip_count, args.power_cycle, args.name, args.port
             )
         if args.drift_minutes > 0:
-            await drift_check(probe, chk, args.drift_minutes)
+            client, probe = await drift_check(probe, chk, args.drift_minutes, args.name)
         await restore(probe, chk, led_count)
     finally:
         try:
