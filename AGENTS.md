@@ -181,23 +181,35 @@ SHA-256 索引、配置丢失记录。
 
 ### `ui` 层（渲染回归）怎么开起来
 
-`ui` 层长期报 `SKIPPED: 缺自动化端口`，**不是没装工具，是没开自动化**。三步：
+`ui` 层长期报 `SKIPPED: 缺自动化端口`，**不是没装工具，是没开自动化**。
 
 ```powershell
 # 1. 开发者工具已安装（本机：C:\Program Files (x86)\Tencent\微信web开发者工具）
-# 2. 用 CLI 开自动化（IDE 已在 9501 上跑时，auto 会自己占 9502）
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'C:\Program Files (x86)\Tencent\微信web开发者工具\cli.bat' auto --project 'C:\Users\13092\Desktop\项目\zcode\lumen\miniprogram'"
-# 3. 指定端口跑（auto 通常落在 9502）
+# 2. 用 CLI 开自动化。**必须带 --auto-port**，否则 auto 只开 IDE 的 9501，
+#    automator 的 ws 端口根本不会监听（实测 2.02.2608080）。
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'C:\Program Files (x86)\Tencent\微信web开发者工具\cli.bat' auto --project 'C:\Users\13092\Desktop\项目\zcode\lumen\miniprogram' --auto-port 9502 --trust-project"
+# 3. 跑
 WS=ws://127.0.0.1:9502 node scripts/verify-v5.mjs
 ```
+
+> **`--auto-port` 是这个工具链的隐性必需参数**（2026-11-07 实测）。
+> 不带它时 `cli auto` **照样打印 `✔ auto`**，但 `netstat` 里只有 9501（IDE 的 HTTP
+> 端口），9502 不监听——于是 `ui` 层报 SKIP，看起来像「自动化没开」，实际是
+> **参数没给够**。`miniprogram-automator` 自己的 `Launcher` 也是这么调 CLI 的
+> （`["auto","--project",path,"--auto-port",port]`，见它的 `out/Launcher.js`）。
+>
+> 这是本项目踩过的**第二次同类坑**：工具「成功」返回，但没做那件事。
+> 判据必须是 `netstat -ano | grep :9502` 有 LISTENING，不是看 CLI 的输出。
 
 - **9501 是 IDE 的 HTTP 端口，不是自动化 ws**。探 9501 通 ≠ 自动化可用。
 - 带中文路径的 `.ps1` 必须存成 **UTF-8 with BOM**，否则 PowerShell 把 `微信` 读成乱码、
   报「找不到 cli.bat」。
 - `cli auto` 若报 `IDE server has started on 9501 and must be restarted on 9420`，
   **不要加 `--port`**，直接不带端口重跑。
+- IDE 卡住（弹窗关不掉 / 项目窗口只剩空 pane）时 `Stop-Process -Name '微信开发者工具' -Force`
+  再重开即可——比在 GUI 里找关不掉的按钮快。
 - `scripts/verify-v5.mjs` 的断言集已改写成 **v5 页面**（设备页就地展开 + 部位编辑器），
-  实测 **38/38**。改这两个页面时它必须跟着改——它验的是「点得动 + 设备真的收到」，
+  实测 **48/48**。改这两个页面时它必须跟着改——它验的是「点得动 + 设备真的收到」，
   这是单测（直接 `new ControlSession`）覆盖不到的那一层。
 
 ## Agent skills

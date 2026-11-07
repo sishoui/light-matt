@@ -34,19 +34,21 @@ v5 是**断崖**：协议、持久化、渲染模型全换。一条链切成多�
 ### 当前数字
 
 > **数字以最近一次测试报告为准**（`node scripts/test-run.mjs`，见 [`testing.md`](testing.md)）。
-> 下表是 2026-11-07 合入后那次全量跑的实际值。
+> 下表是 **2026-11-07T11:36 那次五层全跑**的实际值
+> （`node scripts/test-run.mjs firmware mp server ui ble`）：
 
 | 层 | 实测 |
 |---|---|
 | 固件 host | **12976 断言** + 113 向量 |
 | 小程序 | **1203 用例 / 61 文件** |
 | 后端 | 140 用例 |
-| ui 渲染回归 | **48 条**（`verify-v5.mjs`）——合入时跑过，本轮改动后**未复跑** |
-| 真机 e2e | **7 用例**（`doctor.py` 修好后不再是 SKIP）——合入时跑过，本轮改动后**未复跑** |
+| ui 渲染回归 | **48 条**（`verify-v5.mjs`，114s） |
+| 真机 e2e | **7 用例**（33s） |
 | 真机协议回归 | `probe-v5.py` **58/58** |
 | 真机整合验收 | `probe-v5-acceptance.py` **31/31**（含断电恢复） |
 
-证据：[`evidence/v5-integration-2026-11-07.md`](evidence/v5-integration-2026-11-07.md)。
+**五层全部 PASS，没有未验证的层。** 证据：
+[`evidence/v5-integration-2026-11-07.md`](evidence/v5-integration-2026-11-07.md)。
 
 ### 收尾状态
 
