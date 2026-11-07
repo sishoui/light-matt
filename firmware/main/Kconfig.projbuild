@@ -298,4 +298,45 @@ menu "Lumen"
 
     endif
 
+    config LUMEN_PLAYHEAD_LOG
+        bool "打印播放头轨迹（相位漂移验收用，量产必须关）"
+        default n
+        help
+            #162 票面要求「30 分钟连续运行的最大相位偏差有明确数字」，而协议
+            **没有**读「演到第几步」的命令（`QueryScene` 只回编好的步表）。
+            打开这个开关后，渲染任务按 `LUMEN_PLAYHEAD_LOG_PERIOD_MS` 打一行
+            `ph:`，内容是两个被观察部位的步号与步内已用时间，外加设备侧
+            单调时钟。判据（由 scripts/analyze-playhead-log.py 实现）：
+
+              - **同一部位的步内时间**必须落在 [0, 该步时长)；
+              - **两个部位的相对相位** = (各自 step_start_ms 之差) 对总周期取模，
+                长时间跑下来应当**只有量化噪声、没有单调漂移**。
+
+            为什么不走协议：加一条只读命令要动契约 + 向量 + 两端实现（那是
+            规格里成本最高的一类改动），而这件事只做一次验收。串口是本机
+            调试通道，不进线上契约。
+
+            代价：115200 下每行约 6ms 串口时间。周期默认 10 秒，占空可忽略。
+            不要在量产固件里打开——它每 10 秒阻塞渲染任务约 6ms。
+
+    config LUMEN_PLAYHEAD_LOG_PERIOD_MS
+        int "播放头日志周期（毫秒）"
+        default 10000
+        range 1000 60000
+        depends on LUMEN_PLAYHEAD_LOG
+        help
+            每多少毫秒打一行 `ph:`。30 分钟 / 10 秒 = 180 个采样点，足够
+            看出单调漂移（每点 10 秒分辨率）。要更细就调小，但别低于 1 秒
+            ——那会让串口占空显著上升，反而污染被测对象。
+
+    config LUMEN_PLAYHEAD_LOG_STRIP
+        int "观察哪条链（0-7）"
+        default 0
+        range 0 7
+        depends on LUMEN_PLAYHEAD_LOG
+        help
+            两个被观察部位取同一条链的 part 0 与 part 1。同链同场景，
+            起点相同（`ActivateScene` 会一起重置），所以它们的相对相位
+            是可直接比较的量。
+
 endmenu

@@ -1,6 +1,7 @@
 #include "led_engine.h"
 
 #include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "esp_log.h"
@@ -643,6 +644,109 @@ static bool tdm_push_strip(uint8_t strip_id, const lumen_state_t *snapshot,
     return true;
 }
 
+/*
+ * 播放头轨迹日志（#162「相位偏差」验收，`CONFIG_LUMEN_PLAYHEAD_LOG`）。
+ *
+ * 协议不报「演到第几步」，所以相位偏差只能从设备侧看。这一行给出的是
+ * **足以复算播放头的全部输入**：
+ *
+ *   - `origin`：该部位的时钟原点（`(t - origin)` 就是绝对经过时间）；
+ *   - `total` ：该部位一个完整循环的总时长；
+ *   - `step` / `elapsed`：当前步号与步内已用时间。
+ *
+ * 于是分析脚本可以用**闭式解**对照：`(t - origin) mod total` 应等于
+ * 「前面各步时长之和 + elapsed」。若固件是累加式实现，这个等式会随时间
+ * 慢慢失配——那才是漂移。所以判据是**等式残差**，不是「步号变了没有」。
+ *
+ * 为什么不直接在合成路径里每帧打：那会 20fps × 8 链刷屏，而串口阻塞会
+ * 改变被测对象（渲染任务就是打日志的那个任务）。这里按时间戳节流。
+ *
+ * 这一行**不是**新的协议能力：只在调试构建里存在，默认关闭。
+ */
+static void playhead_log_tick(const lumen_layout_store_t *layout, const lumen_scene_t *scene,
+                              const lumen_part_clocks_t *clocks, uint32_t now_ms_value)
+{
+#if CONFIG_LUMEN_PLAYHEAD_LOG
+    static uint32_t s_next_ms;
+    if (s_next_ms == 0) {
+        s_next_ms = now_ms_value + CONFIG_LUMEN_PLAYHEAD_LOG_PERIOD_MS;
+        return;
+    }
+    /* 无符号差值判向：时钟回绕时 (now - next) 仍是个小的正数。 */
+    if ((int32_t)(now_ms_value - s_next_ms) < 0) {
+        return;
+    }
+    s_next_ms = now_ms_value + CONFIG_LUMEN_PLAYHEAD_LOG_PERIOD_MS;
+
+    const uint8_t strip = CONFIG_LUMEN_PLAYHEAD_LOG_STRIP;
+    if (strip >= LUMEN_MAX_STRIPS || layout == NULL || scene == NULL || clocks == NULL) {
+        return;
+    }
+    const uint8_t part_count = layout->part_count[strip];
+    for (uint8_t p = 0; p < part_count && p < LUMEN_MAX_PARTS; ++p) {
+        const lumen_part_scene_t *part = &scene->part[strip][p];
+        if (part->step_count == 0 || part->on == 0) {
+            ESP_LOGI(TAG, "ph: t=%lu strip=%u part=%u idle steps=%u on=%u",
+                     (unsigned long)now_ms_value, strip, p, part->step_count, part->on);
+            continue;
+        }
+        /*
+         * **步表单独打一行，且只在它变化时打。**
+         *
+         * 为什么必须打：判据是「闭式解残差」，算残差要知道每一步的时长
+         * （`sum(table[:step])`）。从采样里反推步表要求采样能覆盖到每一步
+         * ——而 10 秒采样配 800ms 循环会永远落在同一相位，一个循环只看到
+         * 一两步，反推必然失败（自检抓到的就是这个）。固件本来就知道步表，
+         * 打一次比让分析脚本猜可靠得多。
+         *
+         * 记下上一次的内容：用户在测漂移期间不该改时间轴，真改了也要让
+         * 分析脚本看到新表（那一行会带新的 total）。
+         */
+        static uint8_t s_table_sig[LUMEN_MAX_STRIPS][LUMEN_MAX_PARTS];
+        static uint32_t s_table_total[LUMEN_MAX_STRIPS][LUMEN_MAX_PARTS];
+        uint32_t total = 0;
+        uint32_t sig = 0;
+        for (uint8_t s = 0; s < part->step_count && s < LUMEN_MAX_STEPS; ++s) {
+            uint16_t d = part->step[s].duration_ms;
+            total += d;
+            sig = sig * 31u + d; /* 顺序敏感，够用即可（碰撞只会少打一行，不会错判） */
+        }
+        if (s_table_total[strip][p] != total || s_table_sig[strip][p] != (uint8_t)sig) {
+            s_table_total[strip][p] = total;
+            s_table_sig[strip][p] = (uint8_t)sig;
+            char table[LUMEN_MAX_STEPS * 6 + 1];
+            size_t used = 0;
+            for (uint8_t s = 0; s < part->step_count && s < LUMEN_MAX_STEPS; ++s) {
+                int n = snprintf(table + used, sizeof(table) - used, s == 0 ? "%u" : ",%u",
+                                 (unsigned)part->step[s].duration_ms);
+                if (n <= 0 || (size_t)n >= sizeof(table) - used) {
+                    break;
+                }
+                used += (size_t)n;
+            }
+            table[used] = '\0';
+            ESP_LOGI(TAG, "ph: table strip=%u part=%u steps=%s total=%lu loop=%u", strip, p,
+                     table, (unsigned long)total, part->loop);
+        }
+
+        lumen_part_position_t pos = lumen_part_clock_advance(part, &clocks->clock[strip][p],
+                                                             now_ms_value);
+        uint16_t dur = pos.step_index < part->step_count ? part->step[pos.step_index].duration_ms : 0;
+        ESP_LOGI(TAG,
+                 "ph: t=%lu strip=%u part=%u step=%u elapsed=%lu dur=%u total=%lu loop=%u "
+                 "origin=%lu",
+                 (unsigned long)now_ms_value, strip, p, pos.step_index,
+                 (unsigned long)pos.elapsed_ms, dur, (unsigned long)total, part->loop,
+                 (unsigned long)clocks->clock[strip][p].origin_ms);
+    }
+#else
+    (void)layout;
+    (void)scene;
+    (void)clocks;
+    (void)now_ms_value;
+#endif
+}
+
 /* 跑一轮 TDM，并记录本轮耗时（串口实测证据）。 */
 static void tdm_run_round(const lumen_state_t *snapshot, const lumen_layout_store_t *layout,
                           const lumen_scene_t *scene, const lumen_part_clocks_t *clocks,
@@ -734,6 +838,20 @@ static void render_task(void *arg)
             wait = anim_ticks > 0 ? anim_ticks : 1;
             anim_mode = true;
         }
+#if CONFIG_LUMEN_PLAYHEAD_LOG
+        /*
+         * 静态场景下渲染任务阻塞在信号量上（零 CPU 是产品特性），播放头日志
+         * 就永远等不到下一次醒来。给它一个自己的节拍——只影响调试构建。
+         */
+        if (wait == portMAX_DELAY) {
+            wait = pdMS_TO_TICKS(CONFIG_LUMEN_PLAYHEAD_LOG_PERIOD_MS);
+        } else {
+            TickType_t log_ticks = pdMS_TO_TICKS(CONFIG_LUMEN_PLAYHEAD_LOG_PERIOD_MS);
+            if (log_ticks > 0 && log_ticks < wait) {
+                wait = log_ticks;
+            }
+        }
+#endif
         xSemaphoreGive(s_state_lock);
 
         if (anim_mode != logged_anim_mode) {
@@ -831,6 +949,9 @@ static void render_task(void *arg)
                                       &selftest, max_brightness(), frame_now);
         }
         s_last_frame_us = (uint32_t)(esp_timer_get_time() - frame_t0);
+
+        /* #162 相位偏差验收：按时间戳节流（一帧最多一行）。默认编译为空。 */
+        playhead_log_tick(&s_render_layout, &s_render_scene, &s_render_clocks, frame_now);
     }
 }
 
