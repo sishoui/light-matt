@@ -7,9 +7,10 @@
 **先读 [`docs/handoff.md`](docs/handoff.md)。** 它写清了当前在哪、哪些已完成、剩余工作卡在
 什么上。不要凭本文件的简短描述推断进度——项目已经过了三个大版本。
 
-> **当前状态：第十一轮（v5 · 部位与场景）在 `integration/lumen-v5`（draft PR #163），
-> 九张票全部落地，**实现完成、待合入**。** 规格 [#145](https://github.com/sishoui/light-matt/issues/145)，
-> 实现票 `#154`–`#162`。详见 [`docs/handoff.md`](docs/handoff.md) §0 与
+> **当前状态：第十一轮（v5 · 部位与场景）在 `integration/lumen-v5`（PR #163，ready for review），
+> 九张票全部落地并**全部关闭**，五层测试全绿、**没有未验证的层**。**
+> 规格 [#145](https://github.com/sishoui/light-matt/issues/145)，实现票 `#154`–`#162`。
+> 详见 [`docs/handoff.md`](docs/handoff.md) §0 与
 > [`docs/evidence/v5-integration-2026-11-07.md`](docs/evidence/v5-integration-2026-11-07.md)。
 > v5 是**断崖**：协议 v5、灯组 → **部位**（多段灯珠、各有独立时间轴）、三套**场景**；
 > 「灯组详情页」与「简单档」已删，压成「设备页 → 部位编辑器」两层。
