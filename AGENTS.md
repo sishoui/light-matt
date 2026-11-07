@@ -24,6 +24,11 @@
 > 注意判据：必须 `lit=8` 且 `pushed` 持续增长，否则测到的是「去重跳过、什么都没推」
 > （第一版就踩了这个坑，读出物理上不可能的 1.9ms）。
 >
+> **仍未闭环（下个会话先读 [`docs/handoff.md`](docs/handoff.md) §0）**：
+> ① PR #163 还没人批准、未合入（领先 master 51 commit、0 冲突）；
+> ② **相位漂移没有真机数字**（协议不报播放头位置，只有 host 数学证明）；
+> ③ `pages/part` 的 `pushSteps()` 缺 busy 重入保护（已知限制，见 `pending-tasks.md`）。
+>
 > 上一轮（第十轮）的修复在 `fix/no-segment-black-and-layer-blend`，已随本分支带上。
 
 **第五轮**（规格 [#85](https://github.com/sishoui/light-matt/issues/85)，实现票 #90–#101）：
