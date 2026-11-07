@@ -7,8 +7,9 @@
 **先读 [`docs/handoff.md`](docs/handoff.md)。** 它写清了当前在哪、哪些已完成、剩余工作卡在
 什么上。不要凭本文件的简短描述推断进度——项目已经过了三个大版本。
 
-> **当前状态：第十一轮（v5 · 部位与场景）在 `integration/lumen-v5`（PR #163，ready for review），
-> 九张票全部落地并**全部关闭**，五层测试全绿、**没有未验证的层**。**
+> **当前状态：第十一轮（v5 · 部位与场景）已合入 `master`**（PR [#163](https://github.com/sishoui/light-matt/pull/163)，
+> merge commit `70cc47d`），九张票全部落地并**全部关闭**，规格父票
+> [#145](https://github.com/sishoui/light-matt/issues/145) 已关闭。
 > 规格 [#145](https://github.com/sishoui/light-matt/issues/145)，实现票 `#154`–`#162`。
 > 详见 [`docs/handoff.md`](docs/handoff.md) §0 与
 > [`docs/evidence/v5-integration-2026-11-07.md`](docs/evidence/v5-integration-2026-11-07.md)。
@@ -24,10 +25,15 @@
 > 注意判据：必须 `lit=8` 且 `pushed` 持续增长，否则测到的是「去重跳过、什么都没推」
 > （第一版就踩了这个坑，读出物理上不可能的 1.9ms）。
 >
+> **相位漂移已实测**（#162 最后一项，`dab2744` + `269b24c`）：30 分钟 / 1792s /
+> **180 采样 / 闭式解残差最大 0 ms**。判据是残差，**不是「步号变了没有」**。
+> 做法是调试构建的串口 `ph:` 日志（`CONFIG_LUMEN_PLAYHEAD_LOG`，**默认 `n`**，
+> 不进线上契约），工具 `scripts/probe-v5-drift.py` + `scripts/analyze-playhead-log.py`。
+> **量产固件绝对不要打开这个开关**（每 10 秒阻塞渲染任务约 6ms）。
+>
 > **仍未闭环（下个会话先读 [`docs/handoff.md`](docs/handoff.md) §0）**：
-> ① PR #163 还没人批准、未合入（领先 master 51 commit、0 冲突）；
-> ② **相位漂移没有真机数字**（协议不报播放头位置，只有 host 数学证明）；
-> ③ `pages/part` 的 `pushSteps()` 缺 busy 重入保护（已知限制，见 `pending-tasks.md`）。
+> ① `integration/test-flow`（第八轮遗留）仍未合入 `master`；
+> ② 真机色域压缩 / 压降 / 8 链共 5V 电流阶跃是物理问题，未解决。
 >
 > 上一轮（第十轮）的修复在 `fix/no-segment-black-and-layer-blend`，已随本分支带上。
 

@@ -38,7 +38,24 @@ Issue 与 spec 住在 GitHub Issues。所有操作走 `gh` CLI；在仓库目录
 
 `.scratch/lumen-mvp/issues/` 里的本地文件是发布时的底稿，**GitHub 上的 issue 是权威 tracker**。两者冲突时以 GitHub 为准。
 
-## 当前 effort：v5 · 部位与场景
+## 上一 effort：v5 · 部位与场景（**已合入 master，2026-11-07**）
+
+**PR [#163](https://github.com/sishoui/light-matt/pull/163) 已合入 `master`**
+（merge commit `70cc47d`，53 个 commit），规格父票
+[#145](https://github.com/sishoui/light-matt/issues/145) 已关闭，九张实现票全部关闭。
+
+合入后又补了两项（都在 master 上）：
+
+- `50c6730` —— `pages/part` 的 `pushSteps()` 并发缺陷（互斥 + 补跑 + 快照，
+  三个缺陷叠加，见 `docs/pending-tasks.md` §0）
+- `dab2744` + `269b24c` —— 相位漂移真机测量（串口 `ph:` 日志 + 闭式解残差，
+  30 分钟 / 180 采样 / 最大 0 ms）
+
+**下一个 effort 待定。** `integration/test-flow`（第八轮遗留）仍未合入 master。
+
+---
+
+## 历史：v5 · 部位与场景（规格 [#145](https://github.com/sishoui/light-matt/issues/145)）
 
 - **规格**：[#145](https://github.com/sishoui/light-matt/issues/145)，label `spec` + `ready-for-agent`。
   正文按 `/to-spec` 模板写成（问题 / 方案 / 54 条用户故事 / 实现决策 / 测试决策 / 范围外 / 备注），
