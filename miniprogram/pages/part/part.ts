@@ -259,6 +259,10 @@ Page({
   timelineSteps: [] as TimelineStep[],
   /** 写入代次：连点保存时旧一轮静默退出。 */
   applyEpoch: 0,
+  /** 时间轴下发是否在飞（`pushSteps` 的互斥，与 `data.busy` 分开）。 */
+  stepsBusy: false,
+  /** 下发期间又改了时间轴：收尾后补跑一次（只补最后一次）。 */
+  stepsQueued: false,
   /** 订阅解绑。 */
   unsubscribers: [] as Array<() => void>,
   /** 方格表：本次拖选的锚点（-1 = 没有在拖）。 */
@@ -284,6 +288,8 @@ Page({
     this.panel = createPanelUnit();
     this.timelineSteps = [];
     this.applyEpoch = 0;
+    this.stepsBusy = false;
+    this.stepsQueued = false;
     this.unsubscribers = [];
     this.gridAnchor = -1;
     this.gridCursor = -1;
@@ -338,6 +344,8 @@ Page({
     }
     this.unsubscribers = [];
     this.applyEpoch += 1;
+    /* 页面已经走了，补跑的下发不能再发（否则用户退出后设备还在被写）。 */
+    this.stepsQueued = false;
   },
 
   /**
@@ -419,15 +427,23 @@ Page({
      *
      * 设备上 0 步时给一个默认步——否则用户面对的是空时间轴，连时长条都没得调。
      * 这只是本地草稿，要点「下发」才会真的建出那一步。
+     *
+     * **时间轴下发在飞时不覆盖本地数组**：写入途中收到 State 事件也会走到这里，
+     * 而设备此刻可能正处于「步数已改、步骤只写了一半」的中间态。铺回去会让
+     * 用户刚加的那一步从界面上消失（补跑那一轮也再拿不到它）。
      */
-    const steps: TimelineStep[] =
-      this.sceneSteps.length === 0
-        ? [{ durationMs: 3000, zones: [] }]
-        : this.sceneSteps.map((item) => ({ durationMs: item.durationMs, zones: [] }));
-    this.timelineSteps = steps;
+    if (this.stepsBusy || this.stepsQueued) {
+      this.timeline = clampTimelineSelection(this.timeline, this.timelineSteps.length);
+    } else {
+      const steps: TimelineStep[] =
+        this.sceneSteps.length === 0
+          ? [{ durationMs: 3000, zones: [] }]
+          : this.sceneSteps.map((item) => ({ durationMs: item.durationMs, zones: [] }));
+      this.timelineSteps = steps;
+      this.timeline = clampTimelineSelection(this.timeline, steps.length);
+    }
     this.timeline = setTimelineLedCount(this.timeline, stripLedCount);
-    this.timeline = clampTimelineSelection(this.timeline, steps.length);
-    const timeline = timelineUnitView(steps, this.timeline);
+    const timeline = timelineUnitView(this.timelineSteps, this.timeline);
 
     /* 4) 效果面板绑到**当前选中的那一步**（选别的块就换一组参数）。 */
     const stepIndex = timeline.selected;
@@ -465,7 +481,7 @@ Page({
       timelineCanAdd: timeline.canAdd,
       loopIndex: loopIndexOf(scenePart?.loop ?? LOOP.NONE),
       on: scenePart?.on ?? false,
-      durationMs: timelineStepDurationMs(steps, timeline.selected),
+      durationMs: timelineStepDurationMs(this.timelineSteps, timeline.selected),
       ...panel,
     });
   },
@@ -600,17 +616,62 @@ Page({
    * `SceneStep` 会因为 `step_index >= step_count` 被拒。
    *
    * 与 #125 同一条口径：失败原因显示在页面顶部；成功刷新读回缓存。
-   * 下发期间**不阻塞**用户继续编辑——代次号让旧一轮在 await 之后静默退出。
+   * 下发期间**不阻塞**用户继续编辑，但并发要处理对，否则三种「看起来没反应」
+   * 都会出现：
+   *
+   *  - **互斥**：别的写入（`commitLayout` / `onSaveContent`）在飞时不能插进来。
+   *    插进来会 `applyEpoch += 1`，把对方那半截写静默作废——用户刚调的灯效没了。
+   *  - **补跑**：被挡下的那次不丢弃，记 `stepsQueued`，等手头这轮收尾再跑一次
+   *    （只补最后一次；连点「加一步」不会写出中间形态）。
+   *  - **快照**：整轮用开跑那一刻的步骤数组。循环里读 `this.timelineSteps` 会让
+   *    设备拿到「步数按旧的、时长按新的」这种谁都没见过的混合态。
    */
   async pushSteps(): Promise<void> {
+    if (this.session === null) {
+      return;
+    }
+    if (this.stepsBusy || this.data.busy) {
+      this.stepsQueued = true;
+      return;
+    }
+    this.stepsBusy = true;
+    try {
+      do {
+        this.stepsQueued = false;
+        await this.pushStepsOnce();
+      } while (this.stepsQueued);
+    } finally {
+      this.stepsBusy = false;
+    }
+  },
+
+  /** 别的写入收尾时把被挡下的时间轴下发补上（只补最后一次）。 */
+  drainSteps(): void {
+    if (!this.stepsQueued) {
+      return;
+    }
+    this.stepsQueued = false;
+    void this.pushSteps();
+  },
+
+  /** `pushSteps` 的一轮。调用方保证此刻没有别的写入在飞。 */
+  async pushStepsOnce(): Promise<void> {
     const session = this.session;
     if (session === null) {
       return;
     }
+    /* 快照：所有编辑入口都换新数组（addStep / removeStep / moveBlock /
+     * setTimelineDuration），所以引用相等 = 这一轮期间没人动过。
+     * 步骤的两层同样取快照——`load()` 会把 `sceneSteps` 换成设备上的（可能是
+     * 写了一半的）那一份，逐轮现读会让同一轮里前后步的层来自两个时刻。 */
+    const steps = this.timelineSteps;
+    const sceneSteps = this.sceneSteps;
+    const stepAt = (index: number): SceneStepReport | null =>
+      sceneSteps.find((item) => item.stepIndex === index) ?? null;
     const sceneId = this.data.sceneId;
     const stripId = this.data.stripId;
     const partId = this.data.partId;
-    const stepCount = this.timelineSteps.length;
+    const stepCount = steps.length;
     this.applyEpoch += 1;
     const epoch = this.applyEpoch;
     this.setData({ busy: true, applyError: "" });
@@ -631,17 +692,18 @@ Page({
         return;
       }
       for (let index = 0; index < stepCount; index += 1) {
-        const existing = this.stepAt(index);
+        const existing = stepAt(index);
         const layers = existing === null ? newStepLayers() : {
           layer0: existing.layer0,
           layer1: existing.layer1,
         };
+        const durationMs = timelineStepDurationMs(steps, index);
         const written = await session.setSceneStep({
           sceneId,
           stripId,
           partId,
           stepIndex: index,
-          durationMs: timelineStepDurationMs(this.timelineSteps, index),
+          durationMs,
           layer0: layers.layer0,
           layer1: layers.layer1,
         });
@@ -653,7 +715,12 @@ Page({
           return;
         }
       }
-      await this.load();
+      /* 有更新的改动在排队、或本地数组已经被改过时**不读回**：`load()` 会用
+       * 设备上的旧数组覆盖 `this.timelineSteps`，补跑那一轮就拿不到用户刚加的
+       * 那一步了（`load()` 自己也按同样的条件保护）。 */
+      if (!this.stepsQueued && this.timelineSteps === steps) {
+        await this.load();
+      }
     } catch (err) {
       this.setData({ applyError: errorText(err) });
     } finally {
@@ -1101,6 +1168,7 @@ Page({
       return false;
     } finally {
       this.setData({ busy: false });
+      this.drainSteps();
     }
   },
 
@@ -1192,8 +1260,14 @@ Page({
       Math.min(MAX_STEPS, this.data.stepCount === 0 ? 1 : this.data.stepCount),
     );
     const loop = LOOP_OPTIONS[this.data.loopIndex]?.value ?? LOOP.NONE;
+    /*
+     * 目标步与参数都在**入口**取好。第一个 await 之后 `this.timeline.selected`
+     * 可能已经被用户点走了（比如保存途中点了「加一步」，选中会跳到新步），
+     * 那时再读会写到一个还没声明步数的下标上，设备回 InvalidParam。
+     */
+    const stepIndex = this.timeline.selected;
     /* 时长与两层都来自各自的单元（页面不再自己算参数）。 */
-    const durationMs = timelineStepDurationMs(this.timelineSteps, this.timeline.selected);
+    const durationMs = timelineStepDurationMs(this.timelineSteps, stepIndex);
     const layers = panelUnitLayers(this.panel);
 
     this.applyEpoch += 1;
@@ -1222,7 +1296,7 @@ Page({
         sceneId,
         stripId,
         partId,
-        stepIndex: this.timeline.selected,
+        stepIndex,
         durationMs,
         layer0: layers.layer0,
         layer1: layers.layer1,
@@ -1245,6 +1319,7 @@ Page({
       this.setData({ applyError: errorText(err) });
     } finally {
       this.setData({ busy: false });
+      this.drainSteps();
     }
   },
 
