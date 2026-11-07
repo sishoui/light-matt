@@ -193,7 +193,16 @@ describe("真机 e2e：协议语义（真 BLE）", () => {
     }
     /* 整份重写：一个部位覆盖整条，1 个段。 */
     const write = await session.writeLayout(0, [
-      { stripId: 0, partId: 0, nameLen: 0, name: "", segCount: 1, segs: [[0, ledCount - 1]] },
+      {
+        stripId: 0,
+        partId: 0,
+        nameLen: 0,
+        name: "",
+        segCount: 1,
+        /* #158 起 LayoutPart 带相位（每部位一份，S6）：缺了它构造器会拒。 */
+        phase: 0,
+        segs: [[0, ledCount - 1]],
+      },
     ]);
     expect(write.kind).toBe("ok");
 
