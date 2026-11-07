@@ -3,7 +3,7 @@
 > ## ⚠️ 本文件的亮度与参数语义已被协议 v4 取代
 >
 > **本文保留为「灯效参数块的历史定义」，不再是最新契约。** 线上字节布局与时序校验的唯一
-> 真相是 [`docs/protocol-v4.md`](./protocol-v4.md)（层 9 字节、段载荷 23 / 25、逐层 `level`）。
+> 真相是 [`docs/protocol-v5.md`](./protocol-v5.md)（层 9 字节、`SceneStep` 载荷 24、每部位 8 步）。
 >
 > v4 相对本文**改了三处**，读本文时按这三条校正：
 >
@@ -21,8 +21,8 @@
 
 **状态**：**已定稿**（2026-10-31，用户逐条确认）；**v4 起被取代**（2026-11-03）。
 **唯一真相**：本文的字节布局与行为公式曾并入 `docs/protocol.md` 的 v2 章节；v4 起以
-[`docs/protocol-v4.md`](./protocol-v4.md) 为准。
-**相关**：[地图 #16](https://github.com/sishoui/light-matt/issues/16)、[协议 v2 #21](https://github.com/sishoui/light-matt/issues/21)、[动画引擎 #22](https://github.com/sishoui/light-matt/issues/22)、[**协议 v4（现行）**](./protocol-v4.md)。
+[`docs/protocol-v5.md`](./protocol-v5.md) 为准。
+**相关**：[地图 #16](https://github.com/sishoui/light-matt/issues/16)、[协议 v2 #21](https://github.com/sishoui/light-matt/issues/21)、[动画引擎 #22](https://github.com/sishoui/light-matt/issues/22)、[**协议 v5（现行）**](./protocol-v5.md)、[v4（已作废）](./protocol-v4.md)。
 
 ---
 
@@ -32,7 +32,7 @@
 - 灯效建模 = **类型枚举 + 参数块**，不做设备端脚本。
 - 首批四种：**静态单色、呼吸、彩虹、流光**；#74 追加**爆闪、心跳、熄灭**；
   #98 追加**随机闪烁**（`0x07`）并给流光加了头数量 / 实色拖尾，合计八种。
-  **新类型的字节契约以 `docs/protocol-v4.md` §7.1 为准**，本文的公式仍适用于既有类型。
+  **新类型的字节契约以 `docs/protocol-v5.md` §7.1 为准**，本文的公式仍适用于既有类型。
 - 一条灯带最多 **8 段**；8 条灯带走 TDM 轮询。
 - **逐段下发**，每帧一个段，帧 ≤ 20 字节（载荷 ≤ 14 字节）。
 - 亮度上限 `max_brightness = 200`（State 第 7 字节报给小程序）。

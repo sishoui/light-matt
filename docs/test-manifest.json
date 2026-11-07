@@ -11,7 +11,6 @@
       "missingHint": "缺 gcc 或 node",
       "scan": [
         "firmware/test/test_skeleton.c",
-        "scripts/check-protocol-testvectors-v4.mjs",
         "scripts/check-protocol-testvectors-v5.mjs"
       ]
     },
@@ -56,10 +55,6 @@
     }
   },
   "files": {
-    "scripts/check-protocol-testvectors-v4.mjs": {
-      "layer": "firmware",
-      "covers": "v4 向量与 protocol-v4.md 的独立一致性校验（保留对照：v4 已作废但仍可回归）。不走生成器，专门抓生成器的错"
-    },
     "scripts/check-protocol-testvectors-v5.mjs": {
       "layer": "firmware",
       "covers": "v5 向量与 protocol-v5.md 的独立一致性校验：帧宽 / magic / version、命令表载荷宽度、退役命令必须回 0x02、布局与场景语义约束、层编码规则、State 32 字节布局、报告宽度与 0x0500 版本、分片重组。不走生成器，专门抓生成器的错",

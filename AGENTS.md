@@ -54,7 +54,7 @@
 
 **验收**：真机探针（`scripts/probe-v4.py`）、模拟器渲染回归、三端单测全部通过，
 肉眼观感已确认。数字见 [`docs/acceptance-v4.md`](docs/acceptance-v4.md)、
-[`docs/acceptance-v5.md`](docs/acceptance-v5.md) 与最近一次测试报告。
+[`docs/acceptance-v5.md`](docs/acceptance-v5.md)（指针）与最近一次测试报告。
 
 **上上轮**：v3 的 11 张实现票（#36–#45）与 4 张缺口票（#47–#50）全部关闭，
 **已合入 `master`**（PR #51，merge commit `f9f2fe3`）。**设备侧验收已全部跑完**：协议层探针 + 行为语义探针
@@ -154,12 +154,13 @@ SHA-256 索引、配置丢失记录。
 
 ## 字节契约
 
-- **v4（当前唯一真相）**：`docs/protocol-v4.md` + 可执行副本
-  `docs/protocol-testvectors-v4.json`（由 `scripts/gen-protocol-testvectors-v4.mjs` 生成）
-- **v3 已作废**：`docs/protocol-v3.md` 与 `protocol-testvectors-v3.json` 仅保留供对照
-- **v2 已作废**：`docs/protocol.md` 与 `docs/spec-v2.md` 仅保留供对照
+- **v5（当前唯一真相）**：`docs/protocol-v5.md` + 可执行副本
+  `docs/protocol-testvectors-v5.json`（由 `scripts/gen-protocol-testvectors-v5.mjs` 生成，
+  `scripts/check-protocol-testvectors-v5.mjs` 独立校验）
+- **v4 / v3 / v2 全部作废**：`protocol-v4.md`、`protocol-v3.md`、`protocol.md`、
+  `spec-v2.md` 顶部都有 ⛔ 横幅，**只作历史对照，不再被任何测试消费**
 
-改任何字节布局 = 契约 + 向量 + 两端实现同一个 commit。
+改任何字节布局 = 契约 + 向量 + 两端实现同一个 commit（现有 113 条向量）。
 
 ## 测试
 

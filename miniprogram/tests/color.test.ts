@@ -26,7 +26,7 @@ import {
   rgbToHex,
   rgbToHsv,
 } from "../utils/color/hsv";
-import { applyLocalColor, clampChannel, clampRgb, presetBrightness, sameRgb } from "../utils/control/color";
+import { applyLocalColor, clampChannel, clampRgb, sameRgb } from "../utils/control/color";
 import { ControlSession } from "../utils/control/session";
 import { bytesToCompactHex } from "../utils/protocol/hex";
 import { encodeFrame } from "../utils/protocol/frame";
@@ -360,14 +360,5 @@ describe("颜色语义纯函数", () => {
     expect(next.brightness).toBe(42);
     expect(sameRgb({ r: 1, g: 2, b: 3 }, { r: 1, g: 2, b: 3 })).toBe(true);
     expect(sameRgb({ r: 1, g: 2, b: 3 }, { r: 1, g: 2, b: 4 })).toBe(false);
-  });
-
-  it("预设亮度：常态取当前亮度，亮度 0 时用最近一次非 0 值", () => {
-    expect(presetBrightness(baseState({ brightness: 90 }), 200)).toBe(90);
-    expect(presetBrightness(baseState({ brightness: 0 }), 200)).toBe(200);
-    /* 设备上限优先；null 状态回退到 255 上限。 */
-    expect(presetBrightness(baseState({ brightness: 200, maxBrightness: 180 }), 200)).toBe(180);
-    expect(presetBrightness(null, 200)).toBe(200);
-    expect(presetBrightness(null, 0)).toBe(128);
   });
 });

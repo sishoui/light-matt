@@ -1,21 +1,16 @@
 /**
  * 颜色语义（纯函数）。
  *
- * v2（#21）退役了 v1 的 SetColor 0x03 / SetAll 0x04，颜色改由段配置
- * （0x10 SetSegment）承担；#25 已把下发路径接上：`ControlSession.queueColor /
- * commitColor / applyPreset` 都写进**选中段**。这里的纯函数（钳位、本地乐观
- * 写回、预设亮度）保留给分段 UI 复用。
+ * v5 的 State 是 32 字节且**不含颜色摘要**（§7.3）：颜色只存在场景的层里
+ * （`SceneStep` 的 `layer[].param` 是 hue/sat），没有「读回当前色」这回事。
+ * 所以这里只剩两件与协议无关的事：钳位、以及两个 RGB 的比较。
  *
- * 与协议的关系（docs/protocol.md §7）：
- *  - State 字节 2-4 是 **strip 0 / seg 0 的基准色**（hue+sat 转 RGB，
- *    不含动画包络），无 seg 0 时为 0；
- *  - 颜色是用户空间 RGB：App 不做 gamma、不把亮度折进 RGB。
+ * 颜色是用户空间 RGB：App 不做 gamma、不把亮度折进 RGB。
  *
  * 本模块不接触 wx / BLE，可在 vitest 里直接测。
  */
 
 import type { DeviceState, RGB } from "../protocol/types";
-import { brightnessForPowerOn, clampBrightness, effectiveMaxBrightness } from "./brightness";
 
 /** 单通道钳成 0-255 的整数；非有限值按 0（与命令行参构造器的字节约束对齐）。 */
 export function clampChannel(value: number): number {
@@ -50,23 +45,3 @@ export function applyLocalColor(state: DeviceState, _rgb: RGB): DeviceState {
   return state;
 }
 
-/**
- * 预设点击时要下发的亮度（亮度 0 时用「最近一次非 0 亮度」恢复）。
- *
- * v2 暂时没有下发路径（SetAll 已退役，预设改由 #25 的静态段承担）；
- * 这个函数保留给 #25 复用，单测仍覆盖其边界。
- * 上限取设备上报的 maxBrightness（不硬编码 255）。
- */
-export function presetBrightness(
-  state: Pick<DeviceState, "brightness" | "maxBrightness"> | null,
-  lastNonZeroBrightness: number,
-): number {
-  if (state === null) {
-    return brightnessForPowerOn(lastNonZeroBrightness, 255);
-  }
-  const max = effectiveMaxBrightness(state.maxBrightness);
-  if (state.brightness > 0) {
-    return clampBrightness(state.brightness, max);
-  }
-  return brightnessForPowerOn(lastNonZeroBrightness, max);
-}

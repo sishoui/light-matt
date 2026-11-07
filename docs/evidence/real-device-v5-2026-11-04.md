@@ -115,7 +115,7 @@ State 里读不到 `elapsed_ms`，所以用**长观察窗**证伪「跑完停住
 
 ---
 
-## 5. 与 `docs/acceptance-v5.md` 的对应
+## 5. 与 `docs/acceptance-ui-round5.md` 的对应（原名 `acceptance-v5.md`）
 
 | 票 #98 验收项 | 状态 | 证据 |
 |---|---|---|
