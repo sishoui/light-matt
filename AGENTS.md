@@ -7,9 +7,13 @@
 **先读 [`docs/handoff.md`](docs/handoff.md)。** 它写清了当前在哪、哪些已完成、剩余工作卡在
 什么上。不要凭本文件的简短描述推断进度——项目已经过了三个大版本。
 
-> **当前状态：第八轮（测试流程改造）在 `integration/test-flow`，待合入 `master`**，
-> 规格 [#102](https://github.com/sishoui/light-matt/issues/102)，实现票 #103–#111 全部关闭。
-> 上一条主线是第五轮（UI / 交互，规格 #85）已合入 `master`（merge `ef295fe`）。
+> **当前状态：第十一轮（v5 · 部位与场景）在 `integration/lumen-v5`（draft PR #163），
+> 2/9 票已合入。** 规格 [#145](https://github.com/sishoui/light-matt/issues/145)，
+> 实现票 `#154`–`#162`，frontier 是 **#156**。
+> v5 是**断崖**：协议 v5、灯组 → **部位**（多段灯珠、各有独立时间轴）、三套**场景**；
+> 「灯组详情页」与「简单档」已删，压成「设备页 → 部位编辑器」两层。
+> **`ui` 层已经能跑**（`scripts/verify-v5.mjs` 38/38），改 `pages/device` / `pages/part` 必须跑它。
+> 上一轮（第十轮）的修复在 `fix/no-segment-black-and-layer-blend`，已随本分支带上。
 
 **第五轮**（规格 [#85](https://github.com/sishoui/light-matt/issues/85)，实现票 #90–#101）：
 

@@ -1,13 +1,94 @@
 # 交接：lumen 当前状态与下一步
 
-**最后更新**：2026-11-06（第十轮）　**分支**：`fix/no-segment-black-and-layer-blend`
+**最后更新**：2026-11-07（第十一轮进行中）　**分支**：`integration/lumen-v5`
+（draft PR [#163](https://github.com/sishoui/light-matt/pull/163)，**不要提前转 ready**）
 
 这份文件是给**新会话**的入口。它只写「新会话必须知道、但代码和文档里读不到」的东西；
 其余一律给指针，不重复。
 
 ---
 
-## 0. 2026-11-06 第十轮：无分区全黑 + 按亮度叠加（**已完成，待合入**）
+## 0. 2026-11-07 第十一轮：v5 · 部位与场景（**进行中，2/9 票已合入**）
+
+**规格 [#145](https://github.com/sishoui/light-matt/issues/145)，9 张垂直切片票 `#154`–`#162`。**
+
+v5 是**断崖**：协议、持久化、渲染模型全换。一条链切成多个**部位**（可多段不连续灯珠），
+每个部位有自己的时间轴（各走各的时钟），整机三套**场景**。「灯组详情页」与「简单档」都删了，
+压成「设备页 → 部位编辑器」两层。
+
+### 已合入
+
+| 票 | 内容 | commit |
+|---|---|---|
+| #154 | 时间轴与效果面板抽成可独立驱动的单元 | `d1fd496` |
+| #155 | 契约 v5 + 111 条向量 + 布局/场景持久化 + `lumen_scene_compose` + 命令层 + 小程序编解码与会话 + 设备页展开 + `pages/part` | `e536e85` |
+| — | **真机验收修掉的三个固件缺陷**（见 §0.1） | `bfecae4` |
+| — | `verify-v5.mjs` 改写成 v5 断言集，ui 层恢复可跑（38/38） | `bf2b7a1` |
+
+### 还剩
+
+`#156`（部位划分与方格拖选，frontier）→ `#157` → `#158` → `#159` → `#160` → `#161` → `#162`。
+**纯链，没有并行空间**：任何时刻只有一张票在 frontier 上。
+
+### 为什么 `ui` 层现在必须跑
+
+它此前从第八轮起一直 SKIP（`verify-v5.mjs` 锁的是已删的 `pages/strip`）。#156 的头牌是
+**方格拖选**——最吃交互的一张票。若 `ui` 继续 SKIP，#156–#162 七张票都会带着
+「ui 未跑」合入，第一次视觉验证发生在最后一张票。**改 `pages/device` / `pages/part` 必须跑它。**
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& 'C:\Program Files (x86)\Tencent\微信web开发者工具\cli.bat' auto --project 'C:\Users\13092\Desktop\项目\zcode\lumen\miniprogram'"
+```
+```bash
+WS=ws://127.0.0.1:9502 node scripts/test-run.mjs ui
+```
+
+### 0.1 真机验收推翻了两票的「已完成」（三个固件缺陷）
+
+`#154` / `#155` 合入时各层测试全绿，**刷到真机后设备起不来**。三个缺陷 host 测试与编译
+都发现不了，全部在 `app_main` 任务的 **3584 字节**栈上：
+
+| 缺陷 | 症状 |
+|---|---|
+| `lumen_led_engine_init` 栈上放 `lumen_layout_store_t`(2696 B) + `lumen_scene_t`(**10530 B**) | 启动即 `Stack protection fault`，连广播都不出 |
+| `lumen_scene_blob_decode` / `lumen_layout_blob_decode` 的 `decoded` 同样在栈上 | **第一次能启动**（NVS 空、走不到解码），写入数据后每次复位都 panic |
+| 多链时 `led_count[1..7]` 从没写回 State | `lumen_layout_store_validate` 要求每条已配置链的灯珠数非 0 → **每句 LayoutCommit 都被拒**，部位划分改了不生效、也落不了盘 |
+
+修法：三处大结构改 `static`；`counts[]` 写回 `s_state.led_count[]`。
+
+**探针**：`scripts/probe-v5.py`（67 项，v5 唯一有效的协议探针）。
+
+| 阶段 | 结果 |
+|---|---|
+| 修复前 | 1 / 37（连 ACK 都收不到） |
+| 三处修完 | **67 / 67**，含断电重启读回（布局 2 部位 / 场景 2 部位头 + 3 步 / `layout_valid=1` / 8 链灯珠数全在） |
+
+> **教训**：「编译通过 + host 测试绿 + 模拟器绿」不证明固件能跑。v5 每加一个大结构，
+> 先问一句「它在哪个栈上」。`scene_store.h` 留了栈预算说明；`AGENTS.md` 有本机
+> ESP-IDF 环境（`IDF_PYTHON_ENV_PATH` / 组件注册表离线 / 仓库路径含中文）。
+
+### 0.2 实现期留下的裁决（与票面/规格有出入，已落进代码注释）
+
+1. **相位模式固定「连续」**：规格 §9.2 说它存在布局第 7 字节，但 §10.3 的 schema 与
+   §13「保留位必须为 0」冲突。v5.0 把它做成 compose 的参数，**不落盘**。
+2. **`LayoutPart` 声明段数后、`LayoutSeg` 到达前的槽位**：RAM 里标 `0xFF/0xFF`，
+   只有 `LayoutCommit` 要求它们写齐。按 0/0 处理会让第二个段静默挤掉合法的段。
+3. **`ScenePart` 只在 `step_count` 真变化时清步骤**：这条命令同时携带开关与循环，
+   每次都清会让「点一下部位开关」抹掉整个时间轴（违反 T9）。
+4. **`#155` 删掉了 v4 界面层**（`pages/strip` + 33 个测试文件）。审计过全部 40 个被删
+   测试，逐条判定「行为在不在 v5」，把仍在的补回（`delete-device` / `loop-mode` /
+   `mock-session` / 页面级用例等），用例数 796 → 1074。
+
+### 0.3 下一步从哪开始
+
+1. 读 `docs/agents/issue-tracker.md` 的「当前 effort：v5」段拿票图。
+2. 接缝笔记在**仓库外**：`C:\Users\13092\Desktop\项目\zcode\lumen-notes\v5\seams.md`
+   （命令分发链 / 持久化 / 渲染分层 / 向量机制，全带 `file:line`）。
+3. `gh issue view 156` 拿票面，然后开工。
+
+---
+
+## 0.0 2026-11-06 第十轮：无分区全黑 + 按亮度叠加（**已完成，待合入**）
 
 用户拿真机试出来的四个现象，根因只有两处：
 
