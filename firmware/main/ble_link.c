@@ -237,6 +237,65 @@ static void reject_oversized(const struct os_mbuf *om, uint16_t mbuf_len)
 }
 
 /*
+ * 多帧报告的**发送任务**。
+ *
+ * 为什么必须另起一个任务：`send_layout_reports` / `send_scene_reports` 最坏要发
+ * 64 / 512 条 notify，而它们原来直接跑在 NimBLE 主机任务的 RX 回调里。
+ * `ble_gatts_notify_custom` 只是把 mbuf 交给主机任务**排队**，真正上天线要等
+ * 主机任务回到事件循环——可它此刻正卡在我们的回调里。于是缓冲在第 18 帧左右
+ * 耗尽，后面全部失败（真机实测：`ScenePartReport 发送失败` 从 strip0 part2 开始）。
+ *
+ * 让出 CPU（vTaskDelay）也没用：执行者就是它自己，让出去谁也推进不了。
+ *
+ * 所以把「发一串报告」整段搬到独立任务：RX 回调只投递一个请求就返回，主机任务
+ * 回到事件循环把 mbuf 发出去，报告任务睡一下再发下一条。协议不变，只是换了
+ * 执行者。
+ */
+/* 这两个函数定义在文件下方（它们又依赖 notify）；任务只转发，所以先声明。 */
+static void send_layout_reports(uint8_t seq, uint8_t strip_id);
+static void send_scene_reports(uint8_t seq, uint8_t scene_id);
+
+typedef struct {
+    uint8_t op;      /* 0x24 = QueryLayout / 0x29 = QueryScene */
+    uint8_t seq;
+    uint8_t id;      /* strip_id 或 scene_id */
+} report_request_t;
+
+static QueueHandle_t s_report_queue;
+
+/* 报告任务：每条报告之间让出一次，给主机任务把上一个 mbuf 发完的机会。 */
+static void report_task(void *arg)
+{
+    (void)arg;
+    report_request_t request;
+    for (;;) {
+        if (xQueueReceive(s_report_queue, &request, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+        if (request.op == LUMEN_CMD_QUERY_LAYOUT) {
+            send_layout_reports(request.seq, request.id);
+        } else if (request.op == LUMEN_CMD_QUERY_SCENE) {
+            send_scene_reports(request.seq, request.id);
+        }
+        /* 一批发完，收尾的那条也已经入队；再让一次，确保它真的发出去。 */
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+}
+
+/* 投递一个报告请求（RX 回调里调，**不**在这里发帧）。队列满时直接丢弃并记日志。 */
+static void request_reports(uint8_t op, uint8_t seq, uint8_t id)
+{
+    if (s_report_queue == NULL) {
+        ESP_LOGW(TAG, "报告队列未初始化，丢弃 op=0x%02X", op);
+        return;
+    }
+    report_request_t request = {op, seq, id};
+    if (xQueueSend(s_report_queue, &request, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "报告队列已满，丢弃 op=0x%02X seq=0x%02X", op, seq);
+    }
+}
+
+/*
  * QueryLayout 0x24 的多帧响应（docs/protocol-v5.md §7.2 / §8）：
  * 逐部位一条 LayoutReport 0x89 + 一条 LayoutListEnd 0x8A，**全部回显同一个 seq**。
  *
@@ -262,8 +321,8 @@ static void send_layout_reports(uint8_t seq, uint8_t strip_id)
             continue; /* 没有划出灯珠的部位不报（报告条数 = part_mask 位数） */
         }
         size_t len = lumen_protocol_encode_layout_report(
-            seq, strip_id, p, part->name_len, part->name, part->segs.seg_count, part->segs.seg,
-            frame, sizeof(frame));
+            seq, strip_id, p, part->name_len, part->name, part->segs.seg_count, part->phase,
+            part->segs.seg, frame, sizeof(frame));
         if (len == 0 || lumen_ble_link_notify(frame, len) != ESP_OK) {
             ESP_LOGW(TAG, "LayoutReport 发送失败 strip=%u part=%u", strip_id, p);
             continue;
@@ -296,6 +355,7 @@ static void send_scene_reports(uint8_t seq, uint8_t scene_id)
     uint8_t frame[LUMEN_MAX_FRAME];
     uint8_t part_reports = 0;
     uint8_t step_reports = 0;
+    uint16_t sent = 0;
 
     for (uint8_t strip = 0; strip < LUMEN_MAX_STRIPS; ++strip) {
         for (uint8_t part = 0; part < LUMEN_MAX_PARTS; ++part) {
@@ -312,6 +372,7 @@ static void send_scene_reports(uint8_t seq, uint8_t scene_id)
                 continue;
             }
             ++part_reports;
+            ++sent;
             for (uint8_t st = 0; st < ps->step_count && st < LUMEN_MAX_STEPS; ++st) {
                 uint8_t l0[9];
                 uint8_t l1[9];
@@ -625,13 +686,14 @@ static void handle_frame(const uint8_t *data, size_t len)
     /* QueryLayout：逐部位 LayoutReport + 一条 LayoutListEnd，同 seq（§8）。 */
     if (outcome.layout_op && outcome.layout_opcode == LUMEN_CMD_QUERY_LAYOUT &&
         outcome.result_code == LUMEN_RESULT_OK) {
-        send_layout_reports(frame.seq, outcome.layout_strip);
+        /* 只投递，不在这里发（见 report_task 的注释）。 */
+        request_reports(LUMEN_CMD_QUERY_LAYOUT, frame.seq, outcome.layout_strip);
     }
 
     /* QueryScene：部位头 / 每步 / 收尾三段，同 seq（§6.2）。 */
     if (outcome.scene_op && outcome.scene_opcode == LUMEN_CMD_QUERY_SCENE &&
         outcome.result_code == LUMEN_RESULT_OK) {
-        send_scene_reports(frame.seq, outcome.scene_id);
+        request_reports(LUMEN_CMD_QUERY_SCENE, frame.seq, outcome.scene_id);
     }
 
     /* QueryStripConfig 0x1C：ACK 之后一条 StripConfigReport 0x87（§7.4）。 */
@@ -1024,6 +1086,23 @@ esp_err_t lumen_ble_link_init(void)
     }
 
     /*
+     * 报告发送任务：QueryLayout / QueryScene 的多帧响应在它上面发，**不**在
+     * NimBLE 主机任务的 RX 回调里发（后者会把缓冲耗到第 18 帧，见 report_task）。
+     *
+     * 队列只要 4 格：小程序是一次一帧的（§8），同一时刻最多一条查询在飞。
+     */
+    if (s_report_queue == NULL) {
+        s_report_queue = xQueueCreate(4, sizeof(report_request_t));
+        if (s_report_queue == NULL) {
+            ESP_LOGW(TAG, "报告队列创建失败，多帧查询将不可用");
+        } else if (xTaskCreate(report_task, "lumen_reports", 3072, NULL, 4, NULL) != pdPASS) {
+            ESP_LOGW(TAG, "报告任务创建失败，多帧查询将不可用");
+            vQueueDelete(s_report_queue);
+            s_report_queue = NULL;
+        }
+    }
+
+    /*
      * 偏好 MTU 247（docs/protocol-v4.md §2.1）：chunk_capacity 因此能到
      * min(247-3, 180) = 180。必须在主机任务启动前设置，协商结果以对端为准；
      * 对端不配合时 s_mtu 会停在 23，所有路径按 20 字节写 / 19 字节数据兜底。
@@ -1116,7 +1195,26 @@ esp_err_t lumen_ble_link_notify(const uint8_t *data, size_t len)
         if (om == NULL) {
             return ESP_ERR_NO_MEM;
         }
+        /*
+         * 背压：`ble_gatts_notify_custom` 在 mbuf 池 / 主机缓冲满时返回非 0。
+         * 一次 QueryScene 最坏要发 512 条报告（8 链 × 8 部位 × 8 步），全部在
+         * NimBLE 主机任务的 RX 回调里连发——不让出 CPU 的话池子会在第 18 帧
+         * 左右耗尽，后面全部失败（真机实测：`ScenePartReport 发送失败`）。
+         *
+         * 所以失败时短暂让出（vTaskDelay 会给 NimBLE 主机任务机会把缓冲发完），
+         * 重试几次再放弃。放弃时仍然回 ESP_FAIL，调用方照旧跳过这一条——
+         * 「少报一条」比「卡死主机任务」安全。
+         */
         int rc = ble_gatts_notify_custom(conn_handle, s_tx_val_handle, om);
+        for (uint8_t attempt = 0; rc != 0 && attempt < 4; ++attempt) {
+            vTaskDelay(pdMS_TO_TICKS(4));
+            om = ble_hs_mbuf_from_flat(chunk, (uint16_t)n);
+            if (om == NULL) {
+                rc = BLE_HS_ENOMEM;
+                break;
+            }
+            rc = ble_gatts_notify_custom(conn_handle, s_tx_val_handle, om);
+        }
         if (rc != 0) {
             ESP_LOGW(TAG, "notify failed rc=%d (chunk %u/%u)", rc, i, count);
             return ESP_FAIL;

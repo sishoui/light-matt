@@ -6779,16 +6779,60 @@ static void test_scene_encode_capacity(void)
     uint8_t small[16];
     CHECK(lumen_scene_blob_encode(&scene, small, sizeof(small)) == 0);
 
-    /* 空场景也有固定头部（32 字节头 + 每链 1 字节 + 每部位 3 字节头）。 */
+    /*
+     * 空场景只有固定头部（32 字节头 + 每链 1 字节的 part_count）。
+     *
+     * 早先这里期望 `+ 64 * 3`（全部 64 个部位槽位的 3 字节头）——那条期望与
+     * 实现不一致，正是 #162 抓到的真缺陷：`blob_size` / `encode` / `decode`
+     * 对「没编排过的部位占不占空间」各说各话，结果每次场景恢复都失败
+     * （保存成功、重启后三个场景全空）。现在三处统一为「不占」。
+     */
     lumen_scene_t empty;
     lumen_scene_init(&empty);
-    CHECK(lumen_scene_blob_size(&empty) == 32 + 8 + 64 * 3);
+    CHECK(lumen_scene_blob_size(&empty) == 32 + 8);
     uint8_t blob[LUMEN_SCENE_BLOB_MAX];
     size_t n = lumen_scene_blob_encode(&empty, blob, sizeof(blob));
-    CHECK(n == 32 + 8 + 64 * 3);
+    CHECK(n == 32 + 8);
     lumen_scene_t back;
     CHECK(lumen_scene_blob_decode(blob, n, &back));
     CHECK(back.part[0][0].step_count == 0);
+
+    /*
+     * 回归：**只编排一个部位**的场景必须能存能读（#162）。
+     *
+     * 这一条守着「三处对未编排部位的处理一致」。任何一个（size / encode /
+     * decode）单独改回「算全部 64 槽位」，roundtrip 立刻断。
+     */
+    lumen_scene_t one;
+    lumen_scene_init(&one);
+    one.name_len = 2;
+    one.name[0] = 'A';
+    one.name[1] = 'B';
+    one.part[0][0].step_count = 2;
+    one.part[0][0].loop = LUMEN_LOOP_ALL_V5;
+    one.part[0][0].on = 1;
+    for (uint8_t s = 0; s < 2; ++s) {
+        one.part[0][0].step[s].duration_ms = 1000;
+        one.part[0][0].step[s].layer[0].type = LUMEN_EFFECT_STATIC;
+        one.part[0][0].step[s].layer[0].param[0] = 0x1E;
+        one.part[0][0].step[s].layer[0].param[2] = 0x80;
+        one.part[0][0].step[s].layer[0].level = 100;
+        one.part[0][0].step[s].layer[1].type = LUMEN_NO_EFFECT;
+    }
+    size_t one_need = lumen_scene_blob_size(&one);
+    size_t one_wrote = lumen_scene_blob_encode(&one, blob, sizeof(blob));
+    CHECK(one_need == one_wrote);
+    CHECK(one_wrote > 32 + 8);
+    lumen_scene_t one_back;
+    lumen_scene_init(&one_back);
+    CHECK(lumen_scene_blob_decode(blob, one_wrote, &one_back));
+    CHECK(one_back.name_len == 2);
+    CHECK(one_back.name[0] == 'A' && one_back.name[1] == 'B');
+    CHECK(one_back.part[0][0].step_count == 2);
+    CHECK(one_back.part[0][0].loop == LUMEN_LOOP_ALL_V5);
+    CHECK(one_back.part[0][0].on == 1);
+    CHECK(one_back.part[0][0].step[0].duration_ms == 1000);
+    CHECK(one_back.part[0][0].step[1].layer[0].type == LUMEN_EFFECT_STATIC);
 }
 
 /* ================= v5（#155）：播放头推进（纯函数） ================= */

@@ -246,8 +246,17 @@ def parse_state(payload):
     }
 
 
+# LayoutPart 0x21 / LayoutReport 0x89 的载荷宽度（§1.1 / §7.2）。
+# 29 = strip|part|name_len|name[24]|seg_count|phase；报文多 strip/part 已在头部，
+# 所以报告是 45 = 前面 29 的语义 + 额外 16 字节的 8 段（实际布局见下面注释）。
+LAYOUT_PART_BYTES = 29
+LAYOUT_REPORT_BYTES = 45
+# 报告里段的起点：strip(0) part(1) name_len(2) name[3..26] seg_count(27) phase(28)。
+LAYOUT_REPORT_SEGS_OFFSET = 29
+
+
 def parse_layout_report(payload):
-    if len(payload) < 44:
+    if len(payload) < LAYOUT_REPORT_BYTES:
         return None
     name_len = payload[2]
     return {
@@ -255,7 +264,12 @@ def parse_layout_report(payload):
         "part_id": payload[1],
         "name": payload[3:3 + name_len].decode("utf-8", "replace"),
         "seg_count": payload[27],
-        "segs": [(payload[28 + i * 2], payload[29 + i * 2]) for i in range(8)],
+        "phase": payload[28],
+        "segs": [
+            (payload[LAYOUT_REPORT_SEGS_OFFSET + i * 2],
+             payload[LAYOUT_REPORT_SEGS_OFFSET + i * 2 + 1])
+            for i in range(8)
+        ],
     }
 
 
@@ -333,7 +347,7 @@ async def run(probe, chk, args):
     name_eye = "眼灯".encode("utf-8")
     result, _ = await probe.send(
         "LAYOUT_PART",
-        bytes([0, 0, len(name_eye)]) + name_eye + b"\x00" * (24 - len(name_eye)) + bytes([1]),
+        bytes([0, 0, len(name_eye)]) + name_eye + b"\x00" * (24 - len(name_eye)) + bytes([1, 0]),
     )
     chk.check("LayoutPart(眼灯, 1 段) OK", result == OK, f"0x{result:02X}" if result is not None else "无 ACK")
 
@@ -343,7 +357,7 @@ async def run(probe, chk, args):
     name_fin = "散热".encode("utf-8")
     result, _ = await probe.send(
         "LAYOUT_PART",
-        bytes([0, 1, len(name_fin)]) + name_fin + b"\x00" * (24 - len(name_fin)) + bytes([1]),
+        bytes([0, 1, len(name_fin)]) + name_fin + b"\x00" * (24 - len(name_fin)) + bytes([1, 0]),
     )
     chk.check("LayoutPart(散热, 1 段) OK", result == OK, f"0x{result:02X}" if result is not None else "无 ACK")
 
@@ -489,7 +503,7 @@ async def cleanup(probe, chk, led_count):
     await probe.send("LAYOUT_WRITE", bytes([0, 1]))
     whole = "整条".encode("utf-8")
     await probe.send("LAYOUT_PART",
-                     bytes([0, 0, len(whole)]) + whole + b"\x00" * (24 - len(whole)) + bytes([1]))
+                     bytes([0, 0, len(whole)]) + whole + b"\x00" * (24 - len(whole)) + bytes([1, 0]))
     await probe.send("LAYOUT_SEG", bytes([0, 0, 0, 0, led_count - 1]))
     result, _ = await probe.send("LAYOUT_COMMIT")
     chk.check("收尾布局提交 OK", result == OK, f"0x{result:02X}" if result is not None else "无 ACK")

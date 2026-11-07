@@ -165,7 +165,12 @@ static void store_task(void *arg)
                     s_event_cb(command);
                 }
             } else {
-                ESP_LOGD(TAG, "saved key=%s (%u bytes, cmd=0x%02X)", k_key_names[key],
+                /*
+                 * INFO 而不是 DEBUG：默认日志级别看不到 DEBUG，而「到底存了没有」
+                 * 是真机排查的第一个问题（#162 靠它确认了写入确实发生）。
+                 * 只在真落盘时打，不随每次编辑刷屏。
+                 */
+                ESP_LOGI(TAG, "saved key=%s (%u bytes, cmd=0x%02X)", k_key_names[key],
                          (unsigned)len, command);
             }
         }
@@ -246,9 +251,21 @@ bool lumen_state_store_load_scene(uint8_t scene_id, lumen_scene_t *out)
     size_t size = sizeof(blob);
     lumen_save_key_t key = (lumen_save_key_t)(LUMEN_SAVE_KEY_SCENE0 + scene_id);
     if (!read_key(key, blob, &size)) {
+        ESP_LOGW(TAG, "场景 %u：NVS 里没有 %s", scene_id, k_key_names[key]);
         return false;
     }
-    return lumen_scene_blob_decode(blob, size, out);
+    if (!lumen_scene_blob_decode(blob, size, out)) {
+        /*
+         * 记「读到了多少字节 + 头 4 字节」就够了：只记「解码失败」的话，
+         * 「长度不对」「magic 不对」「版本不对」在日志里长得一样（#162 正是
+         * 靠这两个数字定位到 encode/decode 对未编排部位的处理不一致）。
+         */
+        ESP_LOGW(TAG, "场景 %u：%u 字节解码失败，magic=%02X%02X%02X%02X ver=%u", scene_id,
+                 (unsigned)size, size > 0 ? blob[0] : 0, size > 1 ? blob[1] : 0,
+                 size > 2 ? blob[2] : 0, size > 3 ? blob[3] : 0, size > 4 ? blob[4] : 0);
+        return false;
+    }
+    return true;
 }
 
 void lumen_state_store_set_event_cb(lumen_store_event_cb cb)

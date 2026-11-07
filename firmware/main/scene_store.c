@@ -270,7 +270,18 @@ size_t lumen_scene_blob_size(const lumen_scene_t *scene)
     }
     size_t total = (size_t)SCENE_HEADER_BYTES + LUMEN_MAX_STRIPS;
     for (uint8_t strip = 0; strip < LUMEN_MAX_STRIPS; ++strip) {
+        /*
+         * 与 encode / decode **同一条规则**：每链只算到「最后一个有步的部位」，
+         * 没编排过的槽位不占空间（§10.4）。三处必须一起改——只改一处会让
+         * `encode` 的自检（written != need）失败并返回 0，从而「什么都存不下」。
+         */
+        uint8_t parts = 0;
         for (uint8_t part = 0; part < LUMEN_MAX_PARTS; ++part) {
+            if (scene->part[strip][part].step_count > 0) {
+                parts = (uint8_t)(part + 1);
+            }
+        }
+        for (uint8_t part = 0; part < parts; ++part) {
             const lumen_part_scene_t *p = &scene->part[strip][part];
             total += 3; /* step_count / loop / on */
             for (uint8_t s = 0; s < p->step_count && s < LUMEN_MAX_STEPS; ++s) {
@@ -317,8 +328,23 @@ size_t lumen_scene_blob_encode(const lumen_scene_t *scene, uint8_t *out, size_t 
         *p++ = parts;
     }
 
+    /*
+     * 部位记录**只写到该链的 part_count 为止**（§10.4）。这里与解码端是同一条
+     * 规则：解码也只遍历到 part_count，超出部分当作「这个场景没编排过」。
+     *
+     * 曾经两侧不一致：编码写了全部 64 个槽位、解码也要求全部 64 个 3 字节头，
+     * 但 `lumen_scene_blob_size` 只按实际步数算长度——于是 blob 长度比解码
+     * 期望的短，`p + 3 > limit` 让**每一次**场景恢复都失败（真机表现：保存
+     * 成功、重启后三个场景全空，日志只有「未恢复」）。#162 抓住的就是这个。
+     */
     for (uint8_t strip = 0; strip < LUMEN_MAX_STRIPS; ++strip) {
+        uint8_t parts = 0;
         for (uint8_t part = 0; part < LUMEN_MAX_PARTS; ++part) {
+            if (scene->part[strip][part].step_count > 0) {
+                parts = (uint8_t)(part + 1);
+            }
+        }
+        for (uint8_t part = 0; part < parts; ++part) {
             const lumen_part_scene_t *ps = &scene->part[strip][part];
             *p++ = ps->step_count;
             *p++ = ps->loop;
@@ -388,7 +414,11 @@ bool lumen_scene_blob_decode(const uint8_t *blob, size_t len, lumen_scene_t *out
     }
 
     for (uint8_t strip = 0; strip < LUMEN_MAX_STRIPS; ++strip) {
-        for (uint8_t part = 0; part < LUMEN_MAX_PARTS; ++part) {
+        /*
+         * 只遍历到该链的 part_count（与编码端同一条规则）。没编排过的部位保持
+         * `lumen_scene_init` 给的默认头，不占 blob 空间。
+         */
+        for (uint8_t part = 0; part < part_count[strip]; ++part) {
             if (p + 3 > limit) {
                 return false;
             }
@@ -396,10 +426,6 @@ bool lumen_scene_blob_decode(const uint8_t *blob, size_t len, lumen_scene_t *out
             uint8_t loop = *p++;
             uint8_t on = *p++;
             if (step_count > LUMEN_MAX_STEPS || loop > LUMEN_LOOP_V5_MAX || on > 1) {
-                return false;
-            }
-            /* 未编排过的部位槽位必须是空头，否则是坏 blob。 */
-            if (part >= part_count[strip] && (step_count != 0 || loop != 0 || on != 0)) {
                 return false;
             }
             lumen_part_scene_t *ps = &decoded.part[strip][part];

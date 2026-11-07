@@ -231,7 +231,13 @@ static bool persist_scene_locked(uint8_t scene_id, uint8_t command)
                  (unsigned)sizeof(s_scene_blob[scene_id]));
         return false;
     }
-    return lumen_state_store_request_scene_save(scene_id, s_scene_blob[scene_id], len, command);
+    bool queued =
+        lumen_state_store_request_scene_save(scene_id, s_scene_blob[scene_id], len, command);
+    if (!queued) {
+        /* 入队失败只可能是参数非法或调度器拒收——是异常，值得一条日志。 */
+        ESP_LOGW(TAG, "场景 %u 落盘入队失败：%u 字节", scene_id, (unsigned)len);
+    }
+    return queued;
 }
 
 /* 每条灯带自己的灯珠数（**调用者必须持锁**）。 */
@@ -883,9 +889,17 @@ esp_err_t lumen_led_engine_init(void)
      */
     for (uint8_t i = 0; i < LUMEN_MAX_SCENES; ++i) {
         lumen_scene_init(&s_restore_scene);
-        if (lumen_state_store_load_scene(i, &s_restore_scene)) {
+        bool loaded = lumen_state_store_load_scene(i, &s_restore_scene);
+        if (loaded) {
             s_scenes.scene[i] = s_restore_scene;
         }
+        /*
+         * 每个场景都记一行：只记成功的话，「一个都没恢复」和「根本没读」在
+         * 日志里长得一样（#162 就是靠这一行才看出三个场景全没恢复）。
+         */
+        ESP_LOGI(TAG, "场景 %u %s：name_len=%u strip0 steps=%u/%u", i,
+                 loaded ? "已恢复" : "未恢复（无 key 或 blob 被拒）", s_restore_scene.name_len,
+                 s_restore_scene.part[0][0].step_count, s_restore_scene.part[0][1].step_count);
     }
     refresh_layout_summary_locked();
 
